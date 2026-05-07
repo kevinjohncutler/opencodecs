@@ -1,0 +1,31 @@
+# Build artifacts
+build/
+dist/
+*.egg-info/
+*.so
+*.pyd
+*.dll
+
+# Cython-generated C
+src/opencodecs/codecs/*.c
+
+# Vendored libjxl build (rebuilt via bench/build_libjxl.sh)
+vendor/libjxl/
+
+# Python caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.testmondata*
+.coverage*
+
+# Editor / OS
+.DS_Store
+._*
+*.swp
+.vscode/
+.idea/
+
+# Bench output
+bench_data/
