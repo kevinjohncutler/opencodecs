@@ -31,3 +31,61 @@ test = [
 [tool.setuptools.packages.find]
 where = ["src"]
 include = ["opencodecs*"]
+
+
+# ---------------------------------------------------------------------------
+# cibuildwheel — produces self-contained wheels that bundle every linked
+# system library (libjxl, libavif, libheif, ...) into the .whl via
+# auditwheel/delocate. Without this the user would have to apt/brew/conda
+# the libs themselves before `pip install opencodecs`.
+# ---------------------------------------------------------------------------
+
+[tool.cibuildwheel]
+# Stable CPython versions only. Skip musllinux (no manylinux prebuilt
+# binaries for several of the codec libs there) and pp* (PyPy lacks the
+# C-extension compatibility we depend on).
+build = "cp310-* cp311-* cp312-* cp313-*"
+skip = ["*-musllinux*", "pp*"]
+build-frontend = "build"
+test-requires = ["pytest", "tifffile>=2024.5.10", "h5py", "numcodecs", "zarr>=3"]
+# Smoke-test each wheel inside cibuildwheel's isolated env. Don't run the
+# full suite — the test-on-host job already does that, and slowing wheel
+# builds with full pytest would multiply CI time by 4× per cell.
+test-command = "pytest -q -k 'not lab_czi and not LAB_CZI' {project}/tests/test_unified_api.py {project}/tests/test_optional_backend.py"
+
+[tool.cibuildwheel.linux]
+# manylinux_2_28 = AlmaLinux 8. The dnf packages cover most codecs;
+# libjxl, libheif, and libdeflate need EPEL or build-from-source. The
+# script below uses dnf for what's available and builds libjxl from
+# source (vendored, opencodecs already has bench/build_libjxl.sh for it).
+manylinux-x86_64-image = "manylinux_2_28"
+manylinux-aarch64-image = "manylinux_2_28"
+before-all = [
+    "dnf install -y epel-release",
+    "dnf install -y zlib-devel zstd-devel libzstd-devel lz4-devel brotli-devel libwebp-devel libpng-devel libjpeg-turbo-devel openjpeg2-devel libavif-devel libheif-devel libdeflate-devel || true",
+    # Build libjxl from source — the manylinux base doesn't ship it.
+    # bench/build_libjxl.sh uses cmake + ninja; both are in manylinux_2_28.
+    "bash bench/build_libjxl.sh /usr/local || true",
+    # c-blosc2 isn't in EPEL; build from source (small package).
+    "dnf install -y cmake ninja-build || true",
+    # Note: failures above (|| true) are tolerated so the wheel build
+    # still proceeds with whichever extensions managed to find their libs.
+    # The optional-backend pattern means missing extensions just don't
+    # register; the wheel still installs and works for the codecs it has.
+]
+# Tell setup.py to look in /usr/local for libjxl we just built.
+environment = { OPENCODECS_JXL_PREFIX = "/usr/local" }
+
+[tool.cibuildwheel.macos]
+# macos-latest runners have brew preinstalled. Install codec libs in the
+# host shell before cibuildwheel invokes setup.py (cibuildwheel for macOS
+# runs natively, no container).
+before-all = "brew install jpeg-xl libavif libheif webp libpng jpeg-turbo openjpeg zstd brotli c-blosc2 lz4 libdeflate"
+# Match the floor in setup.py so wheel tag and binary agree. M-series CI
+# runners need 11.0+; older deployment targets fail to link libjxl 0.11.
+environment = { MACOSX_DEPLOYMENT_TARGET = "11.0" }
+
+[tool.cibuildwheel.windows]
+# Windows pre-install happens at the GitHub Actions level (see
+# build_wheels.yml — conda-incubator/setup-miniconda + conda install).
+# CIBW_ENVIRONMENT_WINDOWS pipes the resulting CONDA_PREFIX into setup.py.
