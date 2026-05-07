@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=64", "wheel", "Cython>=3.0", "numpy>=1.25"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "opencodecs"
+version = "0.1.0.dev0"
+description = "Streaming, network-aware image codecs for scientific imaging (prototype: JPEG XL)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "BSD-3-Clause" }
+authors = [{ name = "Kevin Cutler" }]
+dependencies = ["numpy>=1.25", "platformdirs>=4"]
+
+[project.optional-dependencies]
+# tifffile >=2024.5 ships TiffPage.init_decode(), which opencodecs.tiff_reader
+# uses for its parallel pread+decode loop. Older tifffile lacks the method
+# entirely (verified on Linux 2023.2.28).
+tiff = ["tifffile>=2024.5.10"]
+hdf5 = ["h5py"]
+zarr = ["numcodecs", "zarr>=3"]
+test = [
+    "pytest>=8",
+    "pytest-cov",
+    "tifffile>=2024.5.10",
+    "h5py",
+    "numcodecs",
+    "zarr>=3",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["opencodecs*"]
