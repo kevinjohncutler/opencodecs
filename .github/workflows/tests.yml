@@ -1,0 +1,106 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: ["*"]
+  workflow_dispatch:
+
+# Concurrency: cancel in-flight runs of the same workflow on the same ref.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Test ${{ matrix.os }} Py ${{ matrix.python-version }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python-version: ["3.10", "3.13"]
+    defaults:
+      run:
+        # bash on every platform — pwsh is the Windows default and breaks
+        # the heredoc / multi-line shell scripts below.
+        shell: bash -el {0}
+    steps:
+      - uses: actions/checkout@v4
+
+      # ----- System C libraries opencodecs links against -----
+      # Every codec wraps a separate native lib. Install paths differ per
+      # OS, but the post-condition is the same: setup.py's _PROBE_PREFIXES
+      # finds the headers + .so/.dylib/.lib at standard locations.
+
+      - name: System libs (Ubuntu)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y \
+            libavif-dev libheif-dev libheif-plugin-x265 \
+            libwebp-dev libpng-dev libjpeg-turbo8-dev \
+            libopenjp2-7-dev libdeflate-dev libbrotli-dev \
+            libblosc2-dev liblz4-dev libzstd-dev
+          # Ubuntu's libjxl is older than the 0.11+ our .pxd targets, and
+          # libjpeg-turbo on 24.04 is 2.x (no tj3Init). The optional-backend
+          # pattern means those two extensions just don't register, and the
+          # test suite skips them — no failure.
+
+      - name: System libs (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew update --quiet
+          brew install --quiet \
+            jpeg-xl libavif libheif webp libpng jpeg-turbo openjpeg \
+            zstd brotli c-blosc2 lz4 libdeflate
+
+      # Windows uses conda-forge — no system package manager has the full
+      # set, and the validated win-vm env uses exactly this pattern.
+      - name: Miniconda + codec libs (Windows)
+        if: runner.os == 'Windows'
+        uses: conda-incubator/setup-miniconda@v3
+        with:
+          miniforge-version: latest
+          python-version: ${{ matrix.python-version }}
+          activate-environment: ocbuild
+          channels: conda-forge
+
+      - name: Install codec libs into conda env (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          conda install -y \
+            libjxl libavif libheif libwebp libpng libjpeg-turbo openjpeg \
+            zlib libdeflate brotli libbrotlicommon c-blosc2 lz4-c zstd
+
+      # ----- Python -----
+      # Ubuntu / macOS use setup-python; Windows already has Python from the
+      # conda env above (ocbuild Python matches the matrix python-version).
+      - name: Set up Python (non-Windows)
+        if: runner.os != 'Windows'
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      # ----- Build + test -----
+      - name: Install package + test deps
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          python -m pip install -e .[test]
+
+      - name: List registered codecs
+        run: python -c "import opencodecs as oc; print(sorted(c['name'] for c in oc.list_codecs()))"
+
+      - name: Run tests
+        run: pytest -q --cov=src/opencodecs --cov-report=xml --junitxml=junit.xml
+
+      - name: Upload coverage + junit (one matrix cell)
+        if: matrix.os == 'macos-latest' && matrix.python-version == '3.13'
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: |
+            coverage.xml
+            junit.xml
+          if-no-files-found: warn
