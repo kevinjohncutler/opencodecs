@@ -270,6 +270,15 @@ _PROBE_PREFIXES: list[Path] = [
     Path("/usr"),
 ]
 
+# When _find_libjxl() picked up libjxl from a non-standard prefix
+# (e.g. /cibw-jxl-prefix in the cibuildwheel manylinux container, or
+# the per-user cache dir on a dev machine), make that prefix reachable
+# to the generic _has_header() probe too — otherwise the jxl/types.h
+# REQUIRED_HEADERS gate fails and _jxl auto-skips even though the lib
+# IS present.
+if chosen_prefix is not None and Path(chosen_prefix) not in _PROBE_PREFIXES:
+    _PROBE_PREFIXES.insert(0, Path(chosen_prefix))
+
 # macOS keeps system headers (zlib.h, etc.) under the active Xcode SDK
 # instead of /usr/include/. Probe that too.
 if sys.platform == "darwin":

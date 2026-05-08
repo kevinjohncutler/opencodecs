@@ -149,7 +149,13 @@ jobs:
           # the mounted cache. auditwheel bundles libjxl into the wheel
           # regardless of its install location.
           CIBW_CONTAINER_ENGINE: 'docker; create_args: -v ${{ github.workspace }}/.cibw-cache/usr-local:/cibw-jxl-prefix'
-          CIBW_ENVIRONMENT_LINUX: >
+          # `>-` (strip-chomp) folds lines with single spaces and drops
+          # the trailing newline. cibuildwheel parses the value with
+          # shell semantics; a trailing \n breaks it silently on Linux
+          # (env vars not set, every dep-less codec auto-skips) and
+          # noisily on Windows (we hit "Malformed environment option"
+          # in run #1).
+          CIBW_ENVIRONMENT_LINUX: >-
             LIBJXL_VERSION=${{ env.LIBJXL_VERSION }}
             OPENCODECS_LIBJXL_PREFIX=/cibw-jxl-prefix
             OPENCODECS_JXL_PREFIX=/cibw-jxl-prefix
