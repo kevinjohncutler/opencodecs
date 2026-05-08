@@ -148,9 +148,14 @@ jobs:
             LIBJXL_VERSION=${{ env.LIBJXL_VERSION }}
             OPENCODECS_LIBJXL_PREFIX=/cibw-jxl-prefix
             OPENCODECS_JXL_PREFIX=/cibw-jxl-prefix
-          # PATH is set via $GITHUB_PATH in the prior step; only need to
-          # forward CONDA_PREFIX for setup.py's lib probe.
-          CIBW_ENVIRONMENT_WINDOWS: CONDA_PREFIX=${{ env.OCBUILD_CONDA_PREFIX }}
+          # PATH is set via $GITHUB_PATH in the prior step. Pipe both
+          # CONDA_PREFIX (for runtime DLL search) and the explicit
+          # OPENCODECS_CODEC_LIBS_PREFIX (which setup.py probes
+          # unconditionally — pip's isolated build env scrubs CONDA_PREFIX
+          # in some configs, so this is the belt-and-braces fallback).
+          CIBW_ENVIRONMENT_WINDOWS: >-
+            CONDA_PREFIX=${{ env.OCBUILD_CONDA_PREFIX }}
+            OPENCODECS_CODEC_LIBS_PREFIX=${{ env.OCBUILD_CONDA_PREFIX }}
 
       - uses: actions/upload-artifact@v4
         with:
