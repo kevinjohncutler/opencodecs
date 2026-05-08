@@ -116,10 +116,17 @@ jobs:
           channels: conda-forge
           use-mamba: true
 
-      - name: Stash CONDA_PREFIX for cibuildwheel (Windows)
+      - name: Stash CONDA_PREFIX + add Library/bin to PATH (Windows)
         if: runner.os == 'Windows'
         shell: bash -el {0}
-        run: echo "OCBUILD_CONDA_PREFIX=${CONDA_PREFIX}" >> "$GITHUB_ENV"
+        run: |
+          # The codec DLLs (libjxl, libavif, ...) live in
+          # $CONDA_PREFIX/Library/bin. cibuildwheel inherits the runner
+          # PATH, so prepending here is enough — no CIBW_ENVIRONMENT
+          # gymnastics. CONDA_PREFIX itself goes through cibuildwheel
+          # since setup.py reads it during the build.
+          echo "OCBUILD_CONDA_PREFIX=${CONDA_PREFIX}" >> "$GITHUB_ENV"
+          echo "${CONDA_PREFIX}\\Library\\bin" >> "$GITHUB_PATH"
 
       # ---------- cibuildwheel ----------
       - name: Build wheels
@@ -141,9 +148,9 @@ jobs:
             LIBJXL_VERSION=${{ env.LIBJXL_VERSION }}
             OPENCODECS_LIBJXL_PREFIX=/cibw-jxl-prefix
             OPENCODECS_JXL_PREFIX=/cibw-jxl-prefix
-          CIBW_ENVIRONMENT_WINDOWS: >
-            CONDA_PREFIX=${{ env.OCBUILD_CONDA_PREFIX }}
-            PATH=${{ env.OCBUILD_CONDA_PREFIX }}\\Library\\bin;$PATH
+          # PATH is set via $GITHUB_PATH in the prior step; only need to
+          # forward CONDA_PREFIX for setup.py's lib probe.
+          CIBW_ENVIRONMENT_WINDOWS: CONDA_PREFIX=${{ env.OCBUILD_CONDA_PREFIX }}
 
       - uses: actions/upload-artifact@v4
         with:

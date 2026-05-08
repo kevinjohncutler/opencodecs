@@ -71,7 +71,10 @@ branch = false
 build = "cp310-* cp311-* cp312-* cp313-*"
 skip = ["*-musllinux*", "pp*"]
 build-frontend = "build"
-test-requires = ["pytest", "tifffile>=2024.5.10", "h5py", "numcodecs", "zarr>=3"]
+# zarr 3.x requires Python ≥ 3.11; let pip resolve to whatever fits the
+# wheel's interpreter (zarr 2.x on cp310, 3.x on cp311+). Tests that need
+# v3 wrappers skip via _need_zarr_v3() at runtime.
+test-requires = ["pytest", "tifffile>=2024.5.10", "h5py", "numcodecs", "zarr"]
 # Smoke-test each wheel inside cibuildwheel's isolated env. Don't run the
 # full suite — the test-on-host job already does that, and slowing wheel
 # builds with full pytest would multiply CI time by 4× per cell.
@@ -96,28 +99,40 @@ manylinux-aarch64-image = "manylinux_2_28"
 before-all = [
     "dnf install -y epel-release",
     "dnf install -y cmake ninja-build git",
-    # Best-effort: install codec libs that ARE in repos. Missing ones fall
-    # through to the optional-backend pattern.
-    "dnf install -y zlib-devel zstd-devel libzstd-devel lz4-devel brotli-devel libwebp-devel libpng-devel libjpeg-turbo-devel openjpeg2-devel libavif-devel libheif-devel libdeflate-devel blosc2-devel || true",
-    # libjxl: build from source. OPENCODECS_LIBJXL_PREFIX=/usr/local is
-    # passed via CIBW_ENVIRONMENT_LINUX in the workflow file so the
-    # script writes there instead of into the user cache (which doesn't
-    # persist across cibuildwheel's container layers).
+    # Each codec lib in its own dnf line so any package that's missing
+    # from EPEL doesn't drop the whole transaction. The optional-backend
+    # pattern means missing libs at build time → just-skipped extension.
+    # Known packages in manylinux_2_28 (AlmaLinux 8) base + EPEL 8:
+    "dnf install -y zlib-devel || true",
+    "dnf install -y libzstd-devel || true",
+    "dnf install -y lz4-devel || true",
+    "dnf install -y brotli-devel || true",
+    "dnf install -y libwebp-devel || true",
+    "dnf install -y libpng-devel || true",
+    "dnf install -y libjpeg-turbo-devel || true",
+    "dnf install -y openjpeg2-devel || true",
+    "dnf install -y libdeflate-devel || true",
+    # Not in AlmaLinux 8 / EPEL 8: libavif-devel, libheif-devel,
+    # blosc2-devel — those extensions auto-skip via optional-backend.
+    # libjxl: build from source. OPENCODECS_LIBJXL_PREFIX is set via
+    # CIBW_ENVIRONMENT_LINUX in build_wheels.yml to point at the cached
+    # /cibw-jxl-prefix mount.
     "bash bench/build_libjxl.sh",
-    "ldconfig",
 ]
-# OPENCODECS_JXL_PREFIX tells setup.py to look in /usr/local for the
-# libjxl we just built.
-environment = { OPENCODECS_JXL_PREFIX = "/usr/local", OPENCODECS_LIBJXL_PREFIX = "/usr/local" }
+# Don't set OPENCODECS_*_PREFIX here — build_wheels.yml's
+# CIBW_ENVIRONMENT_LINUX overrides them with the cache-mount path.
 
 [tool.cibuildwheel.macos]
 # macos-latest runners have brew preinstalled. Install codec libs in the
 # host shell before cibuildwheel invokes setup.py (cibuildwheel for macOS
 # runs natively, no container).
 before-all = "brew install jpeg-xl libavif libheif webp libpng jpeg-turbo openjpeg zstd brotli c-blosc2 lz4 libdeflate"
-# Match the floor in setup.py so wheel tag and binary agree. M-series CI
-# runners need 11.0+; older deployment targets fail to link libjxl 0.11.
-environment = { MACOSX_DEPLOYMENT_TARGET = "11.0" }
+# macos-latest is currently macOS 14 (Sonoma) on arm64. Homebrew formulas
+# are compiled for 14.x, so any wheel target lower than 14 fails the
+# delocate scan (linked dylibs reference symbols added in 14). Setting
+# MACOSX_DEPLOYMENT_TARGET=14.0 lines the wheel tag up with the brew libs;
+# the trade is lower-version Macs need to source-build via the sdist.
+environment = { MACOSX_DEPLOYMENT_TARGET = "14.0" }
 
 [tool.cibuildwheel.windows]
 # Windows pre-install happens at the GitHub Actions level (see
