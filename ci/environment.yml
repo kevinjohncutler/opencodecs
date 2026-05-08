@@ -1,0 +1,23 @@
+name: ocbuild
+channels:
+  - conda-forge
+  - nodefaults
+# Codec C libraries opencodecs links against. Python comes from
+# setup-miniconda's python-version input (so the matrix can cycle
+# 3.10 / 3.13 against the same lib set). Bumping any version here
+# invalidates the actions/cache key automatically.
+dependencies:
+  - libjxl
+  - libavif
+  - libheif
+  - libwebp
+  - libpng
+  - libjpeg-turbo
+  - openjpeg
+  - zlib
+  - libdeflate
+  - brotli
+  - libbrotlicommon
+  - c-blosc2
+  - lz4-c
+  - zstd

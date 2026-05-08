@@ -14,24 +14,19 @@ concurrency:
 
 # Strategy: conda-forge on every platform.
 #
-#   Why conda everywhere instead of apt+brew+conda? Three reasons:
-#
-#   1. **Same versions everywhere.** Apt's libjxl is 0.7.0 on Ubuntu LTS,
-#      brew has 0.11.2, conda-forge has 0.11.2. With one channel, every
-#      runner gets the same lib versions and the same code paths exercise
-#      identically across OSes.
-#
-#   2. **libjxl 0.11+ guaranteed.** Ubuntu LTS, Debian stable, Fedora 41,
-#      Alpine ≤3.22, EPEL 8/9 all ship libjxl < 0.11. Only conda-forge
-#      and rolling distros have 0.11+. Source-building libjxl works (we
-#      do that for cibuildwheel) but adds ~5 min cold to each CI run.
-#
-#   3. **Already proven on Windows.** The win-vm setup verified locally
-#      uses exactly this conda-forge env. Reusing it here means one
-#      configuration drift surface, not three.
-#
-# Cost is ~60-90 seconds of conda env setup per matrix cell — comparable
-# to apt-get install on a fresh runner.
+#   1. Same versions everywhere. Apt's libjxl is 0.7.0 on Ubuntu LTS;
+#      brew has 0.11.2; conda-forge has 0.11.2. With one channel, every
+#      runner exercises identical code paths.
+#   2. libjxl 0.11+ guaranteed. Stable distros all ship < 0.11; only
+#      conda-forge and rolling distros have 0.11+. We cannot rely on
+#      stable distros — and conda-forge works on every Linux base.
+#   3. Already validated. The win-vm setup uses exactly this conda env.
+
+# Bump CACHE_VERSION to force a fresh conda env even when the
+# environment.yml hash hasn't changed (e.g. to pick up a new conda-forge
+# build of an existing version).
+env:
+  CACHE_VERSION: 1
 
 jobs:
   test:
@@ -44,11 +39,25 @@ jobs:
         python-version: ["3.10", "3.13"]
     defaults:
       run:
-        # `bash -el` activates the conda env automatically and works on
-        # all three runner OSes (Windows-bash via Git for Windows).
         shell: bash -el {0}
     steps:
       - uses: actions/checkout@v4
+
+      # ----- Cache conda packages -----
+      # Caches the package tarballs conda downloaded after the first solve.
+      # Subsequent runs skip the network round-trip — install is just an
+      # extract from the cache. Keyed on environment.yml + Python version
+      # + OS so a change to any of those triggers a fresh download.
+      - name: Cache conda packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/conda_pkgs_dir
+            ~/.conda/pkgs
+          key: conda-pkgs-v${{ env.CACHE_VERSION }}-${{ runner.os }}-py${{ matrix.python-version }}-${{ hashFiles('ci/environment.yml') }}
+          restore-keys: |
+            conda-pkgs-v${{ env.CACHE_VERSION }}-${{ runner.os }}-py${{ matrix.python-version }}-
+            conda-pkgs-v${{ env.CACHE_VERSION }}-${{ runner.os }}-
 
       - name: Set up Miniforge + codec libs
         uses: conda-incubator/setup-miniconda@v3
@@ -56,13 +65,22 @@ jobs:
           miniforge-version: latest
           python-version: ${{ matrix.python-version }}
           activate-environment: ocbuild
+          environment-file: ci/environment.yml
           channels: conda-forge
+          # Use mamba where available (it's pre-staged in setup-miniconda v3)
+          # for ~3x faster solves; falls back to conda when mamba's missing.
+          use-mamba: true
 
-      - name: Install codec C libraries
-        run: |
-          conda install -y \
-            libjxl libavif libheif libwebp libpng libjpeg-turbo openjpeg \
-            zlib libdeflate brotli libbrotlicommon c-blosc2 lz4-c zstd
+      # ----- Pip cache (pip install -e .[test] downloads several wheels) -----
+      - name: Cache pip wheels
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/pip
+            ~/Library/Caches/pip
+            ~\AppData\Local\pip\Cache
+          key: pip-v${{ env.CACHE_VERSION }}-${{ runner.os }}-py${{ matrix.python-version }}-${{ hashFiles('pyproject.toml') }}
+          restore-keys: pip-v${{ env.CACHE_VERSION }}-${{ runner.os }}-py${{ matrix.python-version }}-
 
       # ----- Build + test -----
       - name: Install package + test deps

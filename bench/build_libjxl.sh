@@ -100,6 +100,15 @@ echo "    workdir : $WORKDIR  (clone + build)"
 echo "    install : $PREFIX   (final lib location)"
 echo "    JOBS=$JOBS  USE_LTO=$USE_LTO  MARCH=${MARCH:-(portable)}"
 
+# Idempotency: if the requested version is already installed at $PREFIX,
+# exit early so cache restores translate to genuine zero-work runs.
+SENTINEL="$PREFIX/.opencodecs-libjxl-version"
+if [ -f "$SENTINEL" ] && [ "$(cat "$SENTINEL" 2>/dev/null)" = "$LIBJXL_VERSION" ] \
+   && ( [ -e "$PREFIX/include/jxl/types.h" ] ); then
+    echo "==> libjxl $LIBJXL_VERSION already installed at $PREFIX (cache hit). Skipping."
+    exit 0
+fi
+
 mkdir -p "$(dirname "$PREFIX")" "$WORKDIR"
 
 # --- clone (with submodules; libjxl vendors libhwy, libbrotli, skcms in submodules)
@@ -164,6 +173,10 @@ fi
 cmake "$SRC" "${CMAKE_ARGS[@]}"
 "${BUILD_CMD[@]}"
 "${INSTALL_CMD[@]}"
+
+# Drop the version sentinel so the next run can short-circuit if nothing
+# changed. Cleared automatically by `rm -rf $PREFIX` on a forced rebuild.
+echo "$LIBJXL_VERSION" > "$PREFIX/.opencodecs-libjxl-version"
 
 echo ""
 echo "==> opencodecs: libjxl installed to $PREFIX"
