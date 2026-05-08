@@ -150,9 +150,11 @@ environment = { MACOSX_DEPLOYMENT_TARGET = "15.0" }
 # OPENCODECS_CODEC_LIBS_PREFIX env var holds the conda env root in
 # forward-slash form (set in build_wheels.yml).
 #
-# Use `python -m delvewheel` not bare `delvewheel` — cibuildwheel
-# installs delvewheel into its build venv but the executable isn't on
-# the cmd.exe PATH for our custom repair command (only its `python` is).
-# cibuildwheel evaluates this string in bash on Windows, so $VAR
-# (not %VAR%) is the right form.
-repair-wheel-command = 'python -m delvewheel repair --add-path "$OPENCODECS_CODEC_LIBS_PREFIX/Library/bin" -w {dest_dir} {wheel}'
+# Custom repair-wheel-command for Windows: cibuildwheel runs the
+# command in the BUILD venv's shell context (not its own venv), so
+# neither `delvewheel` nor `python -m delvewheel` finds the package
+# unless we install it just-in-time. `pip install delvewheel` is a few
+# seconds; the `python -m delvewheel repair` then runs against the
+# package we just dropped in. cibuildwheel evaluates this in bash on
+# Windows, so $VAR / && / single quotes all work.
+repair-wheel-command = 'pip install --quiet delvewheel && python -m delvewheel repair --add-path "$OPENCODECS_CODEC_LIBS_PREFIX/Library/bin" -w {dest_dir} {wheel}'
