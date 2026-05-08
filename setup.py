@@ -415,16 +415,21 @@ def _build_png_ext() -> Extension:
     # Note: spng.c uses ``#ifdef SPNG_USE_MINIZ`` (not ``#if``), so
     # defining it as 0 still triggers the miniz path. We just don't
     # define it at all when zlib is the backend.
-    vendored_spng = HERE / "3rdparty" / "libspng"
+    #
+    # Setuptools requires sources to be /-separated paths *relative* to
+    # setup.py. Use the relative path even though we know the absolute
+    # one — modern setuptools (>=80) refuses absolute paths in
+    # Extension.sources outright.
     return Extension(
         name="opencodecs.codecs._png",
-        sources=["src/opencodecs/codecs/_png.pyx", str(vendored_spng / "spng.c")],
+        sources=["src/opencodecs/codecs/_png.pyx", "3rdparty/libspng/spng.c"],
         define_macros=[
             ("NPY_NO_DEPRECATED_API", "NPY_1_7_API_VERSION"),
             ("SPNG_STATIC", "1"),
         ],
         language="c",
-        include_dirs=[str(PKG_CODECS), numpy.get_include(), str(vendored_spng),
+        include_dirs=[str(PKG_CODECS), numpy.get_include(),
+                      str(HERE / "3rdparty" / "libspng"),
                       *_resolve_include_dirs("zlib.h")],
         library_dirs=_lib_dirs_for_probes(),
         libraries=["z" if not sys.platform == "win32" else "zlib"],
