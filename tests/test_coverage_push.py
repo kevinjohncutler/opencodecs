@@ -438,6 +438,8 @@ def test_zarr_v3_wrapper_handles_plain_bytes():
     """The wrapper's `else` branch (plain bytes that need bytes() coerce)."""
     pytest.importorskip("zarr")
     from opencodecs._zarr_codecs import OcZstd
+    if OcZstd is None:
+        pytest.skip("zarr v3 not installed (likely Python < 3.11)")
     inst = OcZstd()
     payload = b"raw bytes path"
     enc = inst._encode_bytes(payload)
@@ -449,6 +451,8 @@ def test_zarr_v3_wrapper_handles_memoryview():
     """memoryview goes through the bytes() coerce path."""
     pytest.importorskip("zarr")
     from opencodecs._zarr_codecs import OcZstd
+    if OcZstd is None:
+        pytest.skip("zarr v3 not installed (likely Python < 3.11)")
     inst = OcZstd()
     payload = b"memoryview path test" * 20
     enc = inst._encode_bytes(memoryview(payload))
