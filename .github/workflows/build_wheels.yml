@@ -21,11 +21,12 @@ concurrency:
 # those preinstalled — they get pulled in via the CIBW_BEFORE_ALL_LINUX
 # script (see [tool.cibuildwheel.linux] in pyproject.toml), which dnf-installs
 # what's available and builds libjxl from source via bench/build_libjxl.sh.
-# macOS / Windows builds run on the host, so we install via brew / conda
+# macOS / Windows builds run on the host; we install via brew / conda
 # before invoking cibuildwheel. ``auditwheel`` (Linux) and ``delocate``
 # (macOS) bundle each linked .so/.dylib into the resulting wheel.
 env:
   LIBJXL_VERSION: v0.11.2
+  CACHE_VERSION: 1
 
 jobs:
   build_wheels:
@@ -48,8 +49,55 @@ jobs:
         with:
           fetch-depth: 0
 
-      # macOS: install codec libs via brew (cibuildwheel for macOS runs
-      # natively on the host, no container).
+      # ---------- Caching ----------
+      # 1. Linux: cache /usr/local for the cibuildwheel BEFORE_ALL libjxl
+      #    build. ~5 min cold → ~30s warm. Key includes libjxl version +
+      #    build script hash so a bump invalidates.
+      - name: Cache libjxl install (Linux)
+        if: runner.os == 'Linux'
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.cibw-cache/usr-local
+          key: cibw-libjxl-v${{ env.CACHE_VERSION }}-${{ runner.os }}-${{ matrix.archs_linux }}-${{ env.LIBJXL_VERSION }}-${{ hashFiles('bench/build_libjxl.sh') }}
+
+      # 2. cibuildwheel's own pip cache (per-OS so manylinux container
+      #    doesn't share with macOS/Windows). Speeds up the metadata
+      #    resolution pass on each build.
+      - name: Cache cibuildwheel pip
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/pip
+            ~/Library/Caches/pip
+            ~\AppData\Local\pip\Cache
+          key: cibw-pip-v${{ env.CACHE_VERSION }}-${{ runner.os }}-${{ hashFiles('pyproject.toml') }}
+          restore-keys: cibw-pip-v${{ env.CACHE_VERSION }}-${{ runner.os }}-
+
+      # 3. macOS: cache Homebrew downloads — the brew install before-all
+      #    fetches ~700 MB cumulative, mostly already-installed packages
+      #    that brew nonetheless touches. The download cache shaves ~30s.
+      - name: Cache Homebrew downloads (macOS)
+        if: runner.os == 'macOS'
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/Homebrew/downloads
+          key: brew-cibw-v${{ env.CACHE_VERSION }}-${{ runner.os }}-${{ hashFiles('pyproject.toml') }}
+          restore-keys: brew-cibw-v${{ env.CACHE_VERSION }}-${{ runner.os }}-
+
+      # 4. Windows: cache the conda package tarballs.
+      - name: Cache conda packages (Windows)
+        if: runner.os == 'Windows'
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/conda_pkgs_dir
+            ~\AppData\Local\Temp\conda_pkgs_dir
+          key: cibw-conda-pkgs-v${{ env.CACHE_VERSION }}-${{ runner.os }}-${{ hashFiles('ci/environment.yml') }}
+          restore-keys: cibw-conda-pkgs-v${{ env.CACHE_VERSION }}-${{ runner.os }}-
+
+      # ---------- Per-OS pre-install (for macOS / Windows; Linux pre-installs
+      # happen inside the manylinux container via CIBW_BEFORE_ALL) ----------
+
       - name: System libs (macOS)
         if: runner.os == 'macOS'
         run: |
@@ -58,28 +106,22 @@ jobs:
             jpeg-xl libavif libheif webp libpng jpeg-turbo openjpeg \
             zstd brotli c-blosc2 lz4 libdeflate
 
-      # Windows: cibuildwheel can't drive setup-miniconda internally, so
-      # we set up conda + the codec env here and pipe CONDA_PREFIX into
-      # cibuildwheel via CIBW_ENVIRONMENT_WINDOWS below.
       - name: Miniconda + codec libs (Windows)
         if: runner.os == 'Windows'
         uses: conda-incubator/setup-miniconda@v3
         with:
           miniforge-version: latest
           activate-environment: ocbuild
+          environment-file: ci/environment.yml
           channels: conda-forge
+          use-mamba: true
 
-      - name: Install codec libs into conda env (Windows)
+      - name: Stash CONDA_PREFIX for cibuildwheel (Windows)
         if: runner.os == 'Windows'
         shell: bash -el {0}
-        run: |
-          conda install -y \
-            libjxl libavif libheif libwebp libpng libjpeg-turbo openjpeg \
-            zlib libdeflate brotli libbrotlicommon c-blosc2 lz4-c zstd
-          # Stash the env path so the next step can hand it to cibuildwheel.
-          # CONDA_PREFIX is set automatically by `bash -el` activation.
-          echo "OCBUILD_CONDA_PREFIX=${CONDA_PREFIX}" >> "$GITHUB_ENV"
+        run: echo "OCBUILD_CONDA_PREFIX=${CONDA_PREFIX}" >> "$GITHUB_ENV"
 
+      # ---------- cibuildwheel ----------
       - name: Build wheels
         uses: pypa/cibuildwheel@v3.3.1
         with:
@@ -88,13 +130,17 @@ jobs:
           CIBW_ARCHS_LINUX: ${{ matrix.archs_linux }}
           CIBW_ARCHS_WINDOWS: ${{ matrix.archs_windows }}
           CIBW_ARCHS_MACOS: ${{ matrix.archs_macos }}
-          # Linux libjxl version (used by the BEFORE_ALL script in pyproject).
+          # Linux cibuildwheel runs inside manylinux_2_28; mount the
+          # cached prefix so libjxl built by BEFORE_ALL persists across
+          # runs. OPENCODECS_LIBJXL_PREFIX (write side) and
+          # OPENCODECS_JXL_PREFIX (read side via setup.py) both point at
+          # the mounted cache. auditwheel bundles libjxl into the wheel
+          # regardless of its install location.
+          CIBW_CONTAINER_ENGINE: 'docker; create_args: -v ${{ github.workspace }}/.cibw-cache/usr-local:/cibw-jxl-prefix'
           CIBW_ENVIRONMENT_LINUX: >
             LIBJXL_VERSION=${{ env.LIBJXL_VERSION }}
-            OPENCODECS_LIBJXL_PREFIX=/usr/local
-          # Windows: hand the conda env path to setup.py via CONDA_PREFIX,
-          # and prepend Library\bin to PATH so the codec DLLs resolve at
-          # build/test time (numpy delay-loads OpenBLAS from there too).
+            OPENCODECS_LIBJXL_PREFIX=/cibw-jxl-prefix
+            OPENCODECS_JXL_PREFIX=/cibw-jxl-prefix
           CIBW_ENVIRONMENT_WINDOWS: >
             CONDA_PREFIX=${{ env.OCBUILD_CONDA_PREFIX }}
             PATH=${{ env.OCBUILD_CONDA_PREFIX }}\\Library\\bin;$PATH
@@ -116,6 +162,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
+          cache: pip
 
       - name: Build sdist
         run: |
