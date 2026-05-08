@@ -283,15 +283,21 @@ if sys.platform == "darwin":
     except (FileNotFoundError, subprocess.CalledProcessError):
         pass
 
-# Windows: vcpkg installs to <root>/installed/x64-windows/ and conda
-# environments to <prefix>/Library/. Add the active ones if found.
+# conda env: add CONDA_PREFIX to the probe list. On POSIX the env IS
+# the prefix (headers at $CONDA_PREFIX/include, libs at $CONDA_PREFIX/lib);
+# on Windows conda-forge installs under <prefix>/Library/ to mimic that
+# layout. Probe both forms so the same setup.py works in any conda env.
+_conda = os.environ.get("CONDA_PREFIX")
+if _conda:
+    _PROBE_PREFIXES.insert(0, Path(_conda))  # check FIRST so conda wins
+    if sys.platform == "win32":
+        _PROBE_PREFIXES.insert(0, Path(_conda) / "Library")
+
+# Windows: vcpkg installs to <root>/installed/x64-windows/. Add it too.
 if sys.platform == "win32":
     _vcpkg_root = os.environ.get("VCPKG_ROOT")
     if _vcpkg_root:
         _PROBE_PREFIXES.append(Path(_vcpkg_root) / "installed" / "x64-windows")
-    _conda = os.environ.get("CONDA_PREFIX")
-    if _conda:
-        _PROBE_PREFIXES.append(Path(_conda) / "Library")
 
 
 def _multilib_dirs() -> list[Path]:
