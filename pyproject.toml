@@ -77,10 +77,11 @@ build-frontend = "build"
 test-requires = ["pytest", "tifffile>=2024.5.10", "h5py", "numcodecs", "zarr"]
 # Smoke-test each wheel inside cibuildwheel's isolated env. Don't run the
 # full suite — the test-on-host job already does that, and slowing wheel
-# builds with full pytest would multiply CI time by 4× per cell.
-# `cd` into the project dir to dodge cross-platform path-quoting issues
-# (Windows: D:\a\... + forward slashes confuses pytest's collector).
-test-command = "cd {project} && pytest -q -k 'not lab_czi and not LAB_CZI' tests/test_unified_api.py tests/test_optional_backend.py"
+# builds with full pytest would multiply CI time by 4× per cell. Just
+# the two files that don't depend on a lab CZI mount, so no -k filter is
+# needed (which avoids cross-shell single-vs-double-quote pain — Windows
+# cmd.exe and POSIX shells disagree on single-quote semantics).
+test-command = "pytest -q {project}/tests/test_unified_api.py {project}/tests/test_optional_backend.py"
 
 [tool.cibuildwheel.linux]
 # manylinux_2_28 = AlmaLinux 8. EPEL covers most of the codec libs, and
