@@ -12,13 +12,26 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-# libjxl is the marquee codec — every platform MUST end up with libjxl
-# 0.11+ available. Ubuntu's apt ships 0.10 (too old for our .pxd), so on
-# Linux we build from source via bench/build_libjxl.sh and cache the
-# result. macOS/Homebrew and Windows/conda-forge both ship 0.11+ as a
-# stock package; no source build needed there.
-env:
-  LIBJXL_VERSION: v0.11.2
+# Strategy: conda-forge on every platform.
+#
+#   Why conda everywhere instead of apt+brew+conda? Three reasons:
+#
+#   1. **Same versions everywhere.** Apt's libjxl is 0.7.0 on Ubuntu LTS,
+#      brew has 0.11.2, conda-forge has 0.11.2. With one channel, every
+#      runner gets the same lib versions and the same code paths exercise
+#      identically across OSes.
+#
+#   2. **libjxl 0.11+ guaranteed.** Ubuntu LTS, Debian stable, Fedora 41,
+#      Alpine ≤3.22, EPEL 8/9 all ship libjxl < 0.11. Only conda-forge
+#      and rolling distros have 0.11+. Source-building libjxl works (we
+#      do that for cibuildwheel) but adds ~5 min cold to each CI run.
+#
+#   3. **Already proven on Windows.** The win-vm setup verified locally
+#      uses exactly this conda-forge env. Reusing it here means one
+#      configuration drift surface, not three.
+#
+# Cost is ~60-90 seconds of conda env setup per matrix cell — comparable
+# to apt-get install on a fresh runner.
 
 jobs:
   test:
@@ -31,67 +44,13 @@ jobs:
         python-version: ["3.10", "3.13"]
     defaults:
       run:
-        # bash on every platform — pwsh is the Windows default and breaks
-        # the heredoc / multi-line shell scripts below. With conda the
-        # `-el` flag activates the env automatically.
+        # `bash -el` activates the conda env automatically and works on
+        # all three runner OSes (Windows-bash via Git for Windows).
         shell: bash -el {0}
     steps:
       - uses: actions/checkout@v4
 
-      # ----- Cache libjxl build (Linux only; takes ~5 min from source) -----
-      - name: Cache libjxl install (Linux)
-        if: runner.os == 'Linux'
-        id: cache-libjxl
-        uses: actions/cache@v4
-        with:
-          path: /usr/local
-          # Cache key: libjxl version + script hash so any change to either
-          # invalidates. The /usr/local cache also picks up incidental
-          # things, but that's fine — a CI runner's /usr/local is otherwise
-          # mostly empty.
-          key: libjxl-${{ runner.os }}-${{ env.LIBJXL_VERSION }}-${{ hashFiles('bench/build_libjxl.sh') }}
-
-      # ----- System libs per platform -----
-
-      - name: System libs (Ubuntu)
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update -qq
-          # Everything but libjxl. Ubuntu 24.04's libjpeg-turbo is 2.x
-          # without tj3Init; the _jpeg extension auto-skips when our
-          # _header_contains check fails.
-          sudo apt-get install -y \
-            libavif-dev libheif-dev libheif-plugin-x265 \
-            libwebp-dev libpng-dev libjpeg-turbo8-dev \
-            libopenjp2-7-dev libdeflate-dev libbrotli-dev \
-            libblosc2-dev liblz4-dev libzstd-dev \
-            cmake ninja-build
-
-      - name: Build libjxl from source (Linux, cache miss only)
-        if: runner.os == 'Linux' && steps.cache-libjxl.outputs.cache-hit != 'true'
-        env:
-          LIBJXL_VERSION: ${{ env.LIBJXL_VERSION }}
-          OPENCODECS_LIBJXL_PREFIX: /usr/local
-        run: |
-          sudo --preserve-env=LIBJXL_VERSION,OPENCODECS_LIBJXL_PREFIX \
-              bash bench/build_libjxl.sh
-          sudo ldconfig
-
-      - name: ldconfig (Linux, cache hit)
-        if: runner.os == 'Linux' && steps.cache-libjxl.outputs.cache-hit == 'true'
-        run: sudo ldconfig
-
-      - name: System libs (macOS)
-        if: runner.os == 'macOS'
-        run: |
-          # Homebrew already has these — `--quiet` keeps logs short.
-          brew update --quiet
-          brew install --quiet \
-            jpeg-xl libavif libheif webp libpng jpeg-turbo openjpeg \
-            zstd brotli c-blosc2 lz4 libdeflate
-
-      - name: Miniconda + codec libs (Windows)
-        if: runner.os == 'Windows'
+      - name: Set up Miniforge + codec libs
         uses: conda-incubator/setup-miniconda@v3
         with:
           miniforge-version: latest
@@ -99,36 +58,26 @@ jobs:
           activate-environment: ocbuild
           channels: conda-forge
 
-      - name: Install codec libs into conda env (Windows)
-        if: runner.os == 'Windows'
+      - name: Install codec C libraries
         run: |
           conda install -y \
             libjxl libavif libheif libwebp libpng libjpeg-turbo openjpeg \
             zlib libdeflate brotli libbrotlicommon c-blosc2 lz4-c zstd
 
-      # ----- Python (non-Windows; Windows already has Python from conda) -----
-      - name: Set up Python (non-Windows)
-        if: runner.os != 'Windows'
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}
-
       # ----- Build + test -----
       - name: Install package + test deps
-        env:
-          # Tell setup.py where the libjxl we built is, on Linux. macOS
-          # and Windows already get this via brew / conda standard paths.
-          OPENCODECS_JXL_PREFIX: ${{ runner.os == 'Linux' && '/usr/local' || '' }}
         run: |
           python -m pip install --upgrade pip setuptools wheel
           python -m pip install -e .[test]
 
-      - name: List registered codecs
+      - name: List registered codecs (libjxl MUST be present)
         run: |
-          python -c "import opencodecs as oc; \
-            names = sorted(c['name'] for c in oc.list_codecs()); \
-            print(f'{len(names)} codecs:', names); \
-            assert 'jxl' in names, 'libjxl extension MUST be registered'"
+          python -c "
+          import opencodecs as oc
+          names = sorted(c['name'] for c in oc.list_codecs())
+          print(f'{len(names)} codecs:', names)
+          assert 'jxl' in names, 'libjxl extension MUST register on every platform'
+          "
 
       - name: Run tests
         run: pytest -q --cov=src/opencodecs --cov-report=xml --junitxml=junit.xml
