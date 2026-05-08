@@ -145,8 +145,14 @@ environment = { MACOSX_DEPLOYMENT_TARGET = "15.0" }
 #
 # delvewheel runs by default to bundle linked DLLs into the wheel, but
 # it only finds DLLs that are on PATH at delvewheel's invocation time.
-# cibuildwheel's subprocess for the repair step doesn't necessarily
-# inherit our $GITHUB_PATH addition, so pass --add-path explicitly. The
+# cibuildwheel's subprocess for the repair step doesn't inherit our
+# $GITHUB_PATH addition, so pass --add-path explicitly. The
 # OPENCODECS_CODEC_LIBS_PREFIX env var holds the conda env root in
 # forward-slash form (set in build_wheels.yml).
-repair-wheel-command = 'delvewheel repair --add-path "%OPENCODECS_CODEC_LIBS_PREFIX%/Library/bin" -w {dest_dir} {wheel}'
+#
+# Use `python -m delvewheel` not bare `delvewheel` — cibuildwheel
+# installs delvewheel into its build venv but the executable isn't on
+# the cmd.exe PATH for our custom repair command (only its `python` is).
+# cibuildwheel evaluates this string in bash on Windows, so $VAR
+# (not %VAR%) is the right form.
+repair-wheel-command = 'python -m delvewheel repair --add-path "$OPENCODECS_CODEC_LIBS_PREFIX/Library/bin" -w {dest_dir} {wheel}'
