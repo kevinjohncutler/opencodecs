@@ -33,6 +33,25 @@ where = ["src"]
 include = ["opencodecs*"]
 
 
+[tool.pytest.ini_options]
+# Explicit test discovery so pytest works the same on every CI runner
+# (some runners chdir to the repo root; others to a worktree). Adding
+# ``tests`` to pythonpath lets test_czi_fixture do ``from _czi_fixture
+# import ...`` without packaging tests/ as an installable subpackage.
+testpaths = ["tests"]
+pythonpath = ["tests"]
+
+
+[tool.coverage.run]
+source = ["opencodecs"]
+omit = [
+    # tiff_reader / tifffile_patch are optional optimization layers; skipped
+    # when tifffile isn't present. Keep them in the report — see
+    # # pragma: no cover where appropriate.
+]
+branch = false
+
+
 # ---------------------------------------------------------------------------
 # cibuildwheel — produces self-contained wheels that bundle every linked
 # system library (libjxl, libavif, libheif, ...) into the .whl via
