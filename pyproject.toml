@@ -78,7 +78,9 @@ test-requires = ["pytest", "tifffile>=2024.5.10", "h5py", "numcodecs", "zarr"]
 # Smoke-test each wheel inside cibuildwheel's isolated env. Don't run the
 # full suite — the test-on-host job already does that, and slowing wheel
 # builds with full pytest would multiply CI time by 4× per cell.
-test-command = "pytest -q -k 'not lab_czi and not LAB_CZI' {project}/tests/test_unified_api.py {project}/tests/test_optional_backend.py"
+# `cd` into the project dir to dodge cross-platform path-quoting issues
+# (Windows: D:\a\... + forward slashes confuses pytest's collector).
+test-command = "cd {project} && pytest -q -k 'not lab_czi and not LAB_CZI' tests/test_unified_api.py tests/test_optional_backend.py"
 
 [tool.cibuildwheel.linux]
 # manylinux_2_28 = AlmaLinux 8. EPEL covers most of the codec libs, and
@@ -127,12 +129,13 @@ before-all = [
 # host shell before cibuildwheel invokes setup.py (cibuildwheel for macOS
 # runs natively, no container).
 before-all = "brew install jpeg-xl libavif libheif webp libpng jpeg-turbo openjpeg zstd brotli c-blosc2 lz4 libdeflate"
-# macos-latest is currently macOS 14 (Sonoma) on arm64. Homebrew formulas
-# are compiled for 14.x, so any wheel target lower than 14 fails the
-# delocate scan (linked dylibs reference symbols added in 14). Setting
-# MACOSX_DEPLOYMENT_TARGET=14.0 lines the wheel tag up with the brew libs;
-# the trade is lower-version Macs need to source-build via the sdist.
-environment = { MACOSX_DEPLOYMENT_TARGET = "14.0" }
+# macos-latest is now macOS 15 (Sequoia) on arm64. Homebrew formulas are
+# compiled for 15.x, so any wheel target lower than 15 fails the delocate
+# scan (linked dylibs reference symbols added in 15). Setting
+# MACOSX_DEPLOYMENT_TARGET=15.0 lines the wheel tag up with the brew libs;
+# Macs older than 15 fall back to the sdist (or to source-built libs via
+# bench/build_codec_libs.sh once that lands in the wheel pipeline).
+environment = { MACOSX_DEPLOYMENT_TARGET = "15.0" }
 
 [tool.cibuildwheel.windows]
 # Windows pre-install happens at the GitHub Actions level (see
