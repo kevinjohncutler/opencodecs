@@ -142,3 +142,11 @@ environment = { MACOSX_DEPLOYMENT_TARGET = "15.0" }
 # Windows pre-install happens at the GitHub Actions level (see
 # build_wheels.yml — conda-incubator/setup-miniconda + conda install).
 # CIBW_ENVIRONMENT_WINDOWS pipes the resulting CONDA_PREFIX into setup.py.
+#
+# delvewheel runs by default to bundle linked DLLs into the wheel, but
+# it only finds DLLs that are on PATH at delvewheel's invocation time.
+# cibuildwheel's subprocess for the repair step doesn't necessarily
+# inherit our $GITHUB_PATH addition, so pass --add-path explicitly. The
+# OPENCODECS_CODEC_LIBS_PREFIX env var holds the conda env root in
+# forward-slash form (set in build_wheels.yml).
+repair-wheel-command = 'delvewheel repair --add-path "%OPENCODECS_CODEC_LIBS_PREFIX%/Library/bin" -w {dest_dir} {wheel}'
