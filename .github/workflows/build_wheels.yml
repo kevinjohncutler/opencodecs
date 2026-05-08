@@ -125,7 +125,12 @@ jobs:
           # PATH, so prepending here is enough — no CIBW_ENVIRONMENT
           # gymnastics. CONDA_PREFIX itself goes through cibuildwheel
           # since setup.py reads it during the build.
-          echo "OCBUILD_CONDA_PREFIX=${CONDA_PREFIX}" >> "$GITHUB_ENV"
+          #
+          # Convert C:\path\... to C:/path/... before stashing — cibuildwheel
+          # parses CIBW_ENVIRONMENT with bash semantics and would
+          # otherwise eat every backslash as an escape char.
+          PREFIX_FWD=$(echo "${CONDA_PREFIX}" | tr '\\' '/')
+          echo "OCBUILD_CONDA_PREFIX=${PREFIX_FWD}" >> "$GITHUB_ENV"
           echo "${CONDA_PREFIX}\\Library\\bin" >> "$GITHUB_PATH"
 
       # ---------- cibuildwheel ----------
