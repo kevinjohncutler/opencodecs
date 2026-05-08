@@ -70,7 +70,10 @@ def _read_one_page_parallel(
     the canonical 5D ``keyframe.shaped`` array. We allocate an array of
     that shape, write decoded segments in, then reshape to ``page.shape``.
     """
-    page.init_decode()
+    # ``init_decode`` was added in tifffile 2024.5; older versions
+    # initialise lazily inside ``decode``. Tolerate either.
+    if hasattr(page, "init_decode"):
+        page.init_decode()
     decode = page.decode
     offsets = page.dataoffsets
     bytecounts = page.databytecounts
@@ -211,7 +214,8 @@ def imread_stack(
         # Eagerly resolve all pages (forces tifffile to walk the IFD chain).
         tpages = [tf.pages[i] for i in pages]
         for p in tpages:
-            p.init_decode()
+            if hasattr(p, "init_decode"):  # tifffile >= 2024.5
+                p.init_decode()
 
     # POSIX: shared fd + os.pread; Windows: per-thread fd via threading.local.
     fd = os.open(str(path), os.O_RDONLY) if _HAS_PREAD else None
