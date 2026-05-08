@@ -18,14 +18,19 @@ dependencies = ["numpy>=1.25", "platformdirs>=4"]
 # entirely (verified on Linux 2023.2.28).
 tiff = ["tifffile>=2024.5.10"]
 hdf5 = ["h5py"]
-zarr = ["numcodecs", "zarr>=3"]
+# zarr v3 is only available for Python ≥ 3.11 — but our zarr v3
+# BytesBytesCodec wrappers gracefully skip when zarr is < 3 (the
+# `_need_zarr_v3()` helper checks `zarr.__version__.startswith("3")`).
+# So we list `zarr` without a floor; on Py 3.10 pip resolves to 2.x and
+# the v3 wrapper tests skip; on Py 3.11+ pip picks 3.x and they run.
+zarr = ["numcodecs", "zarr"]
 test = [
     "pytest>=8",
     "pytest-cov",
     "tifffile>=2024.5.10",
     "h5py",
     "numcodecs",
-    "zarr>=3",
+    "zarr",
 ]
 
 [tool.setuptools.packages.find]
