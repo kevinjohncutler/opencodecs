@@ -41,8 +41,15 @@ def _need(codec_name: str) -> None:
 
 _COMPRESSION_CODECS = ["zstd", "lz4", "brotli", "blosc2", "deflate"]
 
+# Brotli's stream format is unusually permissive — many random byte
+# sequences happen to parse as valid (but meaningless) brotli streams.
+# That's a libbrotli reality, not a wrapper bug; skip the strict-raise
+# assertion for brotli. The other strict-raise tests (truncated, wrong
+# magic, etc.) still cover brotli.
+_STRICT_RAISE_CODECS = [c for c in _COMPRESSION_CODECS if c != "brotli"]
 
-@pytest.mark.parametrize("fmt", _COMPRESSION_CODECS)
+
+@pytest.mark.parametrize("fmt", _STRICT_RAISE_CODECS)
 def test_compression_decode_random_bytes_raises(fmt):
     _need(fmt)
     payload = os.urandom(1024)
@@ -52,6 +59,19 @@ def test_compression_decode_random_bytes_raises(fmt):
     # on bad input; assertion is that it's a normal exception (no segfault,
     # no SystemExit, no None return).
     assert isinstance(exc.value, Exception)
+
+
+def test_compression_decode_random_bytes_brotli_no_segfault():
+    """brotli is permissive about random input — it often returns
+    nonsense bytes instead of raising. We just need to confirm no
+    segfault / hang."""
+    _need("brotli")
+    payload = os.urandom(1024)
+    try:
+        out = oc.read(payload, format="brotli")
+    except Exception:
+        return  # raising is fine
+    assert isinstance(out, (bytes, bytearray))  # decoded *something*
 
 
 @pytest.mark.parametrize("fmt", _COMPRESSION_CODECS)
