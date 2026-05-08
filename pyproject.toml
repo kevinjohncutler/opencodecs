@@ -54,27 +54,37 @@ test-requires = ["pytest", "tifffile>=2024.5.10", "h5py", "numcodecs", "zarr>=3"
 test-command = "pytest -q -k 'not lab_czi and not LAB_CZI' {project}/tests/test_unified_api.py {project}/tests/test_optional_backend.py"
 
 [tool.cibuildwheel.linux]
-# manylinux_2_28 = AlmaLinux 8. The dnf packages cover most codecs;
-# libjxl, libheif, and libdeflate need EPEL or build-from-source. The
-# script below uses dnf for what's available and builds libjxl from
-# source (vendored, opencodecs already has bench/build_libjxl.sh for it).
+# manylinux_2_28 = AlmaLinux 8. EPEL covers most of the codec libs, and
+# everything that isn't in EPEL falls into one of two buckets:
+#
+#   1. opencodecs's optional-backend pattern. If libavif / libheif /
+#      libdeflate / c-blosc2 fail to install, the corresponding Cython
+#      extension's required-header probe fails at build time; setup.py
+#      drops it from the extensions list and the resulting wheel just
+#      doesn't expose that codec. The package still imports cleanly and
+#      every other codec works.
+#
+#   2. libjxl — the marquee codec. We MUST have it. EPEL doesn't ship
+#      a recent libjxl, so we always build 0.11+ from source via
+#      bench/build_libjxl.sh (cmake + ninja, both in manylinux_2_28).
 manylinux-x86_64-image = "manylinux_2_28"
 manylinux-aarch64-image = "manylinux_2_28"
 before-all = [
     "dnf install -y epel-release",
-    "dnf install -y zlib-devel zstd-devel libzstd-devel lz4-devel brotli-devel libwebp-devel libpng-devel libjpeg-turbo-devel openjpeg2-devel libavif-devel libheif-devel libdeflate-devel || true",
-    # Build libjxl from source — the manylinux base doesn't ship it.
-    # bench/build_libjxl.sh uses cmake + ninja; both are in manylinux_2_28.
-    "bash bench/build_libjxl.sh /usr/local || true",
-    # c-blosc2 isn't in EPEL; build from source (small package).
-    "dnf install -y cmake ninja-build || true",
-    # Note: failures above (|| true) are tolerated so the wheel build
-    # still proceeds with whichever extensions managed to find their libs.
-    # The optional-backend pattern means missing extensions just don't
-    # register; the wheel still installs and works for the codecs it has.
+    "dnf install -y cmake ninja-build git",
+    # Best-effort: install codec libs that ARE in repos. Missing ones fall
+    # through to the optional-backend pattern.
+    "dnf install -y zlib-devel zstd-devel libzstd-devel lz4-devel brotli-devel libwebp-devel libpng-devel libjpeg-turbo-devel openjpeg2-devel libavif-devel libheif-devel libdeflate-devel blosc2-devel || true",
+    # libjxl: build from source. OPENCODECS_LIBJXL_PREFIX=/usr/local is
+    # passed via CIBW_ENVIRONMENT_LINUX in the workflow file so the
+    # script writes there instead of into the user cache (which doesn't
+    # persist across cibuildwheel's container layers).
+    "bash bench/build_libjxl.sh",
+    "ldconfig",
 ]
-# Tell setup.py to look in /usr/local for libjxl we just built.
-environment = { OPENCODECS_JXL_PREFIX = "/usr/local" }
+# OPENCODECS_JXL_PREFIX tells setup.py to look in /usr/local for the
+# libjxl we just built.
+environment = { OPENCODECS_JXL_PREFIX = "/usr/local", OPENCODECS_LIBJXL_PREFIX = "/usr/local" }
 
 [tool.cibuildwheel.macos]
 # macos-latest runners have brew preinstalled. Install codec libs in the

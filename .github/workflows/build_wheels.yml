@@ -16,17 +16,16 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-# IMPORTANT: opencodecs links against ~12 system C libraries (libjxl,
-# libavif, libheif, libwebp, libjpeg-turbo, openjpeg, libdeflate, brotli,
-# c-blosc2, lz4, zstd, plus zlib for the vendored libspng). cibuildwheel
-# runs Linux builds inside a manylinux container that doesn't have most
-# of those preinstalled — they get pulled in via CIBW_BEFORE_ALL_LINUX
-# (see [tool.cibuildwheel] in pyproject.toml). macOS / Windows builds
-# run on the host, so we install via brew / conda before invoking
-# cibuildwheel. ``auditwheel`` (Linux) and ``delocate`` (macOS) then
-# bundle each linked .so/.dylib into the wheel itself, producing a
-# self-contained binary that doesn't require the user to apt-install
-# anything.
+# IMPORTANT: opencodecs links against ~12 system C libraries. cibuildwheel
+# runs Linux builds inside a manylinux container that doesn't have most of
+# those preinstalled — they get pulled in via the CIBW_BEFORE_ALL_LINUX
+# script (see [tool.cibuildwheel.linux] in pyproject.toml), which dnf-installs
+# what's available and builds libjxl from source via bench/build_libjxl.sh.
+# macOS / Windows builds run on the host, so we install via brew / conda
+# before invoking cibuildwheel. ``auditwheel`` (Linux) and ``delocate``
+# (macOS) bundle each linked .so/.dylib into the resulting wheel.
+env:
+  LIBJXL_VERSION: v0.11.2
 
 jobs:
   build_wheels:
@@ -49,8 +48,8 @@ jobs:
         with:
           fetch-depth: 0
 
-      # macOS: install codec libs via brew BEFORE cibuildwheel runs (cibw
-      # builds wheels on the host for macOS, no container).
+      # macOS: install codec libs via brew (cibuildwheel for macOS runs
+      # natively on the host, no container).
       - name: System libs (macOS)
         if: runner.os == 'macOS'
         run: |
@@ -59,9 +58,9 @@ jobs:
             jpeg-xl libavif libheif webp libpng jpeg-turbo openjpeg \
             zstd brotli c-blosc2 lz4 libdeflate
 
-      # Windows: cibuildwheel can't drive conda-incubator/setup-miniconda
-      # internally, so we set up conda and pre-install the libs into a
-      # named env, then point setup.py at that env via CONDA_PREFIX.
+      # Windows: cibuildwheel can't drive setup-miniconda internally, so
+      # we set up conda + the codec env here and pipe CONDA_PREFIX into
+      # cibuildwheel via CIBW_ENVIRONMENT_WINDOWS below.
       - name: Miniconda + codec libs (Windows)
         if: runner.os == 'Windows'
         uses: conda-incubator/setup-miniconda@v3
@@ -77,6 +76,9 @@ jobs:
           conda install -y \
             libjxl libavif libheif libwebp libpng libjpeg-turbo openjpeg \
             zlib libdeflate brotli libbrotlicommon c-blosc2 lz4-c zstd
+          # Stash the env path so the next step can hand it to cibuildwheel.
+          # CONDA_PREFIX is set automatically by `bash -el` activation.
+          echo "OCBUILD_CONDA_PREFIX=${CONDA_PREFIX}" >> "$GITHUB_ENV"
 
       - name: Build wheels
         uses: pypa/cibuildwheel@v3.3.1
@@ -86,11 +88,16 @@ jobs:
           CIBW_ARCHS_LINUX: ${{ matrix.archs_linux }}
           CIBW_ARCHS_WINDOWS: ${{ matrix.archs_windows }}
           CIBW_ARCHS_MACOS: ${{ matrix.archs_macos }}
-          # Hand-off to setup.py: on Windows, point at the conda env we
-          # just populated. On macOS, brew installs to /opt/homebrew (M*)
-          # or /usr/local (Intel) — setup.py probes both.
+          # Linux libjxl version (used by the BEFORE_ALL script in pyproject).
+          CIBW_ENVIRONMENT_LINUX: >
+            LIBJXL_VERSION=${{ env.LIBJXL_VERSION }}
+            OPENCODECS_LIBJXL_PREFIX=/usr/local
+          # Windows: hand the conda env path to setup.py via CONDA_PREFIX,
+          # and prepend Library\bin to PATH so the codec DLLs resolve at
+          # build/test time (numpy delay-loads OpenBLAS from there too).
           CIBW_ENVIRONMENT_WINDOWS: >
-            CONDA_PREFIX=C:\\Miniconda3\\envs\\ocbuild
+            CONDA_PREFIX=${{ env.OCBUILD_CONDA_PREFIX }}
+            PATH=${{ env.OCBUILD_CONDA_PREFIX }}\\Library\\bin;$PATH
 
       - uses: actions/upload-artifact@v4
         with:
