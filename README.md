@@ -2,6 +2,9 @@
 
 # opencodecs
 
+[![Tests](https://github.com/kevinjohncutler/opencodecs/actions/workflows/tests.yml/badge.svg)](https://github.com/kevinjohncutler/opencodecs/actions/workflows/tests.yml)
+[![Build wheels](https://github.com/kevinjohncutler/opencodecs/actions/workflows/build_wheels.yml/badge.svg)](https://github.com/kevinjohncutler/opencodecs/actions/workflows/build_wheels.yml)
+
 Native, parallel-decode codecs for scientific imaging. One unified Codec
 / Reader / Writer API across compression streams, single images,
 multi-frame stacks, and chunked containers.
