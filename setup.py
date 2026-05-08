@@ -292,6 +292,18 @@ if _conda:
     _PROBE_PREFIXES.insert(0, Path(_conda))  # check FIRST so conda wins
     if sys.platform == "win32":
         _PROBE_PREFIXES.insert(0, Path(_conda) / "Library")
+# CI build-env sometimes calls setup.py with CONDA_PREFIX scrubbed (e.g.
+# pip's PEP 517 isolated-build subprocess on Windows). Accept a fallback
+# OPENCODECS_CODEC_LIBS_PREFIX env var that the workflow can set
+# explicitly without relying on cibuildwheel propagating CONDA_PREFIX.
+_libs_prefix = os.environ.get("OPENCODECS_CODEC_LIBS_PREFIX")
+if _libs_prefix:
+    _PROBE_PREFIXES.insert(0, Path(_libs_prefix))
+    if sys.platform == "win32" and (Path(_libs_prefix) / "Library").is_dir():
+        _PROBE_PREFIXES.insert(0, Path(_libs_prefix) / "Library")
+print(f"opencodecs: setup.py CONDA_PREFIX={_conda!r}")
+print(f"opencodecs: setup.py OPENCODECS_CODEC_LIBS_PREFIX={_libs_prefix!r}")
+print(f"opencodecs: setup.py _PROBE_PREFIXES (first 3): {_PROBE_PREFIXES[:3]}")
 
 # Windows: vcpkg installs to <root>/installed/x64-windows/. Add it too.
 if sys.platform == "win32":
