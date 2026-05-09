@@ -100,26 +100,34 @@ test-command = "pytest -q {project}/tests/test_unified_api.py {project}/tests/te
 manylinux-x86_64-image = "manylinux_2_28"
 manylinux-aarch64-image = "manylinux_2_28"
 before-all = [
-    "dnf install -y epel-release",
-    "dnf install -y cmake ninja-build git",
-    # Each codec lib in its own dnf line so any package that's missing
-    # from EPEL doesn't drop the whole transaction. The optional-backend
+    # Enable EPEL + CRB (CodeReady Builder). CRB carries libavif-devel,
+    # libheif-devel, libde265-devel and dav1d-devel on AlmaLinux 8 — none
+    # of which are in the base repos. CRB is unsupported by upstream
+    # AlmaLinux but the packages are stable enough to ship in wheels.
+    "dnf install -y epel-release dnf-plugins-core",
+    "dnf config-manager --set-enabled powertools || dnf config-manager --set-enabled crb || true",
+    "dnf install -y cmake ninja-build git nasm",
+    # Each codec lib in its own dnf line so any package missing from
+    # the repos doesn't drop the whole transaction. The optional-backend
     # pattern means missing libs at build time → just-skipped extension.
-    # Known packages in manylinux_2_28 (AlmaLinux 8) base + EPEL 8:
     "dnf install -y zlib-devel || true",
     "dnf install -y libzstd-devel || true",
     "dnf install -y lz4-devel || true",
     "dnf install -y brotli-devel || true",
     "dnf install -y libwebp-devel || true",
     "dnf install -y libpng-devel || true",
-    "dnf install -y libjpeg-turbo-devel || true",
     "dnf install -y openjpeg2-devel || true",
     "dnf install -y libdeflate-devel || true",
-    # Not in AlmaLinux 8 / EPEL 8: libavif-devel, libheif-devel,
-    # blosc2-devel — those extensions auto-skip via optional-backend.
-    # libjxl: build from source. OPENCODECS_LIBJXL_PREFIX is set via
-    # CIBW_ENVIRONMENT_LINUX in build_wheels.yml to point at the cached
-    # /cibw-jxl-prefix mount.
+    # AVIF / HEIF decode chain (CRB):
+    "dnf install -y libavif-devel || true",
+    "dnf install -y libheif-devel || true",
+    "dnf install -y libde265-devel || true",
+    "dnf install -y dav1d-devel || true",
+    # Source-build libjpeg-turbo (need TJv3 API; EPEL 8 ships 1.5.3) and
+    # c-blosc2 (not in any AlmaLinux 8 repo). The build script writes
+    # to $OPENCODECS_LIBS_PREFIX which the workflow points at the same
+    # cached prefix as libjxl, so all three persist across CI runs.
+    "bash bench/build_codec_libs.sh --only=libjpeg-turbo,c-blosc2",
     "bash bench/build_libjxl.sh",
 ]
 # Don't set OPENCODECS_*_PREFIX here — build_wheels.yml's

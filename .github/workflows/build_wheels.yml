@@ -53,12 +53,16 @@ jobs:
       # 1. Linux: cache /usr/local for the cibuildwheel BEFORE_ALL libjxl
       #    build. ~5 min cold → ~30s warm. Key includes libjxl version +
       #    build script hash so a bump invalidates.
-      - name: Cache libjxl install (Linux)
+      - name: Cache codec-libs install (Linux)
         if: runner.os == 'Linux'
         uses: actions/cache@v4
         with:
           path: ${{ github.workspace }}/.cibw-cache/usr-local
-          key: cibw-libjxl-v${{ env.CACHE_VERSION }}-${{ runner.os }}-${{ matrix.archs_linux }}-${{ env.LIBJXL_VERSION }}-${{ hashFiles('bench/build_libjxl.sh') }}
+          # Invalidate on any of: cache version bump, libjxl version bump,
+          # build script edits. The single mount holds libjxl +
+          # libjpeg-turbo + c-blosc2 + anything else build_codec_libs.sh
+          # writes there.
+          key: cibw-codec-libs-v${{ env.CACHE_VERSION }}-${{ runner.os }}-${{ matrix.archs_linux }}-${{ env.LIBJXL_VERSION }}-${{ hashFiles('bench/build_libjxl.sh', 'bench/build_codec_libs.sh') }}
 
       # 2. cibuildwheel's own pip cache (per-OS so manylinux container
       #    doesn't share with macOS/Windows). Speeds up the metadata
@@ -155,10 +159,20 @@ jobs:
           # (env vars not set, every dep-less codec auto-skips) and
           # noisily on Windows (we hit "Malformed environment option"
           # in run #1).
+          #
+          # All three OPENCODECS_*_PREFIX vars point at the same cached
+          # mount: build_libjxl.sh installs there (LIBJXL_PREFIX),
+          # build_codec_libs.sh installs the source-built libs there
+          # (LIBS_PREFIX), and setup.py probes there at build time
+          # (JXL_PREFIX). Caching covers the whole tree — first run
+          # builds libjxl + libjpeg-turbo + c-blosc2 (~7 min); warm
+          # restores skip to ~30 s.
           CIBW_ENVIRONMENT_LINUX: >-
             LIBJXL_VERSION=${{ env.LIBJXL_VERSION }}
             OPENCODECS_LIBJXL_PREFIX=/cibw-jxl-prefix
+            OPENCODECS_LIBS_PREFIX=/cibw-jxl-prefix
             OPENCODECS_JXL_PREFIX=/cibw-jxl-prefix
+            OPENCODECS_CODEC_LIBS_PREFIX=/cibw-jxl-prefix
           # PATH is set via $GITHUB_PATH in the prior step. Pipe both
           # CONDA_PREFIX (for runtime DLL search) and the explicit
           # OPENCODECS_CODEC_LIBS_PREFIX (which setup.py probes
