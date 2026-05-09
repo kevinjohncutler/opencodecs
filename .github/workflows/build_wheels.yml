@@ -171,6 +171,11 @@ jobs:
           # x265. Wheel ships decode-only AVIF (via dav1d) + decode-only
           # HEIF (via libde265). HEIF/AVIF encode-side tests skip
           # cleanly via the existing exception filter.
+          #
+          # LD_LIBRARY_PATH is critical for auditwheel — it's how
+          # auditwheel resolves linked .so deps from the wheel's .pyd
+          # files. Without /cibw-jxl-prefix/lib64 on it, auditwheel
+          # bails with "Cannot repair wheel, libavif.so.16 not found".
           CIBW_ENVIRONMENT_LINUX: >-
             LIBJXL_VERSION=${{ env.LIBJXL_VERSION }}
             OPENCODECS_LIBJXL_PREFIX=/cibw-jxl-prefix
@@ -179,6 +184,7 @@ jobs:
             OPENCODECS_CODEC_LIBS_PREFIX=/cibw-jxl-prefix
             ENABLE_AOM=0
             ENABLE_X265=0
+            LD_LIBRARY_PATH=/cibw-jxl-prefix/lib64:/cibw-jxl-prefix/lib:$LD_LIBRARY_PATH
           # PATH is set via $GITHUB_PATH in the prior step. Pipe both
           # CONDA_PREFIX (for runtime DLL search) and the explicit
           # OPENCODECS_CODEC_LIBS_PREFIX (which setup.py probes
