@@ -384,9 +384,15 @@ def _resolve_include_dirs(*relpaths: str) -> list[str]:
 
 
 def _lib_dirs_for_probes() -> list[str]:
+    """Return the {prefix}/lib, /lib64, /Library/lib paths that exist.
+
+    rhel/AlmaLinux's CMake honours `CMAKE_INSTALL_LIBDIR=lib64` by default
+    so source builds inside the manylinux container land in `lib64`, not
+    `lib`. Probe both, plus the conda-on-Windows `Library/lib` layout.
+    """
     out: list[str] = []
     for p in _PROBE_PREFIXES:
-        for sub in ("lib", "Library/lib"):
+        for sub in ("lib", "lib64", "Library/lib"):
             d = p / sub
             if d.is_dir():
                 out.append(str(d))
