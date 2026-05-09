@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "opencodecs"
-version = "0.1.0rc1"
+version = "0.1.0rc2"
 description = "Streaming, network-aware image codecs for scientific imaging (prototype: JPEG XL)"
 readme = "README.md"
 requires-python = ">=3.10"

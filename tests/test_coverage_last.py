@@ -83,7 +83,16 @@ def test_avif_encode_accepts_array_like():
     _need("avif")
     rng = np.random.default_rng(0)
     arr = rng.integers(0, 256, (16, 16, 3), dtype=np.uint8)
-    enc = oc.write(None, _ArrayLike(arr), format="avif", lossless=True)
+    try:
+        enc = oc.write(None, _ArrayLike(arr), format="avif", lossless=True)
+    except Exception as exc:
+        # Decode-only libavif builds (no libaom / no system aom) raise
+        # "No codec available" or "Unsupported" on encode. Skip rather
+        # than fail — the cibuildwheel manylinux wheel ships decode-only.
+        msg = str(exc).lower()
+        if any(s in msg for s in ("no codec available", "unsupported", "encoder")):
+            pytest.skip(f"libavif build has no AV1 encoder: {exc}")
+        raise
     decoded = oc.read(enc, format="avif")
     assert np.squeeze(decoded).shape == arr.shape
 

@@ -323,7 +323,13 @@ def test_avif_lossless(shape: tuple[int, ...]) -> None:
     _need("avif")
     rng = np.random.default_rng(23)
     arr = rng.integers(0, 256, shape, dtype=np.uint8)
-    oc_enc = oc.write(None, arr, format="avif", lossless=True)
+    try:
+        oc_enc = oc.write(None, arr, format="avif", lossless=True)
+    except Exception as exc:
+        msg = str(exc).lower()
+        if any(s in msg for s in ("no codec available", "unsupported", "encoder")):
+            pytest.skip(f"libavif build has no AV1 encoder: {exc}")
+        raise
     np.testing.assert_array_equal(oc.read(oc_enc, format="avif"), arr)
 
 
