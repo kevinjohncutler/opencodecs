@@ -29,21 +29,27 @@ upload token. TestPyPI needs to know who's allowed to mint those tokens.
    <https://pypi.org/manage/account/publishing/> for the production
    PyPI project — same fields, environment name `pypi`.
 
-## 2. One-time GitHub setup
+## 2. GitHub deployment environments — already created
 
-The workflow references `environment: { name: testpypi, ... }` and
-`environment: { name: pypi, ... }`. GitHub creates these
-[deployment environments][env] on first reference, but the names
-the trusted publisher knows must match.
+Two empty deployment environments named `testpypi` and `pypi` already
+exist on the repo (created via the gh API during initial setup). The
+workflow's `environment: { name: testpypi, ... }` references attach to
+them automatically. Trusted Publishing handles auth via OIDC; the
+environments don't need any secrets or variables.
 
-[env]: https://docs.github.com/en/actions/deployment/targeting-different-environments/using-environments-for-deployment
+If you ever want to add a manual approval gate before production
+publishes, visit
+<https://github.com/kevinjohncutler/opencodecs/settings/environments/pypi>
+and add yourself as a Required reviewer. Without that, a tag push to
+`v*` triggers a publish with no human in the loop.
 
-* Visit
-  <https://github.com/kevinjohncutler/opencodecs/settings/environments>
-  and create two environments named exactly `testpypi` and `pypi`.
-* You can leave both empty (no secrets, no required reviewers).
-  Trusted Publishing handles auth via OIDC; the environments only
-  exist so the workflow's permissions block can attach to them.
+To verify both environments still exist:
+
+```bash
+gh api repos/kevinjohncutler/opencodecs/environments --jq '.environments[].name'
+# expects: testpypi
+#          pypi
+```
 
 ## 3. Trigger a TestPyPI publish
 
