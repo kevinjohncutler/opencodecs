@@ -62,6 +62,7 @@ VERSIONS=(
     "libaom          3.13.0"
     "dav1d           1.5.1"
     "libavif         1.3.0"
+    "libde265        1.0.16"
     "x265            4.1"
     "libheif         1.21.0"
 
@@ -178,11 +179,15 @@ mark_built() {
 
 fetch_tar() {
     # fetch_tar <name> <version> <url> <strip>
+    # Returns the source dir on stdout — keep ALL diagnostics on stderr
+    # so callers can use `src=$(fetch_tar ...)` cleanly. Earlier version
+    # printed "fetch <url>" to stdout which then poisoned cmake's
+    # source-dir argument.
     local name="$1" version="$2" url="$3" strip="${4:-1}"
     local src="$WORKDIR/$name-$version"
     if [ ! -d "$src" ]; then
         mkdir -p "$src"
-        echo "    fetch  $url"
+        echo "    fetch  $url" >&2
         curl -fsSL "$url" | tar -xz --strip-components="$strip" -C "$src"
     fi
     echo "$src"
@@ -372,6 +377,17 @@ build_libavif() {
     mark_built libavif "$v"
 }
 
+# ---- libde265 (HEVC decoder for libheif) -------------------------------
+build_libde265() {
+    local v="${VERSIONS_MAP[libde265]}"
+    is_built libde265 "$v" && { echo "  libde265 $v already built"; return; }
+    echo "==> libde265 $v"
+    local src
+    src=$(fetch_tar libde265 "$v" "https://github.com/strukturag/libde265/releases/download/v$v/libde265-$v.tar.gz")
+    cmake_build "$src" -DENABLE_DECODER=ON -DENABLE_ENCODER=OFF
+    mark_built libde265 "$v"
+}
+
 # ---- x265 (HEVC encoder for libheif — large C++ build) -----------------
 build_x265() {
     local v="${VERSIONS_MAP[x265]}"
@@ -394,6 +410,8 @@ build_libheif() {
     local args=(-DBUILD_TESTING=OFF -DBUILD_GDK_PIXBUF_LOADER=OFF
                 -DWITH_EXAMPLES=OFF)
     [ "$ENABLE_X265" = "1" ] && args+=(-DWITH_X265=ON)
+    # libheif's CMake auto-detects libde265 via pkg-config when present
+    # at $PKG_CONFIG_PATH (we exported that earlier in this script).
     cmake_build "$src" "${args[@]}"
     mark_built libheif "$v"
 }
@@ -444,6 +462,7 @@ ORDERED=(
     libaom
     dav1d
     libavif
+    libde265
     x265
     libheif
     libjxl
@@ -465,6 +484,7 @@ for name in "${ORDERED[@]}"; do
             libaom)          build_libaom ;;
             dav1d)           build_dav1d ;;
             libavif)         build_libavif ;;
+            libde265)        build_libde265 ;;
             x265)            build_x265 ;;
             libheif)         build_libheif ;;
             libjxl)          build_libjxl ;;

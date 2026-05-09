@@ -167,12 +167,18 @@ jobs:
           # (JXL_PREFIX). Caching covers the whole tree — first run
           # builds libjxl + libjpeg-turbo + c-blosc2 (~7 min); warm
           # restores skip to ~30 s.
+          # ENABLE_AOM=0 / ENABLE_X265=0 keep CI fast + side-step GPL
+          # x265. Wheel ships decode-only AVIF (via dav1d) + decode-only
+          # HEIF (via libde265). HEIF/AVIF encode-side tests skip
+          # cleanly via the existing exception filter.
           CIBW_ENVIRONMENT_LINUX: >-
             LIBJXL_VERSION=${{ env.LIBJXL_VERSION }}
             OPENCODECS_LIBJXL_PREFIX=/cibw-jxl-prefix
             OPENCODECS_LIBS_PREFIX=/cibw-jxl-prefix
             OPENCODECS_JXL_PREFIX=/cibw-jxl-prefix
             OPENCODECS_CODEC_LIBS_PREFIX=/cibw-jxl-prefix
+            ENABLE_AOM=0
+            ENABLE_X265=0
           # PATH is set via $GITHUB_PATH in the prior step. Pipe both
           # CONDA_PREFIX (for runtime DLL search) and the explicit
           # OPENCODECS_CODEC_LIBS_PREFIX (which setup.py probes
