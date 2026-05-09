@@ -204,7 +204,9 @@ reader.select(name)             # switch to a different dataset
 ## Install
 
 See [INSTALL.md](INSTALL.md) for system dependencies per platform and
-build instructions. Short version:
+build instructions, and [docs/publishing.md](docs/publishing.md) for
+the wheel-publishing pipeline (TestPyPI / PyPI via Trusted Publishing).
+Short version:
 
 ```sh
 # macOS
