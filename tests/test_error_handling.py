@@ -132,12 +132,16 @@ def test_image_decode_truncated_raises(fmt):
     try:
         enc = oc.write(None, arr, format=fmt)
     except Exception as exc:
-        if fmt == "heif":
-            msg = str(exc).lower()
-            if any(s in msg for s in (
-                "encoder", "unsupported", "null error text", "heif_writer",
-            )):
-                pytest.skip(f"no HEVC encoder available: {exc}")
+        msg = str(exc).lower()
+        if fmt == "heif" and any(s in msg for s in (
+            "encoder", "unsupported", "null error text", "heif_writer",
+        )):
+            pytest.skip(f"no HEVC encoder available: {exc}")
+        if fmt == "avif" and any(s in msg for s in (
+            "no codec available", "unsupported", "encoder",
+        )):
+            # Decode-only libavif (manylinux wheel: dav1d only, no aom).
+            pytest.skip(f"libavif build has no AV1 encoder: {exc}")
         raise
     if len(enc) < 64:
         pytest.skip(f"{fmt} encoded too small to truncate meaningfully")
