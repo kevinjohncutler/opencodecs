@@ -57,6 +57,7 @@ _EXTENSIONS = (
     "_heif",
     "_png",
     "_bitshuffle",
+    "_tiff",
     "_bytetools",
 )
 

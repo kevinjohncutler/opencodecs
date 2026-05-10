@@ -239,6 +239,15 @@ if "opencodecs.codecs._bitshuffle" in sys.modules:
 
 
 # ---------------------------------------------------------------------------
+# TIFF — native reader (no libtiff dep). See _tiff_codec.py for design notes.
+# ---------------------------------------------------------------------------
+
+if "opencodecs.codecs._tiff" in sys.modules:
+    from .._tiff_codec import TiffCodec
+    register_codec(TiffCodec())
+
+
+# ---------------------------------------------------------------------------
 # Native codec roadmap
 # ---------------------------------------------------------------------------
 #

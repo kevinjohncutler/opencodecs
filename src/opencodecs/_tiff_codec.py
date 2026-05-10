@@ -1,0 +1,557 @@
+"""TiffCodec — native TIFF reader, no libtiff/tifffile dependency.
+
+Walks the IFD chain via opencodecs.codecs._tiff (Cython), exposes one
+TiffPage per IFD, and decodes tiles/strips through opencodecs's existing
+native compression codecs.
+
+Initial scope (Tier 5 session 1):
+  * Header parse + IFD walk: TIFF 6.0 + BigTIFF
+  * Tile / strip layout extraction
+  * Decode for compression == NONE (Tier 5 session 2 layers in
+    deflate / jpeg / lzw / packbits / zstd / jxl / lerc / jpeg2k)
+
+The Reader API is the same as opencodecs's other multi-frame codecs:
+``iter_frames()``, ``[idx]`` random access, ``read()`` materializes
+the first IFD.
+"""
+
+from __future__ import annotations
+
+import io
+import os
+from pathlib import Path
+from typing import Any, Callable, Iterator
+
+import numpy as np
+
+from .core.codec import Codec, Reader
+from .core._optional_backend import import_or_stubs
+
+(
+    _tiff_parse_ifd_chain, _tiff_parse_ifd, _tiff_copy_strips,
+    _tiff_check_signature,
+    TAG_IMAGE_WIDTH, TAG_IMAGE_LENGTH, TAG_BITS_PER_SAMPLE,
+    TAG_COMPRESSION, TAG_PHOTOMETRIC,
+    TAG_STRIP_OFFSETS, TAG_SAMPLES_PER_PIXEL, TAG_ROWS_PER_STRIP,
+    TAG_STRIP_BYTE_COUNTS, TAG_PLANAR_CONFIG,
+    TAG_TILE_WIDTH, TAG_TILE_LENGTH, TAG_TILE_OFFSETS,
+    TAG_TILE_BYTE_COUNTS, TAG_SAMPLE_FORMAT,
+    CMP_NONE, CMP_DEFLATE, CMP_JPEG, CMP_LZW, CMP_PACKBITS,
+    CMP_ZSTD, CMP_WEBP, CMP_JXL, CMP_JPEG2000, CMP_LERC,
+    _HAVE_BACKEND,
+) = import_or_stubs(
+    "opencodecs.codecs._tiff",
+    "parse_ifd_chain", "parse_ifd",
+    "copy_strips_from_buffer", "check_signature",
+    "TAG_IMAGE_WIDTH", "TAG_IMAGE_LENGTH", "TAG_BITS_PER_SAMPLE",
+    "TAG_COMPRESSION", "TAG_PHOTOMETRIC",
+    "TAG_STRIP_OFFSETS", "TAG_SAMPLES_PER_PIXEL", "TAG_ROWS_PER_STRIP",
+    "TAG_STRIP_BYTE_COUNTS", "TAG_PLANAR_CONFIG",
+    "TAG_TILE_WIDTH", "TAG_TILE_LENGTH", "TAG_TILE_OFFSETS",
+    "TAG_TILE_BYTE_COUNTS", "TAG_SAMPLE_FORMAT",
+    "CMP_NONE", "CMP_DEFLATE", "CMP_JPEG", "CMP_LZW", "CMP_PACKBITS",
+    "CMP_ZSTD", "CMP_WEBP", "CMP_JXL", "CMP_JPEG2000", "CMP_LERC",
+)
+
+
+# ---------------------------------------------------------------------------
+# Tag → scalar helper
+# ---------------------------------------------------------------------------
+
+
+def _tag(tags: dict, tag_id: int, default=None):
+    """Return the resolved value of a tag (None if absent)."""
+    e = tags.get(tag_id)
+    if e is None:
+        return default
+    return e[2]
+
+
+def _tag_seq(tags: dict, tag_id: int) -> tuple:
+    """Return tag value as a tuple even if count == 1."""
+    v = _tag(tags, tag_id)
+    if v is None:
+        return ()
+    if isinstance(v, (tuple, list)):
+        return tuple(v)
+    return (v,)
+
+
+# Sample-format codes per TIFF 6.0 §10:
+#   1 = unsigned int (default)
+#   2 = signed int
+#   3 = IEEE float
+#   4 = undefined
+def _dtype_for(bits_per_sample: int, sample_format: int) -> np.dtype:
+    """Return a numpy dtype for the given (bits, sample_format) pair."""
+    if sample_format == 3:  # float
+        if bits_per_sample == 16:
+            return np.dtype(np.float16)
+        if bits_per_sample == 32:
+            return np.dtype(np.float32)
+        if bits_per_sample == 64:
+            return np.dtype(np.float64)
+        raise NotImplementedError(
+            f"TIFF: float dtype with {bits_per_sample} bps not supported"
+        )
+    if sample_format == 2:  # signed int
+        if bits_per_sample == 8:
+            return np.dtype(np.int8)
+        if bits_per_sample == 16:
+            return np.dtype(np.int16)
+        if bits_per_sample == 32:
+            return np.dtype(np.int32)
+        if bits_per_sample == 64:
+            return np.dtype(np.int64)
+        raise NotImplementedError(
+            f"TIFF: signed int dtype with {bits_per_sample} bps not supported"
+        )
+    # Default: unsigned int
+    if bits_per_sample == 8:
+        return np.dtype(np.uint8)
+    if bits_per_sample == 16:
+        return np.dtype(np.uint16)
+    if bits_per_sample == 32:
+        return np.dtype(np.uint32)
+    if bits_per_sample == 64:
+        return np.dtype(np.uint64)
+    if bits_per_sample == 1:  # bilevel TIFFs — packed bits, deferred
+        raise NotImplementedError(
+            "TIFF: 1-bit images need packed-bit unpacking (deferred)"
+        )
+    raise NotImplementedError(f"TIFF: unsupported bps={bits_per_sample}")
+
+
+# ---------------------------------------------------------------------------
+# TiffPage — one IFD's worth of metadata + decode methods
+# ---------------------------------------------------------------------------
+
+
+class TiffPage:
+    """One TIFF page (IFD). Attribute access exposes the common metadata.
+
+    For raw tag access, see ``page.tags`` (dict by tag ID).
+    """
+
+    def __init__(self, stream: "TiffStream", index: int, tags: dict):
+        self._stream = stream
+        self.index = int(index)
+        self.tags = tags
+
+        self.width = int(_tag(self.tags, TAG_IMAGE_WIDTH, 0))
+        self.height = int(_tag(self.tags, TAG_IMAGE_LENGTH, 0))
+        self.compression = int(_tag(self.tags, TAG_COMPRESSION, CMP_NONE))
+        self.photometric = int(_tag(self.tags, TAG_PHOTOMETRIC, 0))
+        self.samples_per_pixel = int(_tag(self.tags, TAG_SAMPLES_PER_PIXEL, 1))
+        self.planar_config = int(_tag(self.tags, TAG_PLANAR_CONFIG, 1))
+
+        bps_raw = _tag(self.tags, TAG_BITS_PER_SAMPLE, 8)
+        if isinstance(bps_raw, (tuple, list)):
+            # All channels must have the same width for now. (Mixed-width
+            # samples are exotic; deferred until we have a use case.)
+            if len(set(bps_raw)) > 1:
+                raise NotImplementedError(
+                    f"TIFF: per-channel bps differs ({bps_raw}); not yet supported"
+                )
+            self.bits_per_sample = int(bps_raw[0])
+        else:
+            self.bits_per_sample = int(bps_raw)
+
+        sf_raw = _tag(self.tags, TAG_SAMPLE_FORMAT, 1)
+        if isinstance(sf_raw, (tuple, list)):
+            if len(set(sf_raw)) > 1:
+                raise NotImplementedError(
+                    f"TIFF: per-channel SampleFormat differs ({sf_raw}); not yet supported"
+                )
+            self.sample_format = int(sf_raw[0])
+        else:
+            self.sample_format = int(sf_raw)
+
+        self.dtype = _dtype_for(self.bits_per_sample, self.sample_format)
+
+        # Tile vs strip layout. A page is tiled iff TAG_TILE_WIDTH is set;
+        # otherwise it's striped (rows-per-strip blocks).
+        tw = _tag(self.tags, TAG_TILE_WIDTH)
+        tl = _tag(self.tags, TAG_TILE_LENGTH)
+        if tw is not None and tl is not None:
+            self.is_tiled = True
+            self.tile_width = int(tw)
+            self.tile_height = int(tl)
+            self.offsets = _tag_seq(self.tags, TAG_TILE_OFFSETS)
+            self.byte_counts = _tag_seq(self.tags, TAG_TILE_BYTE_COUNTS)
+        else:
+            self.is_tiled = False
+            self.tile_width = self.width
+            rps = _tag(self.tags, TAG_ROWS_PER_STRIP, self.height)
+            self.tile_height = int(rps)
+            self.offsets = _tag_seq(self.tags, TAG_STRIP_OFFSETS)
+            self.byte_counts = _tag_seq(self.tags, TAG_STRIP_BYTE_COUNTS)
+
+        # tiles per row, total tiles
+        self.tiles_x = (self.width + self.tile_width - 1) // self.tile_width
+        self.tiles_y = (self.height + self.tile_height - 1) // self.tile_height
+
+    @property
+    def shape(self) -> tuple:
+        if self.samples_per_pixel == 1:
+            return (self.height, self.width)
+        return (self.height, self.width, self.samples_per_pixel)
+
+    def __repr__(self) -> str:
+        comp = _COMPRESSION_NAMES.get(self.compression, f"comp={self.compression}")
+        layout = "tiled" if self.is_tiled else "striped"
+        return (
+            f"<TiffPage {self.index} {self.width}x{self.height} "
+            f"{self.dtype.name} samples={self.samples_per_pixel} "
+            f"{layout} {self.tile_width}x{self.tile_height} {comp}>"
+        )
+
+    # ----- decode -----
+
+    def _decode_segment(self, raw: bytes) -> np.ndarray:
+        """Decode one tile/strip's raw bytes into a flat ndarray.
+
+        Honours the file's byte order: samples > 1 byte stored
+        big-endian get swapped to native here, since the rest of the
+        pipeline (np.empty(...), assign into out) uses native byteorder.
+        """
+        if self.compression == CMP_NONE:
+            # Interpret raw with the *file's* byte order, then return a
+            # native-byteorder view for the caller. byte_order is '<' or '>'.
+            file_dtype = self.dtype.newbyteorder(self._stream._byte_order)
+            arr = np.frombuffer(raw, dtype=file_dtype)
+            if file_dtype.byteorder not in ('=', '|') and \
+                    file_dtype.byteorder != np.dtype(self.dtype).byteorder:
+                arr = arr.astype(self.dtype, copy=True)
+            return arr
+        # Other compressions land in Tier 5 session 2.
+        raise NotImplementedError(
+            f"TIFF compression {self.compression} not yet supported by "
+            f"opencodecs native reader (Tier 5 session 2)"
+        )
+
+    def _segment_shape(self, tx: int, ty: int) -> tuple:
+        """Pixel dimensions of segment (tx, ty) — last row/col may be cropped."""
+        h = min(self.tile_height, self.height - ty * self.tile_height)
+        w = min(self.tile_width,  self.width  - tx * self.tile_width)
+        if self.samples_per_pixel == 1:
+            return (h, w)
+        return (h, w, self.samples_per_pixel)
+
+    def _padded_shape(self) -> tuple:
+        """Stored (padded) shape of one tile — tile_h × tile_w × samples."""
+        if self.samples_per_pixel == 1:
+            return (self.tile_height, self.tile_width)
+        return (self.tile_height, self.tile_width, self.samples_per_pixel)
+
+    def _read_strips_into(self, out: np.ndarray) -> None:
+        """Copy all uncompressed strips directly into ``out``'s buffer.
+
+        Strips in a TIFF are stored row-major: strip 0 is rows 0..rps-1,
+        strip 1 is rows rps..2*rps-1, etc. Total bytes ≡ out.nbytes
+        (no padding). So we can run a single memcpy per strip into the
+        flat byte view of ``out``, skipping the per-strip
+        frombuffer + reshape + assignment overhead.
+
+        Caller must already have validated:
+          * compression == NONE
+          * is_tiled == False
+          * byte order matches host (otherwise need byteswap)
+        """
+        view = out.view(np.uint8).reshape(-1)
+        # Hot path: in-memory bytes/memoryview source. The whole TIFF
+        # buffer is reachable via the read_at callable's `_buf`
+        # attribute; pass it to a Cython memcpy loop and run all strip
+        # copies without re-entering Python per strip.
+        src_buf = getattr(self._stream._read, "_buf", None)
+        if src_buf is not None:
+            try:
+                _tiff_copy_strips(src_buf, view, self.offsets, self.byte_counts)
+                return
+            except Exception:
+                # Fall back to the generic path below on any unexpected
+                # buffer-protocol mismatch (e.g. caller wrapped a read-
+                # only memoryview).
+                pass
+
+        # Fallback: file-handle / HTTP-range / other read_at sources.
+        write_off = 0
+        for idx in range(len(self.offsets)):
+            offset = int(self.offsets[idx])
+            nbytes = int(self.byte_counts[idx])
+            raw = self._stream._read(offset, nbytes)
+            view[write_off:write_off + nbytes] = np.frombuffer(raw, dtype=np.uint8)
+            write_off += nbytes
+
+    def asarray(self) -> np.ndarray:
+        """Fully decode this page into a 2D / 3D ndarray."""
+        # Fast path: single segment that already covers the whole image.
+        # Common cases that hit this:
+        #   * Single-strip striped TIFF (rows-per-strip >= image height)
+        #   * 1×1-tile tiled TIFF where the tile equals the image size
+        # Skip the np.empty + assignment dance: decode → reshape →
+        # one .copy() to give the caller writable memory. Halves the
+        # memory traffic on big single-strip files.
+        if (len(self.offsets) == 1
+                and self.tile_height >= self.height
+                and (not self.is_tiled or self.tile_width >= self.width)):
+            offset = int(self.offsets[0])
+            nbytes = int(self.byte_counts[0])
+            raw = self._stream._read(offset, nbytes)
+            decoded = self._decode_segment(raw)
+            # decoded.size may exceed the visible region for 1-tile
+            # tiled images that are smaller than the tile (rare). Crop
+            # the reshape on its native (padded) extent first then
+            # slice down to image size if needed.
+            if self.is_tiled:
+                full_shape = self._padded_shape()
+                arr = decoded.reshape(full_shape)
+                arr = arr[:self.height, :self.width]
+            else:
+                arr = decoded.reshape(self.shape)
+            # _decode_segment may return a buffer view (frombuffer
+            # of bytes); copy once to give the caller writable memory.
+            return np.ascontiguousarray(arr)
+
+        out = np.empty(self.shape, dtype=self.dtype)
+
+        # Fast path: uncompressed multi-strip — strips are stored row-
+        # contiguous, so we can copy them straight into out's byte buffer
+        # without going through frombuffer→reshape→assignment. This
+        # skips the per-strip Python overhead (~5 µs × N strips).
+        if (not self.is_tiled
+                and self.compression == CMP_NONE
+                and self.dtype.itemsize == 1):
+            self._read_strips_into(out)
+            return out
+        if (not self.is_tiled
+                and self.compression == CMP_NONE
+                and self._stream._byte_order in ("<", "=")
+                and self.dtype.byteorder in ("<", "=", "|")):
+            # Native-LE multi-byte: same fast path; need a uint8 view of out.
+            self._read_strips_into(out)
+            return out
+
+        # Tiled TIFFs always store padded tiles — every tile is exactly
+        # tile_h × tile_w × samples × bytes_per_sample bytes regardless
+        # of whether it's at the right/bottom edge of the image. Strips
+        # are NOT padded; the last strip is genuinely shorter.
+        if self.is_tiled:
+            full_shape = self._padded_shape()
+        for ty in range(self.tiles_y):
+            for tx in range(self.tiles_x):
+                idx = ty * self.tiles_x + tx
+                if idx >= len(self.offsets):
+                    raise ValueError(
+                        f"TIFF: tile index {idx} out of range "
+                        f"(have {len(self.offsets)} offsets)"
+                    )
+                offset = int(self.offsets[idx])
+                nbytes = int(self.byte_counts[idx])
+                raw = self._stream._read(offset, nbytes)
+                tile = self._decode_segment(raw)
+
+                exp_shape = self._segment_shape(tx, ty)
+                if self.is_tiled:
+                    # Decoded segment is the full padded tile; crop to
+                    # the visible region.
+                    tile = tile.reshape(full_shape)
+                    tile = tile[:exp_shape[0], :exp_shape[1]]
+                else:
+                    expected_size = int(np.prod(exp_shape))
+                    if tile.size != expected_size:
+                        raise ValueError(
+                            f"TIFF: decoded strip ({tile.size} elements) "
+                            f"does not match expected ({expected_size}) for "
+                            f"shape {exp_shape}"
+                        )
+                    tile = tile.reshape(exp_shape)
+
+                y0 = ty * self.tile_height
+                x0 = tx * self.tile_width
+                out[y0:y0 + exp_shape[0], x0:x0 + exp_shape[1]] = tile
+        return out
+
+
+_COMPRESSION_NAMES = {
+    CMP_NONE: "none",
+    CMP_DEFLATE: "deflate",
+    CMP_JPEG: "jpeg",
+    CMP_LZW: "lzw",
+    CMP_PACKBITS: "packbits",
+    CMP_ZSTD: "zstd",
+    CMP_WEBP: "webp",
+    CMP_JXL: "jxl",
+    CMP_JPEG2000: "jpeg2000",
+    CMP_LERC: "lerc",
+}
+
+
+# ---------------------------------------------------------------------------
+# TiffStream — Reader subclass exposing iter_frames / [idx] random access
+# ---------------------------------------------------------------------------
+
+
+class TiffStream(Reader):
+    """Reader for one TIFF file. Supports multi-page (one IFD per page).
+
+    Construct via ``TiffCodec().open(src)`` or directly with a
+    ``read_at(offset, n_bytes) -> bytes`` callable for advanced data
+    sources (HTTP-range, S3, mmap)."""
+
+    is_chunked = True
+
+    def __init__(self, src: Any, *, read_at: Callable[[int, int], bytes] | None = None):
+        self._src = src
+        self._owns_fd = False
+
+        if read_at is not None:
+            self._read = read_at
+        else:
+            self._read = self._open_read_at(src)
+
+        # Lazy: walk ONLY the IFD-chain offsets at open time. Each
+        # IFD's tags are resolved on first access via TiffStream.page().
+        # This is what makes opening a 1000-page OME-TIFF fast.
+        bo, is_bigtiff, ifd_offsets = _tiff_parse_ifd_chain(self._read)
+        self._byte_order = bo
+        self._is_bigtiff = is_bigtiff
+        self._ifd_offsets = list(ifd_offsets)
+        self._page_cache: dict[int, TiffPage] = {}
+        self.n_frames = len(self._ifd_offsets)
+
+        if not self._ifd_offsets:
+            raise ValueError("TIFF: no IFDs found")
+
+        # Populate the single-frame Reader contract from page 0.
+        first = self.page(0)
+        self.shape = first.shape
+        self.dtype = first.dtype
+
+    # ----- I/O ----
+
+    def _open_read_at(self, src: Any) -> Callable[[int, int], bytes]:
+        if isinstance(src, (str, os.PathLike)):
+            f = open(src, "rb")
+            self._owns_fd = True
+            self._fd = f
+
+            def _read(offset: int, n: int) -> bytes:
+                f.seek(int(offset))
+                return f.read(int(n))
+
+            return _read
+
+        if isinstance(src, (bytes, bytearray, memoryview)):
+            # Wrap in a memoryview so slicing is zero-copy. Downstream
+            # consumers (struct.unpack, np.frombuffer) all accept
+            # memoryview, and the eventual decode-into-out copy is a
+            # single memcpy instead of two.
+            mv = memoryview(src) if not isinstance(src, memoryview) \
+                else src
+            # uint8 contiguous flatten so the Cython fast-path can take
+            # a `const uint8_t[::1]` view without a typecode mismatch.
+            if mv.format != "B":
+                mv = mv.cast("B")
+
+            def _read(offset: int, n: int):
+                end = int(offset) + int(n)
+                return mv[int(offset):end]
+
+            # Stash the buffer; parse_ifd_chain looks here for its
+            # zero-Python-overhead path.
+            _read._buf = mv  # type: ignore[attr-defined]
+            return _read
+
+        if hasattr(src, "read") and hasattr(src, "seek"):
+            def _read(offset: int, n: int) -> bytes:
+                src.seek(int(offset))
+                return src.read(int(n))
+
+            return _read
+
+        raise TypeError(
+            f"TiffStream: don't know how to read from {type(src).__name__}; "
+            "pass a path, bytes, file-like, or a custom read_at=..."
+        )
+
+    def close(self) -> None:
+        if self._owns_fd:
+            try:
+                self._fd.close()
+            finally:
+                self._owns_fd = False
+
+    # ----- Reader contract -----
+
+    def page(self, index: int) -> TiffPage:
+        if index < 0:
+            index += self.n_frames
+        if not (0 <= index < self.n_frames):
+            raise IndexError(index)
+        page = self._page_cache.get(index)
+        if page is None:
+            tags, _next = _tiff_parse_ifd(
+                self._read, self._byte_order, self._is_bigtiff,
+                self._ifd_offsets[index],
+            )
+            page = TiffPage(self, index, tags)
+            self._page_cache[index] = page
+        return page
+
+    def iter_frames(self) -> Iterator[np.ndarray]:
+        for i in range(self.n_frames):
+            yield self.page(i).asarray()
+
+    def __getitem__(self, idx) -> np.ndarray:
+        return self.page(int(idx)).asarray()
+
+    def read(self) -> np.ndarray:
+        if self.n_frames == 1:
+            return self.page(0).asarray()
+        return np.stack([self.page(i).asarray() for i in range(self.n_frames)],
+                        axis=0)
+
+
+# ---------------------------------------------------------------------------
+# TiffCodec — register under name "tiff"
+# ---------------------------------------------------------------------------
+
+
+class TiffCodec(Codec):
+    """Native TIFF reader (no libtiff dependency)."""
+
+    name = "tiff"
+    file_extensions = (".tif", ".tiff", ".btf")
+    aliases = ("bigtiff",)
+
+    has_native = True
+    has_delegate = False
+    can_encode = False    # reader-only for now (encode in a future tier)
+    can_decode = True
+    multi_frame = True
+    chunked = True
+    streaming_decode = True
+    parallel_decode = False  # session 1: single-threaded
+
+    supported_dtypes = (
+        np.uint8, np.int8,
+        np.uint16, np.int16,
+        np.uint32, np.int32,
+        np.uint64, np.int64,
+        np.float16, np.float32, np.float64,
+    )
+    supports_color = True
+
+    def signature(self, head: bytes) -> bool:
+        return _tiff_check_signature(head)
+
+    def decode(self, src: Any, **opts) -> np.ndarray:
+        with self.open(src, **opts) as r:
+            return r.read()
+
+    def open(self, src: Any, **opts) -> TiffStream:
+        return TiffStream(src, **opts)
+
+
+__all__ = ["TiffCodec", "TiffStream", "TiffPage"]
