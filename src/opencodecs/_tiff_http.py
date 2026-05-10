@@ -207,7 +207,11 @@ class FileDataSource:
 
     def __init__(self, path: str | os.PathLike):
         self.path = str(path)
-        self._fd = os.open(self.path, os.O_RDONLY)
+        # Windows os.open() defaults to TEXT mode: a 0x1A byte (Ctrl-Z)
+        # in binary data triggers a soft-EOF mid-file, and CR/LF gets
+        # translated. OR in O_BINARY when available (Windows only).
+        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
+        self._fd = os.open(self.path, flags)
         self._has_pread = hasattr(os, "pread")
         self._lock = None if self._has_pread else threading.Lock()
         self._total_requests = 0
