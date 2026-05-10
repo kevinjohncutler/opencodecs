@@ -271,6 +271,19 @@ def test_tiff_reader_custom_read_at():
 # ---------------------------------------------------------------------------
 
 
+def _imwrite_or_skip(buf, arr, **kw):
+    """tifffile delegates compressed encode to imagecodecs; skip
+    cleanly if the env doesn't have the necessary backend."""
+    try:
+        tifffile.imwrite(buf, arr, **kw)
+    except (KeyError, AttributeError, ImportError) as exc:
+        msg = str(exc).lower()
+        if "imagecodecs" in msg or "encode" in msg or "compression" in msg:
+            pytest.skip(f"tifffile cannot encode this TIFF without "
+                        f"imagecodecs in the env: {exc}")
+        raise
+
+
 @pytest.mark.parametrize("compression,dtype", [
     ("deflate", np.uint16),
     ("zstd",    np.uint16),
@@ -288,7 +301,7 @@ def test_tiff_byte_stream_compression_roundtrip(compression, dtype):
     else:
         arr = rng.random((48, 64)).astype(dtype)
     buf = io.BytesIO()
-    tifffile.imwrite(buf, arr, compression=compression)
+    _imwrite_or_skip(buf, arr, compression=compression)
     with oc.get_codec("tiff").open(buf.getvalue()) as r:
         np.testing.assert_array_equal(r.page(0).asarray(), arr)
 
@@ -299,7 +312,7 @@ def test_tiff_compressed_tiled(compression):
     _need_tiff()
     arr = np.arange(256 * 256, dtype=np.uint16).reshape(256, 256)
     buf = io.BytesIO()
-    tifffile.imwrite(buf, arr, compression=compression, tile=(128, 128))
+    _imwrite_or_skip(buf, arr, compression=compression, tile=(128, 128))
     with oc.get_codec("tiff").open(buf.getvalue()) as r:
         page = r.page(0)
         assert page.is_tiled is True
@@ -313,7 +326,7 @@ def test_tiff_compressed_with_horizontal_predictor(compression):
     rng = np.random.default_rng(0)
     arr = rng.integers(0, 4096, size=(64, 96), dtype=np.uint16)
     buf = io.BytesIO()
-    tifffile.imwrite(buf, arr, compression=compression, predictor=True)
+    _imwrite_or_skip(buf, arr, compression=compression, predictor=True)
     with oc.get_codec("tiff").open(buf.getvalue()) as r:
         page = r.page(0)
         assert page.predictor == 2
@@ -348,10 +361,7 @@ def test_tiff_jpeg_compression_grayscale():
         pytest.skip("opencodecs._jpeg backend not available")
     arr = (np.indices((64, 96)).sum(0) * 2).astype(np.uint8)
     buf = io.BytesIO()
-    try:
-        tifffile.imwrite(buf, arr, compression="jpeg")
-    except Exception as exc:
-        pytest.skip(f"tifffile cannot write JPEG TIFF: {exc}")
+    _imwrite_or_skip(buf, arr, compression="jpeg")
     with oc.get_codec("tiff").open(buf.getvalue()) as r:
         page = r.page(0)
         out = page.asarray()
