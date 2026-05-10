@@ -214,11 +214,33 @@ class FileDataSource:
 
     def __call__(self, offset: int, n: int) -> bytes:
         self._total_requests += 1
+        # Both os.pread and os.read can return short. POSIX guarantees
+        # full read for files (only signals or EOF cause short reads),
+        # but Windows os.read often returns one block at a time. Loop
+        # until n bytes are accumulated or read() returns 0 (EOF).
         if self._has_pread:
-            return os.pread(self._fd, int(n), int(offset))
+            buf = os.pread(self._fd, int(n), int(offset))
+            need = int(n) - len(buf)
+            cur_off = int(offset) + len(buf)
+            while need > 0:
+                more = os.pread(self._fd, need, cur_off)
+                if not more:
+                    break
+                buf += more
+                cur_off += len(more)
+                need -= len(more)
+            return buf
         with self._lock:
             os.lseek(self._fd, int(offset), os.SEEK_SET)
-            return os.read(self._fd, int(n))
+            buf = os.read(self._fd, int(n))
+            need = int(n) - len(buf)
+            while need > 0:
+                more = os.read(self._fd, need)
+                if not more:
+                    break
+                buf += more
+                need -= len(more)
+            return buf
 
     def close(self) -> None:
         if self._fd >= 0:
