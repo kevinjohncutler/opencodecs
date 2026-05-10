@@ -117,14 +117,18 @@ before-all = [
     "dnf install -y libpng-devel || true",
     "dnf install -y openjpeg2-devel || true",
     "dnf install -y libdeflate-devel || true",
+    # Rust toolchain for pcodec's cdylib (cargo). Use rustup so we get a
+    # version newer than the AlmaLinux 8 repo's; pcodec needs edition 2021.
+    "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable",
     # libjpeg-turbo (TJv3 API needed; EPEL 8 ships 1.5), c-blosc2 (not
     # in any AlmaLinux 8 repo), and the libavif/libheif decode chain
     # (libde265 + dav1d + libavif + libheif — also absent from
-    # AlmaLinux 8 + EPEL 8 + CRB). All five built from source via
-    # bench/build_codec_libs.sh into the cached /cibw-jxl-prefix mount.
-    # Skips encoders (aom, x265) — wheel ships decode-only AVIF/HEIF
-    # to keep the build under ~10 min cold and avoid GPL x265 entirely.
-    "bash bench/build_codec_libs.sh --only=libjpeg-turbo,c-blosc2,libde265,dav1d,libavif,libheif",
+    # AlmaLinux 8 + EPEL 8 + CRB). Plus Tier 1 scientific compressors
+    # (libaec, lerc, zfp, SZ3, pcodec — none in EPEL 8). All built from
+    # source via bench/build_codec_libs.sh into the cached
+    # /cibw-jxl-prefix mount. Skips encoders (aom, x265) — wheel ships
+    # decode-only AVIF/HEIF to keep build < 12 min cold + avoid GPL x265.
+    "bash -c 'PATH=$HOME/.cargo/bin:$PATH bash bench/build_codec_libs.sh --only=libjpeg-turbo,c-blosc2,libde265,dav1d,libavif,libheif,libaec,lerc,zfp,SZ3,pcodec'",
     "bash bench/build_libjxl.sh",
 ]
 # Don't set OPENCODECS_*_PREFIX here — build_wheels.yml's
@@ -134,7 +138,15 @@ before-all = [
 # macos-latest runners have brew preinstalled. Install codec libs in the
 # host shell before cibuildwheel invokes setup.py (cibuildwheel for macOS
 # runs natively, no container).
-before-all = "brew install jpeg-xl libavif libheif webp libpng jpeg-turbo openjpeg zstd brotli c-blosc2 lz4 libdeflate"
+#
+# brew supplies: most originals + libaec/liblerc/zfp for Tier 1.
+# rust toolchain installed for pcodec's cargo build; SZ3 + pcodec are
+# then source-built into the per-user opencodecs cache by
+# bench/build_codec_libs.sh.
+before-all = [
+    "brew install jpeg-xl libavif libheif webp libpng jpeg-turbo openjpeg zstd brotli c-blosc2 lz4 libdeflate libaec liblerc zfp rust cmake ninja",
+    "bash bench/build_codec_libs.sh --only=SZ3,pcodec",
+]
 # macos-latest is now macOS 15 (Sequoia) on arm64. Homebrew formulas are
 # compiled for 15.x, so any wheel target lower than 15 fails the delocate
 # scan (linked dylibs reference symbols added in 15). Setting

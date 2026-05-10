@@ -66,6 +66,13 @@ VERSIONS=(
     "x265            4.1"
     "libheif         1.21.0"
 
+    # Tier 1 scientific compressors (small / medium)
+    "libaec          1.1.6"
+    "lerc            4.1.0"
+    "zfp             1.0.1"
+    "SZ3             3.3.1"
+    "pcodec          1.0.2"
+
     # Marquee codec — delegated to the dedicated script for parity with
     # the per-developer flow (some users only want to source-build libjxl
     # and rely on system libs for the rest).
@@ -416,6 +423,80 @@ build_libheif() {
     mark_built libheif "$v"
 }
 
+# ---- libaec (CCSDS adaptive entropy coding) ----------------------------
+build_libaec() {
+    local v="${VERSIONS_MAP[libaec]}"
+    is_built libaec "$v" && { echo "  libaec $v already built"; return; }
+    echo "==> libaec $v"
+    local src
+    # libaec releases use a YYYYMMDD-tagged tarball on its gitlab; the
+    # GitHub mirror has clean version tags.
+    src=$(fetch_tar libaec "$v" "https://gitlab.dkrz.de/k202009/libaec/-/archive/v$v/libaec-v$v.tar.gz")
+    cmake_build "$src" -DBUILD_TESTING=OFF
+    mark_built libaec "$v"
+}
+
+# ---- lerc (Esri Limited Error Raster Compression) ----------------------
+build_lerc() {
+    local v="${VERSIONS_MAP[lerc]}"
+    is_built lerc "$v" && { echo "  lerc $v already built"; return; }
+    echo "==> lerc $v"
+    local src
+    src=$(fetch_tar lerc "$v" "https://github.com/Esri/lerc/archive/refs/tags/v$v.tar.gz")
+    cmake_build "$src" -DLERC_BUILD_TESTING=OFF
+    mark_built lerc "$v"
+}
+
+# ---- zfp (lossy float compression) -------------------------------------
+build_zfp() {
+    local v="${VERSIONS_MAP[zfp]}"
+    is_built zfp "$v" && { echo "  zfp $v already built"; return; }
+    echo "==> zfp $v"
+    local src
+    src=$(fetch_tar zfp "$v" "https://github.com/LLNL/zfp/archive/refs/tags/$v.tar.gz")
+    cmake_build "$src" -DBUILD_TESTING=OFF -DBUILD_EXAMPLES=OFF -DBUILD_UTILITIES=OFF
+    mark_built zfp "$v"
+}
+
+# ---- SZ3 (error-bounded lossy scientific) ------------------------------
+build_SZ3() {
+    local v="${VERSIONS_MAP[SZ3]}"
+    is_built SZ3 "$v" && { echo "  SZ3 $v already built"; return; }
+    echo "==> SZ3 $v"
+    local src
+    src=$(fetch_tar SZ3 "$v" "https://github.com/szcompressor/SZ3/archive/refs/tags/v$v.tar.gz")
+    # SZ3 ships with bundled zstd; force external to share the zstd we
+    # already built earlier in this script.
+    cmake_build "$src" -DBUILD_SZ3_TESTS=OFF -DSZ3_USE_BUNDLED_ZSTD=OFF
+    mark_built SZ3 "$v"
+}
+
+# ---- pcodec (Rust cdylib via cargo) ------------------------------------
+build_pcodec() {
+    local v="${VERSIONS_MAP[pcodec]}"
+    is_built pcodec "$v" && { echo "  pcodec $v already built"; return; }
+    if ! command -v cargo >/dev/null 2>&1; then
+        echo "  pcodec: cargo not found — skipping (codec auto-disables)"
+        return
+    fi
+    echo "==> pcodec $v (cargo build)"
+    local src
+    src=$(fetch_tar pcodec "$v" "https://github.com/pcodec/pcodec/archive/refs/tags/v$v.tar.gz")
+    ( cd "$src" && cargo build --release -p cpcodec )
+    # Copy the cdylib + header into the prefix layout opencodecs expects.
+    install -d "$PREFIX/include" "$PREFIX/lib"
+    cp "$src/pco_c/include/cpcodec.h" "$src/pco_c/include/cpcodec_generated.h" \
+        "$PREFIX/include/"
+    if [ "$(uname)" = "Darwin" ]; then
+        cp "$src/target/release/libcpcodec.dylib" "$PREFIX/lib/"
+        # Install_name fix so RPATH-based loading works:
+        install_name_tool -id "@rpath/libcpcodec.dylib" "$PREFIX/lib/libcpcodec.dylib"
+    else
+        cp "$src/target/release/libcpcodec.so" "$PREFIX/lib/"
+    fi
+    mark_built pcodec "$v"
+}
+
 # ---- libjxl (delegate to dedicated script for parity) ------------------
 build_libjxl() {
     local v="${VERSIONS_MAP[libjxl]}"
@@ -465,6 +546,11 @@ ORDERED=(
     libde265
     x265
     libheif
+    libaec
+    lerc
+    zfp
+    SZ3
+    pcodec
     libjxl
 )
 
@@ -487,6 +573,11 @@ for name in "${ORDERED[@]}"; do
             libde265)        build_libde265 ;;
             x265)            build_x265 ;;
             libheif)         build_libheif ;;
+            libaec)          build_libaec ;;
+            lerc)            build_lerc ;;
+            zfp)             build_zfp ;;
+            SZ3)             build_SZ3 ;;
+            pcodec)          build_pcodec ;;
             libjxl)          build_libjxl ;;
         esac
     fi

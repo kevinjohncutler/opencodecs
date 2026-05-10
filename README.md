@@ -52,6 +52,43 @@ library is missing — see [INSTALL.md](INSTALL.md).
 | `brotli` | ✓ | ✓ | system libbrotli | `.br` |
 | `blosc2` | ✓ | ✓ | system c-blosc2 | `.b2` |
 | `deflate` | ✓ | ✓ | system zlib | `.zlib` |
+| `bitshuffle` | ✓ | ✓ | vendored bitshuffle (filter) | — |
+
+`bitshuffle` is a *filter*, not a stand-alone compressor: bit-level
+transpose that radically improves LZ77 ratios on typed numerical data.
+Output size equals input size; pair with `zstd` / `lz4`. Aliases:
+`bshuf`.
+
+### Scientific / numerical-array codecs (ndarray ↔ bytes, self-describing)
+
+These four codecs target *typed multidimensional arrays* rather than
+images or raw bytes. The encoded blob carries shape and dtype in its
+header, so `decode(blob)` reconstructs the full ndarray without
+out-of-band metadata.
+
+| Codec | Encode | Decode | Lossless | Lossy modes | Backing library | Extension |
+| --- | :-: | :-: | :-: | --- | --- | --- |
+| `b2nd` | ✓ | ✓ | ✓ | — | system c-blosc2 (NDim API) | `.b2nd` |
+| `aec` | ✓ | ✓ | ✓ | — | system libaec (CCSDS 121.0-B-2) | `.aec` |
+| `lerc` | ✓ | ✓ | ✓ | `max_z_error` | system liblerc (Esri) | `.lerc` |
+| `zfp` | ✓ | ✓ | ✓ (reversible) | rate / precision / accuracy | system libzfp | `.zfp` |
+| `sz3` | ✓ | ✓ | — | abs / rel / psnr / norm | source-built SZ3 | `.sz3` |
+| `pcodec` | ✓ | ✓ | ✓ | — | source-built pcodec (Rust) | `.pco` |
+
+Quick guidance:
+
+- `pcodec` — modern lossless numerical compressor; often beats `zstd`
+  by 1.5–3× on float / int arrays without a pre-filter.
+- `b2nd` — c-blosc2's multidim layer with shuffle/bitshuffle filters
+  built in; great when you already use blosc2 elsewhere.
+- `aec` — entropy coder used by NetCDF-4 SZIP; lossless integers.
+- `lerc` — fast (lossy or lossless) raster codec used in
+  Cloud-Optimized GeoTIFF, Esri MRF.
+- `zfp` — fast 1D-4D float / int compression with multiple lossy modes
+  (predictable size, accuracy, or precision).
+- `sz3` — error-bounded prediction-based scientific compressor;
+  often beats `zfp` at the same error budget on simulation snapshots.
+  *Float only* (the SZ3 v3 C API doesn't dispatch integer types).
 
 ### Single-image codecs
 

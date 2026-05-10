@@ -6,8 +6,9 @@ dist/
 *.pyd
 *.dll
 
-# Cython-generated C
-src/opencodecs/codecs/*.c
+# Cython-generated C (matches every _*.pyx → _*.c). Hand-written C
+# helpers (e.g. b2nd_helpers.c) are NOT prefixed with _ and pass through.
+src/opencodecs/codecs/_*.c
 
 # Vendored libjxl build (rebuilt via bench/build_libjxl.sh)
 vendor/libjxl/

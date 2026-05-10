@@ -82,6 +82,60 @@ if "opencodecs.codecs._blosc2" in sys.modules:
 
 
 # ---------------------------------------------------------------------------
+# Blosc2 NDim (b2nd) — multidimensional layer of c-blosc2
+# ---------------------------------------------------------------------------
+
+if "opencodecs.codecs._b2nd" in sys.modules:
+    from .._b2nd_codec import B2ndCodec
+    register_codec(B2ndCodec())
+
+
+# ---------------------------------------------------------------------------
+# AEC — CCSDS 121.0-B-2 adaptive entropy coding (libaec, system)
+# ---------------------------------------------------------------------------
+
+if "opencodecs.codecs._aec" in sys.modules:
+    from .._aec_codec import AecCodec
+    register_codec(AecCodec())
+
+
+# ---------------------------------------------------------------------------
+# LERC — Esri Limited Error Raster Compression (system liblerc)
+# ---------------------------------------------------------------------------
+
+if "opencodecs.codecs._lerc" in sys.modules:
+    from .._lerc_codec import LercCodec
+    register_codec(LercCodec())
+
+
+# ---------------------------------------------------------------------------
+# ZFP — lossy 1D-4D float / int array compression (system libzfp)
+# ---------------------------------------------------------------------------
+
+if "opencodecs.codecs._zfp" in sys.modules:
+    from .._zfp_codec import ZfpCodec
+    register_codec(ZfpCodec())
+
+
+# ---------------------------------------------------------------------------
+# SZ3 — error-bounded lossy scientific compressor (system SZ3c)
+# ---------------------------------------------------------------------------
+
+if "opencodecs.codecs._sz3" in sys.modules:
+    from .._sz3_codec import Sz3Codec
+    register_codec(Sz3Codec())
+
+
+# ---------------------------------------------------------------------------
+# pcodec — modern (2024+) lossless numerical compressor (Rust cdylib)
+# ---------------------------------------------------------------------------
+
+if "opencodecs.codecs._pcodec" in sys.modules:
+    from .._pcodec_codec import PcodecCodec
+    register_codec(PcodecCodec())
+
+
+# ---------------------------------------------------------------------------
 # deflate / zlib — native (system zlib)
 # ---------------------------------------------------------------------------
 
@@ -173,6 +227,15 @@ register_codec(BmpCodec())
 if "opencodecs.codecs._png" in sys.modules:
     from .._png_codec import PngCodec
     register_codec(PngCodec())
+
+
+# ---------------------------------------------------------------------------
+# Bitshuffle — native (vendored 3rdparty/bitshuffle)
+# ---------------------------------------------------------------------------
+
+if "opencodecs.codecs._bitshuffle" in sys.modules:
+    from .._bitshuffle_codec import BitshuffleCodec
+    register_codec(BitshuffleCodec())
 
 
 # ---------------------------------------------------------------------------
