@@ -271,14 +271,91 @@ def test_tiff_reader_custom_read_at():
 # ---------------------------------------------------------------------------
 
 
-def test_tiff_compressed_raises_not_implemented_yet():
-    """Tier 5 session 1 only implements compression=NONE. Compressed
-    TIFFs must raise a clear NotImplementedError. Session 2 lands the
-    deflate / LZW / packbits / JPEG dispatchers."""
+@pytest.mark.parametrize("compression,dtype", [
+    ("deflate", np.uint16),
+    ("zstd",    np.uint16),
+    ("packbits", np.uint8),
+    ("lzw",     np.uint8),
+    ("lzw",     np.uint16),
+])
+def test_tiff_byte_stream_compression_roundtrip(compression, dtype):
+    """Compressed strip/tile decode through the native dispatcher."""
     _need_tiff()
+    rng = np.random.default_rng(0)
+    if np.issubdtype(dtype, np.integer):
+        info = np.iinfo(dtype)
+        arr = rng.integers(0, info.max // 2, size=(48, 64)).astype(dtype)
+    else:
+        arr = rng.random((48, 64)).astype(dtype)
+    buf = io.BytesIO()
+    tifffile.imwrite(buf, arr, compression=compression)
+    with oc.get_codec("tiff").open(buf.getvalue()) as r:
+        np.testing.assert_array_equal(r.page(0).asarray(), arr)
+
+
+@pytest.mark.parametrize("compression", ["deflate", "zstd", "lzw"])
+def test_tiff_compressed_tiled(compression):
+    """Compressed + tiled (the COG path)."""
+    _need_tiff()
+    arr = np.arange(256 * 256, dtype=np.uint16).reshape(256, 256)
+    buf = io.BytesIO()
+    tifffile.imwrite(buf, arr, compression=compression, tile=(128, 128))
+    with oc.get_codec("tiff").open(buf.getvalue()) as r:
+        page = r.page(0)
+        assert page.is_tiled is True
+        np.testing.assert_array_equal(page.asarray(), arr)
+
+
+@pytest.mark.parametrize("compression", ["deflate", "zstd", "lzw"])
+def test_tiff_compressed_with_horizontal_predictor(compression):
+    """Predictor 2 (horizontal differencing) — common with deflate/lzw."""
+    _need_tiff()
+    rng = np.random.default_rng(0)
+    arr = rng.integers(0, 4096, size=(64, 96), dtype=np.uint16)
+    buf = io.BytesIO()
+    tifffile.imwrite(buf, arr, compression=compression, predictor=True)
+    with oc.get_codec("tiff").open(buf.getvalue()) as r:
+        page = r.page(0)
+        assert page.predictor == 2
+        np.testing.assert_array_equal(page.asarray(), arr)
+
+
+@pytest.mark.skip(reason=(
+    "tifffile-emitted LERC TIFFs use a two-level compression (LERC + "
+    "secondary deflate/zstd indicated by the LercParameters tag 50674); "
+    "Tier 5 session 2 dispatcher only handles the bare-LERC variant. "
+    "Track in Tier 5 session 2 follow-up: parse LercParameters and "
+    "chain through the appropriate inner deflate/zstd before LERC."))
+def test_tiff_lerc_compression():
+    """LERC: dispatches to opencodecs._lerc."""
+    _need_tiff()
+    if not oc.has_codec("lerc"):
+        pytest.skip("opencodecs._lerc backend not available")
     arr = np.arange(64 * 96, dtype=np.uint16).reshape(64, 96)
     buf = io.BytesIO()
-    tifffile.imwrite(buf, arr, compression="deflate")
+    try:
+        tifffile.imwrite(buf, arr, compression="lerc")
+    except Exception as exc:
+        pytest.skip(f"tifffile cannot write LERC TIFF: {exc}")
     with oc.get_codec("tiff").open(buf.getvalue()) as r:
-        with pytest.raises(NotImplementedError, match="compression"):
-            r.page(0).asarray()
+        np.testing.assert_array_equal(r.page(0).asarray(), arr)
+
+
+def test_tiff_jpeg_compression_grayscale():
+    """JPEG-in-TIFF (with stitched JPEGTables)."""
+    _need_tiff()
+    if not oc.has_codec("jpeg"):
+        pytest.skip("opencodecs._jpeg backend not available")
+    arr = (np.indices((64, 96)).sum(0) * 2).astype(np.uint8)
+    buf = io.BytesIO()
+    try:
+        tifffile.imwrite(buf, arr, compression="jpeg")
+    except Exception as exc:
+        pytest.skip(f"tifffile cannot write JPEG TIFF: {exc}")
+    with oc.get_codec("tiff").open(buf.getvalue()) as r:
+        page = r.page(0)
+        out = page.asarray()
+        # JPEG is lossy; check shape + dtype + bounded error.
+        assert out.shape == arr.shape
+        assert out.dtype == np.uint8
+        assert np.abs(out.astype(np.int32) - arr.astype(np.int32)).max() < 32

@@ -30,28 +30,70 @@ from .core._optional_backend import import_or_stubs
 (
     _tiff_parse_ifd_chain, _tiff_parse_ifd, _tiff_copy_strips,
     _tiff_check_signature,
+    _tiff_packbits_decode, _tiff_lzw_decode,
+    _tiff_undo_horizontal_u8, _tiff_undo_horizontal_u16,
+    _tiff_undo_horizontal_u32, _tiff_undo_floating_point,
     TAG_IMAGE_WIDTH, TAG_IMAGE_LENGTH, TAG_BITS_PER_SAMPLE,
     TAG_COMPRESSION, TAG_PHOTOMETRIC,
     TAG_STRIP_OFFSETS, TAG_SAMPLES_PER_PIXEL, TAG_ROWS_PER_STRIP,
     TAG_STRIP_BYTE_COUNTS, TAG_PLANAR_CONFIG,
     TAG_TILE_WIDTH, TAG_TILE_LENGTH, TAG_TILE_OFFSETS,
     TAG_TILE_BYTE_COUNTS, TAG_SAMPLE_FORMAT,
-    CMP_NONE, CMP_DEFLATE, CMP_JPEG, CMP_LZW, CMP_PACKBITS,
-    CMP_ZSTD, CMP_WEBP, CMP_JXL, CMP_JPEG2000, CMP_LERC,
+    TAG_PREDICTOR, TAG_JPEG_TABLES,
+    CMP_NONE, CMP_DEFLATE, CMP_ADOBE_DEFLATE,
+    CMP_JPEG, CMP_LZW, CMP_PACKBITS,
+    CMP_ZSTD, CMP_WEBP, CMP_JXL, CMP_JPEG2000, CMP_LERC, CMP_LERC_LEGACY,
     _HAVE_BACKEND,
 ) = import_or_stubs(
     "opencodecs.codecs._tiff",
     "parse_ifd_chain", "parse_ifd",
     "copy_strips_from_buffer", "check_signature",
+    "packbits_decode", "lzw_decode",
+    "undo_horizontal_u8", "undo_horizontal_u16",
+    "undo_horizontal_u32", "undo_floating_point",
     "TAG_IMAGE_WIDTH", "TAG_IMAGE_LENGTH", "TAG_BITS_PER_SAMPLE",
     "TAG_COMPRESSION", "TAG_PHOTOMETRIC",
     "TAG_STRIP_OFFSETS", "TAG_SAMPLES_PER_PIXEL", "TAG_ROWS_PER_STRIP",
     "TAG_STRIP_BYTE_COUNTS", "TAG_PLANAR_CONFIG",
     "TAG_TILE_WIDTH", "TAG_TILE_LENGTH", "TAG_TILE_OFFSETS",
     "TAG_TILE_BYTE_COUNTS", "TAG_SAMPLE_FORMAT",
-    "CMP_NONE", "CMP_DEFLATE", "CMP_JPEG", "CMP_LZW", "CMP_PACKBITS",
-    "CMP_ZSTD", "CMP_WEBP", "CMP_JXL", "CMP_JPEG2000", "CMP_LERC",
+    "TAG_PREDICTOR", "TAG_JPEG_TABLES",
+    "CMP_NONE", "CMP_DEFLATE", "CMP_ADOBE_DEFLATE",
+    "CMP_JPEG", "CMP_LZW", "CMP_PACKBITS",
+    "CMP_ZSTD", "CMP_WEBP", "CMP_JXL", "CMP_JPEG2000",
+    "CMP_LERC", "CMP_LERC_LEGACY",
 )
+
+
+# Lazy imports of opencodecs's existing native codecs — only loaded
+# when a TIFF actually uses each compression. Keeps `import opencodecs`
+# fast on systems where (e.g.) libjxl isn't built.
+def _decode_via(modname: str, attr: str = "decode"):
+    """Look up a decode function from another opencodecs codec. Returns
+    the callable, or a clear ImportError stub if the backend isn't built."""
+    fn, _have = import_or_stubs(modname, attr)
+    return fn[0]   # import_or_stubs returns (fn, have) tuple; fn is unwrapped
+
+
+_DECODERS_CACHE: dict[str, callable] = {}
+
+def _get_decoder(modname: str):
+    fn = _DECODERS_CACHE.get(modname)
+    if fn is None:
+        from importlib import import_module
+        try:
+            mod = import_module(modname)
+            fn = getattr(mod, "decode")
+        except ImportError as exc:
+            def _missing(*_a, _name=modname, _exc=exc, **_kw):
+                raise ImportError(
+                    f"TIFF: codec {_name!r} backend not built on this "
+                    f"platform — needed for the compressed tile dispatch. "
+                    f"({_exc})"
+                )
+            fn = _missing
+        _DECODERS_CACHE[modname] = fn
+    return fn
 
 
 # ---------------------------------------------------------------------------
@@ -169,6 +211,13 @@ class TiffPage:
 
         self.dtype = _dtype_for(self.bits_per_sample, self.sample_format)
 
+        self.predictor = int(_tag(self.tags, TAG_PREDICTOR, 1))
+        # JPEGTables (tag 347) — common JPEG quantization/Huffman tables
+        # shared across all tiles in a JPEG-compressed TIFF. Stitched
+        # into each tile's stream before libjpeg decode.
+        jt = _tag(self.tags, TAG_JPEG_TABLES)
+        self.jpeg_tables = bytes(jt) if isinstance(jt, (bytes, bytearray, memoryview)) else None
+
         # Tile vs strip layout. A page is tiled iff TAG_TILE_WIDTH is set;
         # otherwise it's striped (rows-per-strip blocks).
         tw = _tag(self.tags, TAG_TILE_WIDTH)
@@ -208,26 +257,131 @@ class TiffPage:
 
     # ----- decode -----
 
-    def _decode_segment(self, raw: bytes) -> np.ndarray:
-        """Decode one tile/strip's raw bytes into a flat ndarray.
+    def _expected_uncompressed_bytes(self) -> int:
+        """Bytes one decompressed tile/strip should produce."""
+        # Tiles store the FULL padded tile; strips store actual rows.
+        # We compute against the padded tile for tiles, against the
+        # nominal strip dimensions for strips. Either way it's the
+        # value the byte-stream codecs (deflate, zstd, lzw, packbits)
+        # are expected to expand to.
+        h = self.tile_height
+        w = self.tile_width
+        return h * w * self.samples_per_pixel * self.dtype.itemsize
 
-        Honours the file's byte order: samples > 1 byte stored
-        big-endian get swapped to native here, since the rest of the
-        pipeline (np.empty(...), assign into out) uses native byteorder.
+    def _bytes_to_array(self, raw_bytes) -> np.ndarray:
+        """Interpret a flat byte buffer as our dtype, honouring file byte
+        order. Used by the byte-stream codec paths (none / deflate /
+        zstd / lzw / packbits)."""
+        file_dtype = self.dtype.newbyteorder(self._stream._byte_order)
+        arr = np.frombuffer(raw_bytes, dtype=file_dtype)
+        if file_dtype.byteorder not in ("=", "|") and \
+                file_dtype.byteorder != np.dtype(self.dtype).byteorder:
+            arr = arr.astype(self.dtype, copy=True)
+        return arr
+
+    def _decode_segment(self, raw) -> np.ndarray:
+        """Decode one tile/strip's raw bytes into a flat or shaped
+        ndarray. Image-format codecs (LERC, JXL, JPEG2K, WebP, JPEG)
+        return a shaped ndarray; byte-stream codecs return a flat one.
+        Caller's `asarray()` knows the difference and handles cropping.
         """
-        if self.compression == CMP_NONE:
-            # Interpret raw with the *file's* byte order, then return a
-            # native-byteorder view for the caller. byte_order is '<' or '>'.
-            file_dtype = self.dtype.newbyteorder(self._stream._byte_order)
-            arr = np.frombuffer(raw, dtype=file_dtype)
-            if file_dtype.byteorder not in ('=', '|') and \
-                    file_dtype.byteorder != np.dtype(self.dtype).byteorder:
-                arr = arr.astype(self.dtype, copy=True)
-            return arr
-        # Other compressions land in Tier 5 session 2.
+        cmp = self.compression
+        if cmp == CMP_NONE:
+            return self._bytes_to_array(raw)
+
+        # Byte-stream codecs: decode → bytes → frombuffer → flat array.
+        if cmp in (CMP_DEFLATE, CMP_ADOBE_DEFLATE):
+            decoded = _get_decoder("opencodecs.codecs._deflate")(bytes(raw))
+            return self._bytes_to_array(decoded)
+        if cmp == CMP_ZSTD:
+            decoded = _get_decoder("opencodecs.codecs._zstd")(bytes(raw))
+            return self._bytes_to_array(decoded)
+        if cmp == CMP_PACKBITS:
+            decoded = _tiff_packbits_decode(
+                bytes(raw),
+                self._expected_uncompressed_bytes(),
+            )
+            return self._bytes_to_array(decoded)
+        if cmp == CMP_LZW:
+            decoded = _tiff_lzw_decode(
+                bytes(raw),
+                self._expected_uncompressed_bytes(),
+            )
+            return self._bytes_to_array(decoded)
+
+        # Image-format codecs: decode → already-shaped ndarray.
+        if cmp == CMP_LERC or cmp == CMP_LERC_LEGACY:
+            return _get_decoder("opencodecs.codecs._lerc")(bytes(raw))
+        if cmp == CMP_JXL:
+            return _get_decoder("opencodecs.codecs._jxl")(bytes(raw))
+        if cmp == CMP_JPEG2000:
+            return _get_decoder("opencodecs.codecs._jpeg2k")(bytes(raw))
+        if cmp == CMP_WEBP:
+            return _get_decoder("opencodecs.codecs._webp")(bytes(raw))
+        if cmp == CMP_JPEG:
+            return self._decode_jpeg_segment(raw)
+
         raise NotImplementedError(
-            f"TIFF compression {self.compression} not yet supported by "
-            f"opencodecs native reader (Tier 5 session 2)"
+            f"TIFF compression {cmp} ({_COMPRESSION_NAMES.get(cmp, '?')}) "
+            f"not implemented in opencodecs's native reader. "
+            f"Use tifffile via the existing tiff_reader.py wrapper."
+        )
+
+    def _decode_jpeg_segment(self, raw) -> np.ndarray:
+        """Decode a JPEG-in-TIFF tile, splicing in JPEGTables if present.
+
+        TIFF 6 Section "JPEG compression": the JPEGTables (tag 347)
+        carries a complete tables-only JPEG stream (SOI…DQT/DHT…EOI),
+        and each tile carries scan data with its own SOI but no tables.
+        Stitch them: take JPEGTables[:-2] (drop EOI) + tile_bytes[2:]
+        (drop SOI) so libjpeg sees one self-contained stream.
+        """
+        tile_bytes = bytes(raw)
+        if self.jpeg_tables is not None and len(self.jpeg_tables) >= 4 \
+                and len(tile_bytes) >= 2 and tile_bytes[:2] == b"\xff\xd8":
+            stitched = self.jpeg_tables[:-2] + tile_bytes[2:]
+            return _get_decoder("opencodecs.codecs._jpeg")(stitched)
+        return _get_decoder("opencodecs.codecs._jpeg")(tile_bytes)
+
+    def _undo_predictor(self, arr: np.ndarray) -> np.ndarray:
+        """Apply the inverse of TAG_PREDICTOR (tag 317) in-place when
+        possible. Predictor 1 = identity (no-op)."""
+        if self.predictor == 1:
+            return arr
+        if self.predictor == 2:
+            # Horizontal differencing reverse. Cython kernels work in-
+            # place on contiguous (rows, cols, samples) views.
+            view = arr if arr.ndim == 3 else arr.reshape(arr.shape[0], arr.shape[1], 1)
+            if not view.flags["C_CONTIGUOUS"]:
+                view = np.ascontiguousarray(view)
+                arr = view.reshape(arr.shape) if view is not arr else arr
+            if view.dtype == np.uint8:
+                _tiff_undo_horizontal_u8(view)
+            elif view.dtype == np.uint16:
+                _tiff_undo_horizontal_u16(view)
+            elif view.dtype == np.uint32:
+                _tiff_undo_horizontal_u32(view)
+            elif view.dtype == np.int8:
+                _tiff_undo_horizontal_u8(view.view(np.uint8))
+            elif view.dtype == np.int16:
+                _tiff_undo_horizontal_u16(view.view(np.uint16))
+            elif view.dtype == np.int32:
+                _tiff_undo_horizontal_u32(view.view(np.uint32))
+            else:
+                raise NotImplementedError(
+                    f"TIFF predictor 2 (horizontal) for dtype "
+                    f"{view.dtype} not supported"
+                )
+            return view if arr.ndim == 3 else view.reshape(arr.shape)
+        if self.predictor == 3:
+            # Floating-point predictor (TIFF Tech Note 3).
+            view = arr if arr.ndim == 3 else arr.reshape(arr.shape[0], arr.shape[1], 1)
+            view_u8 = np.ascontiguousarray(view).view(np.uint8) \
+                .reshape(view.shape[0], view.shape[1], view.shape[2] * view.dtype.itemsize)
+            _tiff_undo_floating_point(view_u8, int(view.dtype.itemsize))
+            return view if arr.ndim == 3 else view.reshape(arr.shape)
+        raise NotImplementedError(
+            f"TIFF predictor {self.predictor} not supported"
         )
 
     def _segment_shape(self, tx: int, ty: int) -> tuple:
@@ -285,57 +439,48 @@ class TiffPage:
 
     def asarray(self) -> np.ndarray:
         """Fully decode this page into a 2D / 3D ndarray."""
-        # Fast path: single segment that already covers the whole image.
-        # Common cases that hit this:
-        #   * Single-strip striped TIFF (rows-per-strip >= image height)
-        #   * 1×1-tile tiled TIFF where the tile equals the image size
-        # Skip the np.empty + assignment dance: decode → reshape →
-        # one .copy() to give the caller writable memory. Halves the
-        # memory traffic on big single-strip files.
+        is_byte_stream = self.compression in (
+            CMP_NONE, CMP_DEFLATE, CMP_ADOBE_DEFLATE,
+            CMP_ZSTD, CMP_PACKBITS, CMP_LZW,
+        )
+        # Image-format codecs (LERC, JXL, JPEG, JPEG2K, WebP) return
+        # already-shaped ndarrays from their own decoders.
+        no_predictor = self.predictor == 1
+
+        # Fast path: single segment covers the whole image AND no
+        # post-decode steps are needed. Skips np.empty + assignment.
         if (len(self.offsets) == 1
                 and self.tile_height >= self.height
-                and (not self.is_tiled or self.tile_width >= self.width)):
+                and (not self.is_tiled or self.tile_width >= self.width)
+                and is_byte_stream
+                and no_predictor):
             offset = int(self.offsets[0])
             nbytes = int(self.byte_counts[0])
             raw = self._stream._read(offset, nbytes)
             decoded = self._decode_segment(raw)
-            # decoded.size may exceed the visible region for 1-tile
-            # tiled images that are smaller than the tile (rare). Crop
-            # the reshape on its native (padded) extent first then
-            # slice down to image size if needed.
             if self.is_tiled:
                 full_shape = self._padded_shape()
-                arr = decoded.reshape(full_shape)
-                arr = arr[:self.height, :self.width]
+                arr = decoded.reshape(full_shape)[:self.height, :self.width]
             else:
                 arr = decoded.reshape(self.shape)
-            # _decode_segment may return a buffer view (frombuffer
-            # of bytes); copy once to give the caller writable memory.
             return np.ascontiguousarray(arr)
 
         out = np.empty(self.shape, dtype=self.dtype)
 
-        # Fast path: uncompressed multi-strip — strips are stored row-
-        # contiguous, so we can copy them straight into out's byte buffer
-        # without going through frombuffer→reshape→assignment. This
-        # skips the per-strip Python overhead (~5 µs × N strips).
+        # Fast path: uncompressed multi-strip with native byte order
+        # and identity predictor — strips are row-contiguous, so we
+        # can memcpy straight into out's byte buffer.
         if (not self.is_tiled
                 and self.compression == CMP_NONE
-                and self.dtype.itemsize == 1):
-            self._read_strips_into(out)
-            return out
-        if (not self.is_tiled
-                and self.compression == CMP_NONE
-                and self._stream._byte_order in ("<", "=")
-                and self.dtype.byteorder in ("<", "=", "|")):
-            # Native-LE multi-byte: same fast path; need a uint8 view of out.
+                and no_predictor
+                and (self.dtype.itemsize == 1 or
+                     (self._stream._byte_order in ("<", "=")
+                      and self.dtype.byteorder in ("<", "=", "|")))):
             self._read_strips_into(out)
             return out
 
-        # Tiled TIFFs always store padded tiles — every tile is exactly
-        # tile_h × tile_w × samples × bytes_per_sample bytes regardless
-        # of whether it's at the right/bottom edge of the image. Strips
-        # are NOT padded; the last strip is genuinely shorter.
+        # General path: per-tile/strip decode + (optional) predictor +
+        # place in out. Handles all compressions and predictors.
         if self.is_tiled:
             full_shape = self._padded_shape()
         for ty in range(self.tiles_y):
@@ -349,23 +494,40 @@ class TiffPage:
                 offset = int(self.offsets[idx])
                 nbytes = int(self.byte_counts[idx])
                 raw = self._stream._read(offset, nbytes)
-                tile = self._decode_segment(raw)
-
+                decoded = self._decode_segment(raw)
                 exp_shape = self._segment_shape(tx, ty)
-                if self.is_tiled:
-                    # Decoded segment is the full padded tile; crop to
-                    # the visible region.
-                    tile = tile.reshape(full_shape)
-                    tile = tile[:exp_shape[0], :exp_shape[1]]
+
+                if is_byte_stream:
+                    # decoded is flat; reshape to padded-or-strip shape.
+                    if self.is_tiled:
+                        tile = decoded.reshape(full_shape)
+                        if not no_predictor:
+                            tile = self._undo_predictor(tile)
+                        tile = tile[:exp_shape[0], :exp_shape[1]]
+                    else:
+                        if decoded.size != int(np.prod(exp_shape)):
+                            raise ValueError(
+                                f"TIFF: decoded strip ({decoded.size} elements)"
+                                f" does not match expected "
+                                f"({int(np.prod(exp_shape))}) for shape {exp_shape}"
+                            )
+                        tile = decoded.reshape(exp_shape)
+                        if not no_predictor:
+                            tile = self._undo_predictor(tile)
                 else:
-                    expected_size = int(np.prod(exp_shape))
-                    if tile.size != expected_size:
-                        raise ValueError(
-                            f"TIFF: decoded strip ({tile.size} elements) "
-                            f"does not match expected ({expected_size}) for "
-                            f"shape {exp_shape}"
-                        )
-                    tile = tile.reshape(exp_shape)
+                    # Image-format codec — already-shaped ndarray.
+                    # TIFF predictors don't apply (these codecs do their
+                    # own prediction internally).
+                    tile = decoded
+                    # Some codecs (LERC) return shape (h, w) for single
+                    # samples; align with TIFF's expected shape.
+                    if tile.ndim == 2 and self.samples_per_pixel > 1:
+                        # Reshape the rare 2D-with-multi-channel case;
+                        # most image codecs return (h, w, channels).
+                        pass
+                    if tile.shape[:2] != exp_shape[:2]:
+                        # Tiled images: codec returned padded tile; crop.
+                        tile = tile[:exp_shape[0], :exp_shape[1]]
 
                 y0 = ty * self.tile_height
                 x0 = tx * self.tile_width

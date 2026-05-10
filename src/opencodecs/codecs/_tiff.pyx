@@ -80,30 +80,39 @@ TAG_SAMPLES_PER_PIXEL  = 277
 TAG_ROWS_PER_STRIP     = 278
 TAG_STRIP_BYTE_COUNTS  = 279
 TAG_PLANAR_CONFIG      = 284
+TAG_PREDICTOR          = 317
 TAG_TILE_WIDTH         = 322
 TAG_TILE_LENGTH        = 323
 TAG_TILE_OFFSETS       = 324
 TAG_TILE_BYTE_COUNTS   = 325
 TAG_SAMPLE_FORMAT      = 339
+TAG_JPEG_TABLES        = 347
 
 
 # Compression codes opencodecs recognizes. Codes outside this set are
 # preserved in the page metadata and the caller can dispatch elsewhere.
-CMP_NONE     = 1
-CMP_CCITT    = 2     # CCITT 1D — not native, raise (legacy fax)
-CMP_CCITT_T4 = 3     # legacy fax
-CMP_CCITT_T6 = 4
-CMP_LZW      = 5     # vendored decoder (Tier 5 session 2)
-CMP_OLD_JPEG = 6     # deprecated — TIFF 6 § "old JPEG" path; rare
-CMP_JPEG     = 7     # libjpeg-turbo via opencodecs._jpeg
-CMP_DEFLATE  = 8     # zlib via opencodecs._deflate
-CMP_PACKBITS = 32773 # vendored decoder (Tier 5 session 2)
-CMP_LZMA     = 34925
-CMP_ZSTD     = 50000 # opencodecs._zstd
-CMP_WEBP     = 50001 # opencodecs._webp
-CMP_JXL      = 50002 # opencodecs._jxl  (TIFF 6 community-assigned)
-CMP_JPEG2000 = 34712 # opencodecs._jpeg2k
-CMP_LERC     = 33003 # opencodecs._lerc
+CMP_NONE          = 1
+CMP_CCITT         = 2     # CCITT 1D — not native, raise (legacy fax)
+CMP_CCITT_T4      = 3     # legacy fax
+CMP_CCITT_T6      = 4
+CMP_LZW           = 5     # vendored decoder
+CMP_OLD_JPEG      = 6     # deprecated — TIFF 6 § "old JPEG" path; rare
+CMP_JPEG          = 7     # libjpeg-turbo via opencodecs._jpeg
+CMP_DEFLATE       = 8     # zlib via opencodecs._deflate (RFC 1950)
+CMP_PACKBITS      = 32773 # vendored decoder
+CMP_LZMA          = 34925
+CMP_ZSTD          = 50000 # opencodecs._zstd
+CMP_WEBP          = 50001 # opencodecs._webp
+CMP_JXL           = 50002 # opencodecs._jxl  (TIFF 6 community-assigned)
+CMP_JPEG2000      = 34712 # opencodecs._jpeg2k
+CMP_LERC          = 34887 # opencodecs._lerc — official TIFF LERC code (registered 2016).
+                          # 33003 is an earlier/legacy alias seen in some
+                          # very old GDAL output; we accept both at the
+                          # dispatcher level.
+CMP_LERC_LEGACY   = 33003
+CMP_ADOBE_DEFLATE = 32946 # the code tifffile writes for `compression="deflate"`
+                          # (TIFF 6 sec'd deflate as 8; Adobe added 32946 with
+                          # identical semantics. Both decode through zlib.)
 
 
 class TiffError(RuntimeError):
@@ -565,6 +574,392 @@ def copy_strips_from_buffer(
         with nogil:
             memcpy(dp + write_off, sp + off, <Py_ssize_t> nbytes)
         write_off += <Py_ssize_t> nbytes
+
+
+# ---------------------------------------------------------------------------
+# PackBits (TIFF compression code 32773)
+# ---------------------------------------------------------------------------
+#
+# Apple's run-length encoding scheme. For each input byte n (interpreted
+# as int8):
+#   n in 0..127      → copy next n+1 input bytes literally
+#   n == -128 (0x80) → no-op
+#   n in -127..-1    → replicate next byte (1 - n) times
+# All TIFF writers fit into < 256 KB output per strip in practice, but
+# we still bound-check on every emit.
+
+def packbits_decode(data, expected_size: int = -1) -> bytes:
+    """Decode a PackBits-compressed strip / tile to bytes.
+
+    `expected_size` (when known from tile_h * tile_w * itemsize) is used
+    as the output capacity. Pass -1 to size at 2x source (works for
+    typical TIFF strip RLE; raises if the encoded data overruns).
+    """
+    cdef:
+        const uint8_t[::1] src
+        Py_ssize_t srcsize
+        Py_ssize_t i = 0
+        Py_ssize_t out_off = 0
+        Py_ssize_t out_cap
+        int8_t n
+        uint8_t b
+        Py_ssize_t k
+        Py_ssize_t kk
+        bytes out
+        uint8_t* dst
+
+    try:
+        src = data
+    except (TypeError, ValueError, BufferError):
+        src = bytes(data)
+    srcsize = src.shape[0]
+    out_cap = expected_size if expected_size > 0 else max(srcsize * 2, 64)
+    out = PyBytes_FromStringAndSize(NULL, out_cap)
+    dst = <uint8_t*> PyBytes_AsString(out)
+
+    while i < srcsize:
+        n = <int8_t> src[i]
+        i += 1
+        if n >= 0:
+            # Literal run of n+1 bytes.
+            k = n + 1
+            if i + k > srcsize:
+                raise TiffError("packbits: literal run extends past EOF")
+            if out_off + k > out_cap:
+                raise TiffError(
+                    f"packbits: output overflow (need >{out_cap} bytes; "
+                    "pass a larger expected_size)"
+                )
+            memcpy(dst + out_off, &src[i], k)
+            i += k
+            out_off += k
+        elif n == -128:
+            # No-op marker.
+            continue
+        else:
+            # Replicate next byte (1 - n) times.
+            k = 1 - n
+            if i >= srcsize:
+                raise TiffError("packbits: replicate marker has no payload")
+            if out_off + k > out_cap:
+                raise TiffError(
+                    f"packbits: output overflow (need >{out_cap} bytes)"
+                )
+            b = src[i]
+            i += 1
+            for kk in range(k):
+                dst[out_off] = b
+                out_off += 1
+    return out[:out_off]
+
+
+# ---------------------------------------------------------------------------
+# LZW (TIFF compression code 5) — variable-width 9..12 bit, MSB-first.
+# ---------------------------------------------------------------------------
+#
+# TIFF's LZW is the "old style" variant defined in TIFF 6.0 Section 13:
+#   * Bits packed MSB-first within each byte
+#   * 9-bit codes initially; width grows to 10/11/12 as the dictionary fills
+#   * Code 256 = clear-code → reset dictionary, drop back to 9-bit
+#   * Code 257 = end-of-information
+#   * Width grows when next-code-to-add equals 2^width - 1 (NOT 2^width;
+#     this is the historical off-by-one TIFF baked in)
+#   * After clear, the FIRST code is just emitted as a literal (no
+#     dictionary entry yet because there's no previous string).
+
+cdef inline uint32_t _lzw_read_bits(
+    const uint8_t* src, Py_ssize_t srcsize,
+    Py_ssize_t* bit_pos, int width,
+) noexcept nogil:
+    """Read `width` bits MSB-first from src starting at *bit_pos.
+    Advances *bit_pos. Returns 0xFFFFFFFF if past end of stream."""
+    cdef Py_ssize_t bp = bit_pos[0]
+    cdef Py_ssize_t byte_off
+    cdef int bit_off
+    cdef uint32_t v = 0
+    cdef int n_left = width
+    cdef int avail
+    cdef int take
+    cdef int shift
+    cdef uint32_t b
+
+    while n_left > 0:
+        byte_off = bp >> 3
+        bit_off = <int> (bp & 7)
+        if byte_off >= srcsize:
+            bit_pos[0] = bp
+            return <uint32_t>0xFFFFFFFF
+        avail = 8 - bit_off
+        take = avail if avail < n_left else n_left
+        shift = avail - take
+        b = (<uint32_t>src[byte_off] >> shift) & ((<uint32_t>1 << take) - 1)
+        v = (v << take) | b
+        bp += take
+        n_left -= take
+    bit_pos[0] = bp
+    return v
+
+
+def lzw_decode(data, expected_size: int = -1) -> bytes:
+    """Decode a TIFF-flavor LZW strip / tile.
+
+    Pure-Cython implementation; no external lib. Builds the dictionary
+    on the fly with PyMem allocations, decodes MSB-first variable-width
+    codes (9..12 bits), and stops at the first code 257 (EOI) or end
+    of input — whichever comes first.
+    """
+    cdef:
+        const uint8_t[::1] src
+        Py_ssize_t srcsize
+        Py_ssize_t bit_pos = 0
+        bytes out
+        uint8_t* dst
+        Py_ssize_t out_off = 0
+        Py_ssize_t out_cap
+        int width
+        uint32_t code
+        uint32_t prev_code
+        uint32_t next_code
+        uint8_t** strings   # strings[c] = pointer
+        uint32_t* lengths   # lengths[c] = length
+        uint32_t cap        # dict capacity
+        uint32_t i
+        uint32_t L
+        uint8_t* entry
+        uint32_t entry_len
+        Py_ssize_t needed
+
+    try:
+        src = data
+    except (TypeError, ValueError, BufferError):
+        src = bytes(data)
+    srcsize = src.shape[0]
+
+    out_cap = expected_size if expected_size > 0 else max(srcsize * 4, 256)
+    out = PyBytes_FromStringAndSize(NULL, out_cap)
+    dst = <uint8_t*> PyBytes_AsString(out)
+
+    # Dictionary capacity = 4096 (12-bit max). Entries 0..255 are 1-byte
+    # literals; 256..257 are control. Entries 258+ grow.
+    cap = 4096
+    strings = <uint8_t**> PyMem_Malloc(cap * sizeof(uint8_t*))
+    lengths = <uint32_t*> PyMem_Malloc(cap * sizeof(uint32_t))
+    if strings == NULL or lengths == NULL:
+        PyMem_Free(strings); PyMem_Free(lengths)
+        raise MemoryError()
+
+    try:
+        # Initial dictionary: 256 single-byte entries.
+        for i in range(256):
+            strings[i] = <uint8_t*> PyMem_Malloc(1)
+            if strings[i] == NULL:
+                raise MemoryError()
+            strings[i][0] = <uint8_t>i
+            lengths[i] = 1
+        strings[256] = NULL; lengths[256] = 0  # CLEAR
+        strings[257] = NULL; lengths[257] = 0  # EOI
+        for i in range(258, cap):
+            strings[i] = NULL
+            lengths[i] = 0
+
+        next_code = 258
+        width = 9
+        # 0xFFFFFFFF sentinel means "no previous code yet"; valid LZW
+        # codes are 0..4095 so this never collides.
+        prev_code = <uint32_t>0xFFFFFFFF
+
+        while True:
+            # Width grows BEFORE reading the next code when next_code
+            # would just have exceeded the current width's max
+            # representable value. This is the TIFF off-by-one vs
+            # canonical LZW.
+            if width < 12 and next_code == ((<uint32_t>1 << width) - 1):
+                width += 1
+
+            code = _lzw_read_bits(&src[0], srcsize, &bit_pos, width)
+            if code == <uint32_t>0xFFFFFFFF:
+                break  # EOF
+            if code == 257:
+                break  # end-of-information
+            if code == 256:
+                # Clear: reset dictionary entries 258+, width back to 9.
+                for i in range(258, next_code):
+                    if strings[i] != NULL:
+                        PyMem_Free(strings[i])
+                        strings[i] = NULL
+                        lengths[i] = 0
+                next_code = 258
+                width = 9
+                prev_code = <uint32_t>0xFFFFFFFF
+                continue
+
+            if code < next_code and strings[code] != NULL:
+                entry = strings[code]
+                entry_len = lengths[code]
+            elif code == next_code and prev_code != <uint32_t>0xFFFFFFFF:
+                # K = first-byte-of-prev case: encoder emitted a code
+                # one ahead of the dictionary. Synthesize as
+                # prev_string + first_byte_of_prev_string.
+                entry_len = lengths[prev_code] + 1
+                entry = <uint8_t*> PyMem_Malloc(entry_len)
+                if entry == NULL:
+                    raise MemoryError()
+                memcpy(entry, strings[prev_code], lengths[prev_code])
+                entry[entry_len - 1] = strings[prev_code][0]
+            else:
+                raise TiffError(
+                    f"LZW: invalid code {code} (next_code={next_code}, "
+                    f"prev={prev_code}, width={width})"
+                )
+
+            # Emit entry → output.
+            needed = out_off + entry_len
+            if needed > out_cap:
+                raise TiffError(
+                    f"LZW: output buffer too small ({out_cap} < {needed}); "
+                    "pass a larger expected_size"
+                )
+            memcpy(dst + out_off, entry, entry_len)
+            out_off += entry_len
+
+            # Add new dictionary entry: prev_string + first_byte_of_entry.
+            if prev_code != <uint32_t>0xFFFFFFFF and next_code < cap:
+                L = lengths[prev_code] + 1
+                strings[next_code] = <uint8_t*> PyMem_Malloc(L)
+                if strings[next_code] == NULL:
+                    raise MemoryError()
+                memcpy(strings[next_code], strings[prev_code], lengths[prev_code])
+                strings[next_code][L - 1] = entry[0]
+                lengths[next_code] = L
+
+                if code == next_code:
+                    # K-case: transfer ownership of the synthesized
+                    # `entry` into the dict (replacing what we just
+                    # malloc'd; the prev_string + first_byte we built
+                    # above happens to equal `entry` so the values
+                    # match). Free the duplicate and use `entry`.
+                    PyMem_Free(strings[next_code])
+                    strings[next_code] = entry
+                    lengths[next_code] = entry_len
+                    entry = NULL
+
+                next_code += 1
+            elif code == next_code:
+                # K-case but dictionary is full: free the synthesized
+                # entry after we've emitted it.
+                PyMem_Free(entry)
+                entry = NULL
+
+            prev_code = code
+
+    finally:
+        for i in range(cap):
+            if strings[i] != NULL:
+                PyMem_Free(strings[i])
+        PyMem_Free(strings)
+        PyMem_Free(lengths)
+
+    return out[:out_off]
+
+
+# ---------------------------------------------------------------------------
+# Predictors — TIFF tag 317. Reverse the encoder-side delta.
+# ---------------------------------------------------------------------------
+#
+# Predictor 1 = no predictor (identity).
+# Predictor 2 = horizontal differencing: each sample (after the first
+#   in a row) was stored as (sample - sample_to_left). Inverse is a
+#   prefix-sum along the last axis (within each row, per channel).
+# Predictor 3 = floating-point predictor (TIFF Tech Note 3): the float
+#   bytes are byte-rearranged + horizontal-differenced. Reverse that.
+
+def undo_horizontal_u8(uint8_t[:, :, ::1] arr not None):
+    """In-place undo of horizontal predictor for a (rows, cols, samples)
+    uint8 array."""
+    cdef Py_ssize_t r, c, s
+    cdef Py_ssize_t rows = arr.shape[0]
+    cdef Py_ssize_t cols = arr.shape[1]
+    cdef Py_ssize_t spp = arr.shape[2]
+    with nogil:
+        for r in range(rows):
+            for c in range(1, cols):
+                for s in range(spp):
+                    arr[r, c, s] = <uint8_t>(arr[r, c, s] + arr[r, c - 1, s])
+
+
+def undo_horizontal_u16(uint16_t[:, :, ::1] arr not None):
+    cdef Py_ssize_t r, c, s
+    cdef Py_ssize_t rows = arr.shape[0]
+    cdef Py_ssize_t cols = arr.shape[1]
+    cdef Py_ssize_t spp = arr.shape[2]
+    with nogil:
+        for r in range(rows):
+            for c in range(1, cols):
+                for s in range(spp):
+                    arr[r, c, s] = <uint16_t>(arr[r, c, s] + arr[r, c - 1, s])
+
+
+def undo_horizontal_u32(uint32_t[:, :, ::1] arr not None):
+    cdef Py_ssize_t r, c, s
+    cdef Py_ssize_t rows = arr.shape[0]
+    cdef Py_ssize_t cols = arr.shape[1]
+    cdef Py_ssize_t spp = arr.shape[2]
+    with nogil:
+        for r in range(rows):
+            for c in range(1, cols):
+                for s in range(spp):
+                    arr[r, c, s] = arr[r, c, s] + arr[r, c - 1, s]
+
+
+def undo_floating_point(uint8_t[:, :, ::1] arr not None, int bytes_per_sample):
+    """In-place undo of TIFF predictor 3 (floating-point predictor).
+
+    Per TIFF Tech Note 3: each row was byte-shuffled (high bytes first,
+    then medium, then low) and horizontal-differenced. Inverse:
+    1. Cumsum the differences along the row axis (treating bytes as u8).
+    2. Un-shuffle: bytes for the i'th sample come from positions
+       [i, i+cols, i+2*cols, ...] of the de-differenced row.
+    """
+    cdef Py_ssize_t r, c
+    cdef Py_ssize_t rows = arr.shape[0]
+    cdef Py_ssize_t cols = arr.shape[1]
+    cdef Py_ssize_t spp = arr.shape[2]
+    cdef Py_ssize_t total_bytes = cols * spp * bytes_per_sample
+    cdef Py_ssize_t bps = bytes_per_sample
+    cdef Py_ssize_t n_samples = cols * spp
+    cdef Py_ssize_t lane, samp_i, src_idx, dst_idx
+    cdef uint8_t* row_p
+    cdef uint8_t* tmp
+
+    if bps != 2 and bps != 4 and bps != 8:
+        raise TiffError(
+            f"predictor 3: bytes_per_sample must be 2/4/8, got {bps}"
+        )
+
+    tmp = <uint8_t*> PyMem_Malloc(total_bytes)
+    if tmp == NULL:
+        raise MemoryError()
+    try:
+        with nogil:
+            for r in range(rows):
+                row_p = &arr[r, 0, 0]
+                # Step 1: prefix-sum along this row's flat byte array.
+                for c in range(1, total_bytes):
+                    row_p[c] = <uint8_t>(row_p[c] + row_p[c - 1])
+                # Step 2: un-shuffle. The encoder placed all
+                # high-bytes first, then mid, then low. We reverse by
+                # interleaving the bps "lanes" back together.
+                # Source layout: [hi0, hi1, ..., hiN-1, mid0, ..., midN-1, lo0, ...]
+                # Dest layout:   [hi0, mid0, lo0, hi1, mid1, lo1, ...]
+                # where N = cols * spp.
+                for samp_i in range(n_samples):
+                    for lane in range(bps):
+                        src_idx = lane * n_samples + samp_i
+                        dst_idx = samp_i * bps + lane
+                        tmp[dst_idx] = row_p[src_idx]
+                memcpy(row_p, tmp, total_bytes)
+    finally:
+        PyMem_Free(tmp)
 
 
 def check_signature(data) -> bool:
