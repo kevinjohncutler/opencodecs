@@ -108,7 +108,13 @@ jobs:
           brew update --quiet
           brew install --quiet \
             jpeg-xl libavif libheif webp libpng jpeg-turbo openjpeg \
-            zstd brotli c-blosc2 lz4 libdeflate
+            zstd brotli c-blosc2 lz4 libdeflate \
+            libaec liblerc zfp \
+            rust cmake ninja
+          # SZ3 + pcodec aren't packaged by brew; source-build into the
+          # per-user opencodecs cache. setup.py probes that prefix and
+          # delocate bundles the resulting dylibs into the wheel.
+          bash bench/build_codec_libs.sh --only=SZ3,pcodec
 
       - name: Miniconda + codec libs (Windows)
         if: runner.os == 'Windows'
@@ -136,6 +142,17 @@ jobs:
           PREFIX_FWD=$(echo "${CONDA_PREFIX}" | tr '\\' '/')
           echo "OCBUILD_CONDA_PREFIX=${PREFIX_FWD}" >> "$GITHUB_ENV"
           echo "${CONDA_PREFIX}\\Library\\bin" >> "$GITHUB_PATH"
+
+      - name: Build SZ3 + pcodec from source (Windows)
+        if: runner.os == 'Windows'
+        shell: bash -el {0}
+        run: |
+          # Neither codec is on conda-forge. SZ3 is C++/CMake, pcodec is
+          # a Rust cdylib. Both go straight into $CONDA_PREFIX/Library so
+          # delvewheel finds them automatically (Library/bin is already
+          # on PATH via the prior step).
+          export OPENCODECS_LIBS_PREFIX="${CONDA_PREFIX}/Library"
+          bash bench/build_codec_libs.sh --only=SZ3,pcodec
 
       # ---------- cibuildwheel ----------
       - name: Build wheels

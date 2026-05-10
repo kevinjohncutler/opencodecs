@@ -12,17 +12,21 @@ the codecs you need.
 
 ```sh
 # macOS
-brew install jpeg-turbo webp libavif libheif openjpeg libtiff hdf5 c-blosc2
+brew install jpeg-turbo webp libavif libheif openjpeg libtiff hdf5 c-blosc2 \
+    libaec liblerc zfp rust    # Tier 1 (sz3 + pcodec source-built below)
 
 # Ubuntu / Debian (24.04+)
 sudo apt install -y \
     libturbojpeg0-dev libwebp-dev libavif-dev libheif-dev \
     libopenjp2-7-dev libblosc2-dev libcharls-dev \
     liblz4-dev libspng-dev libtiff-dev libhdf5-dev \
-    libbrotli-dev libzstd-dev
+    libbrotli-dev libzstd-dev \
+    libaec-dev liblerc-dev cmake ninja-build      # Tier 1 system libs
 
-# Build libjxl (~3 minutes; cached for subsequent installs)
+# Build libjxl + Tier 1 source-only libs (sz3, pcodec, zfp on Linux).
+# All into a per-user cache; cached for subsequent installs.
 ./bench/build_libjxl.sh
+./bench/build_codec_libs.sh --only=zfp,SZ3,pcodec   # ~30 sec each
 
 # Build all extensions
 pip install -e .
@@ -53,6 +57,13 @@ python -m pytest tests/test_native_parity.py
 | libheif | libheif-dev | libheif | `heif` |
 | HDF5 | libhdf5-dev | hdf5 | (read-only via h5py) |
 | libtiff | libtiff-dev | libtiff | (transitive) |
+| libaec | libaec-dev | libaec | `aec` (CCSDS) |
+| liblerc | liblerc-dev | liblerc | `lerc` |
+| libzfp | (source build) | zfp | `zfp` |
+| SZ3c | (source build) | (source build) | `sz3` |
+| cpcodec (Rust cdylib) | (source build via cargo) | (source build via cargo) | `pcodec` |
+| (vendored) bitshuffle | — | — | `bitshuffle` |
+| c-blosc2 (NDim API) | libblosc2-dev | c-blosc2 | `b2nd` |
 
 The TurboJPEG entry is specifically the **v3 API**. Older
 libjpeg-turbo on Ubuntu 22.04 ships only the v2 API; the build will

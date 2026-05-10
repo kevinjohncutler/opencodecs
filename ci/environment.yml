@@ -21,3 +21,12 @@ dependencies:
   - c-blosc2
   - lz4-c
   - zstd
+  # Tier 1 scientific compressors. SZ3 + pcodec aren't on conda-forge;
+  # they're built from source by an explicit step in build_wheels.yml
+  # (cmake + cargo — Rust toolchain provided by the `rust` package below).
+  - libaec
+  - lerc
+  - zfp
+  - rust
+  - cmake
+  - ninja

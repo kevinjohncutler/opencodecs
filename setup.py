@@ -270,6 +270,22 @@ _PROBE_PREFIXES: list[Path] = [
     Path("/usr"),
 ]
 
+# Per-user opencodecs cache prefixes. Some Tier 1 codec libraries
+# (SZ3, pcodec) are not in Homebrew/apt, so we build them once into
+# ~/Library/Caches/opencodecs/<lib>/ via bench/build_codec_libs.sh.
+# Probe these so the generic header/lib search picks them up.
+_OC_USER_CACHE = Path.home() / (
+    "Library/Caches/opencodecs" if sys.platform == "darwin"
+    else (
+        os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache"))
+        + "/opencodecs"
+    )
+)
+for _libdir in ("sz3", "pcodec"):
+    _p = _OC_USER_CACHE / _libdir
+    if (_p / "include").is_dir():
+        _PROBE_PREFIXES.insert(0, _p)
+
 # When _find_libjxl() picked up libjxl from a non-standard prefix
 # (e.g. /cibw-jxl-prefix in the cibuildwheel manylinux container, or
 # the per-user cache dir on a dev machine), make that prefix reachable
@@ -546,6 +562,26 @@ extensions = [
         libraries=["blosc2"],
         language="c",
     ),
+    # blosc2 NDim (b2nd): exposes c-blosc2's multidimensional layer via a
+    # tiny C shim (b2nd_helpers.c). Same library; we just call b2nd_*
+    # entry points instead of blosc2_* ones.
+    Extension(
+        name="opencodecs.codecs._b2nd",
+        sources=[
+            "src/opencodecs/codecs/_b2nd.pyx",
+            "src/opencodecs/codecs/b2nd_helpers.c",
+        ],
+        include_dirs=[
+            str(PKG_CODECS),
+            numpy.get_include(),
+            *_resolve_include_dirs("blosc2.h"),
+            *_resolve_include_dirs("b2nd.h"),
+        ],
+        library_dirs=_lib_dirs_for_probes(),
+        libraries=["blosc2"],
+        define_macros=[("NPY_NO_DEPRECATED_API", "NPY_1_7_API_VERSION")],
+        language="c",
+    ),
     # JPEG via libjpeg-turbo (TurboJPEG v3 API).
     Extension(
         name="opencodecs.codecs._jpeg",
@@ -644,6 +680,106 @@ extensions = [
         include_dirs=[str(PKG_CODECS)],
         language="c",
     ),
+    # pcodec (cpcodec): Rust cdylib built via cargo into per-user cache.
+    Extension(
+        name="opencodecs.codecs._pcodec",
+        sources=["src/opencodecs/codecs/_pcodec.pyx"],
+        include_dirs=[
+            str(PKG_CODECS),
+            numpy.get_include(),
+            *_resolve_include_dirs("cpcodec.h"),
+        ],
+        library_dirs=_lib_dirs_for_probes(),
+        libraries=["cpcodec"],
+        define_macros=[("NPY_NO_DEPRECATED_API", "NPY_1_7_API_VERSION")],
+        extra_link_args=(
+            [f"-Wl,-rpath,{_OC_USER_CACHE / 'pcodec' / 'lib'}"]
+            if (_OC_USER_CACHE / "pcodec" / "lib").is_dir() else []
+        ),
+        language="c",
+    ),
+    # SZ3 (error-bounded lossy compressor): system SZ3c, or per-user
+    # cache when built via bench/build_codec_libs.sh (no system package).
+    Extension(
+        name="opencodecs.codecs._sz3",
+        sources=["src/opencodecs/codecs/_sz3.pyx"],
+        include_dirs=[
+            str(PKG_CODECS),
+            numpy.get_include(),
+            *_resolve_include_dirs("SZ3c/sz3c.h"),
+        ],
+        library_dirs=_lib_dirs_for_probes(),
+        libraries=["SZ3c"],
+        define_macros=[("NPY_NO_DEPRECATED_API", "NPY_1_7_API_VERSION")],
+        # Embed RPATH to the per-user cache so dyld finds libSZ3c at
+        # runtime even though the lib lives outside of standard search
+        # paths. On Linux + cibuildwheel this becomes a no-op (the lib
+        # is built to /cibw-jxl-prefix and bundled via auditwheel).
+        extra_link_args=(
+            [f"-Wl,-rpath,{_OC_USER_CACHE / 'sz3' / 'lib'}"]
+            if (_OC_USER_CACHE / "sz3" / "lib").is_dir() else []
+        ),
+        language="c",
+    ),
+    # ZFP (lossy floating-point compression): system libzfp.
+    Extension(
+        name="opencodecs.codecs._zfp",
+        sources=["src/opencodecs/codecs/_zfp.pyx"],
+        include_dirs=[
+            str(PKG_CODECS),
+            numpy.get_include(),
+            *_resolve_include_dirs("zfp.h"),
+        ],
+        library_dirs=_lib_dirs_for_probes(),
+        libraries=["zfp"],
+        define_macros=[("NPY_NO_DEPRECATED_API", "NPY_1_7_API_VERSION")],
+        language="c",
+    ),
+    # LERC (Esri Limited Error Raster Compression): system liblerc.
+    Extension(
+        name="opencodecs.codecs._lerc",
+        sources=["src/opencodecs/codecs/_lerc.pyx"],
+        include_dirs=[
+            str(PKG_CODECS),
+            numpy.get_include(),
+            *_resolve_include_dirs("Lerc_c_api.h"),
+        ],
+        library_dirs=_lib_dirs_for_probes(),
+        libraries=["Lerc"],
+        define_macros=[("NPY_NO_DEPRECATED_API", "NPY_1_7_API_VERSION")],
+        language="c",
+    ),
+    # AEC (CCSDS 121.0-B-2 adaptive entropy coding): system libaec.
+    Extension(
+        name="opencodecs.codecs._aec",
+        sources=["src/opencodecs/codecs/_aec.pyx"],
+        include_dirs=[
+            str(PKG_CODECS),
+            *_resolve_include_dirs("libaec.h"),
+        ],
+        library_dirs=_lib_dirs_for_probes(),
+        libraries=["aec"],
+        language="c",
+    ),
+    # Bitshuffle: vendored single-purpose filter (~3 small C files). No
+    # external dep — bitshuffle.h is the LZ4-coupled API which we don't
+    # use, but bshuf_compress_lz4 references LZ4_compress_HC, so we
+    # include only bitshuffle_core.{c,h} + iochain.{c,h} sources here.
+    # Pure transpose (encode/decode) needs no compressor library.
+    Extension(
+        name="opencodecs.codecs._bitshuffle",
+        sources=[
+            "src/opencodecs/codecs/_bitshuffle.pyx",
+            "3rdparty/bitshuffle/bitshuffle_core.c",
+            "3rdparty/bitshuffle/iochain.c",
+        ],
+        include_dirs=[
+            str(PKG_CODECS),
+            str(HERE / "3rdparty" / "bitshuffle"),
+        ],
+        define_macros=[("NPY_NO_DEPRECATED_API", "NPY_1_7_API_VERSION")],
+        language="c",
+    ),
     # PNG via libspng (system; Homebrew on Mac, libspng-dev on Ubuntu).
     # libspng is a clean C reimplementation of libpng with a much smaller
     # API surface — ideal for our wrapper. Falls back to vendored sources
@@ -662,6 +798,12 @@ _REQUIRED_HEADERS = {
     "opencodecs.codecs._lz4":    ("lz4frame.h",),
     "opencodecs.codecs._brotli": ("brotli/encode.h",),
     "opencodecs.codecs._blosc2": ("blosc2.h",),
+    "opencodecs.codecs._b2nd":   ("b2nd.h",),
+    "opencodecs.codecs._aec":    ("libaec.h",),
+    "opencodecs.codecs._lerc":   ("Lerc_c_api.h",),
+    "opencodecs.codecs._zfp":    ("zfp.h",),
+    "opencodecs.codecs._sz3":    ("SZ3c/sz3c.h",),
+    "opencodecs.codecs._pcodec": ("cpcodec.h",),
     "opencodecs.codecs._jpeg":   ("turbojpeg.h",),
     "opencodecs.codecs._webp":   ("webp/encode.h",),
     "opencodecs.codecs._jpeg2k": ("openjpeg-2.5/openjpeg.h", "openjpeg-2.4/openjpeg.h"),

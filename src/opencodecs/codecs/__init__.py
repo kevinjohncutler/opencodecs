@@ -43,6 +43,12 @@ _EXTENSIONS = (
     "_lz4",
     "_brotli",
     "_blosc2",
+    "_b2nd",
+    "_aec",
+    "_lerc",
+    "_zfp",
+    "_sz3",
+    "_pcodec",
     "_deflate",
     "_jpeg",
     "_webp",
@@ -50,6 +56,7 @@ _EXTENSIONS = (
     "_avif",
     "_heif",
     "_png",
+    "_bitshuffle",
     "_bytetools",
 )
 
