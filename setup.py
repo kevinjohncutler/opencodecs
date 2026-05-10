@@ -680,6 +680,16 @@ extensions = [
         include_dirs=[str(PKG_CODECS)],
         language="c",
     ),
+    # Native TIFF IFD walker — pure-Python parsing logic in Cython for
+    # speed on huge multi-IFD files (e.g. 10000-page tiled TIFFs).
+    # No external library; tile decompression dispatches to the
+    # already-built compression extensions at runtime.
+    Extension(
+        name="opencodecs.codecs._tiff",
+        sources=["src/opencodecs/codecs/_tiff.pyx"],
+        include_dirs=[str(PKG_CODECS)],
+        language="c",
+    ),
     # pcodec (cpcodec): Rust cdylib built via cargo into per-user cache.
     Extension(
         name="opencodecs.codecs._pcodec",
