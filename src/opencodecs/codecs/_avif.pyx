@@ -10,7 +10,7 @@
 
 from cpython.bytes cimport PyBytes_FromStringAndSize
 from libc.string cimport memcpy
-from libc.stdint cimport uint8_t
+from libc.stdint cimport uint8_t, uint16_t
 
 import numpy as np
 cimport numpy as cnp
@@ -30,6 +30,29 @@ from avif cimport (
     avifResultToString,
 )
 
+
+# CICP (Coding-Independent Code Points) values used by libavif. These match
+# JxlPrimaries / JxlTransferFunction so the same ColorSpec works for both
+# codecs.
+cdef:
+    int AVIF_COLOR_PRIMARIES_BT709 = 1
+    int AVIF_COLOR_PRIMARIES_UNSPECIFIED = 2
+    int AVIF_COLOR_PRIMARIES_BT2020 = 9
+    int AVIF_COLOR_PRIMARIES_DCI_P3 = 12  # NOT Display P3 — use SMPTE_RP_431_2 (=11)
+    int AVIF_COLOR_PRIMARIES_SMPTE_RP_431_2 = 11  # = Display P3 (D65)
+
+    int AVIF_TRANSFER_CHARACTERISTICS_BT709 = 1
+    int AVIF_TRANSFER_CHARACTERISTICS_UNSPECIFIED = 2
+    int AVIF_TRANSFER_CHARACTERISTICS_LINEAR = 8
+    int AVIF_TRANSFER_CHARACTERISTICS_SRGB = 13
+    int AVIF_TRANSFER_CHARACTERISTICS_SMPTE2084 = 16  # PQ
+    int AVIF_TRANSFER_CHARACTERISTICS_HLG = 18
+
+    int AVIF_MATRIX_COEFFICIENTS_IDENTITY = 0  # used for lossless
+    int AVIF_MATRIX_COEFFICIENTS_BT709 = 1
+    int AVIF_MATRIX_COEFFICIENTS_UNSPECIFIED = 2
+    int AVIF_MATRIX_COEFFICIENTS_BT2020_NCL = 9
+
 cnp.import_array()
 
 
@@ -38,11 +61,30 @@ class AvifError(RuntimeError):
 
 
 def encode(data, *, level: int | None = None,
-           lossless: bool = False, speed: int = 6) -> bytes:
+           lossless: bool = False, speed: int = 6,
+           color=None, bit_depth: int | None = None,
+           numthreads: int | None = None) -> bytes:
     """Encode an array as AVIF.
 
-    ``level`` is quality 0-100 (default 60); ignored if ``lossless=True``.
-    ``speed`` 0-10 (lower = better quality but slower; default 6).
+    Parameters
+    ----------
+    data : ndarray
+        2-D grayscale, 3-D HxWx3 (RGB), or 3-D HxWx4 (RGBA). uint8 or uint16.
+    level : int, optional
+        Quality 0-100 (default 60); ignored if ``lossless=True``.
+    lossless : bool, default False
+        If True, encode in mathematically lossless mode (YUV444 + identity
+        matrix). Required for fidelity-critical use; ~2-4x larger than lossy.
+    speed : int, default 6
+        Encoder speed 0-10 (lower = slower / smaller files).
+    color : str or ColorSpec, optional
+        Color-encoding spec. Same vocabulary as the JXL codec accepts:
+        'srgb', 'display-p3', 'rec2020-pq', 'rec2020-hlg', etc. If None,
+        libavif's defaults are used (typically BT.709 sRGB).
+    bit_depth : int, optional
+        Override bit depth (8, 10, 12). Default: 8 for uint8 input, 10 for
+        uint16 input. uint16 with bit_depth=10 means values 0..1023 are
+        stored in the low bits; values >1023 are clamped.
     """
     cdef:
         cnp.ndarray arr
@@ -56,18 +98,38 @@ def encode(data, *, level: int | None = None,
         int quality
         avifPixelFormat yuv_format
         int channels
+        int dtype_bytes  # 1 for uint8, 2 for uint16
+        int actual_bit_depth
         size_t row_bytes_in
         unsigned int y
 
+    # Accept uint8 or uint16 input.
     if not isinstance(data, np.ndarray):
         arr = np.ascontiguousarray(data, dtype=np.uint8)
     else:
-        if data.dtype != np.uint8:
-            raise AvifError(f'AVIF: only uint8 supported, got {data.dtype}')
-        arr = np.ascontiguousarray(data)
+        if data.dtype == np.uint8:
+            arr = np.ascontiguousarray(data)
+        elif data.dtype == np.uint16:
+            arr = np.ascontiguousarray(data)
+        else:
+            raise AvifError(
+                f'AVIF: uint8 or uint16 input supported, got {data.dtype}')
+
+    dtype_bytes = 1 if arr.dtype == np.uint8 else 2
+
+    # Default bit_depth from dtype.
+    if bit_depth is None:
+        actual_bit_depth = 8 if dtype_bytes == 1 else 10
+    else:
+        actual_bit_depth = int(bit_depth)
+    if actual_bit_depth not in (8, 10, 12):
+        raise AvifError(
+            f'AVIF: bit_depth must be 8, 10, or 12 (got {actual_bit_depth})')
+    if dtype_bytes == 1 and actual_bit_depth != 8:
+        raise AvifError(
+            f'AVIF: uint8 input requires bit_depth=8 (got {actual_bit_depth})')
 
     if arr.ndim == 2:
-        # Promote grayscale to RGB.
         arr = np.ascontiguousarray(np.stack([arr] * 3, axis=-1))
         has_alpha = 0
     elif arr.ndim == 3 and arr.shape[2] == 3:
@@ -77,22 +139,41 @@ def encode(data, *, level: int | None = None,
     else:
         raise AvifError(f'AVIF encode: unsupported shape ndim={arr.ndim}')
 
+    # Resolve color spec to CICP values.
+    cdef int cp = AVIF_COLOR_PRIMARIES_UNSPECIFIED
+    cdef int tc = AVIF_TRANSFER_CHARACTERISTICS_UNSPECIFIED
+    cdef int mc = AVIF_MATRIX_COEFFICIENTS_UNSPECIFIED
+    if color is not None:
+        from opencodecs.core.color import parse_color
+        spec = parse_color(color)
+        # JxlPrimaries / JxlTransferFunction enums are CICP-aligned.
+        # JXL primary 11 = P3 -> AVIF SMPTE_RP_431_2 (also 11).
+        cp = int(spec.primaries)
+        tc = int(spec.transfer)
+
     quality = AVIF_QUALITY_LOSSLESS if lossless else (60 if level is None else int(level))
     if quality < 0: quality = 0
     if quality > 100: quality = 100
 
-    # Lossless requires YUV444; lossy default to YUV420 (smaller).
     yuv_format = AVIF_PIXEL_FORMAT_YUV444 if lossless else AVIF_PIXEL_FORMAT_YUV420
 
     image = avifImageCreate(<unsigned int> arr.shape[1],
                             <unsigned int> arr.shape[0],
-                            8, yuv_format)
+                            <unsigned int> actual_bit_depth, yuv_format)
     if image == NULL:
         raise AvifError('avifImageCreate failed')
+
+    # Set color encoding. Identity matrix is REQUIRED for byte-perfect
+    # lossless (YUV planes equal RGB planes); the colorPrimaries and
+    # transferCharacteristics still tag the colorimetry of those values.
     if lossless:
-        # Identity matrix means YUV planes ARE the RGB planes verbatim,
-        # so YUV444 + identity = byte-perfect lossless.
-        image.matrixCoefficients = 0  # AVIF_MATRIX_COEFFICIENTS_IDENTITY
+        mc = AVIF_MATRIX_COEFFICIENTS_IDENTITY
+    elif cp == AVIF_COLOR_PRIMARIES_BT2020:
+        mc = AVIF_MATRIX_COEFFICIENTS_BT2020_NCL
+    image.colorPrimaries = <unsigned int> cp
+    image.transferCharacteristics = <unsigned int> tc
+    image.matrixCoefficients = <unsigned int> mc
+
     encoder = avifEncoderCreate()
     if encoder == NULL:
         avifImageDestroy(image)
@@ -104,16 +185,21 @@ def encode(data, *, level: int | None = None,
     try:
         avifRGBImageSetDefaults(&rgb, image)
         rgb.format = AVIF_RGB_FORMAT_RGBA if has_alpha else AVIF_RGB_FORMAT_RGB
+        rgb.depth = <unsigned int> actual_bit_depth
+
         rc = avifRGBImageAllocatePixels(&rgb)
         if rc != AVIF_RESULT_OK:
             raise AvifError(
                 f'avifRGBImageAllocatePixels: '
                 f'{avifResultToString(rc).decode()}')
         try:
-            # Copy our row-major numpy data into the rgb buffer (which may
-            # have a stride). Both should match for contiguous uint8 input.
             channels = 4 if has_alpha else 3
-            row_bytes_in = <size_t>(<int> arr.shape[1] * channels)
+            # uint16 input = 2 bytes per sample; uint8 = 1 byte.
+            row_bytes_in = <size_t>(<int> arr.shape[1] * channels * dtype_bytes)
+            # Sanity: for uint16 input, libavif expects values left-aligned to
+            # bit_depth's range (e.g. for 10-bit, values 0..1023). We DON'T
+            # auto-shift here — caller is responsible for ensuring values are
+            # in [0, 2^bit_depth - 1].
             for y in range(<int> arr.shape[0]):
                 memcpy(rgb.pixels + y * rgb.rowBytes,
                        <const uint8_t*> cnp.PyArray_DATA(arr) + y * row_bytes_in,
@@ -130,7 +216,11 @@ def encode(data, *, level: int | None = None,
         encoder.qualityAlpha = quality
         if speed >= 0 and speed <= 10:
             encoder.speed = speed
-        encoder.maxThreads = 4
+        if numthreads is None or numthreads <= 0:
+            import os as _os
+            encoder.maxThreads = _os.cpu_count() or 4
+        else:
+            encoder.maxThreads = int(numthreads)
 
         with nogil:
             rc = avifEncoderWrite(encoder, image, &out_data)
@@ -147,8 +237,13 @@ def encode(data, *, level: int | None = None,
         avifImageDestroy(image)
 
 
-def decode(data) -> np.ndarray:
-    """Decode AVIF bytes to a uint8 numpy array."""
+def decode(data, *, numthreads: int | None = None) -> np.ndarray:
+    """Decode AVIF bytes to a numpy array.
+
+    Returns uint8 for 8-bit AVIFs, uint16 for 10/12-bit AVIFs (values
+    left-aligned to bit_depth — i.e. for 10-bit the array contains values
+    0..1023, not shifted into the upper bits).
+    """
     cdef:
         const uint8_t[::1] src
         size_t srcsize
@@ -160,6 +255,8 @@ def decode(data) -> np.ndarray:
         cnp.npy_intp shape[3]
         int has_alpha
         int channels
+        int dtype_bytes
+        int img_depth
         unsigned int y
         size_t row_bytes_out
 
@@ -176,7 +273,11 @@ def decode(data) -> np.ndarray:
     if image == NULL:
         avifDecoderDestroy(decoder)
         raise AvifError('avifImageCreateEmpty failed')
-    decoder.maxThreads = 4
+    if numthreads is None or numthreads <= 0:
+        import os as _os
+        decoder.maxThreads = _os.cpu_count() or 4
+    else:
+        decoder.maxThreads = int(numthreads)
 
     try:
         with nogil:
@@ -185,11 +286,14 @@ def decode(data) -> np.ndarray:
             raise AvifError(
                 f'avifDecoderReadMemory: {avifResultToString(rc).decode()}')
 
+        img_depth = <int> image.depth
+        dtype_bytes = 1 if img_depth <= 8 else 2
+
         avifRGBImageSetDefaults(&rgb, image)
-        # Detect alpha by checking image's alpha plane pointer.
         has_alpha = 1 if image.alphaPlane != NULL else 0
         channels = 4 if has_alpha else 3
         rgb.format = AVIF_RGB_FORMAT_RGBA if has_alpha else AVIF_RGB_FORMAT_RGB
+        rgb.depth = <unsigned int> img_depth
 
         rc = avifRGBImageAllocatePixels(&rgb)
         if rc != AVIF_RESULT_OK:
@@ -207,8 +311,11 @@ def decode(data) -> np.ndarray:
             shape[0] = image.height
             shape[1] = image.width
             shape[2] = channels
-            out = cnp.PyArray_EMPTY(3, shape, cnp.NPY_UINT8, 0)
-            row_bytes_out = <size_t>(image.width * channels)
+            if dtype_bytes == 1:
+                out = cnp.PyArray_EMPTY(3, shape, cnp.NPY_UINT8, 0)
+            else:
+                out = cnp.PyArray_EMPTY(3, shape, cnp.NPY_UINT16, 0)
+            row_bytes_out = <size_t>(image.width * channels * dtype_bytes)
             for y in range(image.height):
                 memcpy(<uint8_t*> cnp.PyArray_DATA(out) + y * row_bytes_out,
                        rgb.pixels + y * rgb.rowBytes,

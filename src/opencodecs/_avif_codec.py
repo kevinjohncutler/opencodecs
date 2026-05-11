@@ -39,14 +39,20 @@ class AvifCodec(Codec):
 
     def encode(self, data: Any, *, dest=None, level: int | None = None,
                lossless: bool = False, speed: int = 6,
+               color=None, bit_depth: int | None = None,
+               numthreads: int | None = None,
                **opts) -> bytes | None:
         if not isinstance(data, np.ndarray):
             data = np.asarray(data)
-        encoded = _avif_encode(data, level=level, lossless=lossless, speed=speed)
+        encoded = _avif_encode(
+            data, level=level, lossless=lossless, speed=speed,
+            color=color, bit_depth=bit_depth, numthreads=numthreads,
+        )
         return _write_dest(encoded, dest)
 
-    def decode(self, src: Any, **opts) -> np.ndarray:
-        return _avif_decode(_read_src(src))
+    def decode(self, src: Any, *, numthreads: int | None = None,
+               **opts) -> np.ndarray:
+        return _avif_decode(_read_src(src), numthreads=numthreads)
 
 
 

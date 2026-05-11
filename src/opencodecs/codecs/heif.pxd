@@ -1,7 +1,6 @@
-# Minimal Cython declarations for libheif (decode-only here; encode is
-# deferred to a follow-up — encode requires walking encoder descriptors).
+# Minimal Cython declarations for libheif.
 
-from libc.stdint cimport uint8_t
+from libc.stdint cimport uint8_t, uint16_t
 
 cdef extern from 'heif_shim.h' nogil:
     ctypedef struct heif_context:
@@ -79,6 +78,7 @@ cdef extern from 'heif_shim.h' nogil:
     int heif_image_handle_get_width(const heif_image_handle*)
     int heif_image_handle_get_height(const heif_image_handle*)
     int heif_image_handle_has_alpha_channel(const heif_image_handle*)
+    int heif_image_handle_get_luma_bits_per_pixel(const heif_image_handle*)
     void heif_image_handle_release(const heif_image_handle*)
 
     int heif_image_get_width(const heif_image*, heif_channel channel)
@@ -98,11 +98,32 @@ cdef extern from 'heif_shim.h' nogil:
         int width, int height, int bit_depth,
     )
 
+    # NCLX color profile (BT.2100 HLG / PQ / Display P3 / etc.)
+    ctypedef struct heif_color_profile_nclx:
+        uint8_t version
+        int color_primaries          # heif_color_primaries enum
+        int transfer_characteristics # heif_transfer_characteristics enum
+        int matrix_coefficients      # heif_matrix_coefficients enum
+        uint8_t full_range_flag
+
+    heif_color_profile_nclx* heif_nclx_color_profile_alloc()
+    void heif_nclx_color_profile_free(heif_color_profile_nclx*)
+    heif_error heif_nclx_color_profile_set_color_primaries(
+        heif_color_profile_nclx*, uint16_t cp)
+    heif_error heif_nclx_color_profile_set_transfer_characteristics(
+        heif_color_profile_nclx*, uint16_t tc)
+    heif_error heif_nclx_color_profile_set_matrix_coefficients(
+        heif_color_profile_nclx*, uint16_t mc)
+    heif_error heif_image_set_nclx_color_profile(
+        heif_image*, const heif_color_profile_nclx*)
+
     heif_error heif_context_get_encoder_for_format(
         heif_context*, heif_compression_format, heif_encoder** out)
     void heif_encoder_release(heif_encoder*)
     heif_error heif_encoder_set_lossy_quality(heif_encoder*, int)
     heif_error heif_encoder_set_lossless(heif_encoder*, int)
+    heif_error heif_encoder_set_parameter_string(
+        heif_encoder*, const char* name, const char* value)
     heif_error heif_context_encode_image(
         heif_context*, const heif_image*, heif_encoder*,
         const heif_encoding_options*, heif_image_handle** out_handle,

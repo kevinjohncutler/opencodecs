@@ -1,10 +1,14 @@
 # Minimal Cython declarations for libavif.
 
-from libc.stdint cimport uint8_t, uint32_t
+from libc.stdint cimport uint8_t, uint16_t, uint32_t
 
 cdef extern from 'avif/avif.h' nogil:
     int AVIF_QUALITY_LOSSLESS
     int AVIF_RESULT_OK
+
+    ctypedef uint16_t avifColorPrimaries
+    ctypedef uint16_t avifTransferCharacteristics
+    ctypedef uint16_t avifMatrixCoefficients
 
     cdef enum avifPixelFormat:
         AVIF_PIXEL_FORMAT_NONE = 0
@@ -39,7 +43,9 @@ cdef extern from 'avif/avif.h' nogil:
         avifPixelFormat yuvFormat
         uint8_t* alphaPlane
         uint8_t alphaPremultiplied
-        int matrixCoefficients
+        avifColorPrimaries colorPrimaries
+        avifTransferCharacteristics transferCharacteristics
+        avifMatrixCoefficients matrixCoefficients
 
     ctypedef struct avifRGBImage:
         uint32_t width
