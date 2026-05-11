@@ -142,23 +142,55 @@ def test_pyramid_writer_layout_validated_by_czifile(
             assert e.pyramid_type == (0 if i == 0 else 2)
 
 
-def test_pyramid_writer_decodes_via_pylibCZIrw(
+def test_pyramid_writer_decodes_via_pylibCZIrw_all_levels(
     tmp_path, _pyramid_levels,
 ):
-    """pylibCZIrw must successfully open and decode the base level
-    of our pyramid CZI. Native libCZI is the canonical CZI reader; if
-    our pyramid layout is wrong it'll either fail to open or hand back
-    wrong pixels."""
-    pylibCZIrw = pytest.importorskip("pylibCZIrw")
+    """Every pyramid level must round-trip pixel-equal through Zeiss's
+    own libCZI reader. pylibCZIrw exposes per-level access via
+    ``zoom=`` (1.0 = level 0 / full-res, 0.5 = level 1, etc.). If our
+    pyramid layout is wrong libCZI would return blurred / interpolated
+    pixels rather than the original stored values.
+    """
+    pytest.importorskip("pylibCZIrw")
     from pylibCZIrw import czi as pyczi
-    out = tmp_path / "pyr_pl.czi"
+    out = tmp_path / "pyr_pl_all.czi"
     with CziPyramidWriter(out) as w:
         w.write_pyramid(_pyramid_levels)
     with pyczi.open_czi(str(out)) as r:
-        back = r.read(plane={"C": 0, "T": 0, "Z": 0})
-    if back.ndim == 3 and back.shape[2] == 1:
-        back = back[..., 0]
-    np.testing.assert_array_equal(back, _pyramid_levels[0])
+        for i, lvl in enumerate(_pyramid_levels):
+            zoom = 1.0 / (2 ** i)
+            back = r.read(zoom=zoom)
+            if back.ndim == 3 and back.shape[2] == 1:
+                back = back[..., 0]
+            np.testing.assert_array_equal(
+                back, lvl,
+                err_msg=f"pylibCZIrw zoom={zoom} (level {i}) "
+                        f"returned pixels that don't match the "
+                        f"source level",
+            )
+
+
+def test_pyramid_writer_decodes_via_czifile_all_levels(
+    tmp_path, _pyramid_levels,
+):
+    """Every pyramid level must round-trip pixel-equal through czifile's
+    per-subblock decode path. czifile is the reference Python CZI
+    reader; if our pyramid layout is wrong it'd either fail to decode
+    or hand back wrong pixels."""
+    czifile = pytest.importorskip("czifile")
+    out = tmp_path / "pyr_cf_all.czi"
+    with CziPyramidWriter(out) as w:
+        w.write_pyramid(_pyramid_levels)
+    with czifile.CziFile(str(out)) as f:
+        sbs = list(f.subblocks())
+        assert len(sbs) == len(_pyramid_levels)
+        for i, (sb, lvl) in enumerate(zip(sbs, _pyramid_levels)):
+            decoded = np.squeeze(sb.data())
+            np.testing.assert_array_equal(
+                decoded, lvl,
+                err_msg=f"czifile sub-block {i} pixel-mismatch with "
+                        f"source level {i}",
+            )
 
 
 @pytest.mark.parametrize("compression", ["none", "zstd", "zstdhdr"])

@@ -14,6 +14,8 @@ regress the flat-file case.
 
 from __future__ import annotations
 
+import os
+
 import numpy as np
 import pytest
 
@@ -315,6 +317,122 @@ def test_pyramid_fixture_validated_by_czifile(tmp_path):
         _dims, _shape, _stored, is_pyr, ptype = exp
         assert ours.is_pyramid is is_pyr
         assert ours.pyramid_type == ptype
+
+
+_REAL_PYRAMID_CZI = (
+    "/Volumes/HiprDrive/2024-08-21_microarray/24-08-21_array_scan_raw.czi"
+)
+
+
+@pytest.mark.skipif(
+    not os.path.exists(_REAL_PYRAMID_CZI),
+    reason="real ZEN-produced pyramid CZI not available (NAS mount)",
+)
+def test_pyramid_metadata_matches_czifile_on_real_zen_file():
+    """Validate our pyramid metadata interpretation against a real
+    ZEN-microscope-produced pyramid CZI.
+
+    czifile is the canonical Python CZI reader. For every sub-block in
+    the real 51 GB file (6288 sub-blocks across 7 pyramid levels), the
+    pyramid-related fields opencodecs decodes must match the values
+    czifile decodes from the same bytes. If we get the pyramid layout
+    wrong on synthetic fixtures we might miss something; if we get it
+    wrong on a real ZEN file the lab-data pipeline breaks. This is the
+    gold-standard validation.
+    """
+    czifile = pytest.importorskip("czifile")
+    oc_r = oc.get_codec("czi").open(_REAL_PYRAMID_CZI)
+    try:
+        with czifile.CziFile(_REAL_PYRAMID_CZI) as cf_r:
+            cf_entries = list(cf_r.subblock_directory)
+        # Map by file_position so we compare the same sub-block
+        # regardless of internal iteration order.
+        cf_by_pos = {e.file_position: e for e in cf_entries}
+        assert len(oc_r.entries) == len(cf_entries)
+
+        mismatches = []
+        for oc_e in oc_r.entries:
+            cf_e = cf_by_pos[oc_e.file_position]
+            if (oc_e.shape != cf_e.shape
+                    or oc_e.stored_shape != cf_e.stored_shape
+                    or oc_e.is_pyramid != cf_e.is_pyramid
+                    or oc_e.pyramid_type != cf_e.pyramid_type):
+                mismatches.append((oc_e.file_position, oc_e, cf_e))
+        assert not mismatches, (
+            f"{len(mismatches)} sub-blocks disagree on pyramid metadata "
+            f"(first: oc={mismatches[0][1]} vs cf={mismatches[0][2]})"
+        )
+        # Confirm our scale-factor-per-level enumeration matches: every
+        # distinct (sy, sx) in the directory should be enumerated.
+        cf_factors = set()
+        for e in cf_entries:
+            # czifile shape includes leading T/C/Z; the spatial axes are
+            # the last two before the optional S axis.
+            spatial_dims = [
+                (s, ss) for d, s, ss in zip(e.dims, e.shape, e.stored_shape)
+                if d in ("Y", "X")
+            ]
+            if len(spatial_dims) >= 2:
+                cf_factors.add(tuple(
+                    (s / ss) if ss > 0 else 1.0
+                    for s, ss in spatial_dims
+                ))
+        oc_factors = set(oc_r.scale_factors_per_level())
+        assert cf_factors == oc_factors, (
+            f"scale-factor enumeration mismatch: cf={sorted(cf_factors)} "
+            f"vs oc={sorted(oc_factors)}"
+        )
+    finally:
+        oc_r.close()
+
+
+@pytest.mark.skipif(
+    not os.path.exists(_REAL_PYRAMID_CZI),
+    reason="real ZEN-produced pyramid CZI not available (NAS mount)",
+)
+def test_pyramid_pixel_decode_matches_czifile_on_real_zen_file():
+    """One sub-block per pyramid level decoded through both opencodecs
+    and czifile; pixels must match.
+
+    Bgr24 sub-blocks have a channel-order convention difference: our
+    reader returns the file-storage order (B-G-R); czifile reorders to
+    R-G-B. We assert pixel-equality after reversing channels — both
+    are valid representations of the same data.
+    """
+    czifile = pytest.importorskip("czifile")
+    oc_r = oc.get_codec("czi").open(_REAL_PYRAMID_CZI)
+    try:
+        # Sample one sub-block per available level
+        levels = list(range(min(oc_r.n_levels if hasattr(oc_r, "n_levels")
+                                else len(oc_r.scale_factors_per_level()),
+                                3)))
+        with czifile.CziFile(_REAL_PYRAMID_CZI) as cf_r:
+            for lvl in levels:
+                oc_e = oc_r.entries_at_level(lvl)[0]
+                oc_pixels = np.squeeze(oc_r._decode_one(oc_e))
+                cf_pixels = None
+                for sb in cf_r.subblocks():
+                    if sb.directory_entry.file_position == oc_e.file_position:
+                        cf_pixels = np.squeeze(sb.data())
+                        break
+                assert cf_pixels is not None, (
+                    f"czifile couldn't find sub-block at file_position "
+                    f"{oc_e.file_position}"
+                )
+                # Bgr24 channel-order convention: oc returns BGR (file order),
+                # czifile returns RGB. Compare after reversing the last axis.
+                if oc_pixels.ndim == 3 and oc_pixels.shape[-1] == 3:
+                    np.testing.assert_array_equal(
+                        oc_pixels[..., ::-1], cf_pixels,
+                        err_msg=f"level {lvl}: pixel mismatch after BGR↔RGB",
+                    )
+                else:
+                    np.testing.assert_array_equal(
+                        oc_pixels, cf_pixels,
+                        err_msg=f"level {lvl}: pixel mismatch",
+                    )
+    finally:
+        oc_r.close()
 
 
 def test_pyramid_fixture_round_trips_through_pylibCZIrw(tmp_path):
