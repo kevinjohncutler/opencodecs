@@ -309,6 +309,17 @@ def encode(data, *, level: int | None = None,
             mc = 9
         else:
             mc = 1
+    if lossless and cp < 0:
+        # In lossless mode without an explicit color spec, force NCLX
+        # with matrix_coefficients=0 (identity / "GBR"). Without this,
+        # libheif's default BT.709 matrix triggers an RGB→YUV→RGB
+        # transform whose integer rounding introduces ±1 LSB errors
+        # in 30%+ of pixels even with chroma=4:4:4. Identity matrix
+        # stores R/G/B directly into the YUV planes — true lossless.
+        cp = 1     # sRGB primaries (any value works; identity matrix
+                   # bypasses chromaticity transforms)
+        tc = 13    # sRGB transfer (likewise — purely a tag)
+        mc = 0     # IDENTITY — the bit that actually makes it lossless
 
     ctx = heif_context_alloc()
     if ctx == NULL:
