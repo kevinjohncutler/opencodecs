@@ -1,0 +1,17 @@
+{"timestamp": "20260511T065450Z", "git_rev": "261a5be", "name": "tiff_random_tile_read", "median_ms": 0.6855410756543279, "min_ms": 0.641333987005055, "max_ms": 0.8152499794960022, "noisy": false}
+{"timestamp": "20260511T065450Z", "git_rev": "261a5be", "name": "tiff_pyramid_overview", "median_ms": 0.14312495477497578, "min_ms": 0.12854102533310652, "max_ms": 0.1772909890860319, "noisy": true}
+{"timestamp": "20260511T065450Z", "git_rev": "261a5be", "name": "ndtiff_index_parse_synthetic_10k", "median_ms": 4.3293749913573265, "min_ms": 4.242790979333222, "max_ms": 4.443540936335921, "noisy": false}
+{"timestamp": "20260511T065450Z", "git_rev": "261a5be", "name": "ndtiff_write_50_frames", "median_ms": 4.458167008124292, "min_ms": 4.353665979579091, "max_ms": 4.5679580653086305, "noisy": false}
+{"timestamp": "20260511T065450Z", "git_rev": "261a5be", "name": "ndtiff_write_compressed_zstd", "median_ms": 42.994124989490956, "min_ms": 42.19870804809034, "max_ms": 43.65520901046693, "noisy": false}
+{"timestamp": "20260511T065551Z", "git_rev": "261a5be", "name": "tiff_random_tile_read", "median_ms": 0.7341250311583281, "min_ms": 0.690709101036191, "max_ms": 0.7565000560134649, "noisy": false}
+{"timestamp": "20260511T065551Z", "git_rev": "261a5be", "name": "tiff_pyramid_overview", "median_ms": 0.22799998987466097, "min_ms": 0.20104204304516315, "max_ms": 0.24683296214789152, "noisy": true}
+{"timestamp": "20260511T065551Z", "git_rev": "261a5be", "name": "ndtiff_index_parse_synthetic_10k", "median_ms": 4.372916999273002, "min_ms": 4.263957962393761, "max_ms": 4.435708047822118, "noisy": false}
+{"timestamp": "20260511T065551Z", "git_rev": "261a5be", "name": "ndtiff_random_frame_read", "median_ms": 1.7542714485898614, "min_ms": 1.736624981276691, "max_ms": 1.8516669515520334, "noisy": false}
+{"timestamp": "20260511T065551Z", "git_rev": "261a5be", "name": "ndtiff_write_50_frames", "median_ms": 4.791375016793609, "min_ms": 4.393083043396473, "max_ms": 4.887417075224221, "noisy": false}
+{"timestamp": "20260511T065551Z", "git_rev": "261a5be", "name": "ndtiff_write_compressed_zstd", "median_ms": 43.978541041724384, "min_ms": 43.460584012791514, "max_ms": 45.83120800089091, "noisy": false}
+{"timestamp": "20260511T065651Z", "git_rev": "261a5be", "name": "tiff_random_tile_read", "median_ms": 0.7869370165280998, "min_ms": 0.765874981880188, "max_ms": 0.8621669840067625, "noisy": false}
+{"timestamp": "20260511T065651Z", "git_rev": "261a5be", "name": "tiff_pyramid_crop_from_fullres", "median_ms": 0.4788750084117055, "min_ms": 0.46149990521371365, "max_ms": 0.5075419321656227, "noisy": true}
+{"timestamp": "20260511T065651Z", "git_rev": "261a5be", "name": "ndtiff_index_parse_synthetic_10k", "median_ms": 4.558124928735197, "min_ms": 4.37579199206084, "max_ms": 4.948124988004565, "noisy": false}
+{"timestamp": "20260511T065651Z", "git_rev": "261a5be", "name": "ndtiff_random_frame_read", "median_ms": 1.2154579162597656, "min_ms": 1.1847090208902955, "max_ms": 1.316875102929771, "noisy": false}
+{"timestamp": "20260511T065651Z", "git_rev": "261a5be", "name": "ndtiff_write_50_frames", "median_ms": 4.251834005117416, "min_ms": 4.195415996946394, "max_ms": 4.39370796084404, "noisy": false}
+{"timestamp": "20260511T065651Z", "git_rev": "261a5be", "name": "ndtiff_write_compressed_zstd", "median_ms": 44.92537502665073, "min_ms": 44.264999916777015, "max_ms": 46.36929102707654, "noisy": false}
