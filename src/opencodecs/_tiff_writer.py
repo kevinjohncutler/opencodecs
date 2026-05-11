@@ -310,6 +310,7 @@ class TiffWriter:
         resolution: tuple[float, float] | None = None,
         extra_tags: list[tuple[int, int, tuple]] | None = None,
         n_workers: int | None = None,
+        _in_chain: bool = True,
     ) -> dict:
         """Encode + emit one IFD for ``arr``.
 
@@ -604,13 +605,22 @@ class TiffWriter:
                 add(tag_id, tc, tuple(vals))
 
         # ---- Pack the IFD ----
-        ifd_offset = self._write_ifd(entries)
-        self._patch_next_ifd_offset(ifd_offset)
-
-        # Update where the next IFD's "next" pointer would go (i.e.,
-        # the 4-byte slot right after the IFD entries we just wrote).
-        # Computed in _write_ifd, stashed on self.
-        self._n_pages += 1
+        # For sub-IFDs, _in_chain=False: write the IFD struct at the
+        # current file position but do NOT splice it into the top-
+        # level IFD next-pointer chain. The caller (write_pyramid with
+        # subifds=True) records this offset for the parent's
+        # SubIFDs tag.
+        if _in_chain:
+            ifd_offset = self._write_ifd(entries)
+            self._patch_next_ifd_offset(ifd_offset)
+            self._n_pages += 1
+        else:
+            # Stash current next-slot before _write_ifd clobbers it
+            # so chain-mode pages emitted later continue from the
+            # right parent.
+            saved_next_slot = self._next_ifd_offset_slot
+            ifd_offset = self._write_ifd(entries)
+            self._next_ifd_offset_slot = saved_next_slot
 
         return {
             "ifd_offset": ifd_offset,
@@ -630,26 +640,73 @@ class TiffWriter:
         predictor: int = 1,
         photometric: str | int = "auto",
         metadata: str | None = None,
+        subifds: bool = False,
     ) -> list[dict]:
-        """Write a pyramid: full-res IFD followed by reduced-res IFDs.
+        """Write a pyramid.
 
-        ``levels[0]`` is the base resolution; subsequent levels are
-        emitted with ``NewSubfileType = 1``. Caller is responsible for
-        downsampling; this writer just emits the pages.
+        ``levels[0]`` is full-resolution; ``levels[1:]`` are progressively
+        downsampled. Two storage layouts:
+
+        * ``subifds=False`` (default) — COG convention. Each level is a
+          separate top-level IFD. ``NewSubfileType = 1`` flags the
+          reduced-resolution pages. Compatible with COG viewers.
+
+        * ``subifds=True`` — bioformats / OME-TIFF convention. Only the
+          full-resolution page is a top-level IFD; the reduced-
+          resolution levels are referenced via the SubIFDs tag (330).
+          Compatible with bioformats, QuPath, NDPI, anything that
+          follows the OME-TIFF spec.
         """
-        infos = []
-        for i, arr in enumerate(levels):
-            infos.append(self.write_page(
-                arr,
+        if not subifds:
+            infos = []
+            for i, arr in enumerate(levels):
+                infos.append(self.write_page(
+                    arr,
+                    tile=tile,
+                    compression=compression,
+                    compression_level=compression_level,
+                    predictor=predictor,
+                    photometric=photometric,
+                    subfiletype=0 if i == 0 else 1,
+                    metadata=metadata if i == 0 else None,
+                ))
+            return infos
+
+        # SubIFD layout: write the sub-resolution IFDs first (out of
+        # the top-level chain) so we know their offsets, then write
+        # the main IFD with SubIFDs tag (330) pointing at those
+        # offsets.
+        sub_infos: list[dict] = []
+        for sub in levels[1:]:
+            info = self.write_page(
+                sub,
                 tile=tile,
                 compression=compression,
                 compression_level=compression_level,
                 predictor=predictor,
                 photometric=photometric,
-                subfiletype=0 if i == 0 else 1,
-                metadata=metadata if i == 0 else None,
-            ))
-        return infos
+                subfiletype=1,
+                _in_chain=False,
+            )
+            sub_infos.append(info)
+        sub_ifd_offsets = tuple(int(i["ifd_offset"]) for i in sub_infos)
+
+        # Now the main page goes into the top-level chain with a
+        # SubIFDs tag listing each sub-IFD's offset. TIFF type 13
+        # (IFD) is the canonical type for SubIFDs but bioformats /
+        # libtiff also write type 4 (LONG) — both decode the same.
+        main_info = self.write_page(
+            levels[0],
+            tile=tile,
+            compression=compression,
+            compression_level=compression_level,
+            predictor=predictor,
+            photometric=photometric,
+            subfiletype=0,
+            metadata=metadata,
+            extra_tags=[(330, T_LONG, sub_ifd_offsets)],
+        )
+        return [main_info] + sub_infos
 
     def close(self) -> None:
         """Patch a null next-IFD pointer for the last page and close

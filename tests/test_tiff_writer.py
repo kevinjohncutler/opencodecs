@@ -343,3 +343,77 @@ def test_writer_big_endian_roundtrip(tmp_path):
         back = r.read()
     np.testing.assert_array_equal(back, arr)
     np.testing.assert_array_equal(tifffile.imread(str(p)), arr)
+
+
+# ---------------------------------------------------------------------------
+# SubIFD-based pyramid write (bioformats / OME-TIFF convention)
+# ---------------------------------------------------------------------------
+
+
+def test_writer_pyramid_subifds_basic(tmp_path):
+    """Write a 3-level pyramid in SubIFD layout, read back via our
+    own SubIFD-aware reader."""
+    _need_tiff()
+    from opencodecs._tiff_pyramid import TiffPyramidReader
+    p = tmp_path / "pyr_subifds.tif"
+    base = np.arange(256 * 256, dtype=np.uint16).reshape(256, 256)
+    levels = [base, base[::2, ::2].copy(), base[::4, ::4].copy()]
+    with TiffWriter(p) as w:
+        infos = w.write_pyramid(levels, tile=(64, 64), subifds=True)
+    assert len(infos) == 3
+    with TiffPyramidReader(str(p)) as r:
+        assert r.n_levels == 3
+        for i, lvl in enumerate(levels):
+            assert r.level(i).shape == lvl.shape
+            back = r.read_region(i, y=(0, lvl.shape[0]), x=(0, lvl.shape[1]))
+            np.testing.assert_array_equal(back, lvl)
+
+
+def test_writer_pyramid_subifds_top_level_chain_is_just_main(tmp_path):
+    """SubIFD layout means only ONE top-level IFD — the sub-resolutions
+    aren't reachable via the next-IFD chain. Confirms our writer
+    actually produces the bioformats layout, not the COG layout."""
+    _need_tiff()
+    p = tmp_path / "subifd_chain.tif"
+    levels = [
+        np.arange(128 * 128, dtype=np.uint16).reshape(128, 128),
+        np.arange(64 * 64, dtype=np.uint16).reshape(64, 64),
+        np.arange(32 * 32, dtype=np.uint16).reshape(32, 32),
+    ]
+    with TiffWriter(p) as w:
+        w.write_pyramid(levels, tile=(32, 32), subifds=True)
+    # Walk just the top-level chain via TiffStream — should see 1, not 3.
+    with TiffStream(str(p)) as r:
+        assert r.n_frames == 1
+        page = r.page(0)
+        # And that one page should carry tag 330 with 2 sub-IFD offsets.
+        from opencodecs._tiff_codec import TAG_SUB_IFDS
+        sub_entry = page.tags.get(TAG_SUB_IFDS)
+        assert sub_entry is not None
+        # (dtype, count, value) — value can be int (count==1) or tuple.
+        v = sub_entry[2]
+        if isinstance(v, int):
+            v = (v,)
+        assert len(v) == 2, f"expected 2 sub-IFD offsets, got {v!r}"
+
+
+def test_writer_pyramid_subifds_round_trips_through_tifffile(tmp_path):
+    """The bioformats convention is what tifffile recognizes as
+    ``series[0].levels``. After we write subifds=True, tifffile should
+    expose 3 levels in series 0."""
+    _need_tiff()
+    p = tmp_path / "subifd_tff.tif"
+    base = np.arange(128 * 128, dtype=np.uint16).reshape(128, 128)
+    levels = [base, base[::2, ::2].copy(), base[::4, ::4].copy()]
+    with TiffWriter(p) as w:
+        w.write_pyramid(levels, tile=(32, 32), subifds=True)
+    with tifffile.TiffFile(str(p)) as tf:
+        # series 0 should expose 3 levels (the main + 2 sub-IFDs).
+        s = tf.series[0]
+        assert len(s.levels) == 3, (
+            f"tifffile sees {len(s.levels)} levels; expected 3 — our "
+            f"SubIFDs aren't being recognized as a pyramid"
+        )
+        for i, lvl in enumerate(levels):
+            tf_lvl = np.asarray(s.levels[i].asarray())
+            np.testing.assert_array_equal(tf_lvl, lvl)
