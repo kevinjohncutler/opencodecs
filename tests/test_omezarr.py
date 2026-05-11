@@ -587,3 +587,98 @@ def test_sharded_v3_with_inner_compression(tmp_path, compressor):
     z[:] = arr
     back = OmeZarrArray(p).read()
     np.testing.assert_array_equal(back, arr)
+
+
+# ---------------------------------------------------------------------------
+# Writer (write_zarr_array + write_omezarr_pyramid)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("zarr_format", [2, 3])
+@pytest.mark.parametrize("compressor", ["zstd", "gzip", "none"])
+def test_writer_array_round_trips_through_zarr_python(
+    tmp_path, zarr_format, compressor,
+):
+    """write_zarr_array output must read back pixel-equal via
+    zarr-python — the reference reader."""
+    from opencodecs import write_zarr_array
+    rng = np.random.default_rng(0)
+    arr = rng.integers(0, 4000, size=(48, 64), dtype=np.uint16)
+    p = tmp_path / f"out_v{zarr_format}_{compressor}"
+    write_zarr_array(
+        p, arr, chunks=(16, 32),
+        compressor=compressor, zarr_format=zarr_format,
+    )
+    z = zarr.open(str(p), mode="r")
+    back = np.asarray(z[:])
+    np.testing.assert_array_equal(back, arr)
+
+
+@pytest.mark.parametrize("zarr_format", [2, 3])
+def test_writer_array_round_trips_through_opencodecs(tmp_path, zarr_format):
+    """write_zarr_array → OmeZarrArray round-trip (our writer +
+    our reader). Confirms both halves agree on the on-disk format."""
+    from opencodecs import write_zarr_array
+    rng = np.random.default_rng(1)
+    arr = rng.integers(0, 4000, size=(64, 96), dtype=np.uint16)
+    p = tmp_path / f"selfrt_v{zarr_format}"
+    write_zarr_array(p, arr, chunks=(16, 16), compressor="zstd",
+                     zarr_format=zarr_format)
+    back = OmeZarrArray(p).read()
+    np.testing.assert_array_equal(back, arr)
+
+
+def test_writer_array_dtype_matrix(tmp_path):
+    """Every numeric dtype we map round-trips at zarr_format=3."""
+    from opencodecs import write_zarr_array
+    rng = np.random.default_rng(2)
+    for dt in [np.uint8, np.uint16, np.int32, np.float32, np.float64]:
+        if np.issubdtype(dt, np.floating):
+            arr = rng.standard_normal((16, 24)).astype(dt)
+        else:
+            info = np.iinfo(dt)
+            arr = rng.integers(
+                max(info.min, -(1 << 30)), min(info.max, (1 << 30)),
+                size=(16, 24),
+            ).astype(dt)
+        p = tmp_path / f"dt_{np.dtype(dt).name}"
+        write_zarr_array(p, arr, chunks=(8, 12), zarr_format=3)
+        back = OmeZarrArray(p).read()
+        np.testing.assert_array_equal(back, arr)
+
+
+@pytest.mark.parametrize("zarr_format", [2, 3])
+def test_writer_pyramid_round_trips_through_pyramid_reader(
+    tmp_path, zarr_format,
+):
+    """OME-NGFF pyramid writer → OmeZarrPyramidDataset round-trip."""
+    from opencodecs import write_omezarr_pyramid
+    base = np.arange(128 * 128, dtype=np.uint16).reshape(128, 128)
+    levels = [base, base[::2, ::2].copy(), base[::4, ::4].copy()]
+    p = tmp_path / f"pyr_v{zarr_format}.zarr"
+    write_omezarr_pyramid(
+        p, levels, chunks=(32, 32),
+        compressor="zstd", zarr_format=zarr_format,
+    )
+    with OmeZarrPyramidDataset(p) as ds:
+        assert ds.n_levels == 3
+        for i, lvl in enumerate(levels):
+            assert ds.level(i).shape == lvl.shape
+            out = ds.read_region(
+                i, y=(0, lvl.shape[0]), x=(0, lvl.shape[1]),
+            )
+            np.testing.assert_array_equal(out, lvl)
+
+
+def test_writer_partial_chunks_at_edges_pad_with_fill_value(tmp_path):
+    """When array shape isn't a multiple of chunks, edge chunks are
+    padded with fill_value. Read-back must crop back to the original
+    shape correctly."""
+    from opencodecs import write_zarr_array
+    arr = np.arange(48 * 56, dtype=np.uint8).reshape(48, 56)
+    # chunks 16x16; edge chunks at right (col 48..56) and bottom
+    # (row 48..64 within full chunks)
+    p = tmp_path / "edge"
+    write_zarr_array(p, arr, chunks=(16, 16), zarr_format=2)
+    back = OmeZarrArray(p).read()
+    np.testing.assert_array_equal(back, arr)
