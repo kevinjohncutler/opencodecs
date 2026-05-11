@@ -121,6 +121,15 @@ class CziSubBlockEntry:
     # (used to compute pixel-data offset in the sub-block segment).
     storage_size: int
 
+    # CZI 1.2.2 spec ``PyramidType`` (byte 25 of DirectoryEntryDV):
+    #   0 = NONE         — full-resolution sub-block
+    #   1 = SINGLE_SUBBLOCK — single sub-block per mosaic position, no pyramid
+    #   2 = MULTI_SUBBLOCK  — pyramid level (downsampled)
+    # Note that some producers leave this 0 even on downsampled
+    # sub-blocks; ``is_pyramid`` covers that case by comparing the
+    # logical shape with the stored shape.
+    pyramid_type: int = 0
+
     @property
     def dtype(self) -> np.dtype:
         return _pixel_type_dtype(self.pixel_type)[0]
@@ -128,6 +137,26 @@ class CziSubBlockEntry:
     @property
     def samples(self) -> int:
         return _pixel_type_dtype(self.pixel_type)[1]
+
+    @property
+    def is_pyramid(self) -> bool:
+        """True if this sub-block stores a downsampled version (its
+        logical extent in coordinate space is larger than the actual
+        pixel grid stored on disk). Matches czifile's same-named field.
+        """
+        return self.shape != self.stored_shape
+
+    @property
+    def scale_factors(self) -> tuple[float, ...]:
+        """Per-dimension downscale: ``shape[d] / stored_shape[d]``.
+
+        Values > 1.0 mean this sub-block is downscaled on that axis.
+        For full-res (non-pyramid) sub-blocks every value is 1.0.
+        """
+        return tuple(
+            (float(s) / float(ss)) if ss > 0 else 1.0
+            for s, ss in zip(self.shape, self.stored_shape)
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -347,7 +376,7 @@ class CziReader(Reader):
         #   int compression, B pyramid_type, B reserved1, 4s reserved2,
         #   int dimensions_count
         (schema, pixel_type, file_position, _file_part,
-         compression, _pyramid_type, _r1, _r2,
+         compression, pyramid_type, _r1, _r2,
          dims_count) = struct.unpack_from("<2siqiiBB4si", m, off)
         if schema != b"DV":
             raise CziError(f"unsupported directory entry schema {schema!r}")
@@ -397,6 +426,7 @@ class CziReader(Reader):
             mosaic_index=mosaic_index,
             scene_index=scene_index,
             storage_size=storage_size,
+            pyramid_type=int(pyramid_type),
         )
         return entry, storage_size
 
@@ -634,6 +664,76 @@ class CziReader(Reader):
             out = np.squeeze(out)
         return out
 
+    # ----- Pyramid support -----
+
+    @property
+    def is_pyramidal(self) -> bool:
+        """True if any sub-block stores a downscaled version, indicating
+        the file contains multiple resolution levels."""
+        return any(e.is_pyramid for e in self.entries)
+
+    def scale_factors_per_level(
+        self, axes: tuple[str, str] = ("Y", "X"),
+    ) -> list[tuple[float, float]]:
+        """Distinct (y, x) downscale factors present in the directory,
+        sorted ascending (1.0, 1.0) first.
+
+        Each unique pair corresponds to one pyramid level. The default
+        ``axes=('Y', 'X')`` is the natural spatial pyramid axis pair;
+        callers can pass a different pair if the CZI has unusual
+        dimension naming.
+        """
+        if not self.entries:
+            return []
+        ref_dims = self.entries[0].dims
+        try:
+            y_i = ref_dims.index(axes[0])
+            x_i = ref_dims.index(axes[1])
+        except ValueError:
+            return [(1.0, 1.0)]
+        seen: set[tuple[float, float]] = set()
+        out: list[tuple[float, float]] = []
+        for e in self.entries:
+            sf = e.scale_factors
+            if y_i >= len(sf) or x_i >= len(sf):
+                continue
+            key = (sf[y_i], sf[x_i])
+            if key not in seen:
+                seen.add(key)
+                out.append(key)
+        out.sort()
+        return out
+
+    def entries_at_level(
+        self,
+        level: int = 0,
+        *,
+        axes: tuple[str, str] = ("Y", "X"),
+    ) -> list[CziSubBlockEntry]:
+        """Sub-blocks belonging to one pyramid level.
+
+        Level 0 is the full-resolution sub-blocks; subsequent levels are
+        progressively downscaled. ``level=-1`` returns the lowest-res
+        overview.
+        """
+        scales = self.scale_factors_per_level(axes=axes)
+        if not scales:
+            return list(self.entries)
+        if level < 0:
+            level += len(scales)
+        if not (0 <= level < len(scales)):
+            raise IndexError(
+                f"pyramid level {level} out of range (have {len(scales)})"
+            )
+        target = scales[level]
+        ref_dims = self.entries[0].dims
+        y_i = ref_dims.index(axes[0])
+        x_i = ref_dims.index(axes[1])
+        return [
+            e for e in self.entries
+            if (e.scale_factors[y_i], e.scale_factors[x_i]) == target
+        ]
+
     def __repr__(self) -> str:
         if self.entries:
             e = self.entries[0]
@@ -652,4 +752,138 @@ def imread(path: str | Path, **kw) -> np.ndarray:
         return r.read(**kw)
 
 
-__all__ = ["CziReader", "CziError", "imread"]
+# ---------------------------------------------------------------------------
+# CziPyramidReader — multi-resolution view over a CziReader
+# ---------------------------------------------------------------------------
+
+
+from .core.pyramid import PyramidLevel, PyramidReader, _normalize_axis
+
+
+class CziPyramidReader(PyramidReader):
+    """Pyramid view of a CZI file with multiple resolution levels.
+
+    CZI's pyramid model differs from TIFF / OME-Zarr: rather than
+    separate IFDs or array groups, each sub-block carries a logical
+    ``shape`` (the coordinate-space extent at full resolution) and a
+    ``stored_shape`` (the actual pixel grid). Downscaled sub-blocks
+    have ``stored_shape < shape`` and the ratio is the level's scale
+    factor. Sub-blocks with the same scale factor form one pyramid
+    level.
+
+    Examples
+    --------
+    Open a Zeiss multiscale CZI and crop a region from a chosen level::
+
+        with CziPyramidReader("acquisition.czi") as p:
+            best = p.best_level_for(max_pixels_y=2048)
+            crop = p.read_region(best, y=(1000, 2000), x=(2000, 3000))
+
+    Note
+    ----
+    Not all CZI files are pyramidal. For non-pyramidal files this
+    reader presents a single level. Construct via
+    :func:`CziReader.pyramid` for the natural entry point.
+    """
+
+    def __init__(self, czi: "CziReader"):
+        self._czi = czi
+        self._scales = czi.scale_factors_per_level()
+        if not self._scales:
+            raise CziError("CziPyramidReader: file has no sub-blocks")
+
+        # Build a PyramidLevel per distinct scale factor.
+        self._level_entries: list[list[CziSubBlockEntry]] = [
+            czi.entries_at_level(i) for i in range(len(self._scales))
+        ]
+        self._levels: list[PyramidLevel] = []
+        for i, (entries, scale) in enumerate(
+            zip(self._level_entries, self._scales)
+        ):
+            # Compute the level's (h, w) shape from the union of
+            # sub-block stored shapes. For mosaic acquisitions this is
+            # the bounding box of all tiles at this resolution.
+            h, w = _level_extent(entries)
+            sy, sx = scale
+            self._levels.append(PyramidLevel(
+                reader=entries,
+                downscale=(int(round(sy)), int(round(sx))),
+                shape=(h, w),
+                dtype=entries[0].dtype,
+            ))
+
+    @property
+    def levels(self) -> list[PyramidLevel]:
+        return self._levels
+
+    def close(self) -> None:
+        self._czi.close()
+
+    def _read_region(self, level, y0, y1, x0, x1):
+        """Assemble a (y0:y1, x0:x1) region from a pyramid level.
+
+        Loops the level's sub-blocks; for each one that intersects the
+        requested bbox in stored-space, decodes it and pastes it into
+        the output.
+        """
+        entries = level.reader
+        ref = entries[0]
+        ref_dims = ref.dims
+        y_i = ref_dims.index("Y") if "Y" in ref_dims else len(ref_dims) - 2
+        x_i = ref_dims.index("X") if "X" in ref_dims else len(ref_dims) - 1
+
+        out_h, out_w = y1 - y0, x1 - x0
+        out_extra = (ref.samples,) if ref.samples > 1 else ()
+        out = np.zeros((out_h, out_w) + out_extra, dtype=level.dtype)
+
+        for e in entries:
+            tile_y = e.start[y_i]
+            tile_x = e.start[x_i]
+            tile_h = e.stored_shape[y_i]
+            tile_w = e.stored_shape[x_i]
+            iy0 = max(y0, tile_y)
+            iy1 = min(y1, tile_y + tile_h)
+            ix0 = max(x0, tile_x)
+            ix1 = min(x1, tile_x + tile_w)
+            if iy1 <= iy0 or ix1 <= ix0:
+                continue
+            tile = self._czi._decode_one(e)
+            # Reshape: the decoded tile carries entry.stored_shape
+            # (e.g. (32, 48, 1) for 1-sample 2D). Pick out the (Y, X)
+            # axes — those are at y_i, x_i — and any sample axis at
+            # the end. Use ``moveaxis`` so this works regardless of
+            # axis order.
+            tile = np.moveaxis(tile, (y_i, x_i), (0, 1))
+            # The remaining axes (T, C, Z, S) are all length 1 here
+            # for this single sub-block; squeeze interior length-1
+            # axes while preserving the optional trailing sample axis.
+            if e.samples > 1:
+                # Move sample axis (whichever it is) to the end.
+                tile = tile.reshape(
+                    tile.shape[0], tile.shape[1], -1
+                )[:, :, :e.samples]
+            else:
+                tile = tile.reshape(tile.shape[0], tile.shape[1])
+            sy0 = iy0 - tile_y
+            sy1 = iy1 - tile_y
+            sx0 = ix0 - tile_x
+            sx1 = ix1 - tile_x
+            out[iy0 - y0:iy1 - y0, ix0 - x0:ix1 - x0] = tile[sy0:sy1, sx0:sx1]
+        return out
+
+
+def _level_extent(
+    entries: list[CziSubBlockEntry],
+) -> tuple[int, int]:
+    """Bounding box (h, w) in stored-space across all sub-blocks at one level."""
+    ref_dims = entries[0].dims
+    y_i = ref_dims.index("Y") if "Y" in ref_dims else len(ref_dims) - 2
+    x_i = ref_dims.index("X") if "X" in ref_dims else len(ref_dims) - 1
+    max_y = max_x = 0
+    for e in entries:
+        max_y = max(max_y, e.start[y_i] + e.stored_shape[y_i])
+        max_x = max(max_x, e.start[x_i] + e.stored_shape[x_i])
+    return max_y, max_x
+
+
+__all__ = ["CziReader", "CziError", "CziPyramidReader", "imread"]
