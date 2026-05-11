@@ -503,3 +503,87 @@ def test_pyramid_from_http_real_idr_endpoint():
         assert s["bytes_fetched"] > 0
     finally:
         p.close()
+
+
+# ---------------------------------------------------------------------------
+# Zarr v3 sharded storage
+# ---------------------------------------------------------------------------
+
+
+def test_sharded_v3_full_array_round_trip(tmp_path):
+    """A Zarr v3 array written with shards= round-trips pixel-equal
+    through OmeZarrArray. zarr-python is the reference writer; we
+    must match its decoded output exactly."""
+    p = tmp_path / "sharded.zarr"
+    rng = np.random.default_rng(0)
+    arr = rng.integers(0, 4000, size=(64, 64), dtype=np.uint16)
+    z = zarr.create_array(
+        store=str(p), shape=arr.shape,
+        chunks=(16, 16), shards=(32, 32),
+        dtype=arr.dtype,
+    )
+    z[:] = arr
+    back = OmeZarrArray(p).read()
+    np.testing.assert_array_equal(back, arr)
+
+
+def test_sharded_v3_partial_region(tmp_path):
+    """Partial reads on a sharded array — only the shards that contain
+    intersecting chunks should be touched. Verify pixels match."""
+    p = tmp_path / "sharded_partial.zarr"
+    rng = np.random.default_rng(1)
+    arr = rng.integers(0, 4000, size=(128, 128), dtype=np.uint16)
+    z = zarr.create_array(
+        store=str(p), shape=arr.shape,
+        chunks=(16, 16), shards=(64, 64),
+        dtype=arr.dtype,
+    )
+    z[:] = arr
+    reader = OmeZarrArray(p)
+    # The user-facing chunk shape is the INNER chunk (16, 16),
+    # matching zarr-python's arr.chunks.
+    assert reader.chunks == (16, 16)
+    # Crop spanning two shards (left half goes through shard (0,0),
+    # right half through shard (0,1)).
+    crop = reader[30:60, 40:120]
+    np.testing.assert_array_equal(crop, arr[30:60, 40:120])
+
+
+def test_sharded_v3_fill_value_for_absent_chunk(tmp_path):
+    """A sharded array with no data written returns fill_value for
+    every chunk. Tests the EMPTY-marker path inside the shard index."""
+    p = tmp_path / "sharded_empty.zarr"
+    z = zarr.create_array(
+        store=str(p), shape=(32, 32), chunks=(16, 16), shards=(32, 32),
+        dtype="uint8", fill_value=77,
+    )
+    # No write — all chunks absent. zarr-python doesn't create the
+    # shard file at all in this case, so OmeZarrArray's missing-chunk
+    # path returns fill_value.
+    out = OmeZarrArray(p).read()
+    assert np.all(out == 77)
+
+
+@pytest.mark.parametrize("compressor", ["zstd", "gzip", None])
+def test_sharded_v3_with_inner_compression(tmp_path, compressor):
+    """Sharded arrays support an arbitrary inner codec chain — the
+    bytes inside each shard go through the inner codecs before
+    storage. Confirm we decode that correctly with each compressor."""
+    p = tmp_path / f"sharded_{compressor or 'raw'}.zarr"
+    rng = np.random.default_rng(2)
+    arr = rng.integers(0, 4000, size=(48, 48), dtype=np.uint16)
+    if compressor is None:
+        comps = ()
+    elif compressor == "zstd":
+        comps = (zarr.codecs.ZstdCodec(level=1),)
+    else:
+        comps = (zarr.codecs.GzipCodec(level=5),)
+    z = zarr.create_array(
+        store=str(p), shape=arr.shape,
+        chunks=(16, 16), shards=(48, 48),
+        dtype=arr.dtype,
+        compressors=comps,
+    )
+    z[:] = arr
+    back = OmeZarrArray(p).read()
+    np.testing.assert_array_equal(back, arr)

@@ -454,15 +454,37 @@ class OmeZarrArray:
             raise NotImplementedError(f"OmeZarrArray: unsupported v3 dtype {dt_name!r}")
         self.dtype = _V3_DTYPE_MAP[dt_name]
         grid = meta["chunk_grid"]["configuration"]
-        self.chunks = tuple(grid["chunk_shape"])
+        outer_chunks = tuple(grid["chunk_shape"])
         self.fill_value = meta.get("fill_value", 0)
-        self._codecs = meta.get("codecs", [])
+        codecs = meta.get("codecs", [])
         self._chunk_key_sep = (
             meta.get("chunk_key_encoding", {})
             .get("configuration", {})
             .get("separator", "/")
         )
-        # Resolve byte order from the "bytes" codec if present.
+
+        # Sharding detection: when the FIRST codec in the chain is
+        # ``sharding_indexed``, the outer chunk on disk is a SHARD that
+        # holds many inner sub-chunks plus a trailing (or leading)
+        # index. The user-facing chunk shape is the inner one — that's
+        # how zarr-python presents it via ``arr.chunks``.
+        self._sharded = False
+        self._shard_shape: tuple[int, ...] | None = None
+        self._shard_index_codecs: list[dict] = []
+        self._shard_index_location: str = "end"
+        if codecs and codecs[0].get("name") == "sharding_indexed":
+            cfg = codecs[0].get("configuration", {})
+            self._sharded = True
+            self._shard_shape = outer_chunks
+            self.chunks = tuple(cfg["chunk_shape"])
+            self._codecs = cfg.get("codecs", [])
+            self._shard_index_codecs = cfg.get("index_codecs", [])
+            self._shard_index_location = cfg.get("index_location", "end")
+        else:
+            self.chunks = outer_chunks
+            self._codecs = codecs
+
+        # Resolve byte order from the inner "bytes" codec if present.
         self._byte_order = "<"
         for c in self._codecs:
             if c.get("name") == "bytes":
@@ -479,6 +501,12 @@ class OmeZarrArray:
                 f"({meta.get('zarr_format')})"
             )
         self.zarr_format = 2
+        # Zarr v2 has no sharding concept; initialize the sharding
+        # fields so the shared codepaths below see consistent attrs.
+        self._sharded = False
+        self._shard_shape = None
+        self._shard_index_codecs = []
+        self._shard_index_location = "end"
         self.shape = tuple(meta["shape"])
         self.chunks = tuple(meta["chunks"])
         self.dtype = np.dtype(meta["dtype"])
@@ -532,11 +560,95 @@ class OmeZarrArray:
         return arr
 
     def _load_chunk(self, chunk_idx: tuple[int, ...]) -> np.ndarray:
-        key = self._chunk_key(chunk_idx)
-        if key not in self._store:
-            # Missing chunk → fill with fill_value (Zarr semantics).
+        """Load one (inner) chunk by index.
+
+        For non-sharded arrays this is a straightforward store fetch by
+        chunk key. For sharded arrays we first locate the shard that
+        contains this chunk, fetch it (cached), parse the shard's
+        index, and pull out the chunk's bytes from the shard payload.
+        """
+        if not self._sharded:
+            key = self._chunk_key(chunk_idx)
+            if key not in self._store:
+                return np.full(self.chunks, self.fill_value, dtype=self.dtype)
+            return self._decode_chunk(self._store[key])
+        return self._load_chunk_from_shard(chunk_idx)
+
+    def _load_chunk_from_shard(
+        self, chunk_idx: tuple[int, ...],
+    ) -> np.ndarray:
+        """Resolve a sub-chunk inside a v3 shard.
+
+        Layout per shard (when ``index_location == "end"`` — the
+        zarr-python default):
+
+            [chunk_0_bytes][chunk_1_bytes]...[index]
+
+        The index has one (offset, nbytes) ``uint64`` pair per inner
+        chunk, in row-major order over the shard's chunk grid. Both
+        fields are ``(2**64-1)`` for absent chunks (Zarr's "empty"
+        marker). The index is itself encoded by ``index_codecs`` —
+        commonly ``[bytes, crc32c]``, where the crc32c codec just
+        appends a 4-byte trailing checksum.
+        """
+        shard_shape = self._shard_shape
+        assert shard_shape is not None
+        # Outer (shard) index: how many shards in each dim and which
+        # one contains our chunk.
+        shard_idx = tuple(
+            (ci * c) // s
+            for ci, c, s in zip(chunk_idx, self.chunks, shard_shape)
+        )
+        # Position of our chunk WITHIN the shard (0-based, in inner
+        # chunk units).
+        chunks_per_shard = tuple(
+            s // c for s, c in zip(shard_shape, self.chunks)
+        )
+        within = tuple(
+            ci - (si * cps)
+            for ci, si, cps in zip(chunk_idx, shard_idx, chunks_per_shard)
+        )
+
+        shard_key = self._chunk_key(shard_idx)
+        if shard_key not in self._store:
             return np.full(self.chunks, self.fill_value, dtype=self.dtype)
-        return self._decode_chunk(self._store[key])
+        shard_bytes = self._store[shard_key]
+
+        # Decode the index. Number of inner chunks per shard.
+        n_inner = 1
+        for cps in chunks_per_shard:
+            n_inner *= cps
+        index_bytes_len = n_inner * 16     # u64 offset + u64 nbytes
+        # crc32c codec appends 4 bytes to the index
+        has_crc = any(
+            c.get("name") == "crc32c" for c in self._shard_index_codecs
+        )
+        if has_crc:
+            index_bytes_len += 4
+
+        if self._shard_index_location == "end":
+            index_raw = bytes(shard_bytes[-index_bytes_len:])
+        else:
+            index_raw = bytes(shard_bytes[:index_bytes_len])
+        if has_crc:
+            index_raw = index_raw[:-4]   # drop CRC trailer
+
+        # Parse (offset, nbytes) pairs in row-major shard-local order.
+        import struct as _struct
+        pairs = _struct.unpack(
+            f"<{n_inner * 2}Q", index_raw,
+        )
+        # Compute the linear index of our inner chunk within the shard.
+        lin = 0
+        for w, cps in zip(within, chunks_per_shard):
+            lin = lin * cps + w
+        offset = pairs[lin * 2]
+        nbytes = pairs[lin * 2 + 1]
+        EMPTY = (1 << 64) - 1
+        if offset == EMPTY or nbytes == EMPTY:
+            return np.full(self.chunks, self.fill_value, dtype=self.dtype)
+        chunk_raw = bytes(shard_bytes[offset:offset + nbytes])
+        return self._decode_chunk(chunk_raw)
 
     # ----- public read API -----
 
