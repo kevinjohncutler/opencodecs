@@ -87,6 +87,7 @@ TAG_TILE_OFFSETS       = 324
 TAG_TILE_BYTE_COUNTS   = 325
 TAG_SAMPLE_FORMAT      = 339
 TAG_JPEG_TABLES        = 347
+TAG_SUB_IFDS           = 330   # bioformats / OME-TIFF pyramid sub-resolutions
 
 
 # Compression codes opencodecs recognizes. Codes outside this set are

@@ -27,6 +27,46 @@ from opencodecs._omezarr import OmeZarrArray, OmeZarrPyramidDataset
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Local HTTP server fixture — serve a Zarr directory tree
+# ---------------------------------------------------------------------------
+
+
+import functools
+import http.server
+import socketserver
+import threading
+
+
+@pytest.fixture
+def http_zarr_server(tmp_path):
+    """Spin up a localhost HTTP server rooted at a directory the
+    caller fills in. Yields ``(base_url, directory)``. Used to test
+    :meth:`OmeZarrArray.from_http` and
+    :meth:`OmeZarrPyramidDataset.from_http` without needing network."""
+    directory = tmp_path / "zarr_server_root"
+    directory.mkdir()
+
+    handler = functools.partial(
+        http.server.SimpleHTTPRequestHandler, directory=str(directory),
+    )
+
+    class _Quiet(http.server.ThreadingHTTPServer):
+        allow_reuse_address = True
+
+    httpd = _Quiet(("127.0.0.1", 0), handler)
+    # Suppress per-request log spam.
+    handler.log_message = lambda *_, **__: None
+    th = threading.Thread(target=httpd.serve_forever, daemon=True)
+    th.start()
+    base_url = f"http://127.0.0.1:{httpd.server_address[1]}"
+    try:
+        yield base_url, directory
+    finally:
+        httpd.shutdown()
+        th.join(timeout=2)
+
+
 @pytest.mark.parametrize("zarr_format", [2, 3])
 @pytest.mark.parametrize("compressor", ["zstd", "gzip", None])
 def test_array_full_read(tmp_path, zarr_format, compressor):
@@ -316,3 +356,150 @@ def _v3_compressors(name: str | None):
     if name == "blosc":
         return (zarr.codecs.BloscCodec(),)
     raise ValueError(name)
+
+
+# ---------------------------------------------------------------------------
+# HTTP (OmeZarrArray.from_http / OmeZarrPyramidDataset.from_http)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("zarr_format", [2, 3])
+def test_array_from_http_matches_local(tmp_path, http_zarr_server, zarr_format):
+    """from_http() reads the same array as the local-path constructor."""
+    base_url, root = http_zarr_server
+    rng = np.random.default_rng(0)
+    arr_src = rng.integers(0, 4000, size=(64, 96), dtype=np.uint16)
+    arr_dir = root / f"a_v{zarr_format}"
+    z = zarr.create_array(
+        store=str(arr_dir), shape=arr_src.shape, chunks=(16, 24),
+        dtype=arr_src.dtype, zarr_format=zarr_format,
+    )
+    z[:] = arr_src
+
+    local = OmeZarrArray(arr_dir)
+    remote = OmeZarrArray.from_http(f"{base_url}/{arr_dir.name}")
+    np.testing.assert_array_equal(local.read(), remote.read())
+
+
+def test_array_from_http_partial_read_only_touches_relevant_chunks(
+    tmp_path, http_zarr_server,
+):
+    """Partial reads must touch only the chunks intersecting the bbox.
+    The HTTP store's stats() reports request count and bytes fetched —
+    if the partial read were materializing the whole array we'd see
+    100+ chunk requests."""
+    base_url, root = http_zarr_server
+    rng = np.random.default_rng(1)
+    arr_src = rng.integers(0, 4000, size=(128, 192), dtype=np.uint16)
+    arr_dir = root / "partial"
+    z = zarr.create_array(
+        store=str(arr_dir), shape=arr_src.shape, chunks=(32, 32),
+        dtype=arr_src.dtype, zarr_format=2,
+    )
+    z[:] = arr_src
+    arr = OmeZarrArray.from_http(f"{base_url}/partial")
+    # Read a (10, 10) crop entirely inside one 32x32 chunk.
+    one_chunk_crop = arr.read_region(
+        (slice(0, 10), slice(0, 10))
+    )
+    np.testing.assert_array_equal(one_chunk_crop, arr_src[0:10, 0:10])
+    s = arr._store.stats()
+    # 1 metadata fetch (the .zarray) + 1 chunk fetch + at most one
+    # __contains__ probe for the metadata file = ~2-3 requests total.
+    # Anything close to 6×8=48 (total chunks) would indicate a bug.
+    assert s["requests"] <= 5, (
+        f"partial read fetched {s['requests']} HTTP requests for a "
+        f"single-chunk crop; expected ≤5 (metadata + 1 chunk)"
+    )
+
+
+@pytest.mark.parametrize("ngff_version", ["v04", "v05"])
+def test_pyramid_from_http_matches_local(
+    tmp_path, http_zarr_server, ngff_version,
+):
+    """Building an OmeZarrPyramidDataset over HTTP returns the same
+    pixels per level as the local-path version."""
+    base_url, root = http_zarr_server
+    if ngff_version == "v04":
+        local_root, levels = _build_v04_pyramid(root)
+    else:
+        local_root, levels = _build_v05_pyramid(root)
+    # local_root is inside `root` so served under {base_url}/{name}
+    rel = local_root.name
+    with OmeZarrPyramidDataset(local_root) as local:
+        with OmeZarrPyramidDataset.from_http(f"{base_url}/{rel}") as remote:
+            assert local.n_levels == remote.n_levels
+            for i in range(local.n_levels):
+                assert local.level(i).shape == remote.level(i).shape
+                local_lvl = local.read_region(
+                    i, y=(0, levels[i].shape[0]),
+                    x=(0, levels[i].shape[1]),
+                )
+                remote_lvl = remote.read_region(
+                    i, y=(0, levels[i].shape[0]),
+                    x=(0, levels[i].shape[1]),
+                )
+                np.testing.assert_array_equal(local_lvl, remote_lvl)
+
+
+def test_http_store_lru_cache_hits(tmp_path, http_zarr_server):
+    """The LRU cache satisfies repeated reads of the same chunk
+    without re-fetching."""
+    base_url, root = http_zarr_server
+    arr_src = np.arange(64 * 64, dtype=np.uint16).reshape(64, 64)
+    arr_dir = root / "cached"
+    z = zarr.create_array(
+        store=str(arr_dir), shape=arr_src.shape, chunks=(32, 32),
+        dtype=arr_src.dtype, zarr_format=2,
+    )
+    z[:] = arr_src
+    arr = OmeZarrArray.from_http(f"{base_url}/cached")
+    # First read: cache miss; second: cache hit.
+    arr.read_region((slice(0, 32), slice(0, 32)))
+    s1 = arr._store.stats()
+    arr.read_region((slice(0, 32), slice(0, 32)))
+    s2 = arr._store.stats()
+    # Misses didn't increase, hits did
+    assert s2["misses"] == s1["misses"]
+    assert s2["hits"] >= s1["hits"] + 1
+
+
+# ---------------------------------------------------------------------------
+# Bonus: live test against IDR (only runs when network + IDR are reachable)
+# ---------------------------------------------------------------------------
+
+
+_IDR_URL = "https://uk1s3.embassy.ebi.ac.uk/idr/zarr/v0.4/idr0062A/6001240.zarr"
+
+
+def _idr_reachable() -> bool:
+    """Quick HEAD probe — used as a skip gate so CI without network
+    just skips this test rather than failing."""
+    import urllib.request, urllib.error
+    try:
+        urllib.request.urlopen(_IDR_URL + "/.zattrs", timeout=3).close()
+        return True
+    except Exception:
+        return False
+
+
+@pytest.mark.skipif(
+    not _idr_reachable(),
+    reason="IDR HTTPS endpoint unreachable (offline or blocked)",
+)
+def test_pyramid_from_http_real_idr_endpoint():
+    """Live network test against a real IDR-hosted OME-NGFF dataset.
+    Validates the full streaming pipeline end-to-end on actual S3
+    object storage."""
+    p = OmeZarrPyramidDataset.from_http(_IDR_URL)
+    try:
+        assert p.n_levels == 3
+        # Lowest-res level is small enough to fully fetch
+        lo = p.read_region(2, c=0)
+        assert lo.shape == (68, 67)
+        # bytes_fetched should be a small multiple of the level-2 size,
+        # not the full pyramid
+        s = p._store.stats()
+        assert s["bytes_fetched"] > 0
+    finally:
+        p.close()

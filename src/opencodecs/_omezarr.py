@@ -34,8 +34,11 @@ from __future__ import annotations
 
 import json
 import os
+import urllib.error
+import urllib.request
+from collections import OrderedDict
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 
@@ -61,6 +64,170 @@ class _FsStore:
     def __getitem__(self, key: str) -> bytes:
         with open(self.root / key, "rb") as f:
             return f.read()
+
+
+class _HttpStore:
+    """HTTP(S) store. Each key is a path appended to ``base_url``.
+
+    For OME-Zarr on S3 / web servers: chunks live at URLs like
+    ``https://bucket/array.zarr/c/0/0`` (v3) or ``https://bucket/array.zarr/0.0``
+    (v2). Each chunk is a complete object — we issue one GET per chunk
+    rather than byte-range requests. An LRU cache (default 32 MB) keeps
+    recently-accessed chunks resident so cropping the same region
+    repeatedly doesn't re-fetch.
+
+    Authentication / custom headers can be supplied via the ``headers``
+    dict or by passing a pre-configured ``urllib.request.OpenerDirector``
+    through ``opener``.
+
+    Stats are exposed for tests + benchmarks::
+
+        store = _HttpStore("https://...")
+        ...
+        s = store.stats()
+        # {"hits": N, "misses": N, "bytes_fetched": N, "cache_entries": N}
+    """
+
+    __slots__ = (
+        "base_url", "_headers", "_timeout", "_opener",
+        "_cache", "_cache_max", "_cache_used",
+        "_missing",  # keys that 404'd, cached so we don't refetch
+        "_stats",
+    )
+
+    def __init__(
+        self,
+        base_url: str,
+        *,
+        cache_bytes: int = 32 * 1024 * 1024,
+        timeout: float = 30.0,
+        headers: dict[str, str] | None = None,
+        opener: urllib.request.OpenerDirector | None = None,
+    ):
+        # Normalize: no trailing slash so we can always do "base/key".
+        self.base_url = base_url.rstrip("/")
+        self._headers = dict(headers) if headers else {}
+        self._timeout = float(timeout)
+        self._opener = opener
+        self._cache: "OrderedDict[str, bytes]" = OrderedDict()
+        self._cache_max = int(cache_bytes)
+        self._cache_used = 0
+        self._missing: set[str] = set()
+        self._stats = {"hits": 0, "misses": 0, "bytes_fetched": 0,
+                       "requests": 0}
+
+    def __contains__(self, key: str) -> bool:
+        if key in self._cache or key in self._missing:
+            return key in self._cache
+        # HEAD probe. Some S3 endpoints don't support HEAD for anon
+        # objects; fall back to a 0-byte GET via Range.
+        try:
+            self._head(key)
+            return True
+        except _NotFound:
+            self._missing.add(key)
+            return False
+
+    def __getitem__(self, key: str) -> bytes:
+        if key in self._cache:
+            self._stats["hits"] += 1
+            self._cache.move_to_end(key)
+            return self._cache[key]
+        if key in self._missing:
+            raise KeyError(key)
+        try:
+            data = self._fetch(key)
+        except _NotFound:
+            self._missing.add(key)
+            raise KeyError(key)
+        self._stats["misses"] += 1
+        self._stats["bytes_fetched"] += len(data)
+        self._cache_put(key, data)
+        return data
+
+    def stats(self) -> dict:
+        return {
+            **self._stats,
+            "cache_entries": len(self._cache),
+            "cache_used_bytes": self._cache_used,
+        }
+
+    # ----- internals -----
+
+    def _url(self, key: str) -> str:
+        return self.base_url + "/" + key.lstrip("/")
+
+    def _head(self, key: str) -> None:
+        req = urllib.request.Request(
+            self._url(key), method="HEAD", headers=self._headers,
+        )
+        self._stats["requests"] += 1
+        opener = self._opener or urllib.request.build_opener()
+        try:
+            opener.open(req, timeout=self._timeout).close()
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                raise _NotFound(key) from None
+            raise
+
+    def _fetch(self, key: str) -> bytes:
+        req = urllib.request.Request(
+            self._url(key), headers=self._headers,
+        )
+        self._stats["requests"] += 1
+        opener = self._opener or urllib.request.build_opener()
+        try:
+            with opener.open(req, timeout=self._timeout) as resp:
+                return resp.read()
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                raise _NotFound(key) from None
+            raise
+
+    def _cache_put(self, key: str, value: bytes) -> None:
+        existing = self._cache.pop(key, None)
+        if existing is not None:
+            self._cache_used -= len(existing)
+        self._cache[key] = value
+        self._cache_used += len(value)
+        while self._cache_used > self._cache_max and self._cache:
+            _k, _v = self._cache.popitem(last=False)
+            self._cache_used -= len(_v)
+
+
+class _NotFound(Exception):
+    """Raised inside _HttpStore when a key 404s; translated to KeyError
+    at the public boundary so callers can treat the store like a dict."""
+
+
+class _CallableStore:
+    """Adapter wrapping a user-provided ``fetch(key) -> bytes`` callable
+    as a Zarr store. Lets callers plug in S3 SDKs, fsspec, etc. without
+    inheriting from a base class — bring your own transport.
+
+    The callable should raise ``KeyError(key)`` for missing keys.
+    """
+
+    __slots__ = ("_fetch", "_keyset")
+
+    def __init__(self, fetch: Callable[[str], bytes],
+                 keys: set[str] | None = None):
+        self._fetch = fetch
+        # Optional pre-known key set; if None, every membership test
+        # round-trips through the fetch callable.
+        self._keyset = keys
+
+    def __contains__(self, key: str) -> bool:
+        if self._keyset is not None:
+            return key in self._keyset
+        try:
+            self._fetch(key)
+            return True
+        except KeyError:
+            return False
+
+    def __getitem__(self, key: str) -> bytes:
+        return self._fetch(key)
 
 
 # ---------------------------------------------------------------------------
@@ -194,11 +361,35 @@ class OmeZarrArray:
     loaded on demand by :meth:`read_region`.
     """
 
-    def __init__(self, path: str | Path):
-        self._root = Path(path)
-        if not self._root.is_dir():
-            raise FileNotFoundError(f"OmeZarrArray: not a directory: {self._root}")
-        self._store = _FsStore(self._root)
+    def __init__(self, path: str | Path | None = None, *,
+                 store: Any = None):
+        """Open a Zarr array.
+
+        Parameters
+        ----------
+        path : path-like or None
+            Local filesystem directory containing the array. Mutually
+            exclusive with ``store``.
+        store : store-like or None
+            Any object implementing ``__contains__(key) -> bool`` and
+            ``__getitem__(key) -> bytes``. Use :class:`_HttpStore` for
+            HTTP(S) backends or :class:`_CallableStore` to plug in
+            S3 SDKs, fsspec, etc.
+        """
+        if (path is None) == (store is None):
+            raise ValueError(
+                "OmeZarrArray: pass exactly one of path= or store="
+            )
+        if path is not None:
+            self._root = Path(path)
+            if not self._root.is_dir():
+                raise FileNotFoundError(
+                    f"OmeZarrArray: not a directory: {self._root}"
+                )
+            self._store = _FsStore(self._root)
+        else:
+            self._root = None
+            self._store = store
 
         # Try Zarr v3 first (zarr.json); fall back to v2 (.zarray).
         if "zarr.json" in self._store:
@@ -207,9 +398,39 @@ class OmeZarrArray:
             self._parse_v2()
         else:
             raise FileNotFoundError(
-                f"OmeZarrArray: no zarr.json (v3) or .zarray (v2) in "
-                f"{self._root}"
+                f"OmeZarrArray: no zarr.json (v3) or .zarray (v2) at "
+                f"{self._root or 'store root'}"
             )
+
+    @classmethod
+    def from_http(
+        cls,
+        url: str,
+        *,
+        cache_bytes: int = 32 * 1024 * 1024,
+        timeout: float = 30.0,
+        headers: dict[str, str] | None = None,
+    ) -> "OmeZarrArray":
+        """Open a Zarr array served over HTTP(S).
+
+        ``url`` is the base URL of the array directory (no trailing
+        slash needed). The array's ``zarr.json`` / ``.zarray`` is
+        fetched immediately to parse metadata; chunks are fetched
+        on demand with an LRU cache.
+
+        Examples
+        --------
+        >>> arr = OmeZarrArray.from_http(
+        ...     "https://uk1s3.embassy.ebi.ac.uk/idr/zarr/v0.4/idr0062A/6001240.zarr/2"
+        ... )
+        >>> arr.shape
+        (2, 236, 68, 67)
+        """
+        store = _HttpStore(
+            url, cache_bytes=cache_bytes, timeout=timeout,
+            headers=headers,
+        )
+        return cls(store=store)
 
     # ----- metadata -----
 
@@ -411,20 +632,24 @@ class OmeZarrArray:
 # ---------------------------------------------------------------------------
 
 
-def _read_group_attributes(group_root: Path) -> dict:
+def _read_group_attributes(store) -> dict:
     """Return the OME attributes block for a Zarr group, regardless
     of zarr_format. v2 stores user attrs in ``.zattrs``; v3 stores them
-    inside ``zarr.json`` under ``attributes``."""
-    if (group_root / "zarr.json").exists():
-        meta = json.loads((group_root / "zarr.json").read_text())
+    inside ``zarr.json`` under ``attributes``.
+
+    ``store`` is any ``__contains__`` + ``__getitem__`` mapping (local
+    filesystem store, HTTP store, custom callable store).
+    """
+    if "zarr.json" in store:
+        meta = json.loads(store["zarr.json"].decode("utf-8"))
         if meta.get("node_type") != "group":
             raise ValueError(
-                f"OmeZarrPyramidDataset: zarr.json at {group_root} is not "
-                f"a group (node_type={meta.get('node_type')!r})"
+                f"OmeZarrPyramidDataset: zarr.json is not a group "
+                f"(node_type={meta.get('node_type')!r})"
             )
         return meta.get("attributes", {})
-    if (group_root / ".zattrs").exists():
-        return json.loads((group_root / ".zattrs").read_text())
+    if ".zattrs" in store:
+        return json.loads(store[".zattrs"].decode("utf-8"))
     return {}
 
 
@@ -484,17 +709,40 @@ class OmeZarrPyramidDataset(PyramidReader):
         crop = p.read_region(level=0, y=(1000, 2000), x=(3000, 4000), c=0)
     """
 
-    def __init__(self, path: str | Path):
-        self._root = Path(path)
-        if not self._root.is_dir():
-            raise FileNotFoundError(
-                f"OmeZarrPyramidDataset: not a directory: {self._root}"
+    def __init__(self, path: str | Path | None = None, *,
+                 store: Any = None):
+        """Open an OME-NGFF Zarr group.
+
+        Parameters
+        ----------
+        path : path-like or None
+            Local filesystem directory. Mutually exclusive with ``store``.
+        store : store-like or None
+            Any ``__contains__`` / ``__getitem__`` mapping for the
+            group root (see :class:`_HttpStore`). Per-level arrays
+            inherit the same store family (``_FsStore`` → per-level
+            subdirs; ``_HttpStore`` → per-level sub-URLs).
+        """
+        if (path is None) == (store is None):
+            raise ValueError(
+                "OmeZarrPyramidDataset: pass exactly one of path= or store="
             )
-        attrs = _read_group_attributes(self._root)
+        if path is not None:
+            self._root = Path(path)
+            if not self._root.is_dir():
+                raise FileNotFoundError(
+                    f"OmeZarrPyramidDataset: not a directory: {self._root}"
+                )
+            self._store = _FsStore(self._root)
+        else:
+            self._root = None
+            self._store = store
+        attrs = _read_group_attributes(self._store)
         multiscales = _extract_multiscales(attrs)
         if not multiscales:
             raise ValueError(
-                f"OmeZarrPyramidDataset: empty 'multiscales' in {self._root}"
+                f"OmeZarrPyramidDataset: empty 'multiscales' in "
+                f"{self._root or 'store root'}"
             )
         ms = multiscales[0]  # OME-NGFF allows multiple but ~always 1.
         datasets = ms.get("datasets") or []
@@ -532,7 +780,7 @@ class OmeZarrPyramidDataset(PyramidReader):
                 raise ValueError(
                     f"OmeZarrPyramidDataset: dataset entry missing 'path'"
                 )
-            self._arrays.append(OmeZarrArray(self._root / rel))
+            self._arrays.append(self._open_level(rel))
 
         # Normalize axis indices (handle negatives).
         n_dims = len(self._arrays[0].shape)
@@ -555,6 +803,64 @@ class OmeZarrPyramidDataset(PyramidReader):
             for i, arr in enumerate(self._arrays)
         ]
 
+    # ----- store-family-aware level opener -----
+
+    def _open_level(self, rel: str) -> "OmeZarrArray":
+        """Open a per-level array using the same store family as the
+        group. Local groups use ``_FsStore`` rooted at the level's
+        subdir; HTTP groups use ``_HttpStore`` rooted at the level's
+        sub-URL. Custom stores are handed a *prefixed view* that
+        rewrites ``key -> rel/key`` so each level looks like a
+        standalone Zarr array."""
+        if isinstance(self._store, _FsStore):
+            return OmeZarrArray(self._store.root / rel)
+        if isinstance(self._store, _HttpStore):
+            sub = _HttpStore(
+                self._store.base_url + "/" + rel.strip("/"),
+                cache_bytes=self._store._cache_max,
+                timeout=self._store._timeout,
+                headers=self._store._headers,
+                opener=self._store._opener,
+            )
+            return OmeZarrArray(store=sub)
+        # Generic / user-provided: wrap with a prefix view
+        parent = self._store
+        prefix = rel.strip("/") + "/"
+
+        class _PrefixView:
+            __slots__ = ()
+            def __contains__(_self, key):
+                return (prefix + key) in parent
+            def __getitem__(_self, key):
+                return parent[prefix + key]
+        return OmeZarrArray(store=_PrefixView())
+
+    @classmethod
+    def from_http(
+        cls,
+        url: str,
+        *,
+        cache_bytes: int = 32 * 1024 * 1024,
+        timeout: float = 30.0,
+        headers: dict[str, str] | None = None,
+    ) -> "OmeZarrPyramidDataset":
+        """Open an OME-NGFF pyramid served over HTTP(S).
+
+        Examples
+        --------
+        >>> p = OmeZarrPyramidDataset.from_http(
+        ...     "https://uk1s3.embassy.ebi.ac.uk/idr/zarr/v0.4/idr0062A/6001240.zarr"
+        ... )
+        >>> p.n_levels
+        3
+        >>> overview = p.read_region(p.best_level_for(max_pixels_y=200), c=0)
+        """
+        store = _HttpStore(
+            url, cache_bytes=cache_bytes, timeout=timeout,
+            headers=headers,
+        )
+        return cls(store=store)
+
     # ----- ABC contract -----
 
     @property
@@ -562,7 +868,7 @@ class OmeZarrPyramidDataset(PyramidReader):
         return self._levels
 
     def close(self) -> None:
-        # _FsStore holds no open fds — nothing to close.
+        # _FsStore + _HttpStore hold no open fds — nothing to close.
         pass
 
     # ----- region read with non-spatial axis indexing -----

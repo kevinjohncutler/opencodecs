@@ -273,3 +273,141 @@ def test_pyramid_region_via_http_minimal_tiles(http_pyramid):
         f"fetched {stats['bytes_fetched']}/{full_size}; tile-aware read "
         f"should fetch ~4 tiles + headers, not the whole file"
     )
+
+
+# ---------------------------------------------------------------------------
+# SubIFD-based pyramid (bioformats / OME-TIFF convention)
+# ---------------------------------------------------------------------------
+
+
+def _build_subifd_pyramid_tiff(tmp_path, base_size=512):
+    """Build a TIFF whose pyramid is encoded via SubIFDs (tag 330)
+    rather than via separate top-level IFDs. This is the layout
+    bioformats emits.
+
+    tifffile's ``subifds=N`` argument writes N reduced-resolution
+    IFDs attached to the just-written page as sub-IFDs.
+    """
+    p = tmp_path / "subifd_pyr.tif"
+    full = np.arange(base_size * base_size, dtype=np.uint16).reshape(
+        base_size, base_size,
+    )
+    half = full[::2, ::2].copy()
+    quarter = full[::4, ::4].copy()
+    with tifffile.TiffWriter(str(p)) as tw:
+        # Main page + 2 sub-resolutions reachable via SubIFDs.
+        tw.write(full, subifds=2, tile=(128, 128), compression=None)
+        tw.write(half, subfiletype=1, tile=(128, 128), compression=None)
+        tw.write(quarter, subfiletype=1, tile=(128, 128), compression=None)
+    return p, [full, half, quarter]
+
+
+def test_subifd_pyramid_detected_automatically(tmp_path):
+    """When IFD 0 has SubIFDs, the pyramid reader uses them as levels
+    automatically (no ``ifd_index`` kwarg required)."""
+    _need_tiff()
+    p, levels = _build_subifd_pyramid_tiff(tmp_path)
+    with TiffPyramidReader(p) as r:
+        assert r.n_levels == 3
+        assert r.level(0).shape == levels[0].shape
+        assert r.level(1).shape == levels[1].shape
+        assert r.level(2).shape == levels[2].shape
+        assert r.level(1).downscale == (2, 2)
+        assert r.level(2).downscale == (4, 4)
+
+
+def test_subifd_pyramid_round_trip_via_region(tmp_path):
+    """Each level reads back pixel-equal to source."""
+    _need_tiff()
+    p, levels = _build_subifd_pyramid_tiff(tmp_path)
+    with TiffPyramidReader(p) as r:
+        for i, src in enumerate(levels):
+            out = r.read_region(i, y=(0, src.shape[0]), x=(0, src.shape[1]))
+            np.testing.assert_array_equal(out, src)
+
+
+def test_subifd_pyramid_explicit_ifd_index(tmp_path):
+    """``ifd_index=N`` anchors the pyramid on a specific top-level IFD —
+    useful for multi-series files where each IFD has its own SubIFD
+    pyramid (one acquisition plane per IFD, levels in SubIFDs)."""
+    _need_tiff()
+    # Two independent pyramid-IFDs written back-to-back.
+    p = tmp_path / "two_series_subifd.tif"
+    rng = np.random.default_rng(0)
+    p0_full = rng.integers(0, 256, size=(256, 256), dtype=np.uint8)
+    p0_half = p0_full[::2, ::2].copy()
+    p1_full = rng.integers(0, 256, size=(128, 128), dtype=np.uint8)
+    p1_half = p1_full[::2, ::2].copy()
+    with tifffile.TiffWriter(str(p)) as tw:
+        tw.write(p0_full, subifds=1, tile=(64, 64), compression=None)
+        tw.write(p0_half, subfiletype=1, tile=(64, 64), compression=None)
+        tw.write(p1_full, subifds=1, tile=(64, 64), compression=None)
+        tw.write(p1_half, subfiletype=1, tile=(64, 64), compression=None)
+
+    # Default auto-detect → anchors on IFD 0 → returns the p0 pyramid
+    with TiffPyramidReader(p) as r:
+        assert r.n_levels == 2
+        assert r.level(0).shape == (256, 256)
+        np.testing.assert_array_equal(
+            r.read_region(0, y=(0, 256), x=(0, 256)), p0_full,
+        )
+
+    # When written with subifds=N, tifffile stores the sub-IFDs OUT
+    # of the top-level chain — so n_frames counts only main writes.
+    # ifd_index=1 anchors on the second pyramid.
+    with TiffPyramidReader(p, ifd_index=1) as r:
+        assert r.n_levels == 2
+        assert r.level(0).shape == (128, 128)
+        np.testing.assert_array_equal(
+            r.read_region(0, y=(0, 128), x=(0, 128)), p1_full,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Real bioformats OME-TIFF — gated on the test corpus being present
+# ---------------------------------------------------------------------------
+
+
+_REAL_OMETIFF = Path(".test_data/ome_tiff/retina_pyramid.ome.tiff")
+
+
+@pytest.mark.skipif(
+    not _REAL_OMETIFF.exists(),
+    reason="run tests/download_test_corpus.sh to enable",
+)
+def test_real_ometiff_subifd_pyramid_3_levels():
+    """The OME-TIFF in our corpus has bioformats's SubIFD pyramid
+    layout. With SubIFD support, our reader now exposes 3 levels
+    (1567x2048, 783x1024, 391x512) anchored on IFD 0 — series 0 of
+    bioformats's terminology."""
+    _need_tiff()
+    with TiffPyramidReader(str(_REAL_OMETIFF)) as r:
+        assert r.n_levels == 3
+        assert r.level(0).shape == (1567, 2048)
+        assert r.level(1).shape == (783, 1024)
+        assert r.level(2).shape == (391, 512)
+        assert r.level(1).downscale == (2, 2)
+        assert r.level(2).downscale == (4, 4)
+
+
+@pytest.mark.skipif(
+    not _REAL_OMETIFF.exists(),
+    reason="run tests/download_test_corpus.sh to enable",
+)
+def test_real_ometiff_subifd_level_matches_tifffile():
+    """Pixels at every level on the real bioformats OME-TIFF must
+    match tifffile's per-level decode."""
+    _need_tiff()
+    import tifffile as tff
+    with tff.TiffFile(str(_REAL_OMETIFF)) as tf:
+        levels = tf.series[0].levels
+        ref = [np.asarray(lvl.asarray()[0, 0]) for lvl in levels]
+    with TiffPyramidReader(str(_REAL_OMETIFF)) as r:
+        for i, expected in enumerate(ref):
+            out = r.read_region(
+                i, y=(0, expected.shape[0]), x=(0, expected.shape[1]),
+            )
+            np.testing.assert_array_equal(
+                out, expected,
+                err_msg=f"level {i}: pixels disagree with tifffile",
+            )

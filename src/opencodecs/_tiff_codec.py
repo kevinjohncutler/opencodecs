@@ -39,7 +39,7 @@ from .core._optional_backend import import_or_stubs
     TAG_STRIP_BYTE_COUNTS, TAG_PLANAR_CONFIG,
     TAG_TILE_WIDTH, TAG_TILE_LENGTH, TAG_TILE_OFFSETS,
     TAG_TILE_BYTE_COUNTS, TAG_SAMPLE_FORMAT,
-    TAG_PREDICTOR, TAG_JPEG_TABLES,
+    TAG_PREDICTOR, TAG_JPEG_TABLES, TAG_SUB_IFDS,
     CMP_NONE, CMP_DEFLATE, CMP_ADOBE_DEFLATE,
     CMP_JPEG, CMP_LZW, CMP_PACKBITS,
     CMP_ZSTD, CMP_WEBP, CMP_JXL, CMP_JPEG2000, CMP_LERC, CMP_LERC_LEGACY,
@@ -57,7 +57,7 @@ from .core._optional_backend import import_or_stubs
     "TAG_STRIP_BYTE_COUNTS", "TAG_PLANAR_CONFIG",
     "TAG_TILE_WIDTH", "TAG_TILE_LENGTH", "TAG_TILE_OFFSETS",
     "TAG_TILE_BYTE_COUNTS", "TAG_SAMPLE_FORMAT",
-    "TAG_PREDICTOR", "TAG_JPEG_TABLES",
+    "TAG_PREDICTOR", "TAG_JPEG_TABLES", "TAG_SUB_IFDS",
     "CMP_NONE", "CMP_DEFLATE", "CMP_ADOBE_DEFLATE",
     "CMP_JPEG", "CMP_LZW", "CMP_PACKBITS",
     "CMP_ZSTD", "CMP_WEBP", "CMP_JXL", "CMP_JPEG2000",
@@ -239,6 +239,46 @@ class TiffPage:
         # tiles per row, total tiles
         self.tiles_x = (self.width + self.tile_width - 1) // self.tile_width
         self.tiles_y = (self.height + self.tile_height - 1) // self.tile_height
+
+        # SubIFD offsets (TIFF tag 330) — bioformats / pyramid OME-TIFFs
+        # use these to attach sub-resolution levels to a top-level IFD.
+        # ``_tag`` returns a scalar for count==1 and a tuple otherwise; we
+        # always want a tuple here even for a single sub-IFD.
+        sub_offsets = self.tags.get(TAG_SUB_IFDS)
+        if sub_offsets is None:
+            self._subifd_offsets: tuple[int, ...] = ()
+        else:
+            v = sub_offsets[2]   # (dtype, count, value)
+            if isinstance(v, (tuple, list)):
+                self._subifd_offsets = tuple(int(o) for o in v)
+            else:
+                self._subifd_offsets = (int(v),)
+        self._subifd_pages: list["TiffPage"] | None = None
+
+    @property
+    def subifds(self) -> list["TiffPage"]:
+        """Sub-resolution IFDs attached to this page via tag 330.
+
+        bioformats / OME-TIFF's preferred pyramid layout: each
+        full-resolution page carries a SubIFDs tag whose values are
+        offsets to additional IFDs holding the same image at lower
+        resolutions. This walks the chain lazily and returns one
+        :class:`TiffPage` per sub-IFD. Returns an empty list when the
+        page has no SubIFDs.
+        """
+        if self._subifd_pages is None:
+            self._subifd_pages = []
+            for offset in self._subifd_offsets:
+                tags, _next = _tiff_parse_ifd(
+                    self._stream._read,
+                    self._stream._byte_order,
+                    self._stream._is_bigtiff,
+                    offset,
+                )
+                # Indexed within parent for diagnostics; share the stream.
+                sub = TiffPage(self._stream, -1, tags)
+                self._subifd_pages.append(sub)
+        return self._subifd_pages
 
     @property
     def shape(self) -> tuple:

@@ -55,11 +55,32 @@ class TiffPyramidReader(PyramidReader):
         src: Any,
         *,
         read_at=None,
+        ifd_index: int | None = None,
     ):
+        """Open a TIFF and discover its pyramid structure.
+
+        Parameters
+        ----------
+        src
+            Same as :class:`TiffStream`: path, bytes, file-like, or a
+            ``read_at`` callable like :class:`HTTPDataSource`.
+        ifd_index : int or None
+            How to discover pyramid levels.
+
+            * ``None`` (default) — auto. If the first IFD has SubIFDs
+              (tag 330, bioformats / OME-TIFF convention), use that IFD
+              + its SubIFD chain as the pyramid. Otherwise fall back to
+              grouping all top-level IFDs by area (the COG convention).
+            * an int ``n`` — anchor on top-level IFD ``n``. Pyramid is
+              ``[n]`` + that IFD's SubIFDs. Useful for multi-series
+              OME-TIFFs where each top-level IFD is a different scene
+              (T/C/Z plane), each with its own SubIFD pyramid.
+        """
         # Pass-through to TiffStream — it accepts paths, bytes,
         # file-likes, or a custom read_at callable (HTTPDataSource).
         self._stream = TiffStream(src, read_at=read_at) if read_at is not None \
             else TiffStream(src)
+        self._ifd_index = ifd_index
         self._levels = self._build_levels()
 
     # ----- ABC contract -----
@@ -74,16 +95,36 @@ class TiffPyramidReader(PyramidReader):
     # ----- Build pyramid levels from the IFD chain -----
 
     def _build_levels(self) -> list[PyramidLevel]:
-        """Walk every IFD, sort by area descending, compute downscales."""
-        pages: list[TiffPage] = []
-        for i in range(self._stream.n_frames):
-            pages.append(self._stream.page(i))
-        if not pages:
+        """Discover pyramid levels.
+
+        Layout precedence:
+
+        1. If ``ifd_index`` was given explicitly, the pyramid is the
+           chosen top-level IFD followed by its SubIFDs.
+        2. Otherwise, if the first IFD has SubIFDs (tag 330), assume
+           bioformats / OME-TIFF layout: pyramid = IFD 0 + its SubIFDs.
+        3. Otherwise (COG convention), pyramid = every top-level IFD,
+           sorted by area descending.
+        """
+        n = self._stream.n_frames
+        if n == 0:
             raise ValueError("TiffPyramidReader: no IFDs in TIFF")
+
+        if self._ifd_index is not None:
+            anchor = self._stream.page(self._ifd_index)
+            pages = [anchor] + list(anchor.subifds)
+        else:
+            ifd0 = self._stream.page(0)
+            if ifd0.subifds:
+                # bioformats / OME-TIFF SubIFD-based pyramid layout
+                pages = [ifd0] + list(ifd0.subifds)
+            else:
+                # COG: all top-level IFDs are pyramid levels
+                pages = [self._stream.page(i) for i in range(n)]
 
         # Largest-first. With the COG convention (full-res at IFD 0,
         # overviews after) this matches the natural order; with the
-        # OME-TIFF "subifds" convention sub-IFDs land after the main
+        # OME-TIFF SubIFDs convention sub-IFDs come after the main
         # page so sorting still produces the right order.
         pages.sort(key=lambda p: -(p.width * p.height))
 
