@@ -51,6 +51,7 @@ from .jxl import (
 )
 from ._tiff_writer import TiffWriter, imwrite as tiff_imwrite
 from ._omezarr import OmeZarrArray, OmeZarrPyramidDataset
+from ._omezarr_writer import write_zarr_array, write_omezarr_pyramid
 from ._czi_reader import CziPyramidReader
 from ._czi_writer import CziWriter, CziPyramidWriter
 
@@ -110,6 +111,7 @@ __all__ = [
     "jxl_encode", "jxl_decode", "jxl_iter_frames", "jxl_open",
     "TiffWriter", "tiff_imwrite",
     "OmeZarrArray", "OmeZarrPyramidDataset",
+    "write_zarr_array", "write_omezarr_pyramid",
     "CziPyramidReader",
     "CziWriter", "CziPyramidWriter",
 ]
