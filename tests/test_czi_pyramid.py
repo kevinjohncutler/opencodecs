@@ -200,6 +200,151 @@ def test_synthetic_pyramid_reader_reads_correct_tile():
         p.close()
 
 
+def test_real_pyramid_fixture_round_trips_through_reader(tmp_path):
+    """End-to-end: build a 3-level pyramid CZI fixture using the same
+    binary layout ZEN writes, then read it back through our
+    CziPyramidReader. The decoded pixels at every level must match the
+    source arrays.
+
+    This is the validation the synthetic-stub tests couldn't reach —
+    here we put real CZI bytes through the full parse + decode path.
+    """
+    from _czi_fixture import pyramid_czi_bytes  # type: ignore[import-not-found]
+
+    rng = np.random.RandomState(5)
+    base = rng.randint(0, 256, (128, 128), dtype=np.uint8)
+    half = base[::2, ::2].copy()
+    quarter = base[::4, ::4].copy()
+    levels = [base, half, quarter]
+
+    data = pyramid_czi_bytes(levels, compression=0)
+
+    czi = oc.get_codec("czi").open(data)
+    assert czi.is_pyramidal is True
+    assert czi.scale_factors_per_level() == [(1.0, 1.0), (2.0, 2.0), (4.0, 4.0)]
+
+    p = CziPyramidReader(czi)
+    try:
+        assert p.n_levels == 3
+        for i, lvl in enumerate(levels):
+            assert p.level(i).shape == lvl.shape, (
+                f"level {i}: pyramid shape {p.level(i).shape} != "
+                f"source {lvl.shape}"
+            )
+            # Full read of each level
+            out = p.read_region(
+                i, y=(0, lvl.shape[0]), x=(0, lvl.shape[1]),
+            )
+            np.testing.assert_array_equal(out, lvl)
+        # Crop from full-resolution
+        crop = p.read_region(0, y=(10, 50), x=(20, 80))
+        np.testing.assert_array_equal(crop, base[10:50, 20:80])
+        # best_level_for picks the right level
+        assert p.best_level_for(max_pixels_y=100) == 1
+        assert p.best_level_for(max_pixels_y=40) == 2
+    finally:
+        p.close()
+
+
+@pytest.mark.parametrize("compression", [0, 5, 6])
+def test_real_pyramid_fixture_compressed(tmp_path, compression):
+    """Pyramid fixture round-trips through compressed code paths too
+    (uncompressed, raw zstd, ZSTDHDR — every supported CZI compression)."""
+    from _czi_fixture import pyramid_czi_bytes  # type: ignore[import-not-found]
+
+    rng = np.random.RandomState(6)
+    base = rng.randint(0, 256, (64, 64), dtype=np.uint8)
+    half = base[::2, ::2].copy()
+    levels = [base, half]
+    data = pyramid_czi_bytes(levels, compression=compression)
+
+    czi = oc.get_codec("czi").open(data)
+    p = CziPyramidReader(czi)
+    try:
+        np.testing.assert_array_equal(
+            p.read_region(0, y=(0, 64), x=(0, 64)), base,
+        )
+        np.testing.assert_array_equal(
+            p.read_region(1, y=(0, 32), x=(0, 32)), half,
+        )
+    finally:
+        p.close()
+
+
+def test_pyramid_fixture_validated_by_czifile(tmp_path):
+    """Cross-validate the fixture's pyramid layout. ``czifile`` (the
+    independently-maintained reference Python CZI reader) must see the
+    same pyramid_type / is_pyramid / shape / stored_shape values our
+    reader does. If our fixture writes the bytes wrong, czifile would
+    see a different layout — this test catches that.
+    """
+    czifile = pytest.importorskip("czifile")
+    from _czi_fixture import pyramid_czi_bytes  # type: ignore[import-not-found]
+    import io
+
+    rng = np.random.RandomState(7)
+    base = rng.randint(0, 256, (96, 96), dtype=np.uint8)
+    half = base[::2, ::2].copy()
+    quarter = base[::4, ::4].copy()
+    levels = [base, half, quarter]
+    raw = pyramid_czi_bytes(levels, compression=0)
+
+    expected = [
+        # (dims, shape, stored_shape, is_pyramid, pyramid_type)
+        (("Y", "X", "S"), (96, 96, 1), (96, 96, 1), False, 0),
+        (("Y", "X", "S"), (96, 96, 1), (48, 48, 1), True, 2),
+        (("Y", "X", "S"), (96, 96, 1), (24, 24, 1), True, 2),
+    ]
+    with czifile.CziFile(io.BytesIO(raw)) as f:
+        directory = list(f.subblock_directory)
+        assert len(directory) == 3
+        for e, exp in zip(directory, expected):
+            dims, shape, stored, is_pyr, ptype = exp
+            assert e.dims == dims
+            assert e.shape == shape
+            assert e.stored_shape == stored
+            assert e.is_pyramid is is_pyr
+            assert e.pyramid_type == ptype
+
+    # Our own reader must agree with czifile.
+    czi = oc.get_codec("czi").open(raw)
+    assert czi.scale_factors_per_level() == [
+        (1.0, 1.0), (2.0, 2.0), (4.0, 4.0),
+    ]
+    for ours, exp in zip(czi.entries, expected):
+        _dims, _shape, _stored, is_pyr, ptype = exp
+        assert ours.is_pyramid is is_pyr
+        assert ours.pyramid_type == ptype
+
+
+def test_pyramid_fixture_round_trips_through_pylibCZIrw(tmp_path):
+    """A second independent decoder. ``pylibCZIrw`` is Zeiss's own
+    libCZI Python wrapper — if our fixture bytes are wrong, this is
+    where it would surface as a decode error or wrong pixel data.
+    """
+    pylibCZIrw = pytest.importorskip("pylibCZIrw")
+    from _czi_fixture import pyramid_czi_bytes  # type: ignore[import-not-found]
+    from pylibCZIrw import czi as pyczi
+
+    rng = np.random.RandomState(8)
+    base = rng.randint(0, 256, (64, 64), dtype=np.uint8)
+    half = base[::2, ::2].copy()
+    levels = [base, half]
+    raw = pyramid_czi_bytes(levels, compression=0)
+
+    # pylibCZIrw needs a file path; spill to disk.
+    p = tmp_path / "fixture.czi"
+    p.write_bytes(raw)
+
+    with pyczi.open_czi(str(p)) as r:
+        # Full-resolution read via the default plane.
+        out = r.read(plane={"C": 0, "T": 0, "Z": 0})
+        # libCZI returns (H, W, C). Squeeze the trailing dim.
+        if out.ndim == 3 and out.shape[2] == 1:
+            out = out[..., 0]
+        np.testing.assert_array_equal(out, base)
+
+
 def test_synthetic_pyramid_multi_level():
     """Two levels: full-res 4 tiles + 1 half-res tile. The pyramid
     reader should expose both."""

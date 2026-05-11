@@ -119,6 +119,16 @@ def _build_subblock(
     compression: int,
     hilo: bool,
     file_position: int,
+    *,
+    # Pyramid + multi-tile parameters. By default a sub-block describes
+    # its own grid at its stored size — the standard non-pyramid layout.
+    # For pyramids: set ``logical_shape=(H, W)`` larger than ``array.shape``
+    # so the DirectoryEntryDV records ``size=H`` ``stored=h``. For mosaic
+    # acquisitions: ``location=(start_y, start_x)`` shifts where this
+    # sub-block sits in the parent coordinate space.
+    logical_shape: tuple[int, int] | None = None,
+    location: tuple[int, int] = (0, 0),
+    pyramid_type: int = 0,
 ) -> tuple[bytes, int]:
     """Build one ZISRAWSUBBLOCK segment payload + return (bytes, storage_size).
 
@@ -131,11 +141,16 @@ def _build_subblock(
     # 32-byte directory-entry header (DV schema)
     #   2s schema, int pixel_type, q file_position, int file_part,
     #   int compression, B pyramid, B reserved1, 4s reserved2, int dims_count
-    dims = []
-    if array.ndim == 3 and samples > 1:
-        # Just 2D for tests — the optional sample axis is implicit (S).
-        pass
-    dims = [(b"X", 0, w, 0.0, 0), (b"Y", 0, h, 0.0, 0)]
+    if logical_shape is None:
+        logical_h, logical_w = h, w
+    else:
+        logical_h, logical_w = logical_shape
+    start_y, start_x = location
+
+    dims = [
+        (b"X", start_x, logical_w, 0.0, w),
+        (b"Y", start_y, logical_h, 0.0, h),
+    ]
 
     de_header = struct.pack(
         "<2siqiiBB4si",
@@ -144,7 +159,7 @@ def _build_subblock(
         file_position,          # file_position (filled by caller's caller)
         0,                      # file_part
         compression,            # compression
-        0, 0, b"\x00\x00\x00\x00",  # pyramid + reserved
+        pyramid_type, 0, b"\x00\x00\x00\x00",  # pyramid + reserved
         len(dims),              # dims count
     )
     de_dims = b""
@@ -179,25 +194,36 @@ def _build_subblock(
 
 
 def _build_directory_segment(
-    entries: list[tuple[int, int, int, int, int, int]],
+    entries: list[dict],
 ) -> bytes:
-    """Build a ZISRAWDIRECTORY segment from list of entries.
+    """Build a ZISRAWDIRECTORY segment from a list of entry dicts.
 
-    Each entry is (file_position, pixel_type, compression, dims_count,
-    width, height) — minimal subset for tests.
+    Each entry dict carries: ``file_position``, ``pixel_type``,
+    ``compression``, ``stored_w``, ``stored_h``, ``logical_w``,
+    ``logical_h``, ``start_x``, ``start_y``, ``pyramid_type``.
+
+    The directory entry must match the inline DirectoryEntryDV in the
+    sub-block segment exactly — pyramid info, mosaic positions, and
+    stored vs logical sizes all need to round-trip through both.
     """
     sid = _DIR_MAGIC + b"\x00"  # 15 + 1 = 16
     # entry_count + 124 reserved bytes
     body = struct.pack("<I", len(entries)) + b"\x00" * 124
-    for (fp, pt, comp, _dims_count, w, h) in entries:
-        # 32-byte DV header
+    for e in entries:
         body += struct.pack(
             "<2siqiiBB4si",
-            b"DV", pt, fp, 0, comp, 0, 0, b"\x00\x00\x00\x00", 2,
+            b"DV", e["pixel_type"], e["file_position"], 0,
+            e["compression"], e.get("pyramid_type", 0),
+            0, b"\x00\x00\x00\x00", 2,
         )
-        # 2 dim entries (X, Y)
-        body += struct.pack("<4siifi", b"X", 0, w, 0.0, 0)
-        body += struct.pack("<4siifi", b"Y", 0, h, 0.0, 0)
+        body += struct.pack(
+            "<4siifi", b"X",
+            e.get("start_x", 0), e["logical_w"], 0.0, e["stored_w"],
+        )
+        body += struct.pack(
+            "<4siifi", b"Y",
+            e.get("start_y", 0), e["logical_h"], 0.0, e["stored_h"],
+        )
     return _pad_segment(sid + body)
 
 
@@ -284,8 +310,14 @@ def czi_bytes(
             fr, pixel_type, compression, hilo, cur_offset,
         )
         sub_segments.append(seg)
-        sub_meta.append((cur_offset, pixel_type, compression, 2,
-                         fr.shape[1], fr.shape[0]))
+        h, w = fr.shape[:2]
+        sub_meta.append({
+            "file_position": cur_offset, "pixel_type": pixel_type,
+            "compression": compression,
+            "stored_w": w, "stored_h": h,
+            "logical_w": w, "logical_h": h,
+            "start_x": 0, "start_y": 0, "pyramid_type": 0,
+        })
         cur_offset += len(seg)
 
     directory_position = cur_offset
@@ -302,6 +334,89 @@ def czi_bytes(
     )
 
     # Assemble.
+    out = bytearray()
+    out += file_header
+    out += b"\x00" * (metadata_position - len(file_header))
+    out += metadata_segment
+    for seg in sub_segments:
+        out += seg
+    out += directory_segment
+    return bytes(out)
+
+
+def pyramid_czi_bytes(
+    levels: list[np.ndarray],
+    *,
+    compression: int = 0,
+    hilo: bool = False,
+    metadata_xml: bytes = b"<Metadata/>",
+) -> bytes:
+    """Serialize a multi-resolution CZI fixture.
+
+    ``levels[0]`` is the full-resolution image. Each subsequent entry
+    is a downscaled version; its logical extent equals level 0's
+    shape, but its stored grid is the array's actual shape. That's
+    exactly the on-disk encoding ZEN uses for pyramid CZIs.
+
+    For example::
+
+        base = np.random.randint(0, 256, (256, 256), dtype=np.uint8)
+        half = base[::2, ::2]
+        quarter = base[::4, ::4]
+        data = pyramid_czi_bytes([base, half, quarter])
+
+    produces a CZI with 3 sub-blocks: one at stored (256,256) +
+    logical (256,256) [pyramid_type=0]; one at stored (128,128) +
+    logical (256,256) [pyramid_type=2]; one at stored (64,64) +
+    logical (256,256) [pyramid_type=2].
+    """
+    if not levels:
+        raise ValueError("pyramid_czi_bytes: levels must be non-empty")
+    base = levels[0]
+    if base.ndim != 2:
+        raise ValueError("pyramid_czi_bytes: levels must be 2-D")
+    logical_h, logical_w = base.shape
+    pixel_type, _samples = _DTYPE_TO_PIXELTYPE[base.dtype]
+
+    file_header_size = 32 + 88
+    file_header_size = (file_header_size + 31) // 32 * 32
+
+    metadata_segment = _build_metadata_segment(metadata_xml)
+    metadata_position = file_header_size
+    cur_offset = metadata_position + len(metadata_segment)
+    sub_segments = []
+    sub_meta = []
+
+    for i, lvl in enumerate(levels):
+        h, w = lvl.shape[:2]
+        # ZEN convention: level 0 has pyramid_type=0; later levels =2.
+        ptype = 0 if i == 0 else 2
+        seg, _storage = _build_subblock(
+            lvl, pixel_type, compression, hilo, cur_offset,
+            logical_shape=(logical_h, logical_w),
+            location=(0, 0),
+            pyramid_type=ptype,
+        )
+        sub_segments.append(seg)
+        sub_meta.append({
+            "file_position": cur_offset, "pixel_type": pixel_type,
+            "compression": compression,
+            "stored_w": w, "stored_h": h,
+            "logical_w": logical_w, "logical_h": logical_h,
+            "start_x": 0, "start_y": 0, "pyramid_type": ptype,
+        })
+        cur_offset += len(seg)
+
+    directory_position = cur_offset
+    directory_segment = _build_directory_segment(sub_meta)
+    cur_offset += len(directory_segment)
+
+    file_size = cur_offset
+    file_header = _build_file_header(
+        directory_position=directory_position,
+        metadata_position=metadata_position,
+        file_size=file_size,
+    )
     out = bytearray()
     out += file_header
     out += b"\x00" * (metadata_position - len(file_header))
