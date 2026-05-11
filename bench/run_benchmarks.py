@@ -466,6 +466,302 @@ def bench_ndtiff_write_compressed():
     }
 
 
+# ---------------------------------------------------------------------------
+# Direct head-to-head: opencodecs vs imagecodecs (raw codec calls)
+# ---------------------------------------------------------------------------
+#
+# Both packages wrap the same underlying C libraries (libzstd, libdeflate,
+# libjxl, …), but they differ in binding strategy: opencodecs aims for
+# zero-copy buffer-protocol dispatch and minimal Python-side overhead;
+# imagecodecs uses a more conservative bytes() coercion path for safety.
+# These benches measure whether the difference is observable in practice.
+#
+# One workload per (codec, op) pair — each renders as a single row in
+# the Markdown summary, with `speedup_vs_imagecodecs` driving the ratio
+# column. Payloads are sized so encode + decode each take 2-20 ms on
+# a modern CPU (above the timing floor, below the patience threshold).
+
+
+def _h2h_byte_stream(name: str, oc_encode, oc_decode, ic_encode, ic_decode,
+                     *, data, encode_kw=None, decode_kw=None):
+    """One round of head-to-head for a byte-stream codec.
+
+    Returns a dict with side-by-side encode + decode timings. Each
+    library decodes its own encoded payload (mirrors real-world use
+    and avoids cross-decode interop bugs polluting timing).
+    """
+    encode_kw = encode_kw or {}
+    decode_kw = decode_kw or {}
+    oc_payload = oc_encode(data, **encode_kw)
+    ic_payload = ic_encode(data, **encode_kw)
+    raw_mb = len(data) / 1e6
+
+    def oc_enc(): oc_encode(data, **encode_kw)
+    def ic_enc(): ic_encode(data, **encode_kw)
+    def oc_dec(): oc_decode(oc_payload, **decode_kw)
+    def ic_dec(): ic_decode(ic_payload, **decode_kw)
+
+    oc_e = _time_fn(oc_enc, n=7)
+    ic_e = _time_fn(ic_enc, n=7)
+    oc_d = _time_fn(oc_dec, n=7)
+    ic_d = _time_fn(ic_dec, n=7)
+    return {
+        "raw_mb": raw_mb,
+        "encoded_mb_oc": len(oc_payload) / 1e6,
+        "encoded_mb_ic": len(ic_payload) / 1e6,
+        "opencodecs_encode_ms": oc_e["median_ms"],
+        "imagecodecs_encode_ms": ic_e["median_ms"],
+        "speedup_vs_imagecodecs_encode":
+            ic_e["median_ms"] / oc_e["median_ms"],
+        "opencodecs_decode_ms": oc_d["median_ms"],
+        "imagecodecs_decode_ms": ic_d["median_ms"],
+        "speedup_vs_imagecodecs_decode":
+            ic_d["median_ms"] / oc_d["median_ms"],
+        "opencodecs_encode_mb_per_s":
+            raw_mb / (oc_e["median_ms"] / 1000),
+        "imagecodecs_encode_mb_per_s":
+            raw_mb / (ic_e["median_ms"] / 1000),
+        "opencodecs_decode_mb_per_s":
+            raw_mb / (oc_d["median_ms"] / 1000),
+        "imagecodecs_decode_mb_per_s":
+            raw_mb / (ic_d["median_ms"] / 1000),
+        "opencodecs": oc_e,    # canonical key for the renderer
+        "reference": {"imagecodecs_encode": ic_e,
+                      "imagecodecs_decode": ic_d,
+                      "opencodecs_decode": oc_d},
+        "speedup_vs_imagecodecs":     # average of encode+decode
+            ((ic_e["median_ms"] + ic_d["median_ms"]) /
+             (oc_e["median_ms"] + oc_d["median_ms"])),
+    }
+
+
+def _h2h_image(name: str, oc_encode, oc_decode, ic_encode, ic_decode,
+               *, arr, encode_kw=None, decode_kw=None):
+    """Head-to-head for an image-format codec (ndarray ↔ bytes)."""
+    encode_kw = encode_kw or {}
+    decode_kw = decode_kw or {}
+    oc_payload = oc_encode(arr, **encode_kw)
+    ic_payload = ic_encode(arr, **encode_kw)
+    raw_mb = arr.nbytes / 1e6
+
+    def oc_enc(): oc_encode(arr, **encode_kw)
+    def ic_enc(): ic_encode(arr, **encode_kw)
+    def oc_dec(): oc_decode(oc_payload, **decode_kw)
+    def ic_dec(): ic_decode(ic_payload, **decode_kw)
+
+    oc_e = _time_fn(oc_enc, n=5)
+    ic_e = _time_fn(ic_enc, n=5)
+    oc_d = _time_fn(oc_dec, n=5)
+    ic_d = _time_fn(ic_dec, n=5)
+    return {
+        "raw_mb": raw_mb,
+        "encoded_mb_oc": len(oc_payload) / 1e6,
+        "encoded_mb_ic": len(ic_payload) / 1e6,
+        "opencodecs_encode_ms": oc_e["median_ms"],
+        "imagecodecs_encode_ms": ic_e["median_ms"],
+        "speedup_vs_imagecodecs_encode":
+            ic_e["median_ms"] / oc_e["median_ms"],
+        "opencodecs_decode_ms": oc_d["median_ms"],
+        "imagecodecs_decode_ms": ic_d["median_ms"],
+        "speedup_vs_imagecodecs_decode":
+            ic_d["median_ms"] / oc_d["median_ms"],
+        "opencodecs_encode_mb_per_s":
+            raw_mb / (oc_e["median_ms"] / 1000),
+        "imagecodecs_encode_mb_per_s":
+            raw_mb / (ic_e["median_ms"] / 1000),
+        "opencodecs_decode_mb_per_s":
+            raw_mb / (oc_d["median_ms"] / 1000),
+        "imagecodecs_decode_mb_per_s":
+            raw_mb / (ic_d["median_ms"] / 1000),
+        "opencodecs": oc_e,
+        "reference": {"imagecodecs_encode": ic_e,
+                      "imagecodecs_decode": ic_d,
+                      "opencodecs_decode": oc_d},
+        "speedup_vs_imagecodecs":
+            ((ic_e["median_ms"] + ic_d["median_ms"]) /
+             (oc_e["median_ms"] + oc_d["median_ms"])),
+    }
+
+
+@workload("h2h_zstd_10mb", tier="fast", group="h2h_byte_stream")
+def bench_h2h_zstd():
+    """opencodecs.zstd vs imagecodecs.zstd on 10 MB compressible bytes."""
+    if _imagecodecs is None:
+        return {"skipped": "imagecodecs not installed"}
+    from opencodecs.codecs._zstd import encode as oc_enc, decode as oc_dec
+    data = np.random.default_rng(0).integers(
+        0, 4000, size=(5 * 1024 * 1024,), dtype=np.uint16
+    ).tobytes()
+    return _h2h_byte_stream(
+        "zstd", oc_enc, oc_dec,
+        _imagecodecs.zstd_encode, _imagecodecs.zstd_decode,
+        data=data, encode_kw=dict(level=3),
+    )
+
+
+@workload("h2h_deflate_10mb", tier="fast", group="h2h_byte_stream")
+def bench_h2h_deflate():
+    if _imagecodecs is None:
+        return {"skipped": "imagecodecs not installed"}
+    from opencodecs.codecs._deflate import encode as oc_enc, decode as oc_dec
+    data = np.random.default_rng(0).integers(
+        0, 4000, size=(5 * 1024 * 1024,), dtype=np.uint16
+    ).tobytes()
+    return _h2h_byte_stream(
+        "deflate", oc_enc, oc_dec,
+        _imagecodecs.zlib_encode, _imagecodecs.zlib_decode,
+        data=data, encode_kw=dict(level=6),
+    )
+
+
+@workload("h2h_lz4_10mb", tier="fast", group="h2h_byte_stream")
+def bench_h2h_lz4():
+    if _imagecodecs is None:
+        return {"skipped": "imagecodecs not installed"}
+    from opencodecs.codecs._lz4 import encode as oc_enc, decode as oc_dec
+    data = np.random.default_rng(0).integers(
+        0, 4000, size=(5 * 1024 * 1024,), dtype=np.uint16
+    ).tobytes()
+    return _h2h_byte_stream(
+        "lz4", oc_enc, oc_dec,
+        _imagecodecs.lz4f_encode, _imagecodecs.lz4f_decode,
+        data=data,
+    )
+
+
+@workload("h2h_brotli_10mb", tier="fast", group="h2h_byte_stream")
+def bench_h2h_brotli():
+    if _imagecodecs is None:
+        return {"skipped": "imagecodecs not installed"}
+    from opencodecs.codecs._brotli import encode as oc_enc, decode as oc_dec
+    # Brotli at level 11 is slow; level 4 is the realistic fast-tier level.
+    data = np.random.default_rng(0).integers(
+        0, 4000, size=(5 * 1024 * 1024,), dtype=np.uint16
+    ).tobytes()
+    return _h2h_byte_stream(
+        "brotli", oc_enc, oc_dec,
+        _imagecodecs.brotli_encode, _imagecodecs.brotli_decode,
+        data=data, encode_kw=dict(level=4),
+    )
+
+
+@workload("h2h_blosc2_10mb", tier="fast", group="h2h_byte_stream")
+def bench_h2h_blosc2():
+    if _imagecodecs is None:
+        return {"skipped": "imagecodecs not installed"}
+    from opencodecs.codecs._blosc2 import encode as oc_enc, decode as oc_dec
+    data = np.random.default_rng(0).integers(
+        0, 4000, size=(5 * 1024 * 1024,), dtype=np.uint16
+    ).tobytes()
+    return _h2h_byte_stream(
+        "blosc2", oc_enc, oc_dec,
+        _imagecodecs.blosc2_encode, _imagecodecs.blosc2_decode,
+        data=data, encode_kw=dict(level=3),
+    )
+
+
+@workload("h2h_jpeg_4mp_rgb", tier="fast", group="h2h_image")
+def bench_h2h_jpeg():
+    if _imagecodecs is None:
+        return {"skipped": "imagecodecs not installed"}
+    from opencodecs.codecs._jpeg import encode as oc_enc, decode as oc_dec
+    arr = np.random.default_rng(0).integers(
+        0, 256, size=(2048, 2048, 3), dtype=np.uint8,
+    )
+    return _h2h_image(
+        "jpeg", oc_enc, oc_dec,
+        _imagecodecs.jpeg_encode, _imagecodecs.jpeg_decode,
+        arr=arr, encode_kw=dict(level=85),
+    )
+
+
+@workload("h2h_png_4mp_rgb", tier="fast", group="h2h_image")
+def bench_h2h_png():
+    if _imagecodecs is None:
+        return {"skipped": "imagecodecs not installed"}
+    from opencodecs.codecs._png import encode as oc_enc, decode as oc_dec
+    # PNG at full level on random data is slow + huge — use 2K×2K
+    # at moderate compression so encode lands ~30 ms.
+    arr = np.random.default_rng(0).integers(
+        0, 256, size=(2048, 2048, 3), dtype=np.uint8,
+    )
+    return _h2h_image(
+        "png", oc_enc, oc_dec,
+        _imagecodecs.png_encode, _imagecodecs.png_decode,
+        arr=arr, encode_kw=dict(level=4),
+    )
+
+
+@workload("h2h_webp_4mp_rgb", tier="fast", group="h2h_image")
+def bench_h2h_webp():
+    if _imagecodecs is None:
+        return {"skipped": "imagecodecs not installed"}
+    from opencodecs.codecs._webp import encode as oc_enc, decode as oc_dec
+    arr = np.random.default_rng(0).integers(
+        0, 256, size=(2048, 2048, 3), dtype=np.uint8,
+    )
+    return _h2h_image(
+        "webp", oc_enc, oc_dec,
+        _imagecodecs.webp_encode, _imagecodecs.webp_decode,
+        arr=arr,
+    )
+
+
+@workload("h2h_jpeg2k_4mp_u16", tier="fast", group="h2h_image")
+def bench_h2h_jpeg2k():
+    if _imagecodecs is None:
+        return {"skipped": "imagecodecs not installed"}
+    from opencodecs.codecs._jpeg2k import encode as oc_enc, decode as oc_dec
+    arr = np.random.default_rng(0).integers(
+        0, 4000, size=(2048, 2048), dtype=np.uint16,
+    )
+    return _h2h_image(
+        "jpeg2k", oc_enc, oc_dec,
+        _imagecodecs.jpeg2k_encode, _imagecodecs.jpeg2k_decode,
+        arr=arr,
+    )
+
+
+@workload("h2h_qoi_4mp_rgb", tier="fast", group="h2h_image")
+def bench_h2h_qoi():
+    if _imagecodecs is None:
+        return {"skipped": "imagecodecs not installed"}
+    from opencodecs.codecs._qoi import encode as oc_enc, decode as oc_dec
+    arr = np.random.default_rng(0).integers(
+        0, 256, size=(2048, 2048, 3), dtype=np.uint8,
+    )
+    return _h2h_image(
+        "qoi", oc_enc, oc_dec,
+        _imagecodecs.qoi_encode, _imagecodecs.qoi_decode,
+        arr=arr,
+    )
+
+
+@workload("h2h_lerc_4mp_u16", tier="fast", group="h2h_image")
+def bench_h2h_lerc():
+    # Known issue: opencodecs and imagecodecs each statically link
+    # their own libLerc, and the duplicated symbols crash when both
+    # are called from the same process. The fix is a separate-process
+    # bench (TODO); for now we just skip so the rest of the head-to-
+    # head row keeps running.
+    return {"skipped": "lerc static-library symbol clash with imagecodecs (cross-process bench TODO)"}
+
+
+@workload("h2h_jxl_4mp_rgb", tier="fast", group="h2h_image")
+def bench_h2h_jxl():
+    if _imagecodecs is None:
+        return {"skipped": "imagecodecs not installed"}
+    from opencodecs.codecs._jxl import encode as oc_enc, decode as oc_dec
+    arr = np.random.default_rng(0).integers(
+        0, 256, size=(2048, 2048, 3), dtype=np.uint8,
+    )
+    return _h2h_image(
+        "jxl", oc_enc, oc_dec,
+        _imagecodecs.jpegxl_encode, _imagecodecs.jpegxl_decode,
+        arr=arr,
+    )
+
+
 @workload("ndtiff_write_compressed_zstd_large", tier="fast",
           group="ndtiff_compress")
 def bench_ndtiff_write_compressed_large():
@@ -884,6 +1180,31 @@ def _format_markdown(results: dict, sysinfo: dict) -> str:
     for name, r in results["workloads"].items():
         if "skipped" in r:
             lines.append(f"| {name} | skipped: {r['skipped']} | — | — | — | — | — |")
+            continue
+        # Head-to-head workloads carry both encode + decode timings
+        # against imagecodecs. Render them as two rows (one per op)
+        # so the ratio column reads naturally per direction.
+        if "speedup_vs_imagecodecs_encode" in r:
+            ref = r.get("reference", {})
+            ic_enc = ref.get("imagecodecs_encode", {})
+            oc_enc = r["opencodecs"]
+            oc_dec = ref.get("opencodecs_decode", {})
+            ic_dec = ref.get("imagecodecs_decode", {})
+            enc_ratio = r["speedup_vs_imagecodecs_encode"]
+            dec_ratio = r["speedup_vs_imagecodecs_decode"]
+            flag_e = "⚠️" if oc_enc.get("noisy") else ""
+            flag_d = "⚠️" if oc_dec.get("noisy") else ""
+            lines.append(
+                f"| {name}/encode | {oc_enc['median_ms']:.2f} | "
+                f"{oc_enc['min_ms']:.2f} | {oc_enc['max_ms']:.2f} | "
+                f"{oc_enc['iqr_ms']:.2f} | {flag_e} | {enc_ratio:.2f}× vs ic |"
+            )
+            if oc_dec:
+                lines.append(
+                    f"| {name}/decode | {oc_dec['median_ms']:.2f} | "
+                    f"{oc_dec['min_ms']:.2f} | {oc_dec['max_ms']:.2f} | "
+                    f"{oc_dec['iqr_ms']:.2f} | {flag_d} | {dec_ratio:.2f}× vs ic |"
+                )
             continue
         oc = r.get("opencodecs") or r.get("opencodecs_zstd_l1") \
             or r.get("opencodecs_none")
