@@ -694,6 +694,15 @@ def bench_h2h_png():
 
 @workload("h2h_webp_4mp_rgb", tier="fast", group="h2h_image")
 def bench_h2h_webp():
+    """WebP head-to-head at matching mode + quality.
+
+    imagecodecs.webp_encode defaults to ``lossless=True`` while
+    opencodecs defaults to ``lossless=False`` at quality 75. Comparing
+    the defaults gives bitstreams 5× different in size — meaningless
+    as a codec comparison. Force both into lossy q=75 (the WebP
+    real-world default) so the bench measures the encoder/decoder, not
+    the format choice.
+    """
     if _imagecodecs is None:
         return {"skipped": "imagecodecs not installed"}
     from opencodecs.codecs._webp import encode as oc_enc, decode as oc_dec
@@ -703,7 +712,7 @@ def bench_h2h_webp():
     return _h2h_image(
         "webp", oc_enc, oc_dec,
         _imagecodecs.webp_encode, _imagecodecs.webp_decode,
-        arr=arr,
+        arr=arr, encode_kw=dict(level=75, lossless=False),
     )
 
 
