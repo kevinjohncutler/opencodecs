@@ -256,4 +256,27 @@ class FileDataSource:
         return {"requests": self._total_requests}
 
 
-__all__ = ["HTTPDataSource", "FileDataSource"]
+def http_fetch_all(
+    url: str,
+    *,
+    timeout: float = 60.0,
+    headers: dict[str, str] | None = None,
+) -> bytes:
+    """Download a URL fully into bytes.
+
+    Convenience helper for readers whose underlying codec wants the
+    whole stream (libjxl, libpng, libtiff-no-range-mode). Falls back
+    to a single GET; no Range. Equivalent to HTTPDataSource(url, prefetch=full)
+    but without the LRU machinery.
+
+    Use HTTPDataSource for readers that do scattered slice access
+    (TIFF tile-by-tile, NDTiff frame-by-frame); use http_fetch_all
+    for readers that just want the file as bytes (JXL, single-image
+    PNG, full-volume reads).
+    """
+    req = urllib.request.Request(url, headers=dict(headers or {}))
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return resp.read()
+
+
+__all__ = ["HTTPDataSource", "FileDataSource", "http_fetch_all"]

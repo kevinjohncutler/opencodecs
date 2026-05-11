@@ -160,19 +160,44 @@ class CziReader(Reader):
         ("&amp;", "&"),
     )
 
-    def __init__(self, path: str | Path) -> None:
-        self.path = str(path)
-        self._fd = os.open(self.path, os.O_RDONLY)
-        self._size = os.fstat(self._fd).st_size
-        # mmap takes different keyword args on POSIX vs Windows. POSIX uses
-        # `prot=PROT_READ`; Windows lacks `PROT_*` symbols entirely and
-        # expects `access=ACCESS_READ` instead.
-        if sys.platform == "win32":
-            self._mmap = mmap.mmap(
-                self._fd, self._size, access=mmap.ACCESS_READ)
+    def __init__(
+        self,
+        path: str | Path | None = None,
+        *,
+        # For non-local sources: a buffer-protocol object (bytes,
+        # bytearray, memoryview, mmap-like) holding the full file
+        # bytes. CZI parsing does scattered slice access through the
+        # directory + sub-block headers; ranged HTTP per-slice would
+        # be ~1000 round-trips per file, so HTTP support is "fetch
+        # all then mmap-equivalent" via from_http(url).
+        buffer: bytes | bytearray | memoryview | None = None,
+    ) -> None:
+        if path is not None:
+            self.path = str(path)
+            self._fd = os.open(self.path, os.O_RDONLY)
+            self._size = os.fstat(self._fd).st_size
+            self._owns_fd = True
+            # mmap takes different keyword args on POSIX vs Windows. POSIX
+            # uses prot=PROT_READ; Windows uses access=ACCESS_READ.
+            if sys.platform == "win32":
+                self._mmap = mmap.mmap(
+                    self._fd, self._size, access=mmap.ACCESS_READ)
+            else:
+                self._mmap = mmap.mmap(
+                    self._fd, self._size, prot=mmap.PROT_READ)
+        elif buffer is not None:
+            self.path = "<buffer>"
+            self._fd = -1
+            self._owns_fd = False
+            # Hold the buffer alive for the reader's lifetime. mmap-like
+            # __getitem__ + struct.unpack_from work on bytes/bytearray/
+            # memoryview transparently.
+            self._mmap = buffer
+            self._size = len(buffer)
         else:
-            self._mmap = mmap.mmap(
-                self._fd, self._size, prot=mmap.PROT_READ)
+            raise ValueError(
+                "CziReader: pass either path or buffer="
+            )
         # No MADV_SEQUENTIAL: it triggers aggressive page eviction after
         # read on macOS / many Linux kernels. For 66 MB CZI files on a
         # NAS that fit easily in RAM, that just forces re-fetch from the
@@ -212,12 +237,14 @@ class CziReader(Reader):
         # nudge if user code retained intermediate views.
         import gc
         gc.collect()
+        # Buffer-only path: nothing to close on the buffer (it's just
+        # bytes), but release our reference so GC can collect it.
+        if not self._owns_fd:
+            self._mmap = None
+            return
         try:
             self._mmap.close()
         except BufferError:  # pragma: no cover - leaked memoryview rescue path
-            # Some pointer is still exported (a memoryview into the mmap).
-            # Run another GC pass; if it still fails, leave the mmap alive
-            # — the OS will reclaim when the fd is closed.
             gc.collect()
             try:
                 self._mmap.close()
@@ -225,6 +252,28 @@ class CziReader(Reader):
                 pass
         finally:
             os.close(self._fd)
+            self._owns_fd = False
+
+    @classmethod
+    def from_http(
+        cls,
+        url: str,
+        *,
+        timeout: float = 120.0,
+        headers: dict[str, str] | None = None,
+    ) -> "CziReader":
+        """Open a remote CZI by downloading it in full.
+
+        CZI parsing does scattered slice access through directory
+        and sub-block headers; ranged HTTP per-slice would issue
+        ~1000 round-trips per file. We fetch once into bytes and
+        operate on that buffer for the reader's lifetime. For
+        very large CZIs (>1 GB) consider downloading to disk first
+        and using ``CziReader(local_path)`` instead.
+        """
+        from ._tiff_http import http_fetch_all
+        data = http_fetch_all(url, timeout=timeout, headers=headers)
+        return cls(buffer=data)
 
     def __enter__(self) -> "CziReader":
         return self

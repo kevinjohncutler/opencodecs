@@ -133,6 +133,29 @@ def open(  # noqa: A001  (shadows builtin intentionally for the public API)
     )
 
 
+def open_http(
+    url: str,
+    *,
+    timeout: float = 60.0,
+    headers: dict[str, str] | None = None,
+    **kwargs,
+) -> JxlReader:
+    """Open a remote JPEG XL stream via HTTPS.
+
+    libjxl wants the whole stream up front, so this issues a single
+    GET and passes the bytes through to :class:`JxlReader`. For
+    container formats with tile/strip random-access (TIFF, NDTiff)
+    use the per-format ``HTTPDataSource`` path which only fetches
+    the tiles the caller actually decodes.
+
+    Any kwargs accepted by :func:`open` are forwarded.
+    """
+    from ._tiff_http import http_fetch_all
+
+    data = http_fetch_all(url, timeout=timeout, headers=headers)
+    return JxlReader(data, **kwargs)
+
+
 def read(src: Any, **kwargs) -> np.ndarray:
     """Decode a JPEG XL source to a single ndarray (multi-frame -> stacked).
 
@@ -155,10 +178,19 @@ def write(
     numthreads: int | None = None,
     animation: bool = False,
     container: bool = False,
+    intensity_target: float | None = None,
+    icc_profile: bytes | None = None,
 ) -> bytes | None:
     """Encode `arr` as JPEG XL.
 
     `dest` may be a path, file-like, or None (in-memory: returns bytes).
+
+    `intensity_target` (nits): brightness anchor written into the JXL
+    basic-info. Required for linear-light HDR files to be recognized as
+    HDR — set to the nit level corresponding to the peak encoded value
+    (e.g. 1200 for an scRGB-style file where 1.0 = SDR diffuse white at
+    100 nits and the file holds up to 12x SDR). Default (None) uses
+    libjxl's per-transfer default.
     """
     return encode(
         arr,
@@ -172,6 +204,8 @@ def write(
         numthreads=numthreads,
         animation=animation,
         container=container,
+        intensity_target=intensity_target,
+        icc_profile=icc_profile,
     )
 
 
