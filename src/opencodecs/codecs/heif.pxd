@@ -98,8 +98,13 @@ cdef extern from 'heif_shim.h' nogil:
         int width, int height, int bit_depth,
     )
 
-    # NCLX color profile (BT.2100 HLG / PQ / Display P3 / etc.)
-    ctypedef struct heif_color_profile_nclx:
+    # NCLX color profile (BT.2100 HLG / PQ / Display P3 / etc.).
+    # libheif declares this as ``struct heif_color_profile_nclx`` (no
+    # typedef). Use ``cdef struct`` so Cython references it as
+    # ``struct heif_color_profile_nclx`` in the generated C — using
+    # ``ctypedef struct`` would emit an incompatible anonymous typedef
+    # that GCC rejects with -Wincompatible-pointer-types.
+    cdef struct heif_color_profile_nclx:
         uint8_t version
         int color_primaries          # heif_color_primaries enum
         int transfer_characteristics # heif_transfer_characteristics enum
