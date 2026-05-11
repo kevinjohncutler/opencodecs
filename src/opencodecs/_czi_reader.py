@@ -85,11 +85,33 @@ _PIXEL_TYPES: dict[int, tuple[str, int]] = {
 }
 
 
+# Pixel types that CZI stores in B-G-R channel order (non-alpha) or
+# B-G-R-A (alpha at the end). When the caller passes ``as_rgb=True``,
+# decoded arrays are re-ordered to R-G-B / R-G-B-A.
+_BGR_PIXEL_TYPES = (3, 4, 8)
+_BGRA_PIXEL_TYPES = (9,)
+
+
 def _pixel_type_dtype(pt: int) -> tuple[np.dtype, int]:
     if pt not in _PIXEL_TYPES:
         raise ValueError(f"unsupported CZI pixel type {pt}")
     s, samples = _PIXEL_TYPES[pt]
     return np.dtype(s), samples
+
+
+def _bgr_to_rgb(arr: np.ndarray, pixel_type: int) -> np.ndarray:
+    """Reorder the channel axis from BGR(A) to RGB(A) in place where
+    possible. Only acts on color CZI pixel types; pass-through for
+    grayscale. The channel axis is always the last one in our decode
+    layout (we keep CZI's storage order, so axis -1 = sample/channel).
+    """
+    if pixel_type in _BGR_PIXEL_TYPES:
+        # 3-channel BGR -> RGB
+        return arr[..., ::-1]
+    if pixel_type in _BGRA_PIXEL_TYPES:
+        # 4-channel BGRA -> RGBA (alpha stays at the end)
+        return arr[..., [2, 1, 0, 3]]
+    return arr
 
 
 # ---------------------------------------------------------------------------
@@ -602,16 +624,26 @@ class CziReader(Reader):
     def __len__(self) -> int:
         return len(self.entries)
 
-    def iter_tiles(self) -> Iterator[np.ndarray]:
-        """Yield each sub-block's array in directory order (single-threaded)."""
+    def iter_tiles(self, *, as_rgb: bool = False) -> Iterator[np.ndarray]:
+        """Yield each sub-block's array in directory order (single-threaded).
+
+        ``as_rgb=True`` reorders the channel axis from CZI's native BGR
+        / BGRA storage to RGB / RGBA. Has no effect on grayscale tiles.
+        """
         for entry in self.entries:
-            yield np.squeeze(self._decode_one(entry))
+            arr = np.squeeze(self._decode_one(entry))
+            if as_rgb:
+                arr = _bgr_to_rgb(arr, entry.pixel_type)
+            yield arr
 
     # Reader ABC: iter_frames() is the canonical streaming entry point.
     iter_frames = iter_tiles
 
     def __getitem__(self, idx) -> np.ndarray:
-        """Random access to a single decoded sub-block by index."""
+        """Random access to a single decoded sub-block by index.
+
+        For RGB-channel-ordered output use :meth:`read_tile` instead.
+        """
         if isinstance(idx, slice):
             indices = range(*idx.indices(len(self.entries)))
             return np.stack(
@@ -624,17 +656,42 @@ class CziReader(Reader):
             raise IndexError(idx)
         return np.squeeze(self._decode_one(self.entries[idx]))
 
+    def read_tile(self, idx: int, *, as_rgb: bool = False) -> np.ndarray:
+        """Read a single sub-block with optional channel re-ordering.
+
+        Same as ``self[idx]`` plus ``as_rgb`` (re-orders BGR/BGRA color
+        channels to RGB/RGBA when the sub-block is one of CZI's color
+        pixel types — 3, 4, 8, 9). Grayscale tiles pass through
+        unchanged.
+        """
+        if idx < 0:
+            idx += len(self.entries)
+        if not 0 <= idx < len(self.entries):
+            raise IndexError(idx)
+        entry = self.entries[idx]
+        arr = np.squeeze(self._decode_one(entry))
+        if as_rgb:
+            arr = _bgr_to_rgb(arr, entry.pixel_type)
+        return arr
+
     def read(
         self,
         *,
         n_workers: int | None = None,
         squeeze: bool = True,
+        as_rgb: bool = False,
     ) -> np.ndarray:
         """Decode all sub-blocks in parallel and stack along axis 0.
 
         Returns array of shape ``(n_subblocks, *tile_shape)``. With
         ``squeeze=True`` (default), singleton axes inside the tile_shape
         are dropped (typical CZI sub-blocks have many of them).
+
+        ``as_rgb=True`` reorders the channel axis from CZI's native BGR
+        / BGRA storage to RGB / RGBA. Matches ``czifile``'s default
+        decoded-pixel convention; lets callers compare outputs directly
+        without an explicit ``[..., ::-1]`` swap. Grayscale CZIs are
+        unaffected.
         """
         if not self.entries:  # pragma: no cover - empty CZI defense
             return np.empty((0,))
@@ -660,6 +717,8 @@ class CziReader(Reader):
             with ThreadPoolExecutor(max_workers=n_workers) as ex:
                 list(ex.map(_worker, range(len(self.entries))))
 
+        if as_rgb:
+            out = _bgr_to_rgb(out, first.pixel_type)
         if squeeze:
             out = np.squeeze(out)
         return out

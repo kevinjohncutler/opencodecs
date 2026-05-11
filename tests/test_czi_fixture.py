@@ -170,3 +170,71 @@ def test_czi_fixture_metadata_xml_decoded():
     )
     with oc.get_codec("czi").open(data) as r:
         assert "hello" in r.metadata_xml
+
+
+# ---------------------------------------------------------------------------
+# as_rgb=True channel-reorder support
+# ---------------------------------------------------------------------------
+
+
+def test_czi_as_rgb_helper_bgr_pixel_types():
+    """Unit test of the channel-reorder helper. CZI's Bgr24 / Bgr48 /
+    Bgr96Float (pixel types 3, 4, 8) get channels reversed; BgrA32 (9)
+    reverses first three channels and keeps alpha at the end."""
+    from opencodecs._czi_reader import _bgr_to_rgb
+    rng = np.random.default_rng(11)
+    bgr24 = rng.integers(0, 256, size=(8, 16, 3), dtype=np.uint8)
+    np.testing.assert_array_equal(
+        _bgr_to_rgb(bgr24, pixel_type=3), bgr24[..., ::-1],
+    )
+    # Non-color: grayscale passes through
+    gray = rng.integers(0, 256, size=(8, 16), dtype=np.uint8)
+    np.testing.assert_array_equal(_bgr_to_rgb(gray, pixel_type=0), gray)
+    # BGRA32: reverse first 3 channels, keep alpha last
+    bgra = rng.integers(0, 256, size=(8, 16, 4), dtype=np.uint8)
+    swapped_a = _bgr_to_rgb(bgra, pixel_type=9)
+    np.testing.assert_array_equal(swapped_a[..., :3], bgra[..., :3][..., ::-1])
+    np.testing.assert_array_equal(swapped_a[..., 3], bgra[..., 3])
+
+
+import os
+_REAL_BGR_CZI = "/Volumes/HiprDrive/2024-08-21_microarray/24-08-21_array_scan_raw.czi"
+
+
+@pytest.mark.skipif(
+    not os.path.exists(_REAL_BGR_CZI),
+    reason="real Bgr24 lab CZI not available (NAS mount)",
+)
+def test_czi_as_rgb_on_real_bgr24_file():
+    """The lab NAS pyramid CZI uses Bgr24 sub-blocks. as_rgb=True
+    on opencodecs must return pixels equal to czifile's default
+    decode (czifile re-orders BGR -> RGB on read; with as_rgb=True
+    we do the same)."""
+    czifile = pytest.importorskip("czifile")
+    r = oc.get_codec("czi").open(_REAL_BGR_CZI)
+    try:
+        e = r.entries_at_level(0)[0]
+        # czifile decodes its own way (RGB)
+        with czifile.CziFile(_REAL_BGR_CZI) as cf:
+            cf_pixels = None
+            for sb in cf.subblocks():
+                if sb.directory_entry.file_position == e.file_position:
+                    cf_pixels = np.squeeze(sb.data())
+                    break
+        assert cf_pixels is not None
+        # opencodecs with as_rgb=True
+        oc_pixels = np.squeeze(r.read_tile(0, as_rgb=True))
+        np.testing.assert_array_equal(oc_pixels, cf_pixels)
+    finally:
+        r.close()
+
+
+def test_czi_as_rgb_grayscale_unchanged():
+    """Grayscale tiles are unaffected by as_rgb=True."""
+    arr = np.arange(16 * 16, dtype=np.uint8).reshape(16, 16)
+    data = czi_bytes(arr, compression=0)
+    with oc.get_codec("czi").open(data) as r:
+        plain = np.squeeze(r.read())
+        swapped = np.squeeze(r.read(as_rgb=True))
+        np.testing.assert_array_equal(plain, swapped)
+        np.testing.assert_array_equal(plain, arr)
