@@ -32,17 +32,19 @@ class HeifCodec(Codec):
     streaming_decode = False
     parallel_decode = False
 
-    supported_dtypes = (np.uint8,)
+    supported_dtypes = (np.uint8, np.uint16)
     supports_color = True
 
     def signature(self, head: bytes) -> bool:
         return _heif_check_signature(head)
 
     def encode(self, data: Any, *, dest=None, level: int | None = None,
-               lossless: bool = False, **opts) -> bytes | None:
+               lossless: bool = False, color=None,
+               bit_depth: int | None = None, **opts) -> bytes | None:
         if not isinstance(data, np.ndarray):
             data = np.asarray(data)
-        encoded = _heif_encode(data, level=level, lossless=lossless)
+        encoded = _heif_encode(data, level=level, lossless=lossless,
+                               color=color, bit_depth=bit_depth)
         return _write_dest(encoded, dest)
 
     def decode(self, src: Any, **opts) -> np.ndarray:

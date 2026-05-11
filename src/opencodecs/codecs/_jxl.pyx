@@ -1157,6 +1157,8 @@ cdef class JxlWriter:
         int _effort
         int _decoding_speed
         object _color_spec  # ColorSpec or None
+        float _intensity_target  # nits; 0.0 = leave libjxl default
+        bytes _icc_profile  # ICC profile bytes; if set, used instead of enum
 
         # first-frame validation cache
         object _first_dtype
@@ -1190,6 +1192,8 @@ cdef class JxlWriter:
         self._effort = 5
         self._decoding_speed = 0
         self._color_spec = None
+        self._intensity_target = 0.0
+        self._icc_profile = None
         self._first_dtype = None
         self._first_xsize = 0
         self._first_ysize = 0
@@ -1206,7 +1210,8 @@ cdef class JxlWriter:
 
     def __init__(self, dest=None, *, color=None, lossless=None,
                  quality=None, distance=None, effort=5, decoding_speed=0,
-                 numthreads=None, animation=False, container=False):
+                 numthreads=None, animation=False, container=False,
+                 intensity_target=None, icc_profile=None):
         from opencodecs.core.color import parse_color, ColorSpec, JXL_TF_GAMMA
 
         # Resolve destination. dest=None means we hold the encoded bytes
@@ -1272,6 +1277,31 @@ cdef class JxlWriter:
 
         self._animation = bool(animation)
         self._container = bool(container)
+
+        # Optional brightness anchor for HDR / linear-light files.
+        # 0.0 = leave libjxl default (255 nits for SDR transfer; we set
+        # 10000 below for PQ/HLG). For linear-tagged HDR set this to the
+        # nit level corresponding to the brightest encoded value (e.g.
+        # 1200 for a 12x-SDR-headroom file with reference SDR=100).
+        if intensity_target is None:
+            self._intensity_target = 0.0
+        else:
+            self._intensity_target = float(intensity_target)
+            if self._intensity_target < 0.0:
+                raise ValueError('intensity_target must be >= 0')
+
+        if icc_profile is None:
+            self._icc_profile = None
+        else:
+            if not isinstance(icc_profile, (bytes, bytearray, memoryview)):
+                raise TypeError(
+                    'icc_profile must be bytes-like; got '
+                    f'{type(icc_profile).__name__}')
+            self._icc_profile = bytes(icc_profile)
+            if len(self._icc_profile) < 128:
+                raise ValueError(
+                    f'icc_profile too short ({len(self._icc_profile)} bytes); '
+                    'a valid ICC profile is at least 128 bytes')
 
         # Output buffer is allocated lazily in _configure_from_first_frame
         # once we know the input size — mirrors imagecodecs's
@@ -1370,6 +1400,14 @@ cdef class JxlWriter:
             if self._basic_info.intensity_target == 0:
                 self._basic_info.intensity_target = 10000.0  # PQ peak
 
+        # User-supplied intensity_target overrides the default. This is
+        # the way to tag linear-light files as HDR (Apple EDR / scRGB
+        # convention: file value 1.0 = SDR diffuse white, intensity_target
+        # = nit level corresponding to peak encoded value, telling the OS
+        # how much headroom the file extends past SDR).
+        if self._intensity_target > 0.0:
+            self._basic_info.intensity_target = self._intensity_target
+
         # pixel format
         self._pixel_format.num_channels = <uint32_t> samples
         self._pixel_format.endianness = JXL_NATIVE_ENDIAN
@@ -1395,38 +1433,55 @@ cdef class JxlWriter:
             _raise_enc('JxlEncoderSetBasicInfo', status,
                        JxlEncoderGetError(self._encoder))
 
-        # Color encoding
-        memset(<void*> &self._color_encoding, 0, sizeof(JxlColorEncoding))
+        # Color encoding. If a raw ICC profile is supplied, embed it
+        # directly via JxlEncoderSetICCProfile and skip the enum-based
+        # SetColorEncoding (the two APIs are mutually exclusive).
+        # Note: libjxl may canonicalize the ICC profile into a CICP-
+        # equivalent enum on encode, so exotic profiles (e.g. Apple's
+        # kCGColorSpaceExtendedLinearDisplayP3) lose information. For
+        # standard profiles (sRGB, Display P3, BT.2020) the round-trip
+        # is fine.
         cdef bint is_gray = (samples in (1, 2))
-        if self._color_spec is None:
-            if jxl_dt == JXL_TYPE_UINT8:
-                JxlColorEncodingSetToSRGB(
-                    &self._color_encoding,
-                    JXL_TRUE if is_gray else JXL_FALSE)
-            else:
-                JxlColorEncodingSetToLinearSRGB(
-                    &self._color_encoding,
-                    JXL_TRUE if is_gray else JXL_FALSE)
+        cdef const uint8_t* icc_buf
+        cdef size_t icc_len
+        memset(<void*> &self._color_encoding, 0, sizeof(JxlColorEncoding))
+        if self._icc_profile is not None:
+            icc_buf = <const uint8_t*> (<bytes> self._icc_profile)
+            icc_len = <size_t> len(self._icc_profile)
+            status = JxlEncoderSetICCProfile(self._encoder, icc_buf, icc_len)
+            if status != JXL_ENC_SUCCESS:
+                _raise_enc('JxlEncoderSetICCProfile', status,
+                           JxlEncoderGetError(self._encoder))
         else:
-            self._color_encoding.color_space = (
-                JXL_COLOR_SPACE_GRAY if is_gray else JXL_COLOR_SPACE_RGB)
-            self._color_encoding.white_point = (
-                <JxlWhitePoint> self._color_spec.white_point)
-            self._color_encoding.primaries = (
-                <JxlPrimaries> self._color_spec.primaries)
-            self._color_encoding.transfer_function = (
-                <JxlTransferFunction> self._color_spec.transfer)
-            self._color_encoding.rendering_intent = (
-                <JxlRenderingIntent> self._color_spec.rendering_intent)
-            if self._color_spec.transfer == JXL_TF_GAMMA:
-                self._color_encoding.gamma = (
-                    <double> self._color_spec.gamma)
+            if self._color_spec is None:
+                if jxl_dt == JXL_TYPE_UINT8:
+                    JxlColorEncodingSetToSRGB(
+                        &self._color_encoding,
+                        JXL_TRUE if is_gray else JXL_FALSE)
+                else:
+                    JxlColorEncodingSetToLinearSRGB(
+                        &self._color_encoding,
+                        JXL_TRUE if is_gray else JXL_FALSE)
+            else:
+                self._color_encoding.color_space = (
+                    JXL_COLOR_SPACE_GRAY if is_gray else JXL_COLOR_SPACE_RGB)
+                self._color_encoding.white_point = (
+                    <JxlWhitePoint> self._color_spec.white_point)
+                self._color_encoding.primaries = (
+                    <JxlPrimaries> self._color_spec.primaries)
+                self._color_encoding.transfer_function = (
+                    <JxlTransferFunction> self._color_spec.transfer)
+                self._color_encoding.rendering_intent = (
+                    <JxlRenderingIntent> self._color_spec.rendering_intent)
+                if self._color_spec.transfer == JXL_TF_GAMMA:
+                    self._color_encoding.gamma = (
+                        <double> self._color_spec.gamma)
 
-        status = JxlEncoderSetColorEncoding(
-            self._encoder, &self._color_encoding)
-        if status != JXL_ENC_SUCCESS:
-            _raise_enc('JxlEncoderSetColorEncoding', status,
-                       JxlEncoderGetError(self._encoder))
+            status = JxlEncoderSetColorEncoding(
+                self._encoder, &self._color_encoding)
+            if status != JXL_ENC_SUCCESS:
+                _raise_enc('JxlEncoderSetColorEncoding', status,
+                           JxlEncoderGetError(self._encoder))
 
         # Frame settings
         self._frame_settings = JxlEncoderFrameSettingsCreate(
@@ -1750,11 +1805,18 @@ cdef class JxlWriter:
 
 def encode(arr, *, color=None, lossless=None, quality=None, distance=None,
            effort=5, decoding_speed=0, numthreads=None, animation=False,
-           container=False, dest=None):
+           container=False, intensity_target=None, icc_profile=None,
+           dest=None):
     """Encode a single ndarray (or animation stack) to JPEG XL bytes.
 
     For a single still image, pass a 2D / 3D array. For an animation stack
     pass a (T, Y, X[, C]) array and animation=True.
+
+    `intensity_target` (nits) populates the JXL basic-info brightness anchor.
+    Most useful for linear-light HDR: set to the peak nit level represented
+    by the brightest encoded value so the decoder knows the file extends
+    past SDR. Default (None / 0) leaves libjxl's standard fallback (255 for
+    SDR transfer; 10000 for PQ/HLG).
     """
     cdef cnp.ndarray a = np.asarray(arr)
 
@@ -1766,6 +1828,8 @@ def encode(arr, *, color=None, lossless=None, quality=None, distance=None,
             distance=distance, effort=effort,
             decoding_speed=decoding_speed, numthreads=numthreads,
             animation=True, container=container,
+            intensity_target=intensity_target,
+            icc_profile=icc_profile,
         ) as w:
             for i in range(a.shape[0]):
                 w.write_frame(
@@ -1778,6 +1842,7 @@ def encode(arr, *, color=None, lossless=None, quality=None, distance=None,
         dest, color=color, lossless=lossless, quality=quality,
         distance=distance, effort=effort, decoding_speed=decoding_speed,
         numthreads=numthreads, animation=False, container=container,
+        intensity_target=intensity_target,
     ) as w:
         w.write_frame(a, is_last=True)
         return w.close()
