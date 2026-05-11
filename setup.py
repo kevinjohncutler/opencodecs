@@ -690,6 +690,15 @@ extensions = [
         include_dirs=[str(PKG_CODECS)],
         language="c",
     ),
+    # NDTiff index parser — Cython nogil walk of the Micro-Manager
+    # NDTiff.index binary side-file. No external library; frame
+    # pixel reads go through os.pread + opencodecs._tiff.
+    Extension(
+        name="opencodecs.codecs._ndtiff",
+        sources=["src/opencodecs/codecs/_ndtiff.pyx"],
+        include_dirs=[str(PKG_CODECS)],
+        language="c",
+    ),
     # pcodec (cpcodec): Rust cdylib built via cargo into per-user cache.
     Extension(
         name="opencodecs.codecs._pcodec",
