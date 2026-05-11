@@ -203,6 +203,33 @@ def test_writer_compression_reduces_size(tmp_path, compression):
     assert p_cmp.stat().st_size < p_raw.stat().st_size
 
 
+@pytest.mark.parametrize("n_workers", [1, 2, 4])
+def test_writer_parallel_encode_byte_identical(tmp_path, n_workers):
+    """write_page with N parallel encoder threads must produce a file
+    byte-identical to the serial path. Encodes run in parallel but
+    the writer drains them in submission order — only scheduling
+    changes, not the on-disk layout."""
+    _need_tiff()
+    rng = np.random.default_rng(42)
+    arr = rng.integers(0, 4000, size=(1024, 1024), dtype=np.uint16)
+
+    serial = tmp_path / "serial.tif"
+    with TiffWriter(serial) as w:
+        w.write_page(arr, tile=(256, 256), compression="zstd",
+                     compression_level=1, n_workers=1)
+
+    par = tmp_path / f"par_{n_workers}.tif"
+    with TiffWriter(par) as w:
+        w.write_page(arr, tile=(256, 256), compression="zstd",
+                     compression_level=1, n_workers=n_workers)
+
+    assert serial.read_bytes() == par.read_bytes()
+    # Sanity: still readable
+    with TiffStream(str(par)) as r:
+        back = r.read()
+    np.testing.assert_array_equal(back, arr)
+
+
 def test_writer_horizontal_predictor_roundtrip(tmp_path):
     _need_tiff()
     p = tmp_path / "pred2.tif"

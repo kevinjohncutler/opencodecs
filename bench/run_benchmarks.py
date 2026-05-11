@@ -890,11 +890,19 @@ def bench_tiff_write_64mb():
         0, 4000, size=(2048, 2048), dtype=np.uint16,
     )
 
-    def oc_fn():
+    def oc_fn_serial():
         buf = io.BytesIO()
         with TiffWriter(buf) as w:
             w.write_page(arr, tile=(256, 256),
-                         compression="zstd", compression_level=1)
+                         compression="zstd", compression_level=1,
+                         n_workers=1)
+
+    def oc_fn_parallel():
+        buf = io.BytesIO()
+        with TiffWriter(buf) as w:
+            w.write_page(arr, tile=(256, 256),
+                         compression="zstd", compression_level=1,
+                         n_workers=None)   # auto = min(cpu, 8)
 
     def oc_fn_none():
         buf = io.BytesIO()
@@ -905,18 +913,23 @@ def bench_tiff_write_64mb():
         buf = io.BytesIO()
         _tifffile.imwrite(buf, arr, tile=(256, 256), compression="zstd")
 
-    oc_t = _time_fn(oc_fn, n=5)
+    oc_t = _time_fn(oc_fn_parallel, n=5)
+    oc_serial_t = _time_fn(oc_fn_serial, n=5)
     oc_none_t = _time_fn(oc_fn_none, n=5)
     tf_t = _time_fn(tf_fn, n=5)
     raw_mb = arr.nbytes / 1e6
     return {
-        "opencodecs_zstd_l1": oc_t,
+        "opencodecs": oc_t,    # canonical key — the recommended default
+        "opencodecs_zstd_l1_serial": oc_serial_t,
         "opencodecs_none": oc_none_t,
         "reference": {"tifffile_zstd": tf_t},
-        "speedup_vs_tifffile_zstd": tf_t["median_ms"] / oc_t["median_ms"],
+        "speedup_vs_tifffile": tf_t["median_ms"] / oc_t["median_ms"],
+        "parallel_speedup_over_serial":
+            oc_serial_t["median_ms"] / oc_t["median_ms"],
         "compress_overhead": oc_t["median_ms"] / oc_none_t["median_ms"],
         "raw_mb": raw_mb,
-        "mb_per_s_zstd": raw_mb / (oc_t["median_ms"] / 1000),
+        "mb_per_s_zstd_parallel": raw_mb / (oc_t["median_ms"] / 1000),
+        "mb_per_s_zstd_serial": raw_mb / (oc_serial_t["median_ms"] / 1000),
         "mb_per_s_none": raw_mb / (oc_none_t["median_ms"] / 1000),
     }
 

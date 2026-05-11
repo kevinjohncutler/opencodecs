@@ -309,6 +309,7 @@ class TiffWriter:
         software: str | None = None,
         resolution: tuple[float, float] | None = None,
         extra_tags: list[tuple[int, int, tuple]] | None = None,
+        n_workers: int | None = None,
     ) -> dict:
         """Encode + emit one IFD for ``arr``.
 
@@ -352,6 +353,15 @@ class TiffWriter:
             ``values`` is a tuple matching the type_code (e.g.
             ``(123,)`` for one SHORT, ``("hello",)`` for ASCII).
             See module-level ``T_SHORT`` etc. for codes.
+        n_workers : int or None
+            Parallel encoder thread count for compressed writes. The
+            on-disk byte layout is identical regardless of worker
+            count — encodes run in parallel but the writer thread
+            drains them in submission order. ``None`` picks
+            ``min(cpu_count, 8)`` when there are at least 2 segments
+            and compression is on; ``1`` forces the serial path.
+            Uncompressed writes always use the serial path (no
+            encode work to parallelize).
 
         Returns
         -------
@@ -476,6 +486,36 @@ class TiffWriter:
                 start = y0 * row_bytes
                 encoded_segments.append(flat[start:start + n])
                 byte_counts.append(n)
+        elif (not cmp_is_none) and n_segments >= 2 and n_workers != 1:
+            # Parallel encode path. Same pattern as NDTiffWriter:
+            # submit segment encodes to a threadpool, drain in
+            # submission order on the writer thread. Output bytes
+            # are identical to the serial path (we use the same
+            # encode function; only scheduling changes).
+            if n_workers is None:
+                _nw = min(os.cpu_count() or 1, 8)
+            else:
+                _nw = max(1, int(n_workers))
+            seg_list = list(segments)
+
+            def _encode_one(seg):
+                if predictor == 2:
+                    seg = np.ascontiguousarray(seg).copy()
+                    _apply_horizontal_predictor(seg)
+                return self._encode_segment_bytes(
+                    seg, cmp_code, compression_level,
+                )
+
+            from concurrent.futures import ThreadPoolExecutor
+            with ThreadPoolExecutor(
+                max_workers=_nw,
+                thread_name_prefix="tiff-encode",
+            ) as ex:
+                futures = [ex.submit(_encode_one, seg) for seg in seg_list]
+                for fut in futures:
+                    encoded = fut.result()
+                    encoded_segments.append(encoded)
+                    byte_counts.append(len(encoded))
         else:
             for seg in segments:
                 # seg arrives as a contiguous (h, w[, c]) ndarray.
