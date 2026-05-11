@@ -408,6 +408,54 @@ def test_ndtiff_writer_compression_reduces_size(tmp_path):
     )
 
 
+@pytest.mark.parametrize("n_workers", [1, 2, 4])
+def test_ndtiff_writer_parallel_write_many_round_trip(tmp_path, n_workers):
+    """write_many with N parallel encode threads must produce a file
+    indistinguishable from the serial path (same on-disk byte layout
+    and the same per-frame index records)."""
+    from opencodecs._ndtiff_writer import NDTiffWriter
+
+    rng = np.random.default_rng(11)
+    yy, xx = np.indices((72, 96))
+    frames = [(200 + 0.3 * yy + 0.7 * xx
+               + rng.integers(0, 50, (72, 96), dtype=np.uint16)
+               + i * 4).astype(np.uint16) for i in range(12)]
+
+    # Serial (n_workers=1) is the ground truth.
+    serial_dir = tmp_path / "serial"
+    with NDTiffWriter(serial_dir, compression="zstd",
+                      compression_level=1) as w:
+        recs_serial = w.write_many(
+            (({"z": i}, a, {"i": i}) for i, a in enumerate(frames)),
+            n_workers=1,
+        )
+
+    # Parallel.
+    par_dir = tmp_path / f"par_{n_workers}"
+    with NDTiffWriter(par_dir, compression="zstd",
+                      compression_level=1) as w:
+        recs_par = w.write_many(
+            (({"z": i}, a, {"i": i}) for i, a in enumerate(frames)),
+            n_workers=n_workers,
+        )
+
+    # Index records must be identical (same offsets, sizes, axes).
+    assert recs_serial == recs_par
+    # Stack file bytes must be identical (parallel pipeline is just a
+    # scheduling change; the on-disk layout is unchanged).
+    serial_bytes = (serial_dir / "NDTiffStack.tif").read_bytes()
+    par_bytes = (par_dir / "NDTiffStack.tif").read_bytes()
+    assert serial_bytes == par_bytes
+    # NDTiff.index too.
+    assert ((serial_dir / "NDTiff.index").read_bytes()
+            == (par_dir / "NDTiff.index").read_bytes())
+
+    # And round-trips back.
+    with NDTiffDataset(par_dir) as ds:
+        for i, expected in enumerate(frames):
+            np.testing.assert_array_equal(ds.read_frame(z=i), expected)
+
+
 @pytest.mark.skipif(not _HAS_NDSTORAGE, reason="ndstorage not installed")
 def test_ndtiff_writer_compatible_with_ndstorage(tmp_path):
     """Files written by our writer must round-trip through ndstorage."""
