@@ -748,12 +748,126 @@ def bench_h2h_qoi():
 
 @workload("h2h_lerc_4mp_u16", tier="fast", group="h2h_image")
 def bench_h2h_lerc():
-    # Known issue: opencodecs and imagecodecs each statically link
-    # their own libLerc, and the duplicated symbols crash when both
-    # are called from the same process. The fix is a separate-process
-    # bench (TODO); for now we just skip so the rest of the head-to-
-    # head row keeps running.
-    return {"skipped": "lerc static-library symbol clash with imagecodecs (cross-process bench TODO)"}
+    """LERC head-to-head — run each library in a separate Python
+    subprocess to avoid the libLerc symbol clash that crashes the
+    second-loaded copy.
+
+    opencodecs and imagecodecs each statically link their own libLerc.
+    When both extension modules are loaded in the same process, the
+    duplicated symbols (`Lerc_Encode`, `Lerc_Decode`, internal globals)
+    resolve to the wrong implementation on the second-loaded copy and
+    we abort with SIGABRT. The fix is to time each library in its own
+    Python interpreter.
+    """
+    if _imagecodecs is None:
+        return {"skipped": "imagecodecs not installed"}
+
+    # Generate the source array once and serialize it so both
+    # subprocesses see the same input bytes.
+    raw_mb = 8.0      # 2048×2048 u16 = 8 MiB
+    arr = np.random.default_rng(0).integers(
+        0, 4000, size=(2048, 2048), dtype=np.uint16,
+    )
+    payload = arr.tobytes()
+    shape = arr.shape
+
+    enc_script = """
+import sys, time, statistics, numpy as np
+shape = tuple({shape})
+arr = np.frombuffer(sys.stdin.buffer.read(), dtype=np.uint16).reshape(shape)
+{import_line}
+samples = []
+# Warmup
+encode_fn(arr)
+for _ in range(5):
+    t0 = time.perf_counter()
+    enc = encode_fn(arr)
+    samples.append((time.perf_counter() - t0) * 1000)
+print('SAMPLES', *samples, 'BYTES', len(enc))
+"""
+    dec_script = """
+import sys, time, statistics, numpy as np
+shape = tuple({shape})
+arr = np.frombuffer(sys.stdin.buffer.read(), dtype=np.uint16).reshape(shape)
+{import_line}
+enc = encode_fn(arr)
+samples = []
+decode_fn(enc)
+for _ in range(5):
+    t0 = time.perf_counter()
+    decode_fn(enc)
+    samples.append((time.perf_counter() - t0) * 1000)
+print('SAMPLES', *samples)
+"""
+
+    def _run_subprocess(script: str, import_line: str) -> dict:
+        import subprocess as sp
+        py = sys.executable
+        proc = sp.run(
+            [py, "-c", script.format(shape=list(shape), import_line=import_line)],
+            input=payload,
+            capture_output=True, timeout=120,
+        )
+        if proc.returncode != 0:
+            raise RuntimeError(
+                f"LERC subprocess failed: rc={proc.returncode}\n"
+                f"stderr={proc.stderr.decode('utf-8', 'replace')[:500]}"
+            )
+        out = proc.stdout.decode().strip().split()
+        i = out.index("SAMPLES") + 1
+        samples = []
+        for tok in out[i:]:
+            try:
+                samples.append(float(tok))
+            except ValueError:
+                break
+        filtered = _hampel_filter(samples)
+        if not filtered:
+            filtered = samples
+        sorted_f = sorted(filtered)
+        med = statistics.median(filtered)
+        iqr = (sorted_f[3 * len(sorted_f) // 4]
+               - sorted_f[len(sorted_f) // 4]) if len(sorted_f) >= 4 else 0.0
+        return {
+            "median_ms": med, "min_ms": min(filtered), "max_ms": max(filtered),
+            "iqr_ms": iqr, "noisy": (med < 0.5) or (med > 0 and iqr/med > 0.25),
+            "n_runs_total": len(samples),
+            "n_runs_after_filter": len(filtered),
+            "all_samples_ms": samples,
+        }
+
+    OC = ("from opencodecs.codecs._lerc import encode as encode_fn, "
+          "decode as decode_fn")
+    IC = ("import imagecodecs; "
+          "encode_fn = imagecodecs.lerc_encode; "
+          "decode_fn = imagecodecs.lerc_decode")
+
+    oc_e = _run_subprocess(enc_script, OC)
+    ic_e = _run_subprocess(enc_script, IC)
+    oc_d = _run_subprocess(dec_script, OC)
+    ic_d = _run_subprocess(dec_script, IC)
+    return {
+        "raw_mb": raw_mb,
+        "opencodecs_encode_ms": oc_e["median_ms"],
+        "imagecodecs_encode_ms": ic_e["median_ms"],
+        "speedup_vs_imagecodecs_encode":
+            ic_e["median_ms"] / oc_e["median_ms"],
+        "opencodecs_decode_ms": oc_d["median_ms"],
+        "imagecodecs_decode_ms": ic_d["median_ms"],
+        "speedup_vs_imagecodecs_decode":
+            ic_d["median_ms"] / oc_d["median_ms"],
+        "opencodecs_encode_mb_per_s": raw_mb / (oc_e["median_ms"] / 1000),
+        "imagecodecs_encode_mb_per_s": raw_mb / (ic_e["median_ms"] / 1000),
+        "opencodecs_decode_mb_per_s": raw_mb / (oc_d["median_ms"] / 1000),
+        "imagecodecs_decode_mb_per_s": raw_mb / (ic_d["median_ms"] / 1000),
+        "opencodecs": oc_e,
+        "reference": {"imagecodecs_encode": ic_e,
+                      "imagecodecs_decode": ic_d,
+                      "opencodecs_decode": oc_d},
+        "speedup_vs_imagecodecs":
+            ((ic_e["median_ms"] + ic_d["median_ms"]) /
+             (oc_e["median_ms"] + oc_d["median_ms"])),
+    }
 
 
 @workload("h2h_jxl_4mp_rgb", tier="fast", group="h2h_image")

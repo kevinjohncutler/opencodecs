@@ -62,3 +62,4 @@
 {"timestamp": "20260511T085359Z", "git_rev": "5272e16", "name": "h2h_qoi_4mp_rgb", "median_ms": 16.480395977851003, "min_ms": 16.46487496327609, "max_ms": 16.51804195716977, "noisy": false}
 {"timestamp": "20260511T085359Z", "git_rev": "5272e16", "name": "h2h_jxl_4mp_rgb", "median_ms": 119.28937502671033, "min_ms": 112.4951250385493, "max_ms": 123.78145905677229, "noisy": false}
 {"timestamp": "20260511T090427Z", "git_rev": "a18b20d", "name": "tiff_write_64mb", "median_ms": 4.5776249608024955, "min_ms": 4.541083006188273, "max_ms": 4.647833062335849, "noisy": false}
+{"timestamp": "20260511T225944Z", "git_rev": "46cca77", "name": "h2h_lerc_4mp_u16", "median_ms": 47.89041599724442, "min_ms": 46.698124962858856, "max_ms": 48.50141704082489, "noisy": false}
