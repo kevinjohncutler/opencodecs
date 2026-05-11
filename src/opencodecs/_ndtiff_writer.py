@@ -103,12 +103,28 @@ class NDTiffWriter:
         # Bit depth for pixel_type encoding into the index. ``"auto"``
         # picks 8 vs 16 from the dtype of the first frame.
         bit_depth: int | str = "auto",
+        # Per-frame compression. ``"none"`` (default) emits raw
+        # pixels, matching ndstorage's behavior and giving the
+        # fastest writer. Set ``"deflate"`` / ``"zstd"`` / ``"jxl"``
+        # / etc. (see opencodecs.core.segment_compression for the
+        # full list) for compressed frames. The encoded bytes go
+        # into the TIFF strip data and the index records the
+        # corresponding TIFF compression code.
+        compression: str | int = "none",
+        compression_level: int | None = None,
     ):
         self._dir = Path(directory)
         self._dir.mkdir(parents=True, exist_ok=True)
         self._base = base_name
         self._summary_bytes = json.dumps(summary or {}).encode("utf-8")
         self._bit_depth_hint = bit_depth
+
+        from .core.segment_compression import (
+            codec_name_to_code, NONE as _CMP_NONE,
+        )
+        self._compression_code = codec_name_to_code(compression)
+        self._compression_level = compression_level
+        self._compression_is_none = self._compression_code == _CMP_NONE
 
         # State.
         self._stack_index = 0           # 0 → NDTiffStack.tif, then _1, _2, ...
@@ -274,13 +290,36 @@ class NDTiffWriter:
 
         # Get a contiguous, host-endian buffer-protocol object for
         # the file. Always little-endian per the NDTiff "II" header.
-        pixel_bytes = self._pixel_bytes(pixels, rgb)
-        # `len()` on an ndarray returns shape[0], not nbytes — use the
-        # buffer protocol's reported byte length.
-        bytes_per_image = (
-            pixel_bytes.nbytes if isinstance(pixel_bytes, np.ndarray)
-            else len(pixel_bytes)
-        )
+        raw_pixels = self._pixel_bytes(pixels, rgb)
+
+        # Compress per-frame when configured. None of the codecs we
+        # dispatch to materially benefit from streaming (they all want
+        # the full pixel buffer in one shot), so this is just one
+        # encode call per frame on the writer thread. For parallel
+        # encode pipelines, the caller can pre-encode and feed bytes
+        # via a custom hook; not implemented yet.
+        if self._compression_is_none:
+            pixel_bytes = raw_pixels
+            bytes_per_image = (
+                raw_pixels.nbytes if isinstance(raw_pixels, np.ndarray)
+                else len(raw_pixels)
+            )
+            tiff_compression_tag = 1   # NONE
+        else:
+            from .core.segment_compression import encode_segment
+            # Pass ndarray buffer-protocol object → underlying codec
+            # accepts via memoryview; no .tobytes() copy.
+            if isinstance(raw_pixels, np.ndarray):
+                raw_pixels_buf = memoryview(raw_pixels).cast("B")
+            else:
+                raw_pixels_buf = raw_pixels
+            pixel_bytes = encode_segment(
+                raw_pixels_buf,
+                self._compression_code,
+                level=self._compression_level,
+            )
+            bytes_per_image = len(pixel_bytes)
+            tiff_compression_tag = self._compression_code
 
         if isinstance(metadata, dict):
             md_bytes = json.dumps(metadata).encode("utf-8")
@@ -320,7 +359,8 @@ class NDTiffWriter:
         e += _pack_ifd_entry(ifd_bytes, e, _TAG_BITS_PER_SAMPLE,
                              3, 3 if rgb else 1,
                              bps_off if rgb else (8 if bit_depth == 8 else 16))
-        e += _pack_ifd_entry(ifd_bytes, e, _TAG_COMPRESSION, 3, 1, 1)  # NONE
+        e += _pack_ifd_entry(ifd_bytes, e, _TAG_COMPRESSION,
+                             3, 1, tiff_compression_tag)
         e += _pack_ifd_entry(ifd_bytes, e, _TAG_PHOTOMETRIC, 3, 1, 2 if rgb else 1)
         e += _pack_ifd_entry(ifd_bytes, e, _TAG_STRIP_OFFSETS, 4, 1, pixel_off)
         e += _pack_ifd_entry(ifd_bytes, e, _TAG_SAMPLES_PER_PIXEL,
@@ -377,7 +417,7 @@ class NDTiffWriter:
         self._index_records.extend(fn_bytes)
         self._index_records.extend(struct.pack(
             "<IIIIIIII",
-            pixel_off, w, h, pixel_type, 0,
+            pixel_off, w, h, pixel_type, tiff_compression_tag,
             metadata_off, len(md_bytes), 0,
         ))
         self._frame_count += 1
