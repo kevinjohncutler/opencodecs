@@ -49,6 +49,7 @@ from .jxl import (
     iter_frames as jxl_iter_frames,
     open as jxl_open,
 )
+from ._tiff_writer import TiffWriter, imwrite as tiff_imwrite
 
 
 def read(src: Any, *, format: str | None = None, **opts):
@@ -104,6 +105,7 @@ __all__ = [
     "jxl", "parallel",
     "JxlReader", "JxlWriter",
     "jxl_encode", "jxl_decode", "jxl_iter_frames", "jxl_open",
+    "TiffWriter", "tiff_imwrite",
 ]
 
 __version__ = "0.2.0.dev0"

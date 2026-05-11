@@ -440,12 +440,75 @@ def bench_ndtiff_write_compressed():
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 
+    def oc_fn_zstd_parallel():
+        tmp = tempfile.mkdtemp()
+        try:
+            with NDTiffWriter(tmp, compression="zstd",
+                              compression_level=1) as w:
+                # n_workers=None → auto = min(cpu_count, 8)
+                w.write_many((({"z": i}, a, None)
+                              for i, a in enumerate(frames)),
+                             n_workers=None)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
     none_t = _time_fn(oc_fn_none, n=5)
     zstd_t = _time_fn(oc_fn_zstd, n=5)
+    zstd_par_t = _time_fn(oc_fn_zstd_parallel, n=5)
     return {
         "opencodecs_none": none_t,
         "opencodecs_zstd_l1": zstd_t,
+        "opencodecs_zstd_l1_parallel": zstd_par_t,
         "encode_overhead": zstd_t["median_ms"] / none_t["median_ms"],
+        "parallel_encode_overhead": zstd_par_t["median_ms"] / none_t["median_ms"],
+        "parallel_speedup": zstd_t["median_ms"] / zstd_par_t["median_ms"],
+        "bytes_written_raw": N * H * W * 2,
+    }
+
+
+@workload("ndtiff_write_compressed_zstd_large", tier="fast",
+          group="ndtiff_compress")
+def bench_ndtiff_write_compressed_large():
+    """Same as ndtiff_write_compressed_zstd but with realistic
+    2048×2048 frames. Here each encode is ~3-5 ms — well above thread
+    overhead — so the parallel pipeline should land a real speedup."""
+    from opencodecs._ndtiff_writer import NDTiffWriter
+
+    H, W, N = 2048, 2048, 8
+    rng = np.random.default_rng(0)
+    yy, xx = np.indices((H, W))
+    frames = [(500 + 0.5 * yy + 0.3 * xx
+               + rng.normal(0, 5, (H, W)) + i * 0.1).astype(np.uint16)
+              for i in range(N)]
+
+    def oc_fn_zstd_serial():
+        tmp = tempfile.mkdtemp()
+        try:
+            with NDTiffWriter(tmp, compression="zstd",
+                              compression_level=1) as w:
+                w.write_many((({"z": i}, a, None)
+                              for i, a in enumerate(frames)),
+                             n_workers=1)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def oc_fn_zstd_parallel():
+        tmp = tempfile.mkdtemp()
+        try:
+            with NDTiffWriter(tmp, compression="zstd",
+                              compression_level=1) as w:
+                w.write_many((({"z": i}, a, None)
+                              for i, a in enumerate(frames)),
+                             n_workers=None)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    serial_t = _time_fn(oc_fn_zstd_serial, n=5)
+    par_t = _time_fn(oc_fn_zstd_parallel, n=5)
+    return {
+        "opencodecs": serial_t,
+        "opencodecs_zstd_l1_parallel": par_t,
+        "speedup_vs_serial": serial_t["median_ms"] / par_t["median_ms"],
         "bytes_written_raw": N * H * W * 2,
     }
 
@@ -502,9 +565,117 @@ def bench_tier1_codecs():
     return results
 
 
+@workload("tiff_write_64mb", tier="fast", group="tiff_write")
+def bench_tiff_write_64mb():
+    """Write a 4K×4K u16 image (~32 MB) as tiled+zstd TIFF — opencodecs
+    vs tifffile.
+
+    Fast-tier scale; main signal is per-write latency rather than
+    throughput. The medium-tier ``tiff_write_1gb`` exercises sustained
+    throughput.
+    """
+    if _tifffile is None:
+        return {"skipped": "tifffile not installed"}
+    from opencodecs._tiff_writer import TiffWriter
+    import opencodecs as oc
+    if not oc.has_codec("tiff"):
+        return {"skipped": "tiff codec not built"}
+
+    arr = np.random.default_rng(0).integers(
+        0, 4000, size=(2048, 2048), dtype=np.uint16,
+    )
+
+    def oc_fn():
+        buf = io.BytesIO()
+        with TiffWriter(buf) as w:
+            w.write_page(arr, tile=(256, 256),
+                         compression="zstd", compression_level=1)
+
+    def oc_fn_none():
+        buf = io.BytesIO()
+        with TiffWriter(buf) as w:
+            w.write_page(arr, tile=(256, 256), compression="none")
+
+    def tf_fn():
+        buf = io.BytesIO()
+        _tifffile.imwrite(buf, arr, tile=(256, 256), compression="zstd")
+
+    oc_t = _time_fn(oc_fn, n=5)
+    oc_none_t = _time_fn(oc_fn_none, n=5)
+    tf_t = _time_fn(tf_fn, n=5)
+    raw_mb = arr.nbytes / 1e6
+    return {
+        "opencodecs_zstd_l1": oc_t,
+        "opencodecs_none": oc_none_t,
+        "reference": {"tifffile_zstd": tf_t},
+        "speedup_vs_tifffile_zstd": tf_t["median_ms"] / oc_t["median_ms"],
+        "compress_overhead": oc_t["median_ms"] / oc_none_t["median_ms"],
+        "raw_mb": raw_mb,
+        "mb_per_s_zstd": raw_mb / (oc_t["median_ms"] / 1000),
+        "mb_per_s_none": raw_mb / (oc_none_t["median_ms"] / 1000),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Medium-tier workloads (placeholders for the next session)
 # ---------------------------------------------------------------------------
+
+
+@workload("tiff_write_1gb", tier="medium", group="tiff_write")
+def bench_tiff_write_1gb():
+    """Write an 8K×8K u16 (~128 MB) image as tiled TIFF — sustained
+    throughput vs tifffile. Repeated to land near 1 GB total written."""
+    if _tifffile is None:
+        return {"skipped": "tifffile not installed"}
+    from opencodecs._tiff_writer import TiffWriter
+
+    arr = np.random.default_rng(0).integers(
+        0, 4000, size=(8192, 8192), dtype=np.uint16,
+    )
+
+    def oc_fn():
+        tmp = tempfile.NamedTemporaryFile(suffix=".tif", delete=False).name
+        try:
+            with TiffWriter(tmp) as w:
+                w.write_page(arr, tile=(256, 256), compression="none")
+        finally:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+
+    def oc_fn_zstd():
+        tmp = tempfile.NamedTemporaryFile(suffix=".tif", delete=False).name
+        try:
+            with TiffWriter(tmp) as w:
+                w.write_page(arr, tile=(256, 256),
+                             compression="zstd", compression_level=1)
+        finally:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+
+    def tf_fn():
+        tmp = tempfile.NamedTemporaryFile(suffix=".tif", delete=False).name
+        try:
+            _tifffile.imwrite(tmp, arr, tile=(256, 256), compression=None)
+        finally:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+
+    oc_t = _time_fn(oc_fn, n=3)
+    oc_zstd_t = _time_fn(oc_fn_zstd, n=3)
+    tf_t = _time_fn(tf_fn, n=3)
+    return {
+        "opencodecs_none": oc_t,
+        "opencodecs_zstd_l1": oc_zstd_t,
+        "reference": {"tifffile_none": tf_t},
+        "speedup_vs_tifffile_none": tf_t["median_ms"] / oc_t["median_ms"],
+        "bytes_written": int(arr.nbytes),
+    }
 
 
 @workload("tiff_full_decode_1gb", tier="medium", group="tiff")

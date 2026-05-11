@@ -156,14 +156,112 @@ class NDTiffWriter:
     def write_many(
         self,
         frames: Iterable[tuple[dict, np.ndarray, dict | str | None]],
+        *,
+        n_workers: int | None = None,
     ) -> list[dict]:
         """Write N frames; single flush at the end. Returns the index
-        records for each frame written."""
-        recs = []
+        records for each frame written.
+
+        Parameters
+        ----------
+        frames : iterable of (axes, pixels, metadata)
+            The frames to write. Order is preserved end-to-end.
+        n_workers : int or None
+            For compressed writers (``compression != "none"``), the
+            number of parallel encoder threads to use. ``None``
+            picks ``min(cpu_count, 8)``. Pass ``1`` to force the
+            serial path. Uncompressed writers always use the serial
+            path (encode is a noop — parallelism would only add
+            overhead). Order of writes to disk is preserved
+            regardless of ``n_workers``: the writer thread drains
+            encodes in submission order so the ndstorage reader and
+            our reader see the exact same on-disk layout as the
+            serial path.
+        """
+        frames_list = list(frames)
+        # Decide whether to use the parallel pipeline.
+        if (self._compression_is_none
+                or len(frames_list) < 2
+                or n_workers == 1):
+            recs = []
+            with self._lock:
+                for axes, pixels, metadata in frames_list:
+                    recs.append(self._write_frame_inner(axes, pixels, metadata))
+                if self._fh is not None:
+                    self._fh.flush()
+            return recs
+
+        if n_workers is None:
+            n_workers = min(os.cpu_count() or 1, 8)
+        return self._write_many_parallel(frames_list, n_workers)
+
+    def _write_many_parallel(
+        self,
+        frames: list[tuple[dict, np.ndarray, dict | str | None]],
+        n_workers: int,
+    ) -> list[dict]:
+        """Parallel encode → serial write pipeline.
+
+        Encodes run on a thread pool (zstd / deflate / jxl / etc.
+        release the GIL during their native compress call, so threads
+        scale near-linearly on multi-core hosts). The writer thread
+        drains futures in submission order so the on-disk byte layout
+        is identical to the serial path — readers see exactly the same
+        IFD chain.
+
+        A bounded look-ahead window caps in-flight encoded bytes so
+        long batches don't grow memory unboundedly when the encoder
+        outpaces the disk writer.
+        """
+        from concurrent.futures import ThreadPoolExecutor
+        from .core.segment_compression import encode_segment
+
+        cmp_code = self._compression_code
+        cmp_level = self._compression_level
+
+        def _encode_pixels(raw_pixels):
+            if isinstance(raw_pixels, np.ndarray):
+                buf = memoryview(raw_pixels).cast("B")
+            else:
+                buf = raw_pixels
+            return encode_segment(buf, cmp_code, level=cmp_level)
+
+        recs: list[dict] = []
         with self._lock:
-            for axes, pixels, metadata in frames:
-                recs.append(self._write_frame_inner(axes, pixels, metadata))
-            # One flush at end of batch — cheaper than per-frame.
+            # Prepare each frame in main thread (no I/O, no encode).
+            # _prepare_frame extracts numpy buffers and JSON-encodes
+            # metadata; cheap and avoids holding refs to user dicts.
+            with ThreadPoolExecutor(
+                max_workers=n_workers,
+                thread_name_prefix="ndtiff-encode",
+            ) as ex:
+                window = max(n_workers * 2, 4)
+                inflight: list[tuple[dict, Any]] = []   # [(prepared, future)]
+                it = iter(frames)
+
+                def _submit_next() -> bool:
+                    try:
+                        axes, pixels, metadata = next(it)
+                    except StopIteration:
+                        return False
+                    p = self._prepare_frame(axes, pixels, metadata)
+                    fut = ex.submit(_encode_pixels, p["raw_pixels"])
+                    inflight.append((p, fut))
+                    return True
+
+                # Prime the pipeline up to the window.
+                for _ in range(window):
+                    if not _submit_next():
+                        break
+
+                while inflight:
+                    p, fut = inflight.pop(0)
+                    encoded = fut.result()
+                    recs.append(self._emit_frame(
+                        p, encoded, self._compression_code,
+                    ))
+                    _submit_next()
+
             if self._fh is not None:
                 self._fh.flush()
         return recs
@@ -270,15 +368,43 @@ class NDTiffWriter:
         pixels: np.ndarray,
         metadata: dict | str | None,
     ) -> dict:
+        """Serial write path: prepare → encode → emit, all in one go."""
+        p = self._prepare_frame(axes, pixels, metadata)
+        if self._compression_is_none:
+            return self._emit_frame(p, p["raw_pixels"], 1)
+        from .core.segment_compression import encode_segment
+        raw = p["raw_pixels"]
+        buf = memoryview(raw).cast("B") if isinstance(raw, np.ndarray) else raw
+        encoded = encode_segment(
+            buf, self._compression_code, level=self._compression_level,
+        )
+        return self._emit_frame(p, encoded, self._compression_code)
+
+    # ------------------------------------------------------------------
+    # Frame pipeline phases — separated so write_many can run the encode
+    # step in parallel threads while the writer thread emits in order.
+    # ------------------------------------------------------------------
+
+    def _prepare_frame(
+        self,
+        axes: dict[str, Any],
+        pixels: np.ndarray,
+        metadata: dict | str | None,
+    ) -> dict:
+        """Pre-encode work that doesn't touch the file: shape +
+        dtype validation, byte-order normalization, metadata JSON.
+
+        Returns a dict consumed by :meth:`_emit_frame` (and, in
+        between, by an encoder thread which only needs ``raw_pixels``).
+        """
         if self._closed:
             raise NDTiffWriterError("writer is closed")
         if pixels.ndim == 2:
             rgb = False
             h, w = pixels.shape
-            samples = 1
         elif pixels.ndim == 3 and pixels.shape[2] == 3:
             rgb = True
-            h, w, samples = pixels.shape
+            h, w, _ = pixels.shape
         else:
             raise NDTiffWriterError(
                 f"NDTiffWriter expects 2D (h,w) or 3D (h,w,3) pixels; "
@@ -288,38 +414,7 @@ class NDTiffWriter:
         if bit_depth == "auto":
             bit_depth = 8 if pixels.dtype == np.uint8 else 16
 
-        # Get a contiguous, host-endian buffer-protocol object for
-        # the file. Always little-endian per the NDTiff "II" header.
         raw_pixels = self._pixel_bytes(pixels, rgb)
-
-        # Compress per-frame when configured. None of the codecs we
-        # dispatch to materially benefit from streaming (they all want
-        # the full pixel buffer in one shot), so this is just one
-        # encode call per frame on the writer thread. For parallel
-        # encode pipelines, the caller can pre-encode and feed bytes
-        # via a custom hook; not implemented yet.
-        if self._compression_is_none:
-            pixel_bytes = raw_pixels
-            bytes_per_image = (
-                raw_pixels.nbytes if isinstance(raw_pixels, np.ndarray)
-                else len(raw_pixels)
-            )
-            tiff_compression_tag = 1   # NONE
-        else:
-            from .core.segment_compression import encode_segment
-            # Pass ndarray buffer-protocol object → underlying codec
-            # accepts via memoryview; no .tobytes() copy.
-            if isinstance(raw_pixels, np.ndarray):
-                raw_pixels_buf = memoryview(raw_pixels).cast("B")
-            else:
-                raw_pixels_buf = raw_pixels
-            pixel_bytes = encode_segment(
-                raw_pixels_buf,
-                self._compression_code,
-                level=self._compression_level,
-            )
-            bytes_per_image = len(pixel_bytes)
-            tiff_compression_tag = self._compression_code
 
         if isinstance(metadata, dict):
             md_bytes = json.dumps(metadata).encode("utf-8")
@@ -329,6 +424,31 @@ class NDTiffWriter:
             md_bytes = b"{}"
         else:
             md_bytes = bytes(metadata)
+
+        return {
+            "axes": axes, "h": h, "w": w, "rgb": rgb, "bit_depth": bit_depth,
+            "raw_pixels": raw_pixels, "md_bytes": md_bytes,
+        }
+
+    def _emit_frame(
+        self,
+        p: dict,
+        pixel_bytes,
+        tiff_compression_tag: int,
+    ) -> dict:
+        """Serialize the prepared+encoded frame to disk. Caller holds
+        ``self._lock``. Updates index records + advances file position.
+        Handles file rollover at the 4 GiB boundary.
+        """
+        axes = p["axes"]
+        h, w = p["h"], p["w"]
+        rgb = p["rgb"]
+        bit_depth = p["bit_depth"]
+        md_bytes = p["md_bytes"]
+        if isinstance(pixel_bytes, np.ndarray):
+            bytes_per_image = pixel_bytes.nbytes
+        else:
+            bytes_per_image = len(pixel_bytes)
 
         self._rollover_if_needed(bytes_per_image + len(md_bytes))
 
