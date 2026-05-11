@@ -328,7 +328,7 @@ _REAL_PYRAMID_CZI = (
 # (Originally from https://zenodo.org/records/10577186, CC-BY-4.0, ~505 MB,
 # Axioscan slide scanner output processed in ZEN.) Cached locally under
 # tests/.test_data so the test is fast and doesn't depend on the network.
-_OME_PYRAMID_CZI = ".test_data/ome_zeiss_sample.czi"
+_OME_PYRAMID_CZI = ".test_data/czi/ome_axioscan_pyramid.czi"
 
 
 @pytest.mark.skipif(
