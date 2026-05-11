@@ -23,7 +23,8 @@ from turbojpeg cimport (
     tj3Set, tj3Get, tj3Free,
     tj3Compress8, tj3DecompressHeader, tj3Decompress8,
     TJINIT_COMPRESS, TJINIT_DECOMPRESS,
-    TJPF_GRAY, TJPF_RGB, TJSAMP_GRAY, TJSAMP_444,
+    TJPF_GRAY, TJPF_RGB,
+    TJSAMP_GRAY, TJSAMP_444, TJSAMP_422, TJSAMP_420, TJSAMP_440, TJSAMP_411,
     TJPARAM_QUALITY, TJPARAM_SUBSAMP,
     TJPARAM_JPEGWIDTH, TJPARAM_JPEGHEIGHT,
 )
@@ -35,10 +36,28 @@ class JpegError(RuntimeError):
     """Raised on JPEG encode/decode failures."""
 
 
-def encode(data, *, level: int | None = None) -> bytes:
+_SUBSAMP_MAP = {
+    "444": TJSAMP_444,
+    "422": TJSAMP_422,
+    "420": TJSAMP_420,
+    "440": TJSAMP_440,
+    "411": TJSAMP_411,
+    "gray": TJSAMP_GRAY,
+    "grayscale": TJSAMP_GRAY,
+}
+
+
+def encode(data, *, level: int | None = None,
+           subsampling: object = None) -> bytes:
     """Encode a 2D or 3D uint8 array as JPEG.
 
     ``level`` is the JPEG quality 0-100 (default 75).
+    ``subsampling`` chooses the chroma subsampling for color JPEGs:
+    "420" (default — same as imagecodecs / cjpeg / every JPEG tool),
+    "422", "444", "440", "411". Higher ratios produce smaller files
+    and encode/decode faster at a small chroma-resolution cost; "444"
+    keeps full chroma. Pass ``"444"`` to match opencodecs's previous
+    behavior. Ignored for grayscale input.
     """
     cdef:
         cnp.ndarray arr
@@ -68,7 +87,18 @@ def encode(data, *, level: int | None = None) -> bytes:
         pitch = width
     elif arr.ndim == 3 and arr.shape[2] == 3:
         pf = TJPF_RGB
-        subsamp = TJSAMP_444
+        # 4:2:0 is the JPEG-encoder universal default — matches
+        # imagecodecs and cjpeg. Halves chroma data → ~2x faster
+        # encode + decode and ~2x smaller files.
+        if subsampling is None:
+            subsamp = TJSAMP_420
+        else:
+            key = str(subsampling).lower().strip()
+            if key not in _SUBSAMP_MAP:
+                raise JpegError(
+                    f'JPEG encode: unknown subsampling {subsampling!r}; '
+                    f'expected one of {sorted(_SUBSAMP_MAP)}')
+            subsamp = _SUBSAMP_MAP[key]
         height = <int> arr.shape[0]
         width = <int> arr.shape[1]
         pitch = 3 * width

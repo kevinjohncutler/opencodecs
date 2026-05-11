@@ -37,6 +37,20 @@ cdef extern from 'webp/decode.h' nogil:
         int* width, int* height,
     )
 
+    # ``Into`` variants — decode straight into a caller-provided
+    # buffer (e.g. a numpy array). Saves one malloc + memcpy vs
+    # the malloc-returning variants above.
+    uint8_t* WebPDecodeRGBInto(
+        const uint8_t* data, size_t data_size,
+        uint8_t* output_buffer, size_t output_buffer_size,
+        int output_stride,
+    )
+    uint8_t* WebPDecodeRGBAInto(
+        const uint8_t* data, size_t data_size,
+        uint8_t* output_buffer, size_t output_buffer_size,
+        int output_stride,
+    )
+
     # Need richer feature info to know if alpha is present.
     ctypedef struct WebPBitstreamFeatures:
         int width

@@ -14,7 +14,6 @@ Decode: returns (H, W, 3) RGB or (H, W, 4) RGBA.
 """
 
 from cpython.bytes cimport PyBytes_FromStringAndSize, PyBytes_AsString
-from libc.string cimport memcpy
 from libc.stdint cimport uint8_t
 
 import numpy as np
@@ -25,7 +24,7 @@ from webp cimport (
     WebPEncodeLosslessRGB, WebPEncodeLosslessRGBA,
     WebPFree,
     WebPGetFeatures, WebPBitstreamFeatures,
-    WebPDecodeRGB, WebPDecodeRGBA,
+    WebPDecodeRGBInto, WebPDecodeRGBAInto,
     VP8_STATUS_OK,
 )
 
@@ -123,6 +122,8 @@ def decode(data) -> np.ndarray:
         cnp.ndarray out
         cnp.npy_intp shape[3]
         int channels
+        size_t out_size
+        int out_stride
 
     if isinstance(data, (bytes, bytearray)):
         src = data
@@ -136,27 +137,34 @@ def decode(data) -> np.ndarray:
     if rc != VP8_STATUS_OK:
         raise WebpError(f'WebPGetFeatures failed: status {rc}')
 
+    width = features.width
+    height = features.height
     has_alpha = bool(features.has_alpha)
     channels = 4 if has_alpha else 3
+    shape[0] = height
+    shape[1] = width
+    shape[2] = channels
+    out = cnp.PyArray_EMPTY(3, shape, cnp.NPY_UINT8, 0)
+    out_stride = width * channels
+    out_size = <size_t> (out_stride * height)
 
+    # Decode straight into the numpy array's buffer — skips the
+    # malloc+memcpy step the WebPDecode{RGB,RGBA} variants would do.
     if has_alpha:
         with nogil:
-            dec_ptr = WebPDecodeRGBA(&src[0], srcsize, &width, &height)
+            dec_ptr = WebPDecodeRGBAInto(
+                &src[0], srcsize,
+                <uint8_t*> cnp.PyArray_DATA(out), out_size, out_stride,
+            )
     else:
         with nogil:
-            dec_ptr = WebPDecodeRGB(&src[0], srcsize, &width, &height)
+            dec_ptr = WebPDecodeRGBInto(
+                &src[0], srcsize,
+                <uint8_t*> cnp.PyArray_DATA(out), out_size, out_stride,
+            )
     if dec_ptr == NULL:
         raise WebpError('WebP decode failed')
-    try:
-        shape[0] = height
-        shape[1] = width
-        shape[2] = channels
-        out = cnp.PyArray_EMPTY(3, shape, cnp.NPY_UINT8, 0)
-        memcpy(cnp.PyArray_DATA(out), dec_ptr,
-               <size_t>(width * height * channels))
-        return out
-    finally:
-        WebPFree(dec_ptr)
+    return out
 
 
 def check_signature(data) -> bool:
