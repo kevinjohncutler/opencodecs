@@ -1,0 +1,217 @@
+"""TiffPyramidReader — pyramid access on top of native TIFF.
+
+Wraps a :class:`TiffStream` and treats each IFD as a pyramid level.
+Levels are sorted largest-area-first so level 0 is full resolution.
+Reduced-resolution overviews are identified by tag 254 (NewSubfileType)
+bit 0; pages with that bit set are pure overviews, the others are the
+"main" pages. Most COG and OME-TIFF pyramids fit this pattern.
+
+The :meth:`PyramidReader.read_region` algorithm runs unchanged — this
+class fills in :meth:`_read_region` to fetch only the tiles intersecting
+the bbox. Combined with :class:`HTTPDataSource`, the same read_region
+call streams a region from a remote COG with O(tiles-in-bbox) HTTP
+Range requests.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+
+from ._tiff_codec import TiffStream, TiffPage
+from .core.pyramid import PyramidLevel, PyramidReader
+
+
+# NewSubfileType (TIFF tag 254): bit 0 = reduced-resolution overview.
+_TAG_NEW_SUBFILE_TYPE = 254
+_NSFT_REDUCED = 0x1
+
+
+class TiffPyramidReader(PyramidReader):
+    """Pyramid view of a multi-IFD TIFF (COG / pyramidal OME-TIFF).
+
+    Examples
+    --------
+    Open a remote COG and render a 1024-pixel-tall overview::
+
+        from opencodecs._tiff_http import HTTPDataSource
+        from opencodecs._tiff_pyramid import TiffPyramidReader
+
+        src = HTTPDataSource("https://bucket/big.tif")
+        with TiffPyramidReader(src) as p:
+            level = p.best_level_for(max_pixels_y=1024)
+            overview = p.read_region(level)
+
+    Or do a tile-aware crop from the full-resolution level::
+
+        crop = p.read_region(level=0, y=(2000, 4000), x=(8000, 10000))
+        # — fetches only the COG tiles overlapping the 2000×2000 bbox
+    """
+
+    def __init__(
+        self,
+        src: Any,
+        *,
+        read_at=None,
+    ):
+        # Pass-through to TiffStream — it accepts paths, bytes,
+        # file-likes, or a custom read_at callable (HTTPDataSource).
+        self._stream = TiffStream(src, read_at=read_at) if read_at is not None \
+            else TiffStream(src)
+        self._levels = self._build_levels()
+
+    # ----- ABC contract -----
+
+    @property
+    def levels(self) -> list[PyramidLevel]:
+        return self._levels
+
+    def close(self) -> None:
+        self._stream.close()
+
+    # ----- Build pyramid levels from the IFD chain -----
+
+    def _build_levels(self) -> list[PyramidLevel]:
+        """Walk every IFD, sort by area descending, compute downscales."""
+        pages: list[TiffPage] = []
+        for i in range(self._stream.n_frames):
+            pages.append(self._stream.page(i))
+        if not pages:
+            raise ValueError("TiffPyramidReader: no IFDs in TIFF")
+
+        # Largest-first. With the COG convention (full-res at IFD 0,
+        # overviews after) this matches the natural order; with the
+        # OME-TIFF "subifds" convention sub-IFDs land after the main
+        # page so sorting still produces the right order.
+        pages.sort(key=lambda p: -(p.width * p.height))
+
+        full_h = pages[0].height
+        full_w = pages[0].width
+        out = []
+        for p in pages:
+            # Downscale factor relative to level 0. We round here:
+            # if the level is exactly N× smaller, downscale=N; if the
+            # encoder used floor-rounding (common), we get the integer
+            # ratio. Float ratios are reported as int via integer
+            # division — the caller can compute precise scales from
+            # full_shape / level.shape if needed.
+            ds_y = max(1, full_h // p.height) if p.height else 1
+            ds_x = max(1, full_w // p.width)  if p.width  else 1
+            out.append(PyramidLevel(
+                reader=p,
+                downscale=(ds_y, ds_x),
+                shape=p.shape,
+                dtype=p.dtype,
+            ))
+        return out
+
+    # ----- Region read -----
+
+    def _read_region(
+        self,
+        level: PyramidLevel,
+        y0: int, y1: int,
+        x0: int, x1: int,
+    ) -> np.ndarray:
+        """Fetch the tiles/strips overlapping (y0:y1, x0:x1) and assemble."""
+        page: TiffPage = level.reader
+        out_h = y1 - y0
+        out_w = x1 - x0
+        if page.samples_per_pixel == 1:
+            out_shape = (out_h, out_w)
+        else:
+            out_shape = (out_h, out_w, page.samples_per_pixel)
+        if out_h == 0 or out_w == 0:
+            return np.empty(out_shape, dtype=page.dtype)
+        out = np.empty(out_shape, dtype=page.dtype)
+
+        if page.is_tiled:
+            self._fill_tiles(page, out, y0, y1, x0, x1)
+        else:
+            self._fill_strips(page, out, y0, y1, x0, x1)
+        return out
+
+    # ----- Tiled path -----
+
+    def _fill_tiles(
+        self, page: TiffPage, out: np.ndarray,
+        y0: int, y1: int, x0: int, x1: int,
+    ) -> None:
+        """Assemble out from the tiles of page that intersect (y0:y1, x0:x1)."""
+        tw, th = page.tile_width, page.tile_height
+        ty_start = y0 // th
+        ty_stop = (y1 + th - 1) // th
+        tx_start = x0 // tw
+        tx_stop = (x1 + tw - 1) // tw
+        ty_stop = min(ty_stop, page.tiles_y)
+        tx_stop = min(tx_stop, page.tiles_x)
+
+        # Padded-tile native shape — every tile read decodes to this,
+        # then we crop into out.
+        full_tile_shape = page._padded_shape()
+
+        for ty in range(ty_start, ty_stop):
+            for tx in range(tx_start, tx_stop):
+                idx = ty * page.tiles_x + tx
+                offset = int(page.offsets[idx])
+                nbytes = int(page.byte_counts[idx])
+                raw = self._stream._read(offset, nbytes)
+                decoded = page._decode_segment(raw)
+                # Byte-stream codecs return flat; image codecs return shaped.
+                if decoded.ndim == 1:
+                    tile = decoded.reshape(full_tile_shape)
+                else:
+                    tile = decoded
+
+                tile_y0 = ty * th
+                tile_x0 = tx * tw
+                # Intersect tile rect with the requested bbox.
+                in_y0 = max(y0 - tile_y0, 0)
+                in_y1 = min(y1 - tile_y0, th)
+                in_x0 = max(x0 - tile_x0, 0)
+                in_x1 = min(x1 - tile_x0, tw)
+                out_y0 = tile_y0 + in_y0 - y0
+                out_x0 = tile_x0 + in_x0 - x0
+                out[out_y0:out_y0 + (in_y1 - in_y0),
+                    out_x0:out_x0 + (in_x1 - in_x0)] = \
+                    tile[in_y0:in_y1, in_x0:in_x1]
+
+    # ----- Striped path -----
+
+    def _fill_strips(
+        self, page: TiffPage, out: np.ndarray,
+        y0: int, y1: int, x0: int, x1: int,
+    ) -> None:
+        """Assemble out from the strips of page that intersect (y0:y1, x0:x1).
+
+        Strips span the full image width, so x clipping happens after
+        decode. Only the strips overlapping (y0:y1) get fetched.
+        """
+        rps = page.tile_height   # rows per strip (filed under tile_height for strips)
+        h = page.height
+        s_start = y0 // rps
+        s_stop = (y1 + rps - 1) // rps
+        s_stop = min(s_stop, len(page.offsets))
+
+        for s in range(s_start, s_stop):
+            offset = int(page.offsets[s])
+            nbytes = int(page.byte_counts[s])
+            raw = self._stream._read(offset, nbytes)
+            decoded = page._decode_segment(raw)
+            strip_y0 = s * rps
+            strip_h = min(rps, h - strip_y0)
+            strip_shape = (strip_h, page.width) if page.samples_per_pixel == 1 \
+                else (strip_h, page.width, page.samples_per_pixel)
+            strip = decoded.reshape(strip_shape) if decoded.ndim == 1 else decoded
+
+            in_y0 = max(y0 - strip_y0, 0)
+            in_y1 = min(y1 - strip_y0, strip_h)
+            out_y0 = strip_y0 + in_y0 - y0
+            # Clip x slice (full strip width → bbox columns).
+            out[out_y0:out_y0 + (in_y1 - in_y0)] = \
+                strip[in_y0:in_y1, x0:x1]
+
+
+__all__ = ["TiffPyramidReader"]

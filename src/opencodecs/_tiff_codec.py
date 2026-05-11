@@ -567,6 +567,15 @@ class TiffStream(Reader):
         self._src = src
         self._owns_fd = False
 
+        # If ``src`` is itself a read_at callable (e.g. HTTPDataSource,
+        # FileDataSource, or any user-provided wrapper that takes
+        # (offset, n) → bytes), promote it to the read_at slot so the
+        # caller doesn't have to spell `read_at=` explicitly.
+        if read_at is None and callable(src) and not isinstance(
+                src, (str, os.PathLike, bytes, bytearray, memoryview)):
+            read_at = src
+            self._src = None
+
         if read_at is not None:
             self._read = read_at
         else:
