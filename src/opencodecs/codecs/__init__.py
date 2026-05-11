@@ -58,6 +58,7 @@ _EXTENSIONS = (
     "_png",
     "_bitshuffle",
     "_tiff",
+    "_ndtiff",
     "_bytetools",
 )
 
