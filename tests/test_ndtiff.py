@@ -307,6 +307,76 @@ def test_ndtiff_dataset_from_http(tmp_path):
         server.server_close()
 
 
+# ---------------------------------------------------------------------------
+# Writer
+# ---------------------------------------------------------------------------
+
+
+def test_ndtiff_writer_round_trip(tmp_path):
+    """Write N frames, read them back via our NDTiffDataset; bytes must match."""
+    from opencodecs._ndtiff_writer import NDTiffWriter
+
+    out_dir = tmp_path / "written"
+    n = 5
+    frames = [
+        np.random.default_rng(i).integers(0, 4000, size=(48, 64), dtype=np.uint16)
+        for i in range(n)
+    ]
+    with NDTiffWriter(out_dir, summary={"PixelType": "uint16"}) as w:
+        for i, arr in enumerate(frames):
+            w.write_frame({"z": i}, arr, metadata={"z_um": i * 0.5})
+
+    # Read back via opencodecs.
+    with NDTiffDataset(out_dir) as ds:
+        assert ds.n_frames == n
+        for i, arr in enumerate(frames):
+            np.testing.assert_array_equal(ds.read_frame(z=i), arr)
+
+
+def test_ndtiff_writer_batch_write(tmp_path):
+    from opencodecs._ndtiff_writer import NDTiffWriter
+
+    out_dir = tmp_path / "batch"
+    n = 8
+    frames = [
+        np.full((20, 30), i, dtype=np.uint16) for i in range(n)
+    ]
+    with NDTiffWriter(out_dir) as w:
+        recs = w.write_many(
+            ({"z": i}, arr, None) for i, arr in enumerate(frames)
+        )
+    assert len(recs) == n
+    with NDTiffDataset(out_dir) as ds:
+        assert ds.n_frames == n
+        for i in range(n):
+            np.testing.assert_array_equal(
+                ds.read_frame(z=i), np.full((20, 30), i, dtype=np.uint16))
+
+
+@pytest.mark.skipif(not _HAS_NDSTORAGE, reason="ndstorage not installed")
+def test_ndtiff_writer_compatible_with_ndstorage(tmp_path):
+    """Files written by our writer must round-trip through ndstorage."""
+    from opencodecs._ndtiff_writer import NDTiffWriter
+
+    out_dir = tmp_path / "compat"
+    frames = [
+        np.arange(i * 1000, i * 1000 + 32 * 24, dtype=np.uint16).reshape(24, 32)
+        for i in range(4)
+    ]
+    with NDTiffWriter(out_dir, summary={"PixelType": "uint16"}) as w:
+        for i, a in enumerate(frames):
+            w.write_frame({"z": i}, a, metadata={"frame": i})
+
+    ds = _silence_ndstorage(ndstorage.NDTiffDataset, str(out_dir))
+    try:
+        assert len(ds.index) == 4
+        for i in range(4):
+            img = ds.read_image(z=i)
+            np.testing.assert_array_equal(img, frames[i])
+    finally:
+        ds.close()
+
+
 @pytest.mark.skipif(not _HAS_NDSTORAGE, reason="ndstorage not installed")
 def test_ndtiff_parity_index_parse(tmp_path):
     """The opencodecs Cython parser should produce the same records as
