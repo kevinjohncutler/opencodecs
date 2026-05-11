@@ -6,6 +6,10 @@ dist/
 *.pyd
 *.dll
 
+# Local test-data downloads (large reference files cached for tests)
+.test_data/
+tests/.test_data/
+
 # Cython-generated C (matches every _*.pyx → _*.c). Hand-written C
 # helpers (e.g. b2nd_helpers.c) are NOT prefixed with _ and pass through.
 src/opencodecs/codecs/_*.c

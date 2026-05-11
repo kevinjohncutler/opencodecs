@@ -323,6 +323,62 @@ _REAL_PYRAMID_CZI = (
     "/Volumes/HiprDrive/2024-08-21_microarray/24-08-21_array_scan_raw.czi"
 )
 
+# OME-curated, publicly downloadable pyramid CZI:
+# https://downloads.openmicroscopy.org/images/Zeiss-CZI/zenodo-10577186/
+# (Originally from https://zenodo.org/records/10577186, CC-BY-4.0, ~505 MB,
+# Axioscan slide scanner output processed in ZEN.) Cached locally under
+# tests/.test_data so the test is fast and doesn't depend on the network.
+_OME_PYRAMID_CZI = ".test_data/ome_zeiss_sample.czi"
+
+
+@pytest.mark.skipif(
+    not os.path.exists(_OME_PYRAMID_CZI),
+    reason=(
+        "OME public pyramid CZI sample not downloaded. To enable this "
+        "test, run: curl -L -o tests/.test_data/ome_zeiss_sample.czi "
+        "https://downloads.openmicroscopy.org/images/Zeiss-CZI/"
+        "zenodo-10577186/2023_11_30__RecognizedCode-27.czi"
+    ),
+)
+def test_pyramid_metadata_matches_czifile_on_public_ome_sample():
+    """End-to-end metadata validation against a *publicly downloadable*
+    ZEN-produced pyramid CZI from the OME sample collection.
+
+    Unlike the lab-CZI test below (gated on a private NAS path), this
+    one is reproducible by anyone — the same .czi file is available at
+    OME's public download mirror. 481 sub-blocks across 6 pyramid
+    levels (1x, 2x, 4x, 8x, 16x, 32x), JPEG-XR compressed.
+
+    czifile is the reference Python CZI reader. For every sub-block in
+    the file, our reader must agree with czifile on shape,
+    stored_shape, is_pyramid, and pyramid_type.
+    """
+    czifile = pytest.importorskip("czifile")
+    oc_r = oc.get_codec("czi").open(_OME_PYRAMID_CZI)
+    try:
+        with czifile.CziFile(_OME_PYRAMID_CZI) as cf:
+            cf_by_pos = {e.file_position: e for e in cf.subblock_directory}
+        assert len(oc_r.entries) == len(cf_by_pos)
+        mismatches = []
+        for oc_e in oc_r.entries:
+            cf_e = cf_by_pos[oc_e.file_position]
+            if (oc_e.shape != cf_e.shape
+                    or oc_e.stored_shape != cf_e.stored_shape
+                    or oc_e.is_pyramid != cf_e.is_pyramid
+                    or oc_e.pyramid_type != cf_e.pyramid_type):
+                mismatches.append((oc_e.file_position, oc_e, cf_e))
+        assert not mismatches, (
+            f"{len(mismatches)} sub-blocks disagree with czifile "
+            f"(first: oc={mismatches[0][1]} vs cf={mismatches[0][2]})"
+        )
+        # 6 pyramid levels: 1, 2, 4, 8, 16, 32x
+        assert oc_r.scale_factors_per_level() == [
+            (1.0, 1.0), (2.0, 2.0), (4.0, 4.0),
+            (8.0, 8.0), (16.0, 16.0), (32.0, 32.0),
+        ]
+    finally:
+        oc_r.close()
+
 
 @pytest.mark.skipif(
     not os.path.exists(_REAL_PYRAMID_CZI),
