@@ -52,6 +52,7 @@ from .jxl import (
 from ._tiff_writer import TiffWriter, imwrite as tiff_imwrite
 from ._omezarr import OmeZarrArray, OmeZarrPyramidDataset
 from ._czi_reader import CziPyramidReader
+from ._czi_writer import CziWriter, CziPyramidWriter
 
 
 def read(src: Any, *, format: str | None = None, **opts):
@@ -110,6 +111,7 @@ __all__ = [
     "TiffWriter", "tiff_imwrite",
     "OmeZarrArray", "OmeZarrPyramidDataset",
     "CziPyramidReader",
+    "CziWriter", "CziPyramidWriter",
 ]
 
 __version__ = "0.2.0.dev0"
