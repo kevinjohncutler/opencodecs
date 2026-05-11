@@ -353,6 +353,61 @@ def test_ndtiff_writer_batch_write(tmp_path):
                 ds.read_frame(z=i), np.full((20, 30), i, dtype=np.uint16))
 
 
+@pytest.mark.parametrize("compression,level", [
+    ("none",    None),
+    ("deflate", 6),
+    ("zstd",    3),
+])
+def test_ndtiff_writer_compression_round_trip(tmp_path, compression, level):
+    """Write compressed NDTiff frames, read them back, verify byte-equal."""
+    from opencodecs._ndtiff_writer import NDTiffWriter
+
+    out = tmp_path / f"compressed_{compression}"
+    rng = np.random.default_rng(7)
+    frames = [rng.integers(0, 4000, size=(48, 64), dtype=np.uint16)
+              for _ in range(5)]
+
+    with NDTiffWriter(out, compression=compression,
+                      compression_level=level) as w:
+        for i, a in enumerate(frames):
+            w.write_frame({"z": i}, a)
+
+    with NDTiffDataset(out) as ds:
+        assert ds.n_frames == 5
+        for i, expected in enumerate(frames):
+            np.testing.assert_array_equal(ds.read_frame(z=i), expected)
+
+
+def test_ndtiff_writer_compression_reduces_size(tmp_path):
+    """zstd-compressed NDTiff must produce a smaller file than uncompressed
+    for correlated data."""
+    from opencodecs._ndtiff_writer import NDTiffWriter
+
+    # Correlated data (radial gradient + low-amplitude noise) — codec-
+    # friendly the way real microscopy data is.
+    h, w = 96, 128
+    rng = np.random.default_rng(0)
+    yy, xx = np.indices((h, w))
+    frames = [(500 + 0.5 * yy + 0.3 * xx
+               + rng.normal(0, 5, (h, w))).astype(np.uint16)
+              for _ in range(8)]
+
+    def write(compression):
+        d = tmp_path / f"size_{compression}"
+        with NDTiffWriter(d, compression=compression,
+                          compression_level=3) as w:
+            for i, a in enumerate(frames):
+                w.write_frame({"z": i}, a)
+        return (d / "NDTiffStack.tif").stat().st_size
+
+    size_none = write("none")
+    size_zstd = write("zstd")
+    # Should compress to ~half on this kind of data.
+    assert size_zstd < size_none * 0.85, (
+        f"zstd compression didn't help: zstd={size_zstd}, none={size_none}"
+    )
+
+
 @pytest.mark.skipif(not _HAS_NDSTORAGE, reason="ndstorage not installed")
 def test_ndtiff_writer_compatible_with_ndstorage(tmp_path):
     """Files written by our writer must round-trip through ndstorage."""
