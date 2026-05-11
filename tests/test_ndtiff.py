@@ -432,6 +432,81 @@ def test_ndtiff_writer_compatible_with_ndstorage(tmp_path):
         ds.close()
 
 
+# ---------------------------------------------------------------------------
+# NDTiff pyramid
+# ---------------------------------------------------------------------------
+
+
+def _build_synthetic_ndtiff_pyramid(tmp_path: Path, downscales=(1, 2, 4)) -> Path:
+    """Build a parent folder with NDTiff acquisitions at multiple downscales.
+
+    Each level is a complete NDTiff folder containing 2 frames keyed
+    by ``z``. Returns the parent directory.
+    """
+    from opencodecs._ndtiff_writer import NDTiffWriter
+
+    parent = tmp_path / "pyramid_dataset"
+    parent.mkdir()
+    full_h, full_w = 64, 96
+    for ds in downscales:
+        if ds == 1:
+            subdir = parent / "Full resolution"
+        else:
+            subdir = parent / f"Downsampled_x{ds}"
+        h, w = full_h // ds, full_w // ds
+        with NDTiffWriter(subdir) as wr:
+            for z in range(2):
+                arr = np.full((h, w), z * 100 + ds, dtype=np.uint16)
+                wr.write_frame({"z": z}, arr)
+    return parent
+
+
+def test_ndtiff_pyramid_enumerates_levels(tmp_path):
+    from opencodecs._ndtiff_pyramid import NDTiffPyramidDataset
+
+    parent = _build_synthetic_ndtiff_pyramid(tmp_path, downscales=(1, 2, 4))
+    with NDTiffPyramidDataset(parent) as p:
+        assert p.n_levels == 3
+        assert p.level(0).downscale == (1, 1)
+        assert p.level(0).shape == (64, 96)
+        assert p.level(1).downscale == (2, 2)
+        assert p.level(1).shape == (32, 48)
+        assert p.level(2).downscale == (4, 4)
+        assert p.level(2).shape == (16, 24)
+
+
+def test_ndtiff_pyramid_read_region(tmp_path):
+    from opencodecs._ndtiff_pyramid import NDTiffPyramidDataset
+
+    parent = _build_synthetic_ndtiff_pyramid(tmp_path, downscales=(1, 2))
+    with NDTiffPyramidDataset(parent) as p:
+        # Full frame at level 0, z=0.
+        full = p.read_region(level=0, z=0)
+        assert full.shape == (64, 96)
+        # Crop at level 0.
+        crop = p.read_region(level=0, y=(10, 40), x=(20, 60), z=1)
+        assert crop.shape == (30, 40)
+        # Each frame is constant — easy to verify.
+        assert (crop == 1 * 100 + 1).all()
+        # Same at level 1.
+        out = p.read_region(level=1, z=0)
+        assert out.shape == (32, 48)
+        assert (out == 0 * 100 + 2).all()
+
+
+def test_ndtiff_pyramid_best_level_for(tmp_path):
+    from opencodecs._ndtiff_pyramid import NDTiffPyramidDataset
+
+    parent = _build_synthetic_ndtiff_pyramid(
+        tmp_path, downscales=(1, 2, 4, 8))
+    with NDTiffPyramidDataset(parent) as p:
+        # Level shapes: 64, 32, 16, 8 (heights).
+        assert p.best_level_for(max_pixels_y=10_000) == 0
+        assert p.best_level_for(max_pixels_y=50) == 1     # 32 fits
+        assert p.best_level_for(max_pixels_y=20) == 2     # 16 fits
+        assert p.best_level_for(max_pixels_y=10) == 3     # 8 fits
+
+
 @pytest.mark.skipif(not _HAS_NDSTORAGE, reason="ndstorage not installed")
 def test_ndtiff_parity_index_parse(tmp_path):
     """The opencodecs Cython parser should produce the same records as
