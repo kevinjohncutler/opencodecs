@@ -207,23 +207,42 @@ class NDTiffDataset(Reader):
 
     def __init__(
         self,
-        path: str | Path,
+        path: str | Path | None = None,
         *,
-        # For HTTP / cloud sources later: a callable that opens a
-        # file handle for read_at(offset, n). Default uses os.pread.
-        file_opener: Callable[[str], int] | None = None,
+        # For HTTP / cloud sources: a factory that takes a filename
+        # (e.g. "NDTiffStack_2.tif") and returns a read_at(offset, n)
+        # callable for that file. Default opens a local fd + os.pread.
+        data_source_factory: Callable[[str], Callable[[int, int], bytes]] | None = None,
+        # Pre-fetched index bytes; if provided, ``path`` may be None
+        # (useful for HTTP/cloud — the caller downloads the small
+        # NDTiff.index file once and passes the bytes here).
+        index_bytes: bytes | None = None,
     ):
-        self._path = Path(path)
-        if not self._path.is_dir():
-            raise FileNotFoundError(f"NDTiff directory not found: {self._path}")
-        index_path = self._path / "NDTiff.index"
-        if not index_path.is_file():
-            raise FileNotFoundError(
-                f"NDTiff.index missing in {self._path}; not an NDTiff folder?"
+        if path is not None:
+            self._path = Path(path)
+            if not self._path.is_dir():
+                raise FileNotFoundError(
+                    f"NDTiff directory not found: {self._path}")
+        else:
+            self._path = None
+
+        if index_bytes is not None:
+            idx_bytes = index_bytes
+        elif self._path is not None:
+            index_path = self._path / "NDTiff.index"
+            if not index_path.is_file():
+                raise FileNotFoundError(
+                    f"NDTiff.index missing in {self._path}; "
+                    "not an NDTiff folder?"
+                )
+            idx_bytes = index_path.read_bytes()
+        else:
+            raise ValueError(
+                "NDTiffDataset: either pass a directory path or "
+                "index_bytes + data_source_factory"
             )
 
         # Cython index parse — single nogil walk over the buffer.
-        idx_bytes = index_path.read_bytes()
         records = _parse_ndtiff_index(idx_bytes)
 
         # Intern axes JSON: identical blobs across the same acquisition
@@ -260,12 +279,19 @@ class NDTiffDataset(Reader):
             key = frozenset(axes.items())
             self._by_axes[key] = len(self.entries) - 1
 
-        # Per-file file descriptors. Opened lazily on first read; an
-        # os.pread per worker thread is safe since pread doesn't share
-        # the fd's seek position.
-        self._fd_cache: dict[str, int] = {}
-        self._fd_lock = threading.Lock()
-        self._file_opener = file_opener or _default_file_opener
+        # Per-file read_at(offset, n) callables. Opened lazily on first
+        # frame read for that file. Default factory opens a local fd
+        # and wraps os.pread; pass a custom factory for HTTP / S3 /
+        # mmap (e.g. ``lambda fn: HTTPDataSource(base_url + fn)``).
+        self._source_cache: dict[str, Callable[[int, int], bytes]] = {}
+        self._source_lock = threading.Lock()
+        self._source_factory = (
+            data_source_factory
+            if data_source_factory is not None
+            else self._default_source_factory
+        )
+        # fds opened by the default factory; close() releases them.
+        self._owned_fds: list[int] = []
 
         # Populate Reader contract attrs from frame 0.
         if not self.entries:
@@ -275,27 +301,103 @@ class NDTiffDataset(Reader):
         self.shape = first.shape
         self.n_frames = len(self.entries)
 
-    # ----- File handle management -----
+    @classmethod
+    def from_http(
+        cls,
+        base_url: str,
+        *,
+        index_url: str | None = None,
+        prefetch_bytes: int = 64 * 1024,
+        cache_bytes_per_file: int = 8 * 1024 * 1024,
+    ) -> "NDTiffDataset":
+        """Open a remote NDTiff acquisition over HTTP Range requests.
 
-    def _fd_for(self, filename: str) -> int:
-        fd = self._fd_cache.get(filename)
-        if fd is not None:
-            return fd
-        with self._fd_lock:
-            fd = self._fd_cache.get(filename)
-            if fd is None:
-                fd = self._file_opener(str(self._path / filename))
-                self._fd_cache[filename] = fd
-        return fd
+        ``base_url`` is the folder URL (must end with ``/`` or have an
+        implicit one). Each ``NDTiffStack[_N].tif`` file referenced by
+        the index will be fetched lazily via HTTPDataSource.
+
+        ``index_url`` defaults to ``base_url + "NDTiff.index"``. The
+        index file is small (KB-MB) so we download it in full once.
+
+        Example::
+
+            ds = NDTiffDataset.from_http(
+                "https://lab.example.org/Acq_647nm/Cam-1/")
+            frame = ds.read_frame(z=42)   # → one Range request
+        """
+        import urllib.request
+
+        from ._tiff_http import HTTPDataSource
+
+        if not base_url.endswith("/"):
+            base_url = base_url + "/"
+        if index_url is None:
+            index_url = base_url + "NDTiff.index"
+
+        with urllib.request.urlopen(index_url) as resp:
+            idx_bytes = resp.read()
+
+        def factory(filename: str) -> Callable[[int, int], bytes]:
+            return HTTPDataSource(
+                base_url + filename,
+                prefetch_bytes=prefetch_bytes,
+                cache_bytes=cache_bytes_per_file,
+            )
+
+        return cls(
+            path=None,
+            data_source_factory=factory,
+            index_bytes=idx_bytes,
+        )
+
+    # ----- Per-file data source management -----
+
+    def _default_source_factory(
+        self, filename: str,
+    ) -> Callable[[int, int], bytes]:
+        """Default: open the file via os.pread. Caller must close the
+        fd in close()."""
+        if self._path is None:
+            raise RuntimeError(
+                "NDTiffDataset has no path; pass a custom "
+                "data_source_factory for non-local data sources"
+            )
+        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
+        fd = os.open(str(self._path / filename), flags)
+        # Stash fd on the closure so close() can release it.
+        self._owned_fds.append(fd)
+        return _make_pread_callable(fd)
+
+    def _source_for(self, filename: str) -> Callable[[int, int], bytes]:
+        src = self._source_cache.get(filename)
+        if src is not None:
+            return src
+        with self._source_lock:
+            src = self._source_cache.get(filename)
+            if src is None:
+                src = self._source_factory(filename)
+                self._source_cache[filename] = src
+        return src
 
     def close(self) -> None:
-        with self._fd_lock:
-            for fd in self._fd_cache.values():
-                try:
-                    os.close(fd)
-                except OSError:  # pragma: no cover - already-closed defense
-                    pass
-            self._fd_cache.clear()
+        # Close all factory-allocated callables. For HTTP/custom
+        # sources, the caller's source may expose a .close() method.
+        with self._source_lock:
+            for src in self._source_cache.values():
+                close = getattr(src, "close", None)
+                if close is not None:
+                    try:
+                        close()
+                    except Exception:  # pragma: no cover - defensive
+                        pass
+            self._source_cache.clear()
+        # Close any fds we opened for the default factory.
+        for fd in self._owned_fds:
+            try:
+                os.close(fd)
+            except OSError:  # pragma: no cover - already-closed defense
+                pass
+        self._owned_fds.clear()
 
     # ----- Random access -----
 
@@ -470,15 +572,23 @@ class NDTiffDataset(Reader):
                 f"NDTiff frame compression {entry.pixel_compression} not yet "
                 "supported (only uncompressed seen in lab corpus)"
             )
-        fd = self._fd_for(entry.filename)
+        read_at = self._source_for(entry.filename)
         nbytes = entry.pixel_nbytes
-        # os.pread is the right primitive: no shared seek position,
-        # so multiple workers can read the same fd concurrently.
-        # The returned bytes object owns its memory, so np.frombuffer
-        # gives a read-only view that the bytes refcount keeps alive
-        # — no explicit .copy() needed (ndstorage does the same).
-        raw = _pread_exact(fd, nbytes, entry.pixel_offset)
-        arr = np.frombuffer(raw, dtype=entry.dtype, count=nbytes // entry.dtype.itemsize)
+        # read_at is the unified interface — for local files it wraps
+        # os.pread (parallel-safe on a shared fd); for HTTP it issues
+        # a Range request. Same call site regardless.
+        raw = read_at(entry.pixel_offset, nbytes)
+        if len(raw) < nbytes:
+            raise EOFError(
+                f"NDTiff: short read ({len(raw)}/{nbytes} bytes) for "
+                f"frame {entry.axes} in {entry.filename}"
+            )
+        # np.frombuffer over memoryview / bytes is zero-copy; the
+        # returned ndarray is a read-only view backed by `raw`.
+        arr = np.frombuffer(
+            raw, dtype=entry.dtype,
+            count=nbytes // entry.dtype.itemsize,
+        )
         return arr.reshape(entry.shape)
 
 
@@ -487,38 +597,47 @@ class NDTiffDataset(Reader):
 # ---------------------------------------------------------------------------
 
 
-def _default_file_opener(path: str) -> int:
-    """Open for reading with binary mode (O_BINARY on Windows)."""
-    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
-    return os.open(path, flags)
+def _make_pread_callable(fd: int) -> Callable[[int, int], bytes]:
+    """Wrap an open fd as a read_at(offset, n) -> bytes callable.
 
-
-def _pread_exact(fd: int, n: int, offset: int) -> bytes:
-    """os.pread but always returns exactly n bytes (or raises).
-
-    Windows os.read/os.pread can return short on block boundaries; loop
-    until we have all n bytes.
+    Uses os.pread on POSIX (parallel-safe — no shared seek state).
+    Windows falls back to a locked seek+read since pread is unavailable.
+    Both paths loop on short reads.
     """
-    if hasattr(os, "pread"):
-        buf = os.pread(fd, int(n), int(offset))
-        need = int(n) - len(buf)
-        cur = int(offset) + len(buf)
-        while need > 0:
-            more = os.pread(fd, need, cur)
-            if not more:
-                raise EOFError(
-                    f"NDTiff: short pread (got {len(buf)}/{n} bytes at "
-                    f"offset {offset})"
-                )
-            buf += more
-            cur += len(more)
-            need -= len(more)
-        return buf
-    # Windows fallback: lock + seek + read (loop on shorts).
-    raise RuntimeError(
-        "NDTiff reader needs os.pread; Windows fallback path goes "
-        "through HTTPDataSource / FileDataSource — not in this v1"
-    )
+    has_pread = hasattr(os, "pread")
+    if has_pread:
+        def read_at(offset: int, n: int) -> bytes:
+            buf = os.pread(fd, int(n), int(offset))
+            need = int(n) - len(buf)
+            cur = int(offset) + len(buf)
+            while need > 0:
+                more = os.pread(fd, need, cur)
+                if not more:
+                    break  # EOF — caller handles short return
+                buf += more
+                cur += len(more)
+                need -= len(more)
+            return buf
+        return read_at
+
+    # Windows: serialize seek+read with a lock since the fd has shared
+    # state. Slower than pread under contention, but correctness first;
+    # users wanting parallel I/O on Windows should use HTTPDataSource.
+    lock = threading.Lock()
+
+    def read_at(offset: int, n: int) -> bytes:
+        with lock:
+            os.lseek(fd, int(offset), os.SEEK_SET)
+            buf = os.read(fd, int(n))
+            need = int(n) - len(buf)
+            while need > 0:
+                more = os.read(fd, need)
+                if not more:
+                    break
+                buf += more
+                need -= len(more)
+            return buf
+    return read_at
 
 
 __all__ = ["NDTiffDataset", "NDTiffIndexEntry"]

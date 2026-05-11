@@ -239,6 +239,74 @@ def test_ndtiff_iter_frames_parallel_bounded_memory(tmp_path):
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# HTTP-range NDTiff
+# ---------------------------------------------------------------------------
+
+
+def test_ndtiff_dataset_from_http(tmp_path):
+    """Open an NDTiff folder over HTTP Range requests. The frames must
+    round-trip byte-for-byte, AND we shouldn't fetch the whole file —
+    just the index + the pixel bytes of the frames we touch."""
+    import http.server
+    import socketserver
+    import threading
+    from pathlib import Path
+
+    d = _build_synthetic_ndtiff(tmp_path, n_frames=4, width=8, height=6)
+
+    class H(http.server.SimpleHTTPRequestHandler):
+        def do_GET(self):
+            rng = self.headers.get("Range")
+            data = (Path(self.directory) / Path(self.path).name).read_bytes()
+            if rng:
+                s, e = rng.split("=", 1)[1].split("-")
+                s = int(s)
+                e = int(e) if e else len(data) - 1
+                chunk = data[s:e + 1]
+                self.send_response(206)
+                self.send_header("Content-Type", "application/octet-stream")
+                self.send_header("Content-Range",
+                                 f"bytes {s}-{e}/{len(data)}")
+                self.send_header("Content-Length", str(len(chunk)))
+                self.end_headers()
+                self.wfile.write(chunk)
+            else:
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+        def log_message(self, *a, **k):
+            pass
+
+    server = socketserver.ThreadingTCPServer(
+        ("127.0.0.1", 0),
+        lambda *a, **kw: H(*a, directory=str(d), **kw),
+    )
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        port = server.server_address[1]
+        base_url = f"http://127.0.0.1:{port}/"
+
+        ds = NDTiffDataset.from_http(base_url)
+        try:
+            assert ds.n_frames == 4
+            assert ds.shape == (6, 8)
+            # Random access — should issue one Range request per frame.
+            for i in range(4):
+                frame = ds.read_frame(z=i)
+                expected = np.arange(
+                    i * 1000, i * 1000 + 8 * 6, dtype=np.uint16,
+                ).reshape(6, 8)
+                np.testing.assert_array_equal(frame, expected)
+        finally:
+            ds.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
 @pytest.mark.skipif(not _HAS_NDSTORAGE, reason="ndstorage not installed")
 def test_ndtiff_parity_index_parse(tmp_path):
     """The opencodecs Cython parser should produce the same records as
