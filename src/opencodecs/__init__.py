@@ -53,6 +53,8 @@ from ._tiff_writer import TiffWriter, imwrite as tiff_imwrite
 from ._omezarr import OmeZarrArray, OmeZarrPyramidDataset
 from ._omezarr_writer import write_zarr_array, write_omezarr_pyramid
 from ._fits import FitsStream, FitsHDU, imread as fits_imread
+from ._rgbe import encode as rgbe_encode, decode as rgbe_decode, \
+    imread as rgbe_imread, imwrite as rgbe_imwrite
 from ._czi_reader import CziPyramidReader
 from ._czi_writer import CziWriter, CziPyramidWriter
 
@@ -114,6 +116,7 @@ __all__ = [
     "OmeZarrArray", "OmeZarrPyramidDataset",
     "write_zarr_array", "write_omezarr_pyramid",
     "FitsStream", "FitsHDU", "fits_imread",
+    "rgbe_encode", "rgbe_decode", "rgbe_imread", "rgbe_imwrite",
     "CziPyramidReader",
     "CziWriter", "CziPyramidWriter",
 ]
