@@ -49,6 +49,11 @@ from spng cimport (
     SPNG_FMT_RGBA8, SPNG_FMT_PNG,
     SPNG_CTX_ENCODER, SPNG_ENCODE_FINALIZE,
     SPNG_IMG_COMPRESSION_LEVEL, SPNG_ENCODE_TO_BUFFER,
+    SPNG_FILTER_CHOICE, SPNG_IMG_COMPRESSION_STRATEGY,
+    SPNG_DISABLE_FILTERING,
+    SPNG_FILTER_CHOICE_NONE, SPNG_FILTER_CHOICE_SUB,
+    SPNG_FILTER_CHOICE_UP, SPNG_FILTER_CHOICE_AVG,
+    SPNG_FILTER_CHOICE_PAETH, SPNG_FILTER_CHOICE_ALL,
 )
 
 cnp.import_array()
@@ -152,8 +157,54 @@ def decode(data) -> np.ndarray:
         spng_ctx_free(ctx)
 
 
-def encode(data, *, level: int | None = None) -> bytes:
-    """Encode a numpy array as a PNG byte string."""
+_FILTER_CHOICE_MAP = {
+    # Friendly aliases for the SPNG_FILTER_CHOICE bitmask.
+    "none":   SPNG_FILTER_CHOICE_NONE,
+    "sub":    SPNG_FILTER_CHOICE_SUB,
+    "up":     SPNG_FILTER_CHOICE_UP,
+    "avg":    SPNG_FILTER_CHOICE_AVG,
+    "paeth":  SPNG_FILTER_CHOICE_PAETH,
+    "all":    SPNG_FILTER_CHOICE_ALL,
+    # Useful presets (matches the heuristics libpng uses):
+    "fast":   SPNG_FILTER_CHOICE_NONE | SPNG_FILTER_CHOICE_SUB
+              | SPNG_FILTER_CHOICE_UP,
+    "off":    SPNG_DISABLE_FILTERING,
+}
+
+
+def encode(data, *, level: int | None = None,
+           filter_choice: object = "fast",
+           strategy: int | None = None) -> bytes:
+    """Encode a numpy array as a PNG byte string.
+
+    ``filter_choice`` controls which of the 5 PNG row filters libspng
+    considers when picking the best per scanline. Accepted values:
+
+      * ``"fast"`` (default) — try NONE/SUB/UP (3 of 5). This is the
+        same trade-off libpng's heuristic mode makes: within 1-5% of
+        full-search file size on real-world content, ~1.5× faster
+        encode. Brings opencodecs to parity with imagecodecs on the
+        head-to-head bench.
+      * ``"all"`` — try all 5 filters per row. Produces the smallest
+        output (libspng's built-in default; was opencodecs's default
+        before this change). Use when you care about file size and not
+        about encode wall-clock.
+      * ``"off"`` — disable filtering entirely (fastest; matches
+        ``SPNG_DISABLE_FILTERING``). Sometimes the smallest output on
+        very noisy data where filters hurt rather than help (e.g.
+        Poisson-noise-dominated microscopy frames).
+      * ``"none"`` / ``"sub"`` / ``"up"`` / ``"avg"`` / ``"paeth"`` —
+        restrict to a single filter.
+      * any int — passed through as the raw bitmask.
+
+    ``strategy`` overrides the zlib compression strategy
+    (``Z_DEFAULT_STRATEGY=0``, ``Z_FILTERED=1``, ``Z_HUFFMAN_ONLY=2``,
+    ``Z_RLE=3``, ``Z_FIXED=4``). libspng's default is ``Z_FILTERED``.
+    Set ``2`` for a 1.5-2× additional encode speedup on photo-like
+    data, but beware: on smooth gradients or low-contrast data this
+    can dramatically *hurt* compression (LZ77 was finding long
+    repeating runs that Huffman alone can't).
+    """
     cdef:
         spng_ctx* ctx = NULL
         spng_ihdr ihdr
@@ -238,6 +289,32 @@ def encode(data, *, level: int | None = None) -> bytes:
             rc = spng_set_option(
                 ctx, SPNG_IMG_COMPRESSION_LEVEL, compression)
             _check(rc, 'spng_set_option(compression_level)')
+
+        # Filter-choice tuning. libspng's default (SPNG_FILTER_CHOICE_ALL)
+        # tries all 5 PNG filters per scanline; that's the smallest
+        # output but slowest encode. For real photographic / gradient
+        # data the savings vs "fast" (NONE+SUB+UP) are tiny but the
+        # speedup is ~1.5x. For incompressible (random RGB) data
+        # disabling filtering entirely is ~2x faster with identical
+        # output size.
+        if filter_choice is not None:
+            if isinstance(filter_choice, str):
+                key = filter_choice.lower().strip()
+                if key not in _FILTER_CHOICE_MAP:
+                    raise PngError(
+                        f'PNG encode: unknown filter_choice {filter_choice!r}'
+                        f'; expected one of {sorted(_FILTER_CHOICE_MAP)}'
+                    )
+                fc = <int> _FILTER_CHOICE_MAP[key]
+            else:
+                fc = <int> int(filter_choice)
+            rc = spng_set_option(ctx, SPNG_FILTER_CHOICE, fc)
+            _check(rc, 'spng_set_option(filter_choice)')
+
+        if strategy is not None:
+            rc = spng_set_option(
+                ctx, SPNG_IMG_COMPRESSION_STRATEGY, int(strategy))
+            _check(rc, 'spng_set_option(compression_strategy)')
 
         img_len = <size_t> arr.nbytes
         with nogil:

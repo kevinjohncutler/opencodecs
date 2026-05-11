@@ -49,3 +49,15 @@
 {"timestamp": "20260511T081121Z", "git_rev": "cabd448", "name": "h2h_jpeg2k_4mp_u16", "median_ms": 702.3434159345925, "min_ms": 693.6775840586051, "max_ms": 708.2757919561118, "noisy": false}
 {"timestamp": "20260511T081121Z", "git_rev": "cabd448", "name": "h2h_qoi_4mp_rgb", "median_ms": 16.652541933581233, "min_ms": 16.131749958731234, "max_ms": 17.490374972112477, "noisy": false}
 {"timestamp": "20260511T081121Z", "git_rev": "cabd448", "name": "h2h_jxl_4mp_rgb", "median_ms": 156.13654209300876, "min_ms": 155.913042020984, "max_ms": 156.30224999040365, "noisy": false}
+{"timestamp": "20260511T085319Z", "git_rev": "5272e16", "name": "h2h_png_4mp_rgb", "median_ms": 276.3754999032244, "min_ms": 271.4420419652015, "max_ms": 283.7918329751119, "noisy": false}
+{"timestamp": "20260511T085359Z", "git_rev": "5272e16", "name": "h2h_zstd_10mb", "median_ms": 10.464646038599312, "min_ms": 10.249457904137671, "max_ms": 10.67441701889038, "noisy": false}
+{"timestamp": "20260511T085359Z", "git_rev": "5272e16", "name": "h2h_deflate_10mb", "median_ms": 280.8646875200793, "min_ms": 280.3053749958053, "max_ms": 281.00170800462365, "noisy": false}
+{"timestamp": "20260511T085359Z", "git_rev": "5272e16", "name": "h2h_lz4_10mb", "median_ms": 2.724915975704789, "min_ms": 2.631707931868732, "max_ms": 2.8119999915361404, "noisy": false}
+{"timestamp": "20260511T085359Z", "git_rev": "5272e16", "name": "h2h_brotli_10mb", "median_ms": 60.015292023308575, "min_ms": 57.618916034698486, "max_ms": 63.06304200552404, "noisy": false}
+{"timestamp": "20260511T085359Z", "git_rev": "5272e16", "name": "h2h_blosc2_10mb", "median_ms": 4.633207921870053, "min_ms": 4.4423750368878245, "max_ms": 4.687333945184946, "noisy": false}
+{"timestamp": "20260511T085359Z", "git_rev": "5272e16", "name": "h2h_jpeg_4mp_rgb", "median_ms": 16.805457998998463, "min_ms": 16.50645909830928, "max_ms": 17.49033306259662, "noisy": false}
+{"timestamp": "20260511T085359Z", "git_rev": "5272e16", "name": "h2h_png_4mp_rgb", "median_ms": 277.7631669305265, "min_ms": 277.49075007159263, "max_ms": 277.88141707424074, "noisy": false}
+{"timestamp": "20260511T085359Z", "git_rev": "5272e16", "name": "h2h_webp_4mp_rgb", "median_ms": 594.5260840235278, "min_ms": 587.6292500179261, "max_ms": 596.1357090855017, "noisy": false}
+{"timestamp": "20260511T085359Z", "git_rev": "5272e16", "name": "h2h_jpeg2k_4mp_u16", "median_ms": 695.0769375544041, "min_ms": 693.2695000432432, "max_ms": 698.1767499819398, "noisy": false}
+{"timestamp": "20260511T085359Z", "git_rev": "5272e16", "name": "h2h_qoi_4mp_rgb", "median_ms": 16.480395977851003, "min_ms": 16.46487496327609, "max_ms": 16.51804195716977, "noisy": false}
+{"timestamp": "20260511T085359Z", "git_rev": "5272e16", "name": "h2h_jxl_4mp_rgb", "median_ms": 119.28937502671033, "min_ms": 112.4951250385493, "max_ms": 123.78145905677229, "noisy": false}

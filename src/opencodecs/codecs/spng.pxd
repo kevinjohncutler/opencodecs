@@ -45,6 +45,17 @@ cdef extern from 'spng.h' nogil:
         SPNG_CHUNK_COUNT_LIMIT
         SPNG_ENCODE_TO_BUFFER
 
+    # filter_choice values are a bitmask of these. Pass to
+    # spng_set_option(ctx, SPNG_FILTER_CHOICE, <bitmask>).
+    cdef enum spng_filter_choice:
+        SPNG_DISABLE_FILTERING = 0
+        SPNG_FILTER_CHOICE_NONE = 8
+        SPNG_FILTER_CHOICE_SUB = 16
+        SPNG_FILTER_CHOICE_UP = 32
+        SPNG_FILTER_CHOICE_AVG = 64
+        SPNG_FILTER_CHOICE_PAETH = 128
+        SPNG_FILTER_CHOICE_ALL = 248    # 8|16|32|64|128
+
     ctypedef struct spng_ihdr "struct spng_ihdr":
         uint32_t width
         uint32_t height
