@@ -428,6 +428,73 @@ def _libname(posix: str, windows: str | None = None) -> str:
     return posix
 
 
+def _build_deflate_extension() -> Extension:
+    """Pick the deflate backend. Prefer ``zlib-ng-compat`` (drop-in
+    zlib replacement, ~1.5-2x faster on most modern CPUs), fall back
+    to system zlib.
+
+    Detection:
+      1. Look for a Homebrew ``opt/zlib-ng-compat`` directory that
+         brews ``libz.dylib`` (replacement) and a ``zlib.h``.
+      2. Look for a Linux ``pkg-config --cflags --libs zlib-ng-compat``
+         that resolves.
+      3. Else: plain system zlib.
+
+    No code changes on the .pyx side — both the compat layer and
+    system zlib expose the same ``z*`` symbols.
+    """
+    zng_compat_prefix = None
+    # Homebrew (macOS)
+    for cand in (Path("/opt/homebrew/opt/zlib-ng-compat"),
+                 Path("/usr/local/opt/zlib-ng-compat")):
+        if (cand / "include" / "zlib.h").exists() and (
+            cand / "lib" / "libz.dylib"
+        ).exists():
+            zng_compat_prefix = cand
+            break
+    # Linux: probe common conda + system paths
+    if zng_compat_prefix is None:
+        for cand in (Path(os.environ.get("CONDA_PREFIX", "")),
+                     Path("/usr/local"), Path("/usr")):
+            if str(cand) and (cand / "lib" / "pkgconfig"
+                              / "zlib-ng-compat.pc").exists():
+                zng_compat_prefix = cand
+                break
+
+    include_dirs = [str(PKG_CODECS)]
+    library_dirs = list(_lib_dirs_for_probes())
+    libraries = [_libname("z", "zlib")]
+    extra_link_args: list[str] = []
+    if zng_compat_prefix is not None:
+        include_dirs.insert(0, str(zng_compat_prefix / "include"))
+        # macOS distutils prepends -L<SDK>/usr/lib before our paths,
+        # which makes a plain ``-lz`` resolve to the system zlib .tbd
+        # stub instead of our zlib-ng-compat replacement. Bypass by
+        # naming the dylib directly via extra_link_args (always
+        # absolute first match) and dropping the "-lz" flag.
+        compat_dylib = zng_compat_prefix / "lib" / (
+            "libz.dylib" if sys.platform == "darwin"
+            else "libz.so"
+        )
+        if compat_dylib.exists():
+            extra_link_args.append(str(compat_dylib))
+            libraries = []
+        else:
+            library_dirs.insert(0, str(zng_compat_prefix / "lib"))
+    else:
+        include_dirs.extend(_resolve_include_dirs("zlib.h"))
+
+    return Extension(
+        name="opencodecs.codecs._deflate",
+        sources=["src/opencodecs/codecs/_deflate.pyx"],
+        include_dirs=include_dirs,
+        library_dirs=library_dirs,
+        libraries=libraries,
+        extra_link_args=extra_link_args,
+        language="c",
+    )
+
+
 def _build_png_ext() -> Extension:
     """Build the _png Extension with system-spng if available, else vendored.
 
@@ -661,18 +728,10 @@ extensions = [
         define_macros=[("NPY_NO_DEPRECATED_API", "NPY_1_7_API_VERSION")],
         language="c",
     ),
-    # zlib / deflate (system zlib).
-    Extension(
-        name="opencodecs.codecs._deflate",
-        sources=["src/opencodecs/codecs/_deflate.pyx"],
-        include_dirs=[
-            str(PKG_CODECS),
-            *_resolve_include_dirs("zlib.h"),
-        ],
-        library_dirs=_lib_dirs_for_probes(),
-        libraries=[_libname("z", "zlib")],
-        language="c",
-    ),
+    # zlib / deflate. Prefers zlib-ng-compat when available (it's a
+    # drop-in zlib replacement that ships ~1.5-2x faster on most
+    # x86_64 / arm64 hardware). Fall back to system zlib otherwise.
+    _build_deflate_extension(),
     # Tight nogil byte-shuffling helpers (used by the CZI reader).
     Extension(
         name="opencodecs.codecs._bytetools",

@@ -108,12 +108,19 @@ def test_deflate_roundtrip_levels(random_payload, level):
     assert imagecodecs.zlib_decode(enc) == random_payload
 
 
-def test_deflate_byte_equal_imagecodecs(random_payload):
-    """deflate at the same level → byte-identical via system zlib."""
+def test_deflate_cross_decode_imagecodecs(random_payload):
+    """deflate at the same level → not necessarily byte-identical
+    (we link zlib-ng-compat when available, which emits a slightly
+    different but standard-conformant deflate stream), but each
+    library MUST be able to decode the other's output back to the
+    same bytes.
+    """
     _need("deflate")
     oc_enc = oc.write(None, random_payload, format="deflate", level=6)
     ic_enc = imagecodecs.zlib_encode(random_payload, level=6)
-    assert oc_enc == ic_enc
+    # Round-trip via the OTHER library
+    assert imagecodecs.zlib_decode(oc_enc) == random_payload
+    assert oc.read(ic_enc, format="deflate") == random_payload
 
 
 @pytest.mark.parametrize("level", [0, 5, 9])
