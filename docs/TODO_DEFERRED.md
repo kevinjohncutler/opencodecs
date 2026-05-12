@@ -102,17 +102,27 @@ git log for `2026-05-11` for the night's shipped commits.
 
 ## DICOMweb reader
 
-* **Status**: not implemented.
-* **Use case**: stream pixel data from a DICOMweb-compliant server
-  (orthanc, dcm4chee, Google Healthcare API) via WADO-RS HTTP-range
-  requests.
-* **Sketch**: implement a `DicomwebClient` that issues WADO-RS
-  `GET /studies/{study}/series/{series}/instances/{instance}/frames/N`
-  requests, parses the multipart/related response, and dispatches the
-  pixel payload through `core.segment_compression` (DICOM frames can
-  be JPEG-LS, JPEG-2K, RLE, deflate — all of which we already decode).
-* **Effort**: ~6-8 hours, mostly DICOM transfer-syntax detection
-  glue. The actual codec dispatch is reusable.
+* **Status**: WADO-RS frame retrieval shipped — see
+  `src/opencodecs/_dicomweb.py` and `tests/test_dicomweb.py`.
+* **What's done**:
+  * `DicomwebClient.get_frame(study, series, instance, frame)` issues
+    the WADO-RS request and decodes the returned multipart/related
+    body into an ndarray.
+  * `DicomwebClient.list_instances()` for QIDO-RS series enumeration.
+  * Self-contained multipart/related parser (RFC 2046).
+  * Transfer-syntax dispatch covering JPEG baseline/extended,
+    JPEG-LS (CharLS), JPEG-2000 (OpenJPEG), HTJ2K (OpenJPH),
+    raw Explicit/Implicit VR LE, and DICOM Annex G RLE Lossless.
+  * 13 unit tests pass — multipart parsing, RLE round-trip, codec
+    dispatch through CharLS/OpenJPH for the JPEG-LS / HTJ2K syntaxes.
+* **What's left**:
+  * Live integration test against an `orthanc` Docker container — the
+    current tests synthesize responses; a real CI smoke test against
+    a public DICOMweb server (e.g. IDC's WADO-RS endpoint) would
+    increase confidence.
+  * STOW-RS (upload) — out of scope for the read-side codec layer.
+  * OAuth dance for Google Healthcare / AWS HealthImaging — caller
+    supplies bearer tokens via `headers=...` for now.
 
 ## HDF5 cloud (h5coro)
 
