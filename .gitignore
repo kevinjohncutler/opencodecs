@@ -10,9 +10,11 @@ dist/
 .test_data/
 tests/.test_data/
 
-# Cython-generated C (matches every _*.pyx → _*.c). Hand-written C
-# helpers (e.g. b2nd_helpers.c) are NOT prefixed with _ and pass through.
+# Cython-generated C / C++ (matches every _*.pyx → _*.c / _*.cpp).
+# Hand-written sources (e.g. b2nd_helpers.c, openjph_shim.cpp) are NOT
+# prefixed with _ and pass through.
 src/opencodecs/codecs/_*.c
+src/opencodecs/codecs/_*.cpp
 
 # Vendored libjxl build (rebuilt via bench/build_libjxl.sh)
 vendor/libjxl/

@@ -63,6 +63,7 @@ _EXTENSIONS = (
     "_mozjpeg",     # optional: only present when MozJPEG was found at build
     "_bcdec",       # BC1-7 / DXT / BPTC texture decoder (vendored, no deps)
     "_charls",      # JPEG-LS (optional; built when libcharls is on system)
+    "_openjph",     # HTJ2K / JPEG-2000 Part-15 (optional; needs OpenJPH)
 )
 
 
