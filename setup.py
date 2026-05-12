@@ -428,6 +428,74 @@ def _libname(posix: str, windows: str | None = None) -> str:
     return posix
 
 
+def _maybe_build_mozjpeg_ext() -> list[Extension]:
+    """Build the optional ``_mozjpeg`` extension when MozJPEG is
+    installed. MozJPEG ships its libturbojpeg under a keg-only prefix
+    on macOS (``/opt/homebrew/opt/mozjpeg``) so its symbols don't
+    collide with the regular libjpeg-turbo. Linux distros tend to
+    have it under ``/usr/include/mozjpeg`` or ``/usr/local/opt/mozjpeg``.
+    """
+    candidates = [
+        Path("/opt/homebrew/opt/mozjpeg"),
+        Path("/usr/local/opt/mozjpeg"),
+        Path("/usr"),  # apt mozjpeg package
+        Path("/usr/local"),
+    ]
+    prefix = None
+    for c in candidates:
+        if (c / "include" / "turbojpeg.h").exists() and (
+            (c / "lib" / "libturbojpeg.dylib").exists()
+            or (c / "lib" / "libturbojpeg.so").exists()
+            or (c / "lib" / "libturbojpeg.so.0").exists()
+            or (c / "lib" / "x86_64-linux-gnu" / "libturbojpeg.so.0").exists()
+        ):
+            # Skip the "vanilla libjpeg-turbo" hit at /usr or /opt/
+            # homebrew. Detect MozJPEG by checking whether the dylib
+            # *lacks* the v3 symbols (`tj3Compress8`).
+            for libname in ("libturbojpeg.dylib", "libturbojpeg.so",
+                            "libturbojpeg.so.0"):
+                libpath = c / "lib" / libname
+                if not libpath.exists():
+                    libpath = c / "lib" / "x86_64-linux-gnu" / libname
+                if not libpath.exists():
+                    continue
+                # Use a cheap shell probe.
+                try:
+                    import subprocess
+                    out = subprocess.run(
+                        ["nm", "-gU", str(libpath)],
+                        capture_output=True, text=True, timeout=10,
+                    ).stdout
+                    if "_tj3Compress8" not in out and "tj3Compress8" not in out:
+                        prefix = c
+                        break
+                except (FileNotFoundError, subprocess.SubprocessError):
+                    continue
+        if prefix is not None:
+            break
+    if prefix is None:
+        return []
+    return [Extension(
+        name="opencodecs.codecs._mozjpeg",
+        sources=["src/opencodecs/codecs/_mozjpeg.pyx"],
+        include_dirs=[
+            str(PKG_CODECS),
+            numpy.get_include(),
+            str(prefix / "include"),
+        ],
+        library_dirs=[str(prefix / "lib")],
+        # Use absolute path on macOS to dodge the SDK-stub issue we
+        # hit with zlib-ng-compat.
+        libraries=[],
+        extra_link_args=[str(prefix / "lib" / (
+            "libturbojpeg.dylib" if sys.platform == "darwin"
+            else "libturbojpeg.so"
+        ))],
+        define_macros=[("NPY_NO_DEPRECATED_API", "NPY_1_7_API_VERSION")],
+        language="c",
+    )]
+
+
 def _build_deflate_extension() -> Extension:
     """Pick the deflate backend. Prefer ``zlib-ng-compat`` (drop-in
     zlib replacement, ~1.5-2x faster on most modern CPUs), fall back
@@ -663,6 +731,12 @@ extensions = [
         define_macros=[("NPY_NO_DEPRECATED_API", "NPY_1_7_API_VERSION")],
         language="c",
     ),
+    # MozJPEG (Mozilla's libjpeg-turbo fork — smaller files at the
+    # same quality). Optional; built only when ``mozjpeg`` is found
+    # on the system. Both Mac homebrew (keg-only) and Linux distros
+    # ship it in a separate prefix to avoid colliding with the regular
+    # libjpeg-turbo libs.
+    *_maybe_build_mozjpeg_ext(),
     # WebP via libwebp.
     Extension(
         name="opencodecs.codecs._webp",
