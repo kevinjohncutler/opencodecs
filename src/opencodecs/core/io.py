@@ -1,15 +1,16 @@
 """I/O primitives shared across codecs.
 
-The big one: ``BackgroundChunkReader`` — a bg-thread file-chunk producer
-with a bounded queue. The bg thread holds the GIL only while doing
-Python work (queue.put, etc.); during the actual ``file.read()`` syscall
-the GIL is released, so the consumer thread (running libjxl /
-TIFFReadStrip / numpy frombuffer / etc. inside ``with nogil:``) gets
-real wall-clock overlap between I/O and codec work.
+Two related substrates, each tuned to a different access pattern:
 
-For chunked formats (JXL incremental SetInput, TIFF tile pyramids, NPY
-row ranges, zarr chunks), this is the substrate the codec wrapper
-plugs into.
+* ``BackgroundChunkReader`` — sequential, bg-thread chunk producer with
+  a bounded queue. Used by streaming codecs (JXL incremental decode,
+  some TIFF compressed strips).
+* ``DataSource`` — random-access, "give me bytes at offset O of length N"
+  abstraction with batched ``read_many`` for parallel fetch. Used by
+  container readers (TIFF tiles, CZI sub-blocks, HDF5 chunks, DICOMweb
+  frames). The concrete subclasses (FileDataSource / HTTPDataSource)
+  live in ``opencodecs._tiff_http`` for historical reasons; this module
+  defines the ABC + the cross-cutting helpers (``coalesce_ranges``).
 """
 
 from __future__ import annotations
@@ -17,8 +18,9 @@ from __future__ import annotations
 import os
 import queue
 import threading
+from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Iterator
+from typing import Iterator, Sequence
 
 
 _DEFAULT_CHUNK_BYTES = 4 * 1024 * 1024   # 4 MiB
@@ -197,4 +199,133 @@ class BackgroundChunkReader:
             self._file = None
 
 
-__all__ = ["BackgroundChunkReader"]
+# ---------------------------------------------------------------------------
+# Random-access DataSource ABC
+# ---------------------------------------------------------------------------
+
+
+Range = tuple[int, int]  # (offset, length)
+
+
+class DataSource(ABC):
+    """Random-access byte source with batched parallel fetch.
+
+    Concrete subclasses live in ``opencodecs._tiff_http``
+    (``FileDataSource``, ``HTTPDataSource``); both predate this ABC and
+    keep their ``__call__(offset, n)`` shorthand for back-compat. The
+    ABC formalizes:
+
+    * ``read_at(offset, n) -> bytes`` — the primitive every consumer
+      uses.
+    * ``read_many(ranges) -> list[bytes]`` — fan out a known batch in
+      parallel. Default impl just loops ``read_at``; overrides exist
+      where parallel fetch is a win (HTTPDataSource).
+    * ``size`` — total bytes, ``None`` if not yet discovered.
+    * ``close()`` — release any held resources (sockets / FDs).
+
+    Range coalescing lives in ``coalesce_ranges``; subclasses that
+    benefit from it call it inside ``read_many``.
+    """
+
+    size: int | None = None
+
+    @abstractmethod
+    def read_at(self, offset: int, n: int) -> bytes:
+        """Fetch ``n`` bytes starting at ``offset``."""
+
+    def __call__(self, offset: int, n: int) -> bytes:
+        """Callable shorthand — keeps the existing read_at-callable API."""
+        return self.read_at(offset, n)
+
+    def read_many(self, ranges: Sequence[Range]) -> list[bytes]:
+        """Fetch many ranges, return results in input order.
+
+        Default impl: serial loop. Subclasses with a faster batched
+        path (parallel HTTP, parallel pread on a fast filesystem)
+        override.
+        """
+        return [self.read_at(o, n) for o, n in ranges]
+
+    def close(self) -> None:  # pragma: no cover - default no-op
+        pass
+
+    def __enter__(self) -> "DataSource":
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.close()
+
+
+def coalesce_ranges(
+    ranges: Sequence[Range],
+    *,
+    max_gap: int = 16 * 1024,
+    max_combined: int = 4 * 1024 * 1024,
+) -> tuple[list[Range], list[list[tuple[int, int, int]]]]:
+    """Merge nearby ranges into bigger fetches.
+
+    A single TIFF tile / HDF5 chunk read is usually a few KB; if the
+    next requested range starts a few KB later we want one HTTP Range
+    request, not two. We sort the input by offset, then greedily
+    merge while:
+
+    * the gap from the previous range's end to the next range's start
+      is ``<= max_gap`` bytes, AND
+    * the resulting combined range is ``<= max_combined`` bytes.
+
+    Returns
+    -------
+    merged
+        ``[(offset, length), ...]`` — the actual fetches the caller
+        should issue.
+    splits
+        For each input range, ``splits[i]`` is a list of
+        ``(merged_index, slice_start, slice_end)`` describing how to
+        reconstruct the original bytes by slicing the merged result.
+        With non-overlapping inputs each list has length 1, but
+        overlapping inputs split fine.
+
+    Both lists are in the **original input order** so callers can
+    reuse their existing per-range indexing.
+    """
+    if not ranges:
+        return [], []
+
+    n = len(ranges)
+    # Sort by (offset, length); remember original index so we can map back.
+    indexed = sorted(
+        ((int(o), int(L), i) for i, (o, L) in enumerate(ranges)),
+        key=lambda t: (t[0], -t[1]),
+    )
+    merged: list[Range] = []
+    # splits[i] is populated as merged ranges close.
+    splits: list[list[tuple[int, int, int]]] = [[] for _ in range(n)]
+
+    cur_off, cur_end = -1, -1
+    cur_idx = -1  # index into `merged`
+    for off, length, orig in indexed:
+        end = off + length
+        if cur_off < 0:
+            cur_off, cur_end, cur_idx = off, end, len(merged)
+            merged.append((cur_off, cur_end - cur_off))
+        elif (
+            off - cur_end <= max_gap
+            and (max(end, cur_end) - cur_off) <= max_combined
+        ):
+            if end > cur_end:
+                cur_end = end
+                merged[cur_idx] = (cur_off, cur_end - cur_off)
+        else:
+            cur_off, cur_end = off, end
+            cur_idx = len(merged)
+            merged.append((cur_off, cur_end - cur_off))
+        splits[orig].append((cur_idx, off - cur_off, end - cur_off))
+    return merged, splits
+
+
+__all__ = [
+    "BackgroundChunkReader",
+    "DataSource",
+    "Range",
+    "coalesce_ranges",
+]
