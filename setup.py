@@ -428,6 +428,64 @@ def _libname(posix: str, windows: str | None = None) -> str:
     return posix
 
 
+def _maybe_build_ext_simple(
+    name: str,
+    source: str,
+    prefixes: list[str],
+    probe_header: str,
+    libname: str,
+    define_macros: list | None = None,
+) -> list[Extension]:
+    """Build an optional Cython extension when the named header +
+    library are found in one of the given prefixes. Used for codecs
+    that depend on a single system C library (CharLS, Brunsli, etc.).
+    """
+    for p in prefixes:
+        prefix = Path(p)
+        hdr = prefix / "include" / probe_header
+        if not hdr.exists():
+            continue
+        # Find matching dylib/so.
+        dlib = None
+        for ext in ("dylib", "so", "so.0"):
+            cand = prefix / "lib" / f"lib{libname}.{ext}"
+            if cand.exists():
+                dlib = cand
+                break
+        if dlib is None:
+            for ext in ("so", "so.0"):
+                cand = prefix / "lib" / "x86_64-linux-gnu" / f"lib{libname}.{ext}"
+                if cand.exists():
+                    dlib = cand
+                    break
+        if dlib is None:
+            continue
+        # Match the zlib-ng-compat pattern: pass dylib by abs path on
+        # macOS so the SDK stub doesn't win the linker lookup.
+        extra_link_args = (
+            [str(dlib)] if sys.platform == "darwin" else []
+        )
+        libs = [] if sys.platform == "darwin" else [libname]
+        return [Extension(
+            name=name,
+            sources=[source],
+            include_dirs=[
+                str(PKG_CODECS),
+                numpy.get_include(),
+                str(prefix / "include"),
+            ],
+            library_dirs=[str(prefix / "lib")],
+            libraries=libs,
+            extra_link_args=extra_link_args,
+            define_macros=(define_macros or []) + [
+                ("NPY_NO_DEPRECATED_API", "NPY_1_7_API_VERSION"),
+            ],
+            language="c++" if name.endswith(("_charls", "_brunsli", "_openjph"))
+                     else "c",
+        )]
+    return []
+
+
 def _maybe_build_mozjpeg_ext() -> list[Extension]:
     """Build the optional ``_mozjpeg`` extension when MozJPEG is
     installed. MozJPEG ships its libturbojpeg under a keg-only prefix
@@ -737,6 +795,19 @@ extensions = [
     # ship it in a separate prefix to avoid colliding with the regular
     # libjpeg-turbo libs.
     *_maybe_build_mozjpeg_ext(),
+    # CharLS / JPEG-LS via libcharls. Optional — built only when CharLS
+    # is on the system.
+    *_maybe_build_ext_simple(
+        name="opencodecs.codecs._charls",
+        source="src/opencodecs/codecs/_charls.pyx",
+        prefixes=[
+            "/opt/homebrew/opt/charls",
+            "/usr/local/opt/charls",
+            "/usr/local", "/usr",
+        ],
+        probe_header="charls/charls.h",
+        libname="charls",
+    ),
     # BC1-7 / DXT / BPTC GPU texture decoder via the vendored single-
     # header ``bcdec.h`` (MIT). No external deps; the implementation
     # gets compiled into our .so via BCDEC_IMPLEMENTATION.
