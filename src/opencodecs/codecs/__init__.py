@@ -60,6 +60,7 @@ _EXTENSIONS = (
     "_tiff",
     "_ndtiff",
     "_bytetools",
+    "_mozjpeg",     # optional: only present when MozJPEG was found at build
 )
 
 
