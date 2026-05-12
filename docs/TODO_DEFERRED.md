@@ -46,20 +46,22 @@ git log for `2026-05-11` for the night's shipped commits.
 
 ## EER (cryo-EM electron event)
 
-* **Status**: not implemented.
-* **Use case**: Falcon 4 / Selectris X cryo-EM detector raw output.
-* **Source**: Thermo Fisher published the EER format spec; ImageJ /
-  RELION have reference readers. Wikipedia summarizes the layout:
-  TIFF container with EER-specific sub-tags carrying event lists +
-  per-event x/y coordinates + dose information.
-* **Sketch**:
-  1. Parse the TIFF wrapper via existing `_tiff_codec.py`.
-  2. Add an EER-specific decoder for the event-list sub-tags
-     (custom RLE-of-coordinates layout).
-  3. Output: dose-corrected float32 frames at user-specified
-     temporal binning.
-* **Effort**: ~6-8 hours. Hard to test without a real EER fixture
-  from a Falcon 4 acquisition.
+* **Status**: bitstream decoder shipped — see
+  `src/opencodecs/codecs/_eer.pyx` and `3rdparty/imcd_eer/eer.{c,h}`.
+* **What's done**: native event-list decoder, vendored from imagecodecs'
+  BSD-3 imcd.c (no runtime dep). Verified against the EER spec test
+  vector and cross-validated against `imagecodecs.eer_decode` over a
+  parameter sweep on random bitstreams. Supports binary (uint8) and
+  uint16 accumulator output, and the super-resolution sub-pixel mode.
+* **What's left**:
+  1. File-level wrapper: a `tifffile`-style EER reader that opens the
+     TIFF container, extracts the per-strip skipbits/horzbits/vertbits
+     tags (65007/65008/65009), and feeds each strip through
+     `_eer.decode`. Could live in `src/opencodecs/io/eer.py` and
+     reuse `_tiff_codec.py` for the TIFF walk.
+  2. Dose correction / temporal binning across frames.
+  3. Real-acquisition test fixture (would need a Falcon 4 sample;
+     synthetic ones suffice for the bitstream decoder itself).
 
 ## CharLS / JPEG-LS
 
