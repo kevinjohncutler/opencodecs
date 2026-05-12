@@ -1,58 +1,38 @@
-# HTJ2K (High-Throughput JPEG 2000) — deferred
+# HTJ2K (High-Throughput JPEG 2000) — shipped
 
 ## Status
 
-**Not implemented.** A native Cython binding is a multi-hour project that
-didn't fit in the same overnight run as the rest of the roadmap.
+**Implemented** via OpenJPH (libopenjph, MIT). Lossless + irreversible
+modes; uint8 / int8 / uint16 / int16 input across 1 / 3 / 4 components.
 
-## What it would take
+- Cython binding: `src/opencodecs/codecs/_openjph.pyx`
+- C++ shim around `ojph::codestream` + `mem_in/outfile`:
+  `src/opencodecs/codecs/openjph_shim.{h,cpp}`
+- Tests: `tests/test_openjph.py` (13 pass + 1 cross-decode skip when
+  imagecodecs has no HTJ2K backend built locally)
+- Build: `_maybe_build_openjph_ext()` in setup.py — built only when
+  libopenjph is on the system (homebrew at `/opt/homebrew/opt/openjph`).
 
-HTJ2K (Part 15 of the JPEG 2000 family, ITU-T T.814 / ISO/IEC 15444-15)
-is not implemented in either of the obvious upstream libraries:
+## Why a C++ shim, not a direct Cython binding
 
-* **openjpeg 2.5.4** — header has no `OPJ_PROFILE_HTJ2K` or
-  `OPJ_EXTENSION_HTJ2K`. The official OpenJPEG project hasn't merged
-  HT support as of 2.5.x.
+OpenJPH's encoder/decoder is a stateful C++ class with value-returning
+accessors (`param_siz access_siz()`) and a union-typed `line_buf::i32`
+field. Wrapping the full class from Cython is doable but messy; the
+shim is far smaller and keeps the .pyx focused on numpy<->codec
+plumbing.
 
-* **imagecodecs 2026.3.6** — exposes `imagecodecs.htj2k_encode` /
-  `htj2k_decode` but the implementation is a `STUB`. Calling either
-  raises rather than encoding.
+## Cross-decode
 
-* **Pillow** — no HTJ2K support.
+When the local imagecodecs install includes the HTJ2K backend
+(builds where `imagecodecs.htj2k_decode` actually loads), the
+`test_openjph_imagecodecs_cross_decode` test confirms output is
+byte-compatible with the reference.
 
-The only viable open-source HT encoder/decoder is **OpenJPH**
-(https://github.com/aous72/OpenJPH), MIT-licensed, C++ API. brew has
-it as `openjph` (currently 0.27.2).
+## Notes for callers
 
-## Implementation sketch
-
-1. Add OpenJPH to the build dependencies (homebrew on Mac, conda
-   recipe on Linux, vendored under `3rdparty/openjph/` for Windows
-   wheels).
-2. Write a thin C shim around `ojph::codestream` (which is C++ only)
-   exposing two C entry points:
-   ```c
-   int ojph_oc_encode(const uint8_t *pixels, int W, int H, int C,
-                      int bit_depth, int reversible,
-                      uint8_t **out, size_t *out_size);
-   int ojph_oc_decode(const uint8_t *data, size_t size,
-                      int *W, int *H, int *C, int *bit_depth,
-                      uint8_t **pixels);
-   ```
-3. Cython binding in `src/opencodecs/codecs/_htj2k.pyx` calling those C
-   entry points (same shape as `_jpeg2k.pyx`).
-4. Wire `htj2k` into `opencodecs/codecs/_registry.py` next to
-   `jpeg2000`.
-5. Add to `bench/run_benchmarks.py` head-to-head section. Note that
-   imagecodecs comparison won't work until upstream imagecodecs
-   actually implements HTJ2K — for now the bench would compare
-   against the openjpeg jpeg2000 codec (showing HTJ2K's ~5-10× speedup
-   on natural images at the same quality).
-
-## Estimated effort
-
-* C shim: 1-2 hours
-* Cython binding + registry wire-up: 2-3 hours
-* Tests + h2h bench row + bit-depth coverage: 1-2 hours
-
-Total: ~4-6 hours of focused work.
+- `encode(arr)` defaults to reversible (lossless).
+- `encode(arr, level=<delta>)` selects irreversible lossy with `delta`
+  as the quantization base step. Smaller -> closer to lossless, larger
+  files. Typical range ~ 0.001 .. 0.1 for natural images.
+- `decode_info(bytes)` reads the SIZ marker without sample decoding.
+- Output is a raw HTJ2K codestream (.j2c-style); no JP2 box wrapping.

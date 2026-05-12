@@ -554,6 +554,67 @@ def _maybe_build_mozjpeg_ext() -> list[Extension]:
     )]
 
 
+def _maybe_build_openjph_ext() -> list[Extension]:
+    """Build the optional ``_openjph`` HTJ2K extension when OpenJPH is
+    installed. OpenJPH (https://github.com/aous72/OpenJPH) provides a
+    high-throughput JPEG-2000 (HTJ2K, ISO/IEC 15444-15) codec; we wrap
+    its C++ ``ojph::codestream`` API through a small shim in
+    ``src/opencodecs/codecs/openjph_shim.cpp``.
+    """
+    candidates = [
+        Path("/opt/homebrew/opt/openjph"),
+        Path("/usr/local/opt/openjph"),
+        Path(os.environ.get("CONDA_PREFIX", "/dev/null")),
+        Path("/usr/local"),
+        Path("/usr"),
+    ]
+    prefix = None
+    for c in candidates:
+        if not str(c) or not c.is_dir():
+            continue
+        if (c / "include" / "openjph" / "ojph_codestream.h").exists():
+            for ext in ("dylib", "so", "so.0"):
+                if (c / "lib" / f"libopenjph.{ext}").exists():
+                    prefix = c
+                    break
+                if (c / "lib" / "x86_64-linux-gnu"
+                        / f"libopenjph.{ext}").exists():
+                    prefix = c
+                    break
+        if prefix is not None:
+            break
+    if prefix is None:
+        return []
+
+    # Match the absolute-dylib pattern used for MozJPEG / CharLS on
+    # macOS so the linker doesn't bind to an SDK stub.
+    if sys.platform == "darwin":
+        dylib = prefix / "lib" / "libopenjph.dylib"
+        extra_link_args = [str(dylib)]
+        libs: list[str] = []
+    else:
+        extra_link_args = []
+        libs = ["openjph"]
+
+    return [Extension(
+        name="opencodecs.codecs._openjph",
+        sources=[
+            "src/opencodecs/codecs/_openjph.pyx",
+            "src/opencodecs/codecs/openjph_shim.cpp",
+        ],
+        include_dirs=[
+            str(PKG_CODECS),
+            numpy.get_include(),
+            str(prefix / "include"),
+        ],
+        library_dirs=[str(prefix / "lib")],
+        libraries=libs,
+        extra_link_args=extra_link_args,
+        define_macros=[("NPY_NO_DEPRECATED_API", "NPY_1_7_API_VERSION")],
+        language="c++",
+    )]
+
+
 def _build_deflate_extension() -> Extension:
     """Pick the deflate backend. Prefer ``zlib-ng-compat`` (drop-in
     zlib replacement, ~1.5-2x faster on most modern CPUs), fall back
@@ -808,6 +869,9 @@ extensions = [
         probe_header="charls/charls.h",
         libname="charls",
     ),
+    # HTJ2K (high-throughput JPEG-2000) via OpenJPH. Optional — built
+    # only when libopenjph is on the system.
+    *_maybe_build_openjph_ext(),
     # BC1-7 / DXT / BPTC GPU texture decoder via the vendored single-
     # header ``bcdec.h`` (MIT). No external deps; the implementation
     # gets compiled into our .so via BCDEC_IMPLEMENTATION.
