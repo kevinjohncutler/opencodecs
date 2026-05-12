@@ -312,19 +312,73 @@ class CziReader(Reader):
         *,
         timeout: float = 120.0,
         headers: dict[str, str] | None = None,
+        max_workers: int = 1,
+        chunk_bytes: int = 8 * 1024 * 1024,
     ) -> "CziReader":
         """Open a remote CZI by downloading it in full.
 
-        CZI parsing does scattered slice access through directory
-        and sub-block headers; ranged HTTP per-slice would issue
-        ~1000 round-trips per file. We fetch once into bytes and
-        operate on that buffer for the reader's lifetime. For
-        very large CZIs (>1 GB) consider downloading to disk first
-        and using ``CziReader(local_path)`` instead.
+        CZI parsing does scattered slice access through the directory
+        and sub-block headers; per-slice Range requests would issue
+        ~1000 round-trips per file, so we always materialise the file
+        before parsing.
+
+        ``max_workers`` (default ``1``) controls the download pattern:
+
+        * ``max_workers=1`` — a single streaming GET. Matches the old
+          behavior; lowest latency on LAN / loopback where TCP
+          slow-start isn't the bottleneck.
+        * ``max_workers>=2`` — pipeline the download as
+          ``chunk_bytes``-sized parallel Range requests. Wins on
+          high-bandwidth WAN connections where a single TCP stream
+          can't saturate the link (typical S3 / GCS reads from
+          outside the bucket region).
+
+        For very large CZIs (> a few GB) prefer downloading to disk
+        and using ``CziReader(local_path)``.
         """
-        from ._tiff_http import http_fetch_all
-        data = http_fetch_all(url, timeout=timeout, headers=headers)
-        return cls(buffer=data)
+        from ._tiff_http import HTTPDataSource, http_fetch_all
+
+        # Single-stream (default): no size probe, no fan-out — matches
+        # the legacy http_fetch_all path exactly.
+        if max_workers <= 1:
+            data = http_fetch_all(url, timeout=timeout, headers=headers)
+            return cls(buffer=data)
+
+        src = HTTPDataSource(
+            url,
+            headers=headers,
+            timeout=timeout,
+            prefetch_bytes=0,
+            cache_bytes=0,
+            max_workers=max_workers,
+            # Don't coalesce — we already chose chunk_bytes; combining
+            # back into bigger fetches would defeat the parallelism.
+            coalesce_gap=0,
+        )
+        try:
+            src.read_at(0, 4096)  # discover total size
+            total = src._total_size
+            if total is None or total <= 0:
+                # Server didn't return Content-Range — fall back to a
+                # single-stream GET.
+                data = http_fetch_all(url, timeout=timeout, headers=headers)
+                return cls(buffer=data)
+
+            ranges: list[tuple[int, int]] = []
+            off = 0
+            while off < total:
+                n = min(chunk_bytes, total - off)
+                ranges.append((off, n))
+                off += n
+            blobs = src.read_many(ranges)
+            data = b"".join(blobs)
+            if len(data) != total:  # pragma: no cover - server inconsistency
+                raise CziError(
+                    f"CZI download incomplete: got {len(data)} of {total} bytes"
+                )
+            return cls(buffer=data)
+        finally:
+            src.close()
 
     def __enter__(self) -> "CziReader":
         return self

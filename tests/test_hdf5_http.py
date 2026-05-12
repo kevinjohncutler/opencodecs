@@ -23,7 +23,12 @@ import pytest
 
 h5py = pytest.importorskip("h5py")
 
-from opencodecs._hdf5_http import _HTTPFileLike, open_remote_hdf5
+from opencodecs._hdf5_http import (
+    _HTTPFileLike,
+    _SOURCE_REGISTRY,
+    open_remote_hdf5,
+    prefetch_hdf5_chunks,
+)
 from opencodecs._tiff_http import HTTPDataSource
 
 
@@ -135,6 +140,59 @@ def test_remote_hdf5_partial_slice_only_fetches_needed_chunks(http_h5_url):
         f"fetched {src._total_bytes_fetched} bytes, file is {total_size};"
         f" partial slice shouldn't pull the whole thing"
     )
+
+
+def test_prefetch_collapses_chunk_fetches(http_h5_url):
+    """prefetch_hdf5_chunks should coalesce many chunk fetches into a
+    small number of parallel HTTP requests, dramatically cutting the
+    request count compared to the serial baseline."""
+    url_for, tmp = http_h5_url
+    with h5py.File(tmp / "big.h5", "w") as f:
+        rng = np.random.default_rng(0)
+        big = rng.integers(0, 4000, size=(512, 512), dtype=np.uint16)
+        f.create_dataset("img", data=big, chunks=(32, 32),
+                         compression="gzip")
+
+    # Serial baseline.
+    with open_remote_hdf5(url_for("big.h5")) as f:
+        src_serial = _SOURCE_REGISTRY[f.id]
+        _ = f["img"][:512, :512]
+        serial_reqs = src_serial.stats["requests"]
+
+    # With parallel prefetch.
+    with open_remote_hdf5(url_for("big.h5"), max_workers=8) as f:
+        src_par = _SOURCE_REGISTRY[f.id]
+        d = f["img"]
+        n = prefetch_hdf5_chunks(d, np.s_[:512, :512])
+        _ = d[:512, :512]
+        par_reqs = src_par.stats["requests"]
+
+    assert n == 256, f"expected 256 chunks for a 512x512/32x32 layout, got {n}"
+    # Coalescing typically takes 256 chunks down to ~5-20 fetches.
+    assert par_reqs * 5 <= serial_reqs, (
+        f"expected substantial request reduction: "
+        f"serial={serial_reqs}, parallel={par_reqs}"
+    )
+
+
+def test_prefetch_correct_values(http_h5_url):
+    """Prefetched + read must equal the no-prefetch read byte-for-byte."""
+    url_for, tmp = http_h5_url
+    rng = np.random.default_rng(1)
+    arr = rng.integers(0, 4000, size=(256, 256), dtype=np.uint16)
+    with h5py.File(tmp / "x.h5", "w") as f:
+        f.create_dataset("img", data=arr, chunks=(32, 32),
+                         compression="gzip")
+
+    with open_remote_hdf5(url_for("x.h5")) as f:
+        baseline = f["img"][:128, :128]
+    with open_remote_hdf5(url_for("x.h5")) as f:
+        d = f["img"]
+        prefetch_hdf5_chunks(d, np.s_[:128, :128])
+        prefetched = d[:128, :128]
+
+    np.testing.assert_array_equal(baseline, prefetched)
+    np.testing.assert_array_equal(baseline, arr[:128, :128])
 
 
 def test_remote_hdf5_filelike_seek_tell(http_h5_url):

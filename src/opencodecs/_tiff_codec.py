@@ -469,6 +469,22 @@ class TiffPage:
                 pass
 
         # Fallback: file-handle / HTTP-range / other read_at sources.
+        # If the source supports read_many (HTTPDataSource / FileDataSource),
+        # batch the strip fetches into one parallel + coalesced call.
+        # Otherwise serial loop matches the old code exactly.
+        read_many = getattr(self._stream._read, "read_many", None)
+        if read_many is not None and len(self.offsets) > 1:
+            ranges = [
+                (int(self.offsets[i]), int(self.byte_counts[i]))
+                for i in range(len(self.offsets))
+            ]
+            blobs = read_many(ranges)
+            write_off = 0
+            for raw, nbytes in zip(blobs, (r[1] for r in ranges)):
+                view[write_off:write_off + nbytes] = np.frombuffer(raw, dtype=np.uint8)
+                write_off += nbytes
+            return
+
         write_off = 0
         for idx in range(len(self.offsets)):
             offset = int(self.offsets[idx])
@@ -523,6 +539,21 @@ class TiffPage:
         # place in out. Handles all compressions and predictors.
         if self.is_tiled:
             full_shape = self._padded_shape()
+
+        # Batched fetch path: when the data source advertises read_many
+        # (HTTPDataSource / FileDataSource), pull every segment's bytes
+        # in one parallel + coalesced call so we pay 1 round-trip per
+        # cluster instead of one per tile. Skip on single-segment images
+        # — overhead dominates the benefit.
+        prefetched: list[bytes] | None = None
+        read_many = getattr(self._stream._read, "read_many", None)
+        if read_many is not None and len(self.offsets) > 1:
+            ranges = [
+                (int(self.offsets[i]), int(self.byte_counts[i]))
+                for i in range(len(self.offsets))
+            ]
+            prefetched = read_many(ranges)
+
         for ty in range(self.tiles_y):
             for tx in range(self.tiles_x):
                 idx = ty * self.tiles_x + tx
@@ -531,9 +562,12 @@ class TiffPage:
                         f"TIFF: tile index {idx} out of range "
                         f"(have {len(self.offsets)} offsets)"
                     )
-                offset = int(self.offsets[idx])
-                nbytes = int(self.byte_counts[idx])
-                raw = self._stream._read(offset, nbytes)
+                if prefetched is not None:
+                    raw = prefetched[idx]
+                else:
+                    offset = int(self.offsets[idx])
+                    nbytes = int(self.byte_counts[idx])
+                    raw = self._stream._read(offset, nbytes)
                 decoded = self._decode_segment(raw)
                 exp_shape = self._segment_shape(tx, ty)
 
