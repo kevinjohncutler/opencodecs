@@ -62,6 +62,7 @@ _EXTENSIONS = (
     "_bytetools",
     "_mozjpeg",     # optional: only present when MozJPEG was found at build
     "_bcdec",       # BC1-7 / DXT / BPTC texture decoder (vendored, no deps)
+    "_charls",      # JPEG-LS (optional; built when libcharls is on system)
 )
 
 
