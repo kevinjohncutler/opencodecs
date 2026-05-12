@@ -126,17 +126,24 @@ git log for `2026-05-11` for the night's shipped commits.
 
 ## HDF5 cloud (h5coro)
 
-* **Status**: not implemented.
-* **Use case**: NASA / SnowEx / Argo-float HDF5 archives served from
-  S3 — read them without downloading the whole file via per-chunk
-  HTTP Range requests.
-* **Source**: https://github.com/SlideRuleEarth/h5coro (BSD-3).
-  Pure C++; not currently bound for Python.
-* **Sketch**: option (a) thin Cython wrapper around h5coro's C++
-  classes; (b) implement a minimal HDF5 reader natively (HDF5 is a
-  complex spec — option a is much smaller).
-* **Effort**: ~8-12 hours for a full pyramidal-HDF5 reader; ~4-6
-  hours for the subset of HDF5 we actually use.
+* **Status**: shipped — see `src/opencodecs/_hdf5_http.py`.
+* **What's done**: ``open_remote_hdf5(url)`` returns an ``h5py.File``
+  whose backing storage is our ``HTTPDataSource`` — a Python file-
+  like that issues HTTP Range requests with HTTP/1.1 keep-alive and
+  an LRU cache. h5py's existing chunked-dataset machinery pulls only
+  the chunks covered by the slice the user reads, so a 100GB HDF5
+  archive in S3 can be sliced into a tiny ndarray with kilobytes of
+  transfer. Same pattern as kerchunk + xarray but without those
+  runtime deps — stdlib only.
+* **What's left**:
+  * Concurrent multi-chunk prefetch (the h5py driver is single-
+    threaded; a smarter dispatcher could parallelize chunk fetches
+    for large slices).
+  * Live IDC / NASA SnowEx smoke test.
+* **Why this beats binding h5coro**: h5py 3.x already accepts file-
+  like objects, so the wrapper is < 100 lines, no native code, and
+  uses the entire upstream h5py decode path (filters, fill values,
+  reference resolution) instead of reimplementing it.
 
 ## zlib-ng / ISA-L deflate swap
 
