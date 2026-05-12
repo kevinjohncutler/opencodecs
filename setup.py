@@ -737,6 +737,27 @@ extensions = [
     # ship it in a separate prefix to avoid colliding with the regular
     # libjpeg-turbo libs.
     *_maybe_build_mozjpeg_ext(),
+    # BC1-7 / DXT / BPTC GPU texture decoder via the vendored single-
+    # header ``bcdec.h`` (MIT). No external deps; the implementation
+    # gets compiled into our .so via BCDEC_IMPLEMENTATION.
+    Extension(
+        name="opencodecs.codecs._bcdec",
+        sources=["src/opencodecs/codecs/_bcdec.pyx"],
+        include_dirs=[
+            str(PKG_CODECS),
+            numpy.get_include(),
+            "3rdparty/bcdec",
+        ],
+        define_macros=[
+            ("NPY_NO_DEPRECATED_API", "NPY_1_7_API_VERSION"),
+            ("BCDEC_IMPLEMENTATION", "1"),
+            ("BCDEC_STATIC", "1"),
+            # Enables the 4-arg BC4/BC5 entry points (with isSigned)
+            # and slightly slower-but-bit-exact decode.
+            ("BCDEC_BC4BC5_PRECISE", "1"),
+        ],
+        language="c",
+    ),
     # WebP via libwebp.
     Extension(
         name="opencodecs.codecs._webp",
