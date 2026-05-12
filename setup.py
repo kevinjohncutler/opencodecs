@@ -872,6 +872,25 @@ extensions = [
     # HTJ2K (high-throughput JPEG-2000) via OpenJPH. Optional — built
     # only when libopenjph is on the system.
     *_maybe_build_openjph_ext(),
+    # EER (Thermo Fisher Electron Event Representation) — cryo-EM
+    # event-list decoder, vendored from imagecodecs imcd.c (BSD-3).
+    # No external deps; always built.
+    Extension(
+        name="opencodecs.codecs._eer",
+        sources=[
+            "src/opencodecs/codecs/_eer.pyx",
+            "3rdparty/imcd_eer/eer.c",
+        ],
+        include_dirs=[
+            str(PKG_CODECS),
+            numpy.get_include(),
+            "3rdparty/imcd_eer",
+        ],
+        define_macros=[
+            ("NPY_NO_DEPRECATED_API", "NPY_1_7_API_VERSION"),
+        ],
+        language="c",
+    ),
     # BC1-7 / DXT / BPTC GPU texture decoder via the vendored single-
     # header ``bcdec.h`` (MIT). No external deps; the implementation
     # gets compiled into our .so via BCDEC_IMPLEMENTATION.
