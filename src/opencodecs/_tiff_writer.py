@@ -262,12 +262,14 @@ class TiffWriter:
         dest: str | Path | io.BufferedWriter,
         *,
         byte_order: str = "<",
+        streaming: bool = False,
     ):
         if byte_order not in ("<", ">"):
             raise TiffWriterError(
                 f"byte_order must be '<' or '>'; got {byte_order!r}"
             )
         self._byte_order = byte_order
+        self._streaming = bool(streaming)
         # Two backing storage modes:
         #   1. path → raw fd (os.write / os.writev / os.pwrite) — bypasses
         #      Python BufferedWriter so per-segment writes hit the kernel
@@ -285,24 +287,42 @@ class TiffWriter:
             self._path = Path(dest)
             flags = (os.O_RDWR | os.O_CREAT | os.O_TRUNC
                      | getattr(os, "O_BINARY", 0))
+            # In streaming mode an O_WRONLY open is sufficient and avoids
+            # accidentally promising back-patch capabilities we shouldn't
+            # exercise.
+            if self._streaming:
+                flags = (os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+                         | getattr(os, "O_BINARY", 0))
             self._fd = os.open(str(self._path), flags, 0o644)
             self._owns_fh = True
-        elif hasattr(dest, "write") and hasattr(dest, "seek"):
+        elif hasattr(dest, "write"):
+            # Streaming mode tolerates dests that lack ``.seek`` (raw
+            # pipes, sockets, HTTP request bodies, gzip streams).
+            # write_page() still requires seek for the back-patch path.
+            if not self._streaming and not hasattr(dest, "seek"):
+                raise TypeError(
+                    "TiffWriter dest must be a seekable writable file-like "
+                    "for write_page(); pass streaming=True + write_stream() "
+                    f"for non-seekable sinks. Got {type(dest).__name__}"
+                )
             self._path = None
             self._fh = dest
             self._owns_fh = False
         else:
             raise TypeError(
-                f"TiffWriter dest must be path or seekable writable file-like; "
+                f"TiffWriter dest must be path or writable file-like; "
                 f"got {type(dest).__name__}"
             )
         # First IFD offset slot is at bytes 4..7 of a classic-TIFF
-        # header — patched once the first IFD is laid out.
+        # header — patched once the first IFD is laid out (only in
+        # non-streaming mode; streaming writes the header lazily once
+        # the first page's layout is known and never patches).
         self._next_ifd_offset_slot: int | None = None
         self._wrote_header = False
         self._closed = False
         self._n_pages = 0
-        self._write_header()
+        if not self._streaming:
+            self._write_header()
 
     # ------------------------------------------------------------------
     # Public API
@@ -388,6 +408,11 @@ class TiffWriter:
         """
         if self._closed:
             raise TiffWriterError("writer is closed")
+        if self._streaming:
+            raise TiffWriterError(
+                "TiffWriter(streaming=True) only supports write_stream(); "
+                "write_page requires a seekable sink for IFD back-patching"
+            )
         if not isinstance(arr, np.ndarray):
             raise TiffWriterError(
                 f"write_page expects an ndarray; got {type(arr).__name__}"
@@ -652,6 +677,444 @@ class TiffWriter:
             "dtype": str(arr.dtype),
         }
 
+    def write_stream(
+        self,
+        pages: Iterable[np.ndarray],
+        *,
+        total_pages: int,
+        tile: tuple[int, int] | None = None,
+        rows_per_strip: int | None = None,
+        compression: str | int = "none",
+        compression_level: int | None = None,
+        predictor: int = 1,
+        photometric: str | int = "auto",
+        planar_config: int = 1,
+        subfiletype: int = 0,
+        metadata: str | None = None,
+        software: str | None = None,
+        resolution: tuple[float, float] | None = None,
+        extra_tags: list[tuple[int, int, tuple]] | None = None,
+        n_workers: int | None = None,
+    ) -> list[dict]:
+        """Emit TIFF to an unseekable sink, COG-style.
+
+        ``write_stream`` lays out each page as ``[IFD ⇒ pixels]`` so
+        every strip/tile offset in the IFD points *forward* into the
+        not-yet-written pixel region — predictable from the encoded
+        byte counts, so no back-patch (and thus no seek) is needed.
+        The next-IFD pointer is similarly computed up front from the
+        running cursor + this page's known total bytes.
+
+        Requirements:
+
+        * Writer must have been constructed with ``streaming=True``.
+        * Caller must declare ``total_pages`` so the last page can
+          set next-IFD = 0.
+        * All pages share the same per-page tag settings (tile,
+          compression, etc.). For heterogeneous pages use a seekable
+          sink and ``write_page``.
+
+        Use cases: HTTP response bodies, S3 multipart upload streams,
+        stdout pipelines, gzip wrappers — anything supporting
+        ``.write()`` but not ``.seek()``.
+
+        Returns one ``info`` dict per page (same shape as
+        ``write_page``'s return).
+        """
+        if self._closed:
+            raise TiffWriterError("writer is closed")
+        if not self._streaming:
+            raise TiffWriterError(
+                "write_stream requires TiffWriter(streaming=True); "
+                "construct a new writer in streaming mode"
+            )
+        if self._wrote_header:
+            raise TiffWriterError(
+                "write_stream is single-shot; construct a new writer "
+                "for each output"
+            )
+        if int(total_pages) < 1:
+            raise TiffWriterError(
+                f"total_pages must be >= 1; got {total_pages}"
+            )
+
+        # Header: first IFD lives immediately after the 8-byte header.
+        # We know that *before* writing any page bytes, so we can emit
+        # the header up-front with the correct first-IFD offset and
+        # never patch it.
+        bo = self._byte_order
+        bo_mark = b"II" if bo == "<" else b"MM"
+        magic = struct.pack(bo + "H", 42)
+        first_ifd_off = struct.pack(bo + "I", 8)
+        self._write(bo_mark + magic + first_ifd_off)
+        self._wrote_header = True
+
+        infos: list[dict] = []
+        pages_iter = iter(pages)
+        for page_idx in range(int(total_pages)):
+            try:
+                arr = next(pages_iter)
+            except StopIteration:
+                raise TiffWriterError(
+                    f"pages iterable exhausted at page {page_idx}; "
+                    f"declared total_pages={total_pages}"
+                )
+            info = self._emit_streaming_page(
+                arr,
+                is_last=(page_idx == int(total_pages) - 1),
+                tile=tile, rows_per_strip=rows_per_strip,
+                compression=compression,
+                compression_level=compression_level,
+                predictor=predictor,
+                photometric=photometric,
+                planar_config=planar_config,
+                subfiletype=subfiletype,
+                metadata=metadata if page_idx == 0 else None,
+                software=software if page_idx == 0 else None,
+                resolution=resolution,
+                extra_tags=extra_tags,
+                n_workers=n_workers,
+            )
+            infos.append(info)
+            self._n_pages += 1
+
+        # Optional trailing-iterable sanity check: complain if caller
+        # promised total_pages but actually has more.
+        try:
+            next(pages_iter)
+        except StopIteration:
+            pass
+        else:
+            raise TiffWriterError(
+                f"pages iterable yielded more than declared "
+                f"total_pages={total_pages}"
+            )
+        return infos
+
+    def _emit_streaming_page(
+        self,
+        arr: np.ndarray,
+        *,
+        is_last: bool,
+        tile: tuple[int, int] | None,
+        rows_per_strip: int | None,
+        compression: str | int,
+        compression_level: int | None,
+        predictor: int,
+        photometric: str | int,
+        planar_config: int,
+        subfiletype: int,
+        metadata: str | None,
+        software: str | None,
+        resolution: tuple[float, float] | None,
+        extra_tags: list[tuple[int, int, tuple]] | None,
+        n_workers: int | None,
+    ) -> dict:
+        """Encode + emit one streaming page in [IFD ⇒ pixels] order.
+
+        Shares the segment-encoding helpers with ``write_page`` but
+        uses a forward-only layout: we compute strip/tile offsets
+        from the post-IFD cursor BEFORE writing the IFD, so the IFD
+        carries correct values on its single trip through the sink.
+        """
+        if not isinstance(arr, np.ndarray):
+            raise TiffWriterError(f"pages must be numpy arrays; got {type(arr).__name__}")
+        if arr.ndim not in (2, 3):
+            raise TiffWriterError(
+                f"expected 2D (h,w) or 3D (h,w,c); got shape={arr.shape}"
+            )
+
+        from .core.segment_compression import (
+            codec_name_to_code, NONE as _CMP_NONE,
+        )
+        cmp_code = codec_name_to_code(compression)
+        cmp_is_none = (cmp_code == _CMP_NONE)
+
+        if arr.ndim == 2:
+            h, w = arr.shape
+            samples_per_pixel = 1
+        else:
+            h, w, samples_per_pixel = arr.shape
+        bps, sample_format = _bps_and_sample_format(arr.dtype)
+
+        if photometric == "auto":
+            photometric_code = (
+                PHOTOMETRIC_RGB if samples_per_pixel >= 3
+                else PHOTOMETRIC_MINISBLACK
+            )
+        elif isinstance(photometric, str):
+            photometric_code = _PHOTOMETRIC_NAMES[photometric.lower()]
+        else:
+            photometric_code = int(photometric)
+
+        arr_le = self._coerce_byte_order(arr)
+        arr_le = np.ascontiguousarray(arr_le)
+
+        is_tiled = tile is not None
+        if is_tiled:
+            tile_h, tile_w = int(tile[0]), int(tile[1])
+            if tile_h <= 0 or tile_w <= 0 or tile_h % 16 or tile_w % 16:
+                raise TiffWriterError(
+                    f"tile dims must be positive multiples of 16; got {tile}"
+                )
+            n_tiles_y = (h + tile_h - 1) // tile_h
+            n_tiles_x = (w + tile_w - 1) // tile_w
+            segments = self._iter_tile_segments(
+                arr_le, h, w, tile_h, tile_w, samples_per_pixel,
+                n_tiles_y, n_tiles_x,
+            )
+            n_segments = n_tiles_y * n_tiles_x
+            strip_h_for_tag = None
+        else:
+            tile_h = tile_w = 0
+            if rows_per_strip is None:
+                bytes_per_row = w * samples_per_pixel * arr.dtype.itemsize
+                rows_per_strip = max(1, 8192 // max(1, bytes_per_row))
+                rows_per_strip = min(rows_per_strip, h)
+            else:
+                rows_per_strip = int(rows_per_strip)
+            n_strips = (h + rows_per_strip - 1) // rows_per_strip
+            segments = self._iter_strip_segments(
+                arr_le, h, w, rows_per_strip, samples_per_pixel, n_strips,
+            )
+            n_segments = n_strips
+            strip_h_for_tag = rows_per_strip
+
+        if predictor not in (1, 2):
+            raise TiffWriterError(f"unsupported predictor {predictor}")
+        is_byte_stream = cmp_code in _BYTE_STREAM_CMP
+        if predictor == 2 and not is_byte_stream:
+            predictor = 1
+
+        # ---- Encode segments ----
+        byte_counts: list[int] = []
+        encoded_segments: list[bytes | memoryview | np.ndarray] = []
+        if cmp_is_none and predictor == 1 and not is_tiled:
+            row_bytes = w * samples_per_pixel * arr.dtype.itemsize
+            flat = arr_le.reshape(-1).view(np.uint8)
+            for i in range(n_segments):
+                y0 = i * rows_per_strip
+                y1 = min(y0 + rows_per_strip, h)
+                n = (y1 - y0) * row_bytes
+                start = y0 * row_bytes
+                encoded_segments.append(flat[start:start + n])
+                byte_counts.append(n)
+        elif (not cmp_is_none) and n_segments >= 2 and n_workers != 1:
+            if n_workers is None:
+                _nw = min(os.cpu_count() or 1, 8)
+            else:
+                _nw = max(1, int(n_workers))
+            seg_list = list(segments)
+
+            def _encode_one(seg):
+                if predictor == 2:
+                    seg = np.ascontiguousarray(seg).copy()
+                    _apply_horizontal_predictor(seg)
+                return self._encode_segment_bytes(
+                    seg, cmp_code, compression_level,
+                )
+
+            from concurrent.futures import ThreadPoolExecutor
+            with ThreadPoolExecutor(
+                max_workers=_nw, thread_name_prefix="tiff-encode",
+            ) as ex:
+                futures = [ex.submit(_encode_one, seg) for seg in seg_list]
+                for fut in futures:
+                    encoded = fut.result()
+                    encoded_segments.append(encoded)
+                    byte_counts.append(len(encoded))
+        else:
+            for seg in segments:
+                if predictor == 2:
+                    seg = np.ascontiguousarray(seg).copy()
+                    _apply_horizontal_predictor(seg)
+                if cmp_is_none:
+                    seg_c = np.ascontiguousarray(seg)
+                    encoded_segments.append(seg_c)
+                    byte_counts.append(seg_c.nbytes)
+                else:
+                    encoded = self._encode_segment_bytes(
+                        seg, cmp_code, compression_level,
+                    )
+                    encoded_segments.append(encoded)
+                    byte_counts.append(len(encoded))
+
+        total_data_bytes = sum(byte_counts)
+        self._ensure_room(total_data_bytes)
+
+        # ---- Word-align IFD start ----
+        if self._pos % 2:
+            self._write(b"\x00")
+        ifd_off = self._pos
+
+        # ---- Build all IFD entries EXCEPT strip/tile offsets ----
+        # Strip/tile offsets depend on where pixels land, which depends
+        # on the IFD's own size. We build everything else first to
+        # measure the IFD, then place strip offsets pointing into the
+        # post-IFD pixel region.
+        bo = self._byte_order
+        entries: list[_IFDEntry] = []
+        def add(tag, tc, vals):
+            entries.append(_IFDEntry(tag, tc, vals, bo))
+
+        if subfiletype:
+            add(TAG_NEW_SUBFILE_TYPE, T_LONG, (int(subfiletype),))
+        add(TAG_IMAGE_WIDTH,       T_LONG,  (int(w),))
+        add(TAG_IMAGE_LENGTH,      T_LONG,  (int(h),))
+        bps_tuple = (bps,) * samples_per_pixel
+        add(TAG_BITS_PER_SAMPLE,   T_SHORT, bps_tuple)
+        add(TAG_COMPRESSION,       T_SHORT, (int(cmp_code),))
+        add(TAG_PHOTOMETRIC,       T_SHORT, (int(photometric_code),))
+        if metadata is not None:
+            add(TAG_IMAGE_DESCRIPTION, T_ASCII, (metadata,))
+        add(TAG_SAMPLES_PER_PIXEL, T_SHORT, (int(samples_per_pixel),))
+        if not is_tiled:
+            add(TAG_ROWS_PER_STRIP, T_LONG, (int(strip_h_for_tag),))
+        if resolution is not None:
+            x_res, y_res = resolution
+            add(TAG_X_RESOLUTION, T_RATIONAL,
+                ((int(round(x_res * 1000)), 1000),))
+            add(TAG_Y_RESOLUTION, T_RATIONAL,
+                ((int(round(y_res * 1000)), 1000),))
+            add(TAG_RESOLUTION_UNIT, T_SHORT, (2,))
+        else:
+            add(TAG_X_RESOLUTION, T_RATIONAL, ((1, 1),))
+            add(TAG_Y_RESOLUTION, T_RATIONAL, ((1, 1),))
+            add(TAG_RESOLUTION_UNIT, T_SHORT, (1,))
+        if samples_per_pixel > 1:
+            add(TAG_PLANAR_CONFIG, T_SHORT, (int(planar_config),))
+        if software is not None:
+            add(TAG_SOFTWARE, T_ASCII, (software,))
+        if predictor != 1:
+            add(TAG_PREDICTOR, T_SHORT, (int(predictor),))
+        if is_tiled:
+            add(TAG_TILE_WIDTH,  T_LONG, (tile_w,))
+            add(TAG_TILE_LENGTH, T_LONG, (tile_h,))
+        sf_tuple = (sample_format,) * samples_per_pixel
+        add(TAG_SAMPLE_FORMAT, T_SHORT, sf_tuple)
+        if extra_tags:
+            for tag_id, tc, vals in extra_tags:
+                add(tag_id, tc, tuple(vals))
+
+        # ---- Add placeholder strip/tile entries (real offsets after layout) ----
+        # We need their PAYLOAD LENGTHS now so we can compute total IFD
+        # ext-blob size, but the actual offset values can stay 0 since
+        # we'll overwrite them once pixel_base is known.
+        sb_payload_len = 4 * n_segments  # T_LONG = 4 bytes per element
+        bc_payload_len = 4 * n_segments
+        if is_tiled:
+            # TileOffsets, TileByteCounts entries: payloads will be
+            # n_segments LONGs each.
+            sb_tag, bc_tag = TAG_TILE_OFFSETS, TAG_TILE_BYTE_COUNTS
+        else:
+            sb_tag, bc_tag = TAG_STRIP_OFFSETS, TAG_STRIP_BYTE_COUNTS
+        add(sb_tag, T_LONG, tuple([0] * n_segments))
+        add(bc_tag, T_LONG, tuple(byte_counts))
+
+        # ---- Compute IFD layout + pixel base ----
+        entries.sort(key=lambda e: e.tag)
+        n_entries = len(entries)
+        ifd_struct_size = 2 + 12 * n_entries + 4
+
+        # Predict ext-blob layout: every entry whose payload > 4 bytes
+        # spills out-of-line, in entry order, each blob word-aligned.
+        ext_total = 0
+        for ent in entries:
+            if len(ent.payload) > 4:
+                ext_total += len(ent.payload)
+                if ext_total % 2:
+                    ext_total += 1
+
+        pixel_base = ifd_off + ifd_struct_size + ext_total
+
+        # ---- Rebuild strip/tile-offsets entry with real offsets ----
+        cursor = pixel_base
+        real_offsets: list[int] = []
+        for n in byte_counts:
+            real_offsets.append(cursor)
+            cursor += n
+        # cursor is now where pixels END.
+        if cursor > self._MAX_OFFSET:
+            raise TiffWriterError(
+                f"classic TIFF: page would push file past 4 GiB at offset "
+                f"{cursor}; BigTIFF (64-bit offsets) is required but "
+                f"not yet supported by TiffWriter"
+            )
+
+        # Find the strip/tile-offsets entry we added with placeholder
+        # zeros, and re-build it in place with real values. We can't
+        # mutate entry.payload directly (it's bytes); construct a new
+        # entry and swap.
+        for i, ent in enumerate(entries):
+            if ent.tag == sb_tag:
+                entries[i] = _IFDEntry(sb_tag, T_LONG, tuple(real_offsets), bo)
+                break
+
+        # ---- Compute next-IFD offset ----
+        if is_last:
+            next_ifd_off = 0
+        else:
+            next_ifd_off = cursor
+            if next_ifd_off % 2:
+                next_ifd_off += 1
+            if next_ifd_off > self._MAX_OFFSET:
+                raise TiffWriterError(
+                    "classic TIFF: next IFD would land past 4 GiB"
+                )
+
+        # ---- Pack IFD struct + ext blobs ----
+        entry_blocks = bytearray()
+        ext_blobs: list[bytes] = []
+        ext_cursor = ifd_off + ifd_struct_size
+
+        for ent in entries:
+            payload = ent.payload
+            if len(payload) <= 4:
+                slot = payload + b"\x00" * (4 - len(payload))
+            else:
+                slot = struct.pack(bo + "I", ext_cursor)
+                ext_blobs.append(payload)
+                ext_cursor += len(payload)
+                if ext_cursor % 2:
+                    ext_blobs.append(b"\x00")
+                    ext_cursor += 1
+            entry_blocks.extend(struct.pack(
+                bo + "HHI", ent.tag, ent.type_code, ent.count,
+            ))
+            entry_blocks.extend(slot)
+
+        # Sanity: predicted ext_total must match actual placement.
+        actual_ext = ext_cursor - (ifd_off + ifd_struct_size)
+        if actual_ext != ext_total:  # pragma: no cover - layout invariant
+            raise TiffWriterError(
+                f"streaming IFD layout invariant violated: predicted "
+                f"ext_total={ext_total}, actual={actual_ext}"
+            )
+
+        ifd_struct = bytearray()
+        ifd_struct.extend(struct.pack(bo + "H", n_entries))
+        ifd_struct.extend(entry_blocks)
+        ifd_struct.extend(struct.pack(bo + "I", next_ifd_off))
+
+        # ---- Emit IFD + ext blobs + pixel segments (one scatter call) ----
+        # Pad to align next-IFD start if needed (between this page's
+        # pixels and the next page's IFD).
+        emit_buffers: list = [bytes(ifd_struct)]
+        emit_buffers.extend(ext_blobs)
+        emit_buffers.extend(encoded_segments)
+        if (not is_last) and (cursor % 2):
+            # cursor is current pixel-end; next-IFD wants to be even.
+            emit_buffers.append(b"\x00")
+        self._writev(emit_buffers)
+
+        return {
+            "ifd_offset": ifd_off,
+            "n_segments": n_segments,
+            "encoded_bytes": int(total_data_bytes),
+            "shape": tuple(arr.shape),
+            "dtype": str(arr.dtype),
+        }
+
     def write_pyramid(
         self,
         levels: list[np.ndarray],
@@ -873,22 +1336,33 @@ class TiffWriter:
         _IOV_MAX = 512
 
     def _write(self, data) -> None:
-        """Sequential write at the current tracked position."""
+        """Sequential write at the current tracked position.
+
+        ``len(ndarray)`` is the FIRST DIMENSION, not the byte count.
+        Normalize ndarrays to a 1-D byte memoryview so cursor tracking
+        and short-write retries see byte counts uniformly.
+        """
+        if isinstance(data, np.ndarray):
+            view = memoryview(data).cast("B")
+        elif isinstance(data, memoryview):
+            view = data if data.format == "B" else data.cast("B")
+        else:
+            view = data  # bytes / bytearray
+        nbytes = len(view)
         if self._fd >= 0:
-            n = os.write(self._fd, data)
-            if n != len(data):  # pragma: no cover - short-write retry
-                view = memoryview(data) if not isinstance(
-                    data, memoryview) else data
+            n = os.write(self._fd, view)
+            if n != nbytes:  # pragma: no cover - short-write retry
+                mv = view if isinstance(view, memoryview) else memoryview(view)
                 written = n
-                while written < len(view):
-                    more = os.write(self._fd, view[written:])
+                while written < nbytes:
+                    more = os.write(self._fd, mv[written:])
                     if not more:
                         raise OSError("short write to TIFF file")
                     written += more
-            self._pos += len(data)
+            self._pos += nbytes
         else:
-            self._fh.write(data)
-            self._pos += len(data)
+            self._fh.write(view)
+            self._pos += nbytes
 
     def _writev(self, buffers) -> None:
         """Scatter-gather write at the current position.

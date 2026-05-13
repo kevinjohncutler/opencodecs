@@ -388,25 +388,36 @@ class NDTiffWriter:
     _HAVE_WRITEV = hasattr(os, "writev")
 
     def _write(self, data) -> None:
-        """Sequential write at the current tracked position."""
+        """Sequential write at the current tracked position.
+
+        ``len(ndarray)`` is the first dimension, not the byte count;
+        normalize to a 1-D byte memoryview so cursor tracking +
+        short-write retries see byte counts uniformly.
+        """
+        if isinstance(data, np.ndarray):
+            view = memoryview(data).cast("B")
+        elif isinstance(data, memoryview):
+            view = data if data.format == "B" else data.cast("B")
+        else:
+            view = data
+        nbytes = len(view)
         if self._mmap is not None:
-            n = len(data)
-            self._mmap[self._pos:self._pos + n] = (
-                data if isinstance(data, (bytes, bytearray))
-                else bytes(data)
+            self._mmap[self._pos:self._pos + nbytes] = (
+                view if isinstance(view, (bytes, bytearray))
+                else bytes(view)
             )
-            self._pos += n
+            self._pos += nbytes
             return
-        n = os.write(self._fd, data)
-        if n != len(data):  # pragma: no cover - partial-write loop
-            view = memoryview(data)
+        n = os.write(self._fd, view)
+        if n != nbytes:  # pragma: no cover - partial-write loop
+            mv = view if isinstance(view, memoryview) else memoryview(view)
             written = n
-            while written < len(view):
-                more = os.write(self._fd, view[written:])
+            while written < nbytes:
+                more = os.write(self._fd, mv[written:])
                 if not more:
                     raise OSError("short write to NDTiff stack file")
                 written += more
-        self._pos += len(data)
+        self._pos += nbytes
 
     def _writev(self, buffers) -> None:
         """One-shot scatter write at the current position.
