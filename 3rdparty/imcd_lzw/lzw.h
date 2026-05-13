@@ -12,7 +12,15 @@
 
 #include <stddef.h>
 #include <stdint.h>
-#include <sys/types.h>
+
+#ifdef _MSC_VER
+  /* MSVC has no <sys/types.h>::ssize_t; the canonical equivalent is
+     SSIZE_T from BaseTsd.h. */
+  #include <BaseTsd.h>
+  typedef SSIZE_T ssize_t;
+#else
+  #include <sys/types.h>
+#endif
 
 #ifdef __cplusplus
 extern "C" {

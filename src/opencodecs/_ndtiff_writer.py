@@ -307,12 +307,20 @@ class NDTiffWriter:
     def _open_next_stack(self) -> None:
         """Open the next NDTiffStack file + pre-allocate the envelope.
 
-        Pre-allocate via ``ftruncate`` (sparse) rather than
-        synchronous block-level allocation (``F_PREALLOCATE`` on
-        macOS / ``posix_fallocate`` on Linux). Block allocation
-        overlapped with the kernel's write-back path is faster than
-        an up-front synchronous reservation for sequential append
-        workloads — measured 30–50ms saved per 4GB envelope on APFS.
+        Pre-allocate via ``ftruncate`` (sparse) on POSIX, where it's
+        instant and block allocation overlaps with the kernel's
+        write-back path (measured 30-50ms saved per 4GB envelope on
+        APFS vs synchronous ``F_PREALLOCATE``).
+
+        On Windows we explicitly use the ``seek + write 1 byte``
+        pattern. ``os.ftruncate`` on NTFS goes through ``_chsize_s``
+        which zero-fills the extension synchronously (~2 GB/s, so
+        ~2s of CPU per 4 GiB stack file) — ndstorage hits this
+        cliff too if it uses ftruncate; matching its lseek+write
+        pattern keeps the per-file open cost in milliseconds because
+        NTFS's "valid data length" semantics let the gap between the
+        current position and the written sentinel byte stay
+        physically unallocated.
 
         We tried also ``mmap``-based writes (no per-frame syscall,
         memcpy into a page-cache-backed region). In isolation the
@@ -325,11 +333,17 @@ class NDTiffWriter:
         self._cur_path = self._dir / self._stack_filename(self._stack_index)
         flags = os.O_RDWR | os.O_CREAT | os.O_TRUNC | getattr(os, "O_BINARY", 0)
         self._fd = os.open(str(self._cur_path), flags, 0o644)
-        try:
-            os.ftruncate(self._fd, _MAX_FILE_SIZE)
-        except OSError:  # pragma: no cover - fallback for FS without sparse truncate
+        if sys.platform == "win32":  # pragma: no cover - covered by win-vm bench
+            # NTFS-friendly pre-extend: writes one byte at the
+            # final position; the gap stays sparse via VDL semantics.
             os.lseek(self._fd, _MAX_FILE_SIZE - 1, os.SEEK_SET)
             os.write(self._fd, b"\x00")
+        else:
+            try:
+                os.ftruncate(self._fd, _MAX_FILE_SIZE)
+            except OSError:  # pragma: no cover - exotic filesystems
+                os.lseek(self._fd, _MAX_FILE_SIZE - 1, os.SEEK_SET)
+                os.write(self._fd, b"\x00")
         self._mmap = None
         self._pos = 0
         self._write_header_and_summary()
