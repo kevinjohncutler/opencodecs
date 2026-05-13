@@ -96,30 +96,96 @@ Quick guidance:
 | --- | :-: | :-: | --- | --- | --- |
 | `qoi` | ✓ | ✓ | RGB / RGBA | vendored qoi.h | `.qoi` |
 | `bmp` | ✓ | ✓ | gray / RGB / RGBA | pure Python+numpy | `.bmp`, `.dib` |
-| `png` | ✓ | ✓ | gray / RGB / RGBA, 8/16-bit | system libspng | `.png` |
+| `png` | ✓ | ✓ | gray / RGB / RGBA, 8/16-bit | vendored libspng + libdeflate | `.png` |
 | `jpeg` | ✓ | ✓ | gray / RGB | libjpeg-turbo (TJ v3) | `.jpg`, `.jpeg` |
+| `mozjpeg` | ✓ | ✓ | gray / RGB, 8/12-bit | system mozjpeg (TJ v2) | `.jpg` |
 | `webp` | ✓ | ✓ | RGB / RGBA, lossy + lossless | system libwebp | `.webp` |
 | `jpeg2k` | ✓ | ✓ | gray / RGB / RGBA, 8/16-bit, lossless + lossy | OpenJPEG | `.jp2`, `.j2k`, `.jpx`, `.jpc` |
+| `htj2k` | ✓ | ✓ | gray / RGB / RGBA, 8/16-bit, lossless + lossy | system OpenJPH | `.j2c` |
+| `jpegls` | ✓ | ✓ | gray / RGB / RGBA, 2-16 bit, lossless + near-lossless | system CharLS | `.jls` |
 | `avif` | ✓ | ✓ | RGB / RGBA, lossy + lossless (YUV444+identity) | libavif | `.avif` |
 | `heif` | ✓ | ✓ | RGB / RGBA, lossy (HEVC) | libheif (+ aomenc) | `.heif`, `.heic` |
 | `jxl` | ✓ | ✓ | gray / RGB / RGBA, P3, HDR, multi-frame | vendored libjxl 0.11.2 | `.jxl` |
+| `bcdec` | — | ✓ | BC1-7 / DXT / BPTC GPU textures | vendored bcdec.h | `.dds` |
+
+`htj2k` is JPEG-2000 Part 15 (High-Throughput) — same DWT front end
+as classic JPEG-2000 but ~10-20× faster entropy coding. Used by
+modern DICOM and remote-sensing pipelines.
+
+`jpegls` (CharLS) is the lossless / near-lossless predictive JPEG
+variant standardized as ISO/IEC 14495-1 — the dominant codec in
+medical-imaging DICOM workflows.
+
+`mozjpeg` is Mozilla's libjpeg-turbo fork; ~10-15% smaller files
+than libjpeg-turbo at the same quality. Built only when MozJPEG is
+on the system (keg-only on Homebrew so it doesn't collide with
+plain libjpeg-turbo).
 
 ### Multi-frame / chunked formats
 
-| Codec | Decode | Container | Notes |
-| --- |:-:| --- |---|
-| `jxl` | ✓ | ISO BMFF (frame index) | Streaming + parallel multi-frame decode |
-| `czi` | ✓ | Zeiss ZISRAW | mmap + parallel zstd; metadata accessor |
-| `hdf5` | ✓ | HDF5 | Wraps `h5py.Dataset` |
+| Codec | Read | Write | Container | Notes |
+| --- |:-:|:-:| --- |---|
+| `jxl` | ✓ | ✓ | ISO BMFF (frame index) | Streaming + parallel multi-frame decode |
+| `czi` | ✓ | ✓ | Zeiss ZISRAW | mmap + parallel zstd; metadata accessor; parallel bulk HTTP fetch via `CziReader.from_http(max_workers=N)` |
+| `tiff` | ✓ | ✓ | TIFF 6.0 + BigTIFF | Native reader + writer; tiled or strip; parallel encode; LZW encode; streaming write to unseekable sinks; EER cryo-EM dispatch |
+| `ndtiff` | ✓ | ✓ | Micro-Manager / Pycro-Manager NDTiff | Streaming writer; `os.writev` hot path; cross-platform (POSIX + Windows-NTFS-safe pre-allocation) |
+| `hdf5` | ✓ | ✓ | HDF5 | Wraps `h5py.Dataset`. Remote HDF5 via `open_remote_hdf5(url)` — slices stream chunks over HTTP Range with one-shot parallel prefetch |
+| `eer` | ✓ | — | Thermo Fisher EER (cryo-EM event-list) | Native bitstream decoder + TIFF compression-tag dispatch (codes 65000-65002) |
+| `dicomweb` | ✓ | — | WADO-RS HTTP frame retrieval | Multipart/related parser; transfer-syntax dispatch through opencodecs's codec layer (JPEG-LS / HTJ2K / JPEG-2000 / RLE / raw) |
+
+#### TIFF writer specifics
+
+```python
+from opencodecs._tiff_writer import TiffWriter
+
+# Classic TIFF (<4 GiB)
+with TiffWriter("out.tif") as w:
+    w.write_page(arr, tile=(256, 256), compression="zstd")
+
+# BigTIFF (>4 GiB; magic=43, 64-bit offsets)
+with TiffWriter("huge.tif", bigtiff=True) as w:
+    w.write_pyramid(levels, compression="zstd", subifds=True)
+
+# COG-style streaming to an unseekable sink (pipe, S3 multipart, HTTP body)
+with TiffWriter(sink, streaming=True) as w:
+    w.write_stream(pages, total_pages=N, tile=(256, 256), compression="zstd")
+```
+
+Supported encode-side compressions: none, deflate (libdeflate /
+zlib-ng / zlib auto-detect), zstd, LZW, JPEG, JPEG2000, WebP, JXL,
+LERC. Horizontal predictor on byte-stream codecs.
+
+#### OME-TIFF metadata
+
+```python
+from opencodecs._ome_xml import write_ome_tiff, Channel
+
+write_ome_tiff(
+    "scan.ome.tif", arr_5d, axes="TCZYX",
+    physical_size_um=(0.108, 0.108, 0.5),
+    channels=[Channel(name="DAPI", emission_wavelength_nm=460),
+              Channel(name="GFP",  emission_wavelength_nm=520)],
+)
+```
+
+Round-trips through tifffile / Bio-Formats / QuPath. For schema
+elements outside the 80%-case subset, hand-author OME-XML and pass
+via TiffWriter's `metadata=` kwarg.
+
+#### Remote HDF5
+
+```python
+from opencodecs._hdf5_http import open_remote_hdf5, prefetch_hdf5_chunks
+
+with open_remote_hdf5("https://bucket.s3.amazonaws.com/big.h5") as f:
+    prefetch_hdf5_chunks(f["img"], np.s_[:1024, :1024])  # 1 syscall, N HTTP
+    arr = f["img"][:1024, :1024]                          # all from cache
+```
 
 `czi` decodes types 0 (uncompressed) and 6 (ZSTDHDR) — the entire
 modern Zen archive. JPEG-XR sub-blocks (rare in 2022+ output) raise
-`NotImplementedError`; native jxrlib support is tracked for v0.2.
-
-`czi` exposes `reader.metadata_bytes` and `reader.metadata_xml` as
-lazy zero-copy accessors so downstream parsers (e.g. hiprpy's Cython
-`metadata_summary`) can consume the XML without a `bytes → str → bytes`
-round trip.
+`NotImplementedError`. The reader exposes `metadata_bytes` and
+`metadata_xml` as lazy zero-copy accessors.
 
 ### zarr v3 codecs
 
@@ -139,6 +205,27 @@ z = zarr.create_array(
 
 ## Performance
 
+Headline numbers from the latest bench run (`bench/run_benchmarks.py
+--fast`, macOS M1 Ultra, vs `imagecodecs` / `tifffile` / `ndstorage`):
+
+| Workload | opencodecs | reference | ratio |
+|---|---:|---:|---:|
+| `tiff_random_tile_read` | 0.70 ms | 7.71 ms (tifffile) | **11×** |
+| `tiff_pyramid_crop_from_fullres` | 0.47 ms | 8.60 ms | **18×** |
+| `ndtiff_index_parse_synthetic_10k` | 4.61 ms | 28.0 ms (ndstorage) | **6.1×** |
+| `h2h_jxl_4mp_rgb` (encode) | 130 ms | 3153 ms (imagecodecs) | **24×** |
+| `h2h_blosc2_10mb` | 4.63 ms | 54.8 ms | **12×** |
+| `h2h_deflate_10mb` (encode) | 109 ms | 296 ms | **2.7×** |
+| `h2h_png_4mp_rgb` (encode) | 252 ms | 287 ms | **1.14×** |
+| `tiff_write_1gb` | 89 ms | 91 ms | parity, +14% on Windows |
+| `ndtiff_write_1gb` (raw 800 MB) | 159 ms | 154 ms | parity (1.04× on macOS, 2.4× on Windows after NTFS-friendly pre-alloc) |
+
+Remote-fetch workloads benefit from `read_many` (one batched HTTP
+fan-out + Range coalescing) — on a loopback Range-supporting server,
+1024-chunk HDF5 slices land in 7 HTTP requests instead of 1010 (a
+~50× request-count reduction; on real-network RTT this translates
+to 8× wall-clock).
+
 Scientific microscopy CZI (66 MB, 14 sub-blocks of 2000×2000 uint16,
 ZSTDHDR), single-file warm cache:
 
@@ -148,27 +235,10 @@ ZSTDHDR), single-file warm cache:
 | aicspylibczi (C++)   |  17 ms | 140 ms       |
 | **opencodecs**       |  **15 ms** | **46 ms**  |
 
-64-core Threadripper benefits dramatically more from parallel decode
-than the 12-core M3.
-
-Pipeline benchmark (8 CZIs back-to-back, 795 MB total, NAS):
-
-| Reader        | Total  | Per-file | Throughput |
-|---------------|-------:|---------:|-----------:|
-| czifile       | 1603 ms | 229 ms  | 0.50 GB/s  |
-| **opencodecs** | **198 ms** | **22 ms** | **4.01 GB/s** |
-| aicspylibczi  | 191 ms |  22 ms   | 4.16 GB/s  |
-
-JXL multi-frame parallel decode on Mac arm64 (16-frame uint16 stack):
-
-| Approach                 | Time    |
-|--------------------------|--------:|
-| Sequential `iter_frames` | 68 ms   |
-| `decode_frames_parallel(n_workers=16)` | 24 ms (2.8×) |
-
 See [docs/io_patterns.md](docs/io_patterns.md) for the lessons learned
 about coalesced I/O, mmap vs pread, persistent thread pools, and where
-parallelism actually pays off.
+parallelism actually pays off. The deflate path is libdeflate when
+available → zlib-ng-compat → stdlib zlib, auto-detected at build time.
 
 ## Public API
 
@@ -247,12 +317,14 @@ Short version:
 
 ```sh
 # macOS
-brew install jpeg-turbo webp libavif libheif openjpeg libtiff hdf5 c-blosc2
+brew install jpeg-turbo webp libavif libheif openjpeg libtiff hdf5 c-blosc2 \
+             charls openjph libdeflate zlib-ng-compat
 
 # Ubuntu / Debian
 sudo apt install -y libturbojpeg0-dev libwebp-dev libavif-dev libheif-dev \
                     libopenjp2-7-dev libblosc2-dev libcharls-dev \
-                    liblz4-dev libspng-dev libtiff-dev libhdf5-dev
+                    liblz4-dev libspng-dev libtiff-dev libhdf5-dev \
+                    libdeflate-dev libopenjph-dev zlib1g-dev
 
 # Build
 cd opencodecs
@@ -271,19 +343,25 @@ on Linux). See INSTALL.md for the rationale (Homebrew/apt builds are
 
 ## Status
 
-- Core API stable
-- 76 parity tests passing on Mac
-- 66 parity tests + 9 graceful skips on Linux x86_64 (Threadripper)
-- CZI native reader benchmarked against czifile + aicspylibczi
-- JXL native reader with frame-index parallel decode
+- Core API stable; **1066 tests passing** (Mac M1 Ultra + Linux + Windows VM)
+- Native readers + writers for the common scientific containers
+  (TIFF, BigTIFF, OME-TIFF, CZI, NDTiff, HDF5, JXL)
+- Cross-platform bench coverage: Mac arm64 (canonical), Windows 11 LTSC
+  (libvirt VM), Linux x86_64 (Threadripper)
+- Compression backend auto-detect (libdeflate → zlib-ng-compat → stdlib)
+- Cloud I/O primitives (`HTTPDataSource.read_many`, range coalescing,
+  HTTP/1.1 keep-alive) wired into TIFF / HDF5 / DICOMweb / CZI readers
+- `tifffile_patch` opt-in shim reroutes tifffile's codec dispatch through
+  opencodecs for users who want only a partial swap
 
-What's not yet shipped:
+Deferred work (see [`docs/TODO_DEFERRED.md`](docs/TODO_DEFERRED.md)):
 
-- Native JPEG-XR (jxrlib) — small minority of older CZI files only
-- Native LERC, JPEG-LS — no current users
-- Native TIFF parser — `tifffile` already wins on this hardware; not worth
-  reimplementing. `opencodecs.tifffile_patch` provides an opt-in shim
-  that reroutes tifffile's codec dispatch through opencodecs.
+- SPERR (error-bounded lossy scientific compression) — CMake build needed
+- Brunsli (lossless JPEG transcoder) — source build needed; no brew formula
+- CCITT Fax3/Fax4 encode — legacy fax; zero scientific users
+- JPEG-XR — abandoned format outside niche DICOM
+- libspng `filter_sum` SIMD — off the bench-tracked workload (`h2h_png_4mp_rgb`
+  is at 1.14× already); filter-bound PNG-encode users could see another 2-3×
 - Wheels / PyPI release — install from source for now
 
 ## License
