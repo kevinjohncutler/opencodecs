@@ -165,3 +165,33 @@ git log for `2026-05-11` for the night's shipped commits.
   3. No code changes needed — symbol-compatible.
   4. h2h bench should show a measurable speedup.
 * **Effort**: ~2-3 hours for path A; ~4-6 hours for path B.
+
+## CCITT Fax3 / Fax4 encode
+
+* **Status**: deferred. CCITT decoder is shipped (vendored in
+  `3rdparty/ccitt/`); encoder is not.
+* **Use case**: 1-bit fax / scanned-document images. Effectively
+  legacy — modern scientific TIFF doesn't use CCITT.
+* **Sketch**: implement Group 3 1D, Group 3 2D, and Group 4 encoders
+  per ITU-T T.4/T.6. ~1500 lines of bit-stream encoding logic, plus
+  per-mode tables. tifffile delegates CCITT encode to imagecodecs;
+  we could do the same and only ship decode natively.
+* **Why deferred**: the audience for *writing* new CCITT TIFFs from
+  scientific imaging code is essentially zero; the audience for
+  *reading* legacy CCITT TIFFs is small but real and is already
+  served. Estimated 8-12 hours work for a feature that benefits
+  nobody on our roadmap.
+
+## JPEG-XR encode/decode
+
+* **Status**: deferred (no native codec; jxrlib is available via
+  Homebrew but not currently bound).
+* **Use case**: niche — Windows Imaging Component / DICOM JPEG-XR
+  transfer syntax (1.2.840.10008.1.2.4.105/106). Most modern
+  imaging stacks have abandoned it in favor of JPEG XL.
+* **Sketch**: Cython binding around libjxrencode/libjxrdecode (BSD-2,
+  Homebrew `jxrlib`). Estimated 4-6 hours.
+* **Why deferred**: virtually no scientific-imaging workflow we know
+  about emits JPEG-XR, and the DICOMweb client we ship would only
+  hit it on very old radiology archives. If a user actually needs it
+  we'll prioritize it; until then it sits below CCITT in the queue.
