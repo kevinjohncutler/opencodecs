@@ -125,3 +125,56 @@ def test_eer_imagecodecs_cross_validate():
                     )
                     matched += 1
     assert matched > 0, "no parameter combo decoded cleanly"
+
+
+def test_eer_in_tiff_dispatch_via_tiffstream():
+    """A synthetic EER-in-TIFF file with compression=65002 + private
+    tags 65007/8/9 must decode through our TiffStream reader's EER
+    compression-tag dispatch (no need for tifffile)."""
+    import struct
+    from opencodecs._tiff_codec import TiffStream
+
+    encoded = b"\x03\x1b\xfc\xb1\x35\xfb"
+    shape = (20, 16)
+    expected = decode(encoded, shape, 7, 1, 1)
+
+    # Hand-roll a minimal classic-TIFF file with the EER strip + tags.
+    bo = "<"
+    out = bytearray()
+    out += b"II"
+    out += struct.pack(bo + "H", 42)
+    out += struct.pack(bo + "I", 0)   # patched below
+    pixel_off = 8
+    out += encoded
+    if len(out) % 2:
+        out += b"\x00"
+    ifd_start = len(out)
+
+    entries = [
+        (256, 4, 1, shape[1]),     # ImageWidth
+        (257, 4, 1, shape[0]),     # ImageLength
+        (258, 3, 1, 8),            # BitsPerSample
+        (259, 3, 1, 65002),        # Compression = EER v2
+        (262, 3, 1, 1),            # Photometric
+        (273, 4, 1, pixel_off),    # StripOffsets
+        (277, 3, 1, 1),            # SamplesPerPixel
+        (278, 4, 1, shape[0]),     # RowsPerStrip
+        (279, 4, 1, len(encoded)), # StripByteCounts
+        (65007, 3, 1, 7),          # EER SKIPBITS
+        (65008, 3, 1, 1),          # EER HORZBITS
+        (65009, 3, 1, 1),          # EER VERTBITS
+    ]
+    entries.sort(key=lambda e: e[0])
+    out[4:8] = struct.pack(bo + "I", ifd_start)
+    out += struct.pack(bo + "H", len(entries))
+    for tag, tc, count, value in entries:
+        out += struct.pack(bo + "HHI", tag, tc, count)
+        out += (struct.pack(bo + "HH", value, 0) if tc == 3
+                else struct.pack(bo + "I", value))
+    out += struct.pack(bo + "I", 0)   # next IFD = 0
+
+    with TiffStream(bytes(out)) as r:
+        page = r.page(0)
+        assert page.compression == 65002
+        arr = page.asarray()
+    np.testing.assert_array_equal(arr, expected)
