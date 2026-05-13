@@ -493,42 +493,61 @@ def _maybe_build_mozjpeg_ext() -> list[Extension]:
     collide with the regular libjpeg-turbo. Linux distros tend to
     have it under ``/usr/include/mozjpeg`` or ``/usr/local/opt/mozjpeg``.
     """
+    # Each candidate is (prefix, require_mozjpeg_subdir). MozJPEG-only
+    # locations (homebrew keg, an explicit mozjpeg prefix) can be probed
+    # by symbol absence alone. For generic system prefixes like /usr or
+    # /usr/local we additionally require a ``mozjpeg/`` include subdir
+    # so we don't misidentify vanilla libjpeg-turbo as MozJPEG.
     candidates = [
-        Path("/opt/homebrew/opt/mozjpeg"),
-        Path("/usr/local/opt/mozjpeg"),
-        Path("/usr"),  # apt mozjpeg package
-        Path("/usr/local"),
+        (Path("/opt/homebrew/opt/mozjpeg"), False),
+        (Path("/usr/local/opt/mozjpeg"), False),
+        (Path("/usr"), True),
+        (Path("/usr/local"), True),
     ]
     prefix = None
-    for c in candidates:
-        if (c / "include" / "turbojpeg.h").exists() and (
-            (c / "lib" / "libturbojpeg.dylib").exists()
-            or (c / "lib" / "libturbojpeg.so").exists()
-            or (c / "lib" / "libturbojpeg.so.0").exists()
-            or (c / "lib" / "x86_64-linux-gnu" / "libturbojpeg.so.0").exists()
-        ):
-            # Skip the "vanilla libjpeg-turbo" hit at /usr or /opt/
-            # homebrew. Detect MozJPEG by checking whether the dylib
-            # *lacks* the v3 symbols (`tj3Compress8`).
-            for libname in ("libturbojpeg.dylib", "libturbojpeg.so",
-                            "libturbojpeg.so.0"):
-                libpath = c / "lib" / libname
-                if not libpath.exists():
-                    libpath = c / "lib" / "x86_64-linux-gnu" / libname
-                if not libpath.exists():
-                    continue
-                # Use a cheap shell probe.
-                try:
-                    import subprocess
-                    out = subprocess.run(
-                        ["nm", "-gU", str(libpath)],
-                        capture_output=True, text=True, timeout=10,
-                    ).stdout
-                    if "_tj3Compress8" not in out and "tj3Compress8" not in out:
-                        prefix = c
-                        break
-                except (FileNotFoundError, subprocess.SubprocessError):
-                    continue
+    lib_subdir = None  # "lib" or "lib/x86_64-linux-gnu" etc.
+    lib_filename = None
+    for c, require_mozjpeg_subdir in candidates:
+        if require_mozjpeg_subdir and not (c / "include" / "mozjpeg").is_dir():
+            continue
+        if not (c / "include" / "turbojpeg.h").exists():
+            continue
+        # Find the actual lib file. Linux multiarch ships under
+        # lib/<triple>/, plain /usr/local installs use lib/.
+        lib_candidates = [
+            ("lib", "libturbojpeg.dylib"),
+            ("lib", "libturbojpeg.so"),
+            ("lib", "libturbojpeg.so.0"),
+            ("lib/x86_64-linux-gnu", "libturbojpeg.so"),
+            ("lib/x86_64-linux-gnu", "libturbojpeg.so.0"),
+            ("lib/aarch64-linux-gnu", "libturbojpeg.so"),
+            ("lib/aarch64-linux-gnu", "libturbojpeg.so.0"),
+        ]
+        for subdir, name in lib_candidates:
+            libpath = c / subdir / name
+            if not libpath.exists():
+                continue
+            # MozJPEG branches off libjpeg-turbo 1.x — it lacks the v3
+            # tj3* API. If we're already constrained to a mozjpeg subdir,
+            # accept any libturbojpeg under it. Otherwise probe symbols.
+            if require_mozjpeg_subdir:
+                prefix = c
+                lib_subdir = subdir
+                lib_filename = name
+                break
+            try:
+                import subprocess
+                out = subprocess.run(
+                    ["nm", "-gU", str(libpath)],
+                    capture_output=True, text=True, timeout=10,
+                ).stdout
+                if "_tj3Compress8" not in out and "tj3Compress8" not in out:
+                    prefix = c
+                    lib_subdir = subdir
+                    lib_filename = name
+                    break
+            except (FileNotFoundError, subprocess.SubprocessError):
+                continue
         if prefix is not None:
             break
     if prefix is None:
@@ -541,14 +560,11 @@ def _maybe_build_mozjpeg_ext() -> list[Extension]:
             numpy.get_include(),
             str(prefix / "include"),
         ],
-        library_dirs=[str(prefix / "lib")],
+        library_dirs=[str(prefix / lib_subdir)],
         # Use absolute path on macOS to dodge the SDK-stub issue we
         # hit with zlib-ng-compat.
         libraries=[],
-        extra_link_args=[str(prefix / "lib" / (
-            "libturbojpeg.dylib" if sys.platform == "darwin"
-            else "libturbojpeg.so"
-        ))],
+        extra_link_args=[str(prefix / lib_subdir / lib_filename)],
         define_macros=[("NPY_NO_DEPRECATED_API", "NPY_1_7_API_VERSION")],
         language="c",
     )]
@@ -681,12 +697,25 @@ def _build_deflate_extension() -> Extension:
         # Same SDK-stub-dodging dance: pass the dylib by absolute path
         # so distutils' implicit -L<SDK>/usr/lib doesn't beat us to
         # it. On Linux just add -ldeflate and let the rpath handle it.
+        # On Windows the import-library file is libdeflate.lib (DLL
+        # build) or libdeflatestatic.lib (static). Prefer the import
+        # lib so we don't bloat the .pyd; the matching DLL must be
+        # alongside the .pyd at runtime (or on PATH).
         if sys.platform == "darwin":
             ld_dylib = ld_prefix / "lib" / "libdeflate.dylib"
             if ld_dylib.exists():
                 extra_link_args.append(str(ld_dylib))
             else:
                 library_dirs.insert(0, str(ld_prefix / "lib"))
+                libraries.append("deflate")
+        elif sys.platform == "win32":
+            library_dirs.insert(0, str(ld_prefix / "lib"))
+            # Prefer the import library (.lib paired with .dll).
+            if (ld_prefix / "lib" / "libdeflate.lib").exists():
+                libraries.append("libdeflate")
+            elif (ld_prefix / "lib" / "libdeflatestatic.lib").exists():
+                libraries.append("libdeflatestatic")
+            else:
                 libraries.append("deflate")
         else:
             library_dirs.insert(0, str(ld_prefix / "lib"))
@@ -705,22 +734,57 @@ def _build_deflate_extension() -> Extension:
 
 
 def _find_libdeflate_prefix() -> Path | None:
-    """Locate libdeflate's install prefix. Brew/system/conda."""
-    candidates = (
+    """Locate libdeflate's install prefix across platforms.
+
+    Search order:
+
+      * ``OPENCODECS_LIBDEFLATE_PREFIX`` env var (explicit override —
+        most useful on Windows where users typically extract the
+        upstream .zip release somewhere like ``C:\\opencodecs_libs``).
+      * Homebrew (macOS).
+      * The active ``CONDA_PREFIX`` — conda-forge has a ``libdeflate``
+        package which installs to ``<prefix>/Library/include`` on
+        Windows and ``<prefix>/include`` elsewhere.
+      * System ``/usr/local`` / ``/usr``.
+
+    Returns the prefix dir (with ``include/libdeflate.h`` directly
+    under it on POSIX, or ``Library/include/libdeflate.h`` on
+    conda-Windows). Returns None when libdeflate isn't found —
+    callers fall through to zlib-ng-compat or stdlib zlib.
+    """
+    candidates = []
+    env_prefix = os.environ.get("OPENCODECS_LIBDEFLATE_PREFIX")
+    if env_prefix:
+        candidates.append(Path(env_prefix))
+    candidates.extend([
         Path("/opt/homebrew/opt/libdeflate"),
         Path("/usr/local/opt/libdeflate"),
         Path(os.environ.get("CONDA_PREFIX", "")),
         Path("/usr/local"),
         Path("/usr"),
-    )
+    ])
     for c in candidates:
-        if not str(c):
+        if not str(c) or str(c) == ".":
             continue
+        # POSIX layout: <prefix>/include/libdeflate.h
         if (c / "include" / "libdeflate.h").is_file() and (
             (c / "lib" / "libdeflate.dylib").exists()
             or (c / "lib" / "libdeflate.so").exists()
             or (c / "lib" / "libdeflate.so.0").exists()
-            or (c / "Library" / "lib" / "libdeflate.lib").exists()
+        ):
+            return c
+        # conda-Windows layout: <prefix>/Library/include/libdeflate.h
+        # + <prefix>/Library/lib/libdeflate.lib
+        if (c / "Library" / "include" / "libdeflate.h").is_file() and (
+            (c / "Library" / "lib" / "libdeflate.lib").exists()
+            or (c / "Library" / "lib" / "libdeflatestatic.lib").exists()
+        ):
+            return c / "Library"
+        # Upstream Windows release layout (extracted .zip):
+        # <prefix>/include/libdeflate.h + <prefix>/lib/libdeflate.lib.
+        if (c / "include" / "libdeflate.h").is_file() and (
+            (c / "lib" / "libdeflate.lib").exists()
+            or (c / "lib" / "libdeflatestatic.lib").exists()
         ):
             return c
     return None
@@ -835,6 +899,14 @@ def _build_png_ext() -> Extension:
                 extra_link_args.append(str(ld_dylib))
             else:
                 library_dirs.insert(0, str(ld_prefix / "lib"))
+                libraries.append("deflate")
+        elif sys.platform == "win32":
+            library_dirs.insert(0, str(ld_prefix / "lib"))
+            if (ld_prefix / "lib" / "libdeflate.lib").exists():
+                libraries.append("libdeflate")
+            elif (ld_prefix / "lib" / "libdeflatestatic.lib").exists():
+                libraries.append("libdeflatestatic")
+            else:
                 libraries.append("deflate")
         else:
             library_dirs.insert(0, str(ld_prefix / "lib"))
