@@ -127,6 +127,18 @@ CMP_ADOBE_DEFLATE = 32946 # the code tifffile writes for `compression="deflate"`
                           # (TIFF 6 sec'd deflate as 8; Adobe added 32946 with
                           # identical semantics. Both decode through zlib.)
 
+# Thermo Fisher EER (Electron Event Representation) — cryo-EM detector
+# raw output. Three compression codes carry slightly different EER
+# variants; per-frame bit-field widths come from private tags
+# 65007/65008/65009.
+CMP_EER_V0        = 65000
+CMP_EER_V1        = 65001
+CMP_EER_V2        = 65002
+# EER private tags (TFS-assigned; documented in EER spec v3, M. Leichsenring 2023).
+TAG_EER_SKIPBITS  = 65007
+TAG_EER_HORZBITS  = 65008
+TAG_EER_VERTBITS  = 65009
+
 
 class TiffError(RuntimeError):
     """Raised on malformed TIFF input."""

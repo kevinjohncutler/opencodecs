@@ -43,6 +43,8 @@ from .core._optional_backend import import_or_stubs
     CMP_NONE, CMP_DEFLATE, CMP_ADOBE_DEFLATE,
     CMP_JPEG, CMP_LZW, CMP_PACKBITS,
     CMP_ZSTD, CMP_WEBP, CMP_JXL, CMP_JPEG2000, CMP_LERC, CMP_LERC_LEGACY,
+    CMP_EER_V0, CMP_EER_V1, CMP_EER_V2,
+    TAG_EER_SKIPBITS, TAG_EER_HORZBITS, TAG_EER_VERTBITS,
     _HAVE_BACKEND,
 ) = import_or_stubs(
     "opencodecs.codecs._tiff",
@@ -62,6 +64,8 @@ from .core._optional_backend import import_or_stubs
     "CMP_JPEG", "CMP_LZW", "CMP_PACKBITS",
     "CMP_ZSTD", "CMP_WEBP", "CMP_JXL", "CMP_JPEG2000",
     "CMP_LERC", "CMP_LERC_LEGACY",
+    "CMP_EER_V0", "CMP_EER_V1", "CMP_EER_V2",
+    "TAG_EER_SKIPBITS", "TAG_EER_HORZBITS", "TAG_EER_VERTBITS",
 )
 
 
@@ -360,11 +364,44 @@ class TiffPage:
             return _get_decoder("opencodecs.codecs._webp")(bytes(raw))
         if cmp == CMP_JPEG:
             return self._decode_jpeg_segment(raw)
+        if cmp in (CMP_EER_V0, CMP_EER_V1, CMP_EER_V2):
+            return self._decode_eer_segment(raw)
 
         raise NotImplementedError(
             f"TIFF compression {cmp} ({_COMPRESSION_NAMES.get(cmp, '?')}) "
             f"not implemented in opencodecs's native reader. "
             f"Use tifffile via the existing tiff_reader.py wrapper."
+        )
+
+    def _decode_eer_segment(self, raw) -> np.ndarray:
+        """Decode one EER (Electron Event Representation) frame.
+
+        Bit-field widths come from the IFD's private tags 65007/8/9
+        when present, falling back to per-variant defaults documented
+        in the EER spec v3 (M. Leichsenring, 2023):
+
+          - compression 65000: skipbits=8, horzbits=2, vertbits=2
+          - compression 65001: skipbits=7, horzbits=2, vertbits=2
+          - compression 65002: read from tags (variant per acquisition)
+
+        Output is a ``(H, W)`` uint8 array of event counts (binary
+        per-pixel when the source isn't super-resolution).
+        """
+        from .codecs._eer import decode as _eer_decode
+        cmp = self.compression
+        if cmp == CMP_EER_V2:
+            skipbits = int(_tag(self.tags, TAG_EER_SKIPBITS, 7))
+            horzbits = int(_tag(self.tags, TAG_EER_HORZBITS, 2))
+            vertbits = int(_tag(self.tags, TAG_EER_VERTBITS, 2))
+        elif cmp == CMP_EER_V1:
+            skipbits, horzbits, vertbits = 7, 2, 2
+        else:  # CMP_EER_V0
+            skipbits, horzbits, vertbits = 8, 2, 2
+        return _eer_decode(
+            bytes(raw),
+            (self.height, self.width),
+            skipbits, horzbits, vertbits,
+            superres=0,
         )
 
     def _decode_jpeg_segment(self, raw) -> np.ndarray:
@@ -620,6 +657,9 @@ _COMPRESSION_NAMES = {
     CMP_JXL: "jxl",
     CMP_JPEG2000: "jpeg2000",
     CMP_LERC: "lerc",
+    CMP_EER_V0: "eer-v0",
+    CMP_EER_V1: "eer-v1",
+    CMP_EER_V2: "eer-v2",
 }
 
 
