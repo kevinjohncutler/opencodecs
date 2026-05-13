@@ -764,10 +764,17 @@ def _build_png_ext() -> Extension:
                 _zng_linux = True
                 break
     have_zlib_ng_compat = _zng_brew or _zng_linux
-    # Skip the system-libspng fast-path when zlib-ng-compat is around;
-    # building 3rdparty/libspng/spng.c ourselves routes the inner
-    # deflate through our preferred libz.
-    if have_system_spng and not have_zlib_ng_compat:
+    # libdeflate detection — if found, we'll patch the vendored
+    # libspng to route its inner deflate calls through libdeflate's
+    # one-shot API (~2x faster than zlib-ng for PNG encode).
+    ld_prefix = _find_libdeflate_prefix()
+    have_libdeflate = ld_prefix is not None
+    # Skip the system-libspng fast-path when we have a faster
+    # alternative (zlib-ng-compat OR libdeflate); building
+    # 3rdparty/libspng/spng.c ourselves routes the inner deflate
+    # through our preferred backend.
+    prefer_vendored = have_zlib_ng_compat or have_libdeflate
+    if have_system_spng and not prefer_vendored:
         return Extension(
             name="opencodecs.codecs._png",
             sources=["src/opencodecs/codecs/_png.pyx"],
@@ -811,13 +818,31 @@ def _build_png_ext() -> Extension:
     else:
         include_dirs.extend(_resolve_include_dirs("zlib.h"))
         libraries = ["z" if not sys.platform == "win32" else "zlib"]
+    # libdeflate fast path: patch the vendored libspng to route its
+    # IDAT-compress call through libdeflate's one-shot API. ~2x faster
+    # PNG encode end-to-end vs zlib-ng. Decode stays on zlib (still
+    # needed for tEXt / zTXt / iTXt chunks at minimum).
+    define_macros = [
+        ("NPY_NO_DEPRECATED_API", "NPY_1_7_API_VERSION"),
+        ("SPNG_STATIC", "1"),
+    ]
+    if have_libdeflate:
+        include_dirs.insert(0, str(ld_prefix / "include"))
+        define_macros.append(("SPNG_USE_LIBDEFLATE", "1"))
+        if sys.platform == "darwin":
+            ld_dylib = ld_prefix / "lib" / "libdeflate.dylib"
+            if ld_dylib.exists():
+                extra_link_args.append(str(ld_dylib))
+            else:
+                library_dirs.insert(0, str(ld_prefix / "lib"))
+                libraries.append("deflate")
+        else:
+            library_dirs.insert(0, str(ld_prefix / "lib"))
+            libraries.append("deflate")
     return Extension(
         name="opencodecs.codecs._png",
         sources=["src/opencodecs/codecs/_png.pyx", "3rdparty/libspng/spng.c"],
-        define_macros=[
-            ("NPY_NO_DEPRECATED_API", "NPY_1_7_API_VERSION"),
-            ("SPNG_STATIC", "1"),
-        ],
+        define_macros=define_macros,
         language="c",
         include_dirs=include_dirs,
         library_dirs=library_dirs,
