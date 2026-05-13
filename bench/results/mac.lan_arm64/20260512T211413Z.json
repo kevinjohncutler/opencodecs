@@ -1,0 +1,229 @@
+{
+  "timestamp": "20260512T211413Z",
+  "git_rev": "ad45385",
+  "tier": "fast",
+  "system": {
+    "hostname": "mac.lan",
+    "platform": "macOS-26.4.1-arm64-arm-64bit",
+    "machine": "arm64",
+    "processor": "arm",
+    "python": "3.12.9",
+    "cpu_count": 20,
+    "cpu_model": "Apple M1 Ultra",
+    "ram_kb_max": 150192128,
+    "opencodecs_version": "0.2.0.dev0",
+    "git_rev": "ad45385",
+    "ref_versions": {
+      "tifffile": "2026.3.3",
+      "ndstorage": "0.1.18",
+      "czifile": "2026.4.11",
+      "imagecodecs": "2026.3.6"
+    }
+  },
+  "workloads": {
+    "ndtiff_index_parse_synthetic_10k": {
+      "opencodecs": {
+        "median_ms": 4.5776249608024955,
+        "min_ms": 4.53091599047184,
+        "max_ms": 4.7062080120667815,
+        "iqr_ms": 0.14775001909583807,
+        "noisy": false,
+        "n_runs_total": 7,
+        "n_runs_after_filter": 7,
+        "all_samples_ms": [
+          4.702875041402876,
+          4.685332998633385,
+          4.573540994897485,
+          4.5776249608024955,
+          4.555125022307038,
+          4.7062080120667815,
+          4.53091599047184
+        ]
+      },
+      "reference": {
+        "ndstorage": {
+          "median_ms": 28.23441696818918,
+          "min_ms": 27.86829206161201,
+          "max_ms": 28.4019170794636,
+          "iqr_ms": 0.22154091857373714,
+          "noisy": false,
+          "n_runs_total": 5,
+          "n_runs_after_filter": 5,
+          "all_samples_ms": [
+            28.4019170794636,
+            28.259915998205543,
+            28.23441696818918,
+            28.038375079631805,
+            27.86829206161201
+          ]
+        }
+      },
+      "speedup_vs_ndstorage": 6.167918344109923
+    },
+    "ndtiff_random_frame_read": {
+      "opencodecs": {
+        "median_ms": 1.2843749718740582,
+        "min_ms": 1.2813749490305781,
+        "max_ms": 1.285709091462195,
+        "iqr_ms": 0.0,
+        "noisy": false,
+        "n_runs_total": 5,
+        "n_runs_after_filter": 3,
+        "all_samples_ms": [
+          1.2843749718740582,
+          1.285709091462195,
+          1.2813749490305781,
+          1.2451659422367811,
+          1.2482500169426203
+        ]
+      },
+      "reference": {
+        "ndstorage": {
+          "median_ms": 1.5614579897373915,
+          "min_ms": 1.4310419792309403,
+          "max_ms": 1.6684590373188257,
+          "iqr_ms": 0.10649999603629112,
+          "noisy": false,
+          "n_runs_total": 5,
+          "n_runs_after_filter": 5,
+          "all_samples_ms": [
+            1.6684590373188257,
+            1.6054579755291343,
+            1.5614579897373915,
+            1.4989579794928432,
+            1.4310419792309403
+          ]
+        }
+      },
+      "speedup_vs_ndstorage": 1.2157337412601832
+    },
+    "ndtiff_write_50_frames": {
+      "opencodecs": {
+        "median_ms": 4.124291008338332,
+        "min_ms": 3.985541989095509,
+        "max_ms": 4.209166974760592,
+        "iqr_ms": 0.1202079001814127,
+        "noisy": false,
+        "n_runs_total": 5,
+        "n_runs_after_filter": 5,
+        "all_samples_ms": [
+          4.181082942523062,
+          3.985541989095509,
+          4.209166974760592,
+          4.0608750423416495,
+          4.124291008338332
+        ]
+      },
+      "reference": {
+        "ndstorage": {
+          "median_ms": 4.605146066751331,
+          "min_ms": 4.510625032708049,
+          "max_ms": 4.647415946237743,
+          "iqr_ms": 0.05441589746624231,
+          "noisy": false,
+          "n_runs_total": 5,
+          "n_runs_after_filter": 4,
+          "all_samples_ms": [
+            4.945957916788757,
+            4.617292084731162,
+            4.510625032708049,
+            4.593000048771501,
+            4.647415946237743
+          ]
+        }
+      },
+      "speedup_vs_ndstorage": 1.1165909625292747,
+      "bytes_written": 16000000
+    },
+    "ndtiff_write_compressed_zstd": {
+      "opencodecs_none": {
+        "median_ms": 4.16891707573086,
+        "min_ms": 4.098209086805582,
+        "max_ms": 4.203792079351842,
+        "iqr_ms": 0.09549898095428944,
+        "noisy": false,
+        "n_runs_total": 5,
+        "n_runs_after_filter": 5,
+        "all_samples_ms": [
+          4.203792079351842,
+          4.16891707573086,
+          4.1949579026550055,
+          4.099458921700716,
+          4.098209086805582
+        ]
+      },
+      "opencodecs_zstd_l1": {
+        "median_ms": 7.9577709548175335,
+        "min_ms": 7.892041001468897,
+        "max_ms": 7.9906249884516,
+        "iqr_ms": 0.04975008778274059,
+        "noisy": false,
+        "n_runs_total": 5,
+        "n_runs_after_filter": 4,
+        "all_samples_ms": [
+          7.9408749006688595,
+          7.9746670089662075,
+          7.892041001468897,
+          7.9906249884516,
+          8.191708009690046
+        ]
+      },
+      "opencodecs_zstd_l1_parallel": {
+        "median_ms": 8.06687498698011,
+        "min_ms": 7.9775420017540455,
+        "max_ms": 8.345665992237628,
+        "iqr_ms": 0.3559580072760582,
+        "noisy": false,
+        "n_runs_total": 5,
+        "n_runs_after_filter": 4,
+        "all_samples_ms": [
+          9.33924992568791,
+          8.345665992237628,
+          8.144041988998652,
+          7.9775420017540455,
+          7.989707984961569
+        ]
+      },
+      "encode_overhead": 1.9088340713571144,
+      "parallel_encode_overhead": 1.9350049042570348,
+      "parallel_speedup": 0.9864750560361143,
+      "bytes_written_raw": 16000000
+    },
+    "ndtiff_write_compressed_zstd_large": {
+      "opencodecs": {
+        "median_ms": 167.98104206100106,
+        "min_ms": 167.09645895753056,
+        "max_ms": 168.946583988145,
+        "iqr_ms": 0.8015830535441637,
+        "noisy": false,
+        "n_runs_total": 5,
+        "n_runs_after_filter": 5,
+        "all_samples_ms": [
+          168.946583988145,
+          167.7707500057295,
+          168.57233305927366,
+          167.98104206100106,
+          167.09645895753056
+        ]
+      },
+      "opencodecs_zstd_l1_parallel": {
+        "median_ms": 33.94512494560331,
+        "min_ms": 31.664500012993813,
+        "max_ms": 43.07549993973225,
+        "iqr_ms": 10.872001061215997,
+        "noisy": true,
+        "n_runs_total": 5,
+        "n_runs_after_filter": 5,
+        "all_samples_ms": [
+          42.55591705441475,
+          31.664500012993813,
+          31.683915993198752,
+          33.94512494560331,
+          43.07549993973225
+        ]
+      },
+      "speedup_vs_serial": 4.948605796272331,
+      "bytes_written_raw": 67108864
+    }
+  }
+}

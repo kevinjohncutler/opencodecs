@@ -1,0 +1,286 @@
+{
+  "timestamp": "20260513T103924Z",
+  "git_rev": "unknown",
+  "tier": "fast",
+  "system": {
+    "hostname": "WIN11-LTSC",
+    "platform": "Windows-10-10.0.26100-SP0",
+    "machine": "AMD64",
+    "processor": "AMD64 Family 23 Model 49 Stepping 0, AuthenticAMD",
+    "python": "3.11.9",
+    "cpu_count": 4,
+    "opencodecs_version": "0.2.0.dev0",
+    "git_rev": "unknown",
+    "ref_versions": {
+      "tifffile": "2026.3.3",
+      "ndstorage": "0.1.18",
+      "czifile": "2019.7.2.3",
+      "imagecodecs": "2026.3.6"
+    }
+  },
+  "workloads": {
+    "tiff_random_tile_read": {
+      "opencodecs": {
+        "median_ms": 1.58269999519689,
+        "min_ms": 1.4420000006793998,
+        "max_ms": 1.861699995060917,
+        "iqr_ms": 0.3814000010606833,
+        "noisy": false,
+        "n_runs_total": 7,
+        "n_runs_after_filter": 7,
+        "all_samples_ms": [
+          1.8514999974286184,
+          1.6322000010404736,
+          1.58269999519689,
+          1.561600001878105,
+          1.861699995060917,
+          1.470099996367935,
+          1.4420000006793998
+        ]
+      },
+      "reference": {
+        "tifffile_full_page": {
+          "median_ms": 61.04269999923417,
+          "min_ms": 57.61450000136392,
+          "max_ms": 69.0074000012828,
+          "iqr_ms": 5.755099999078084,
+          "noisy": false,
+          "n_runs_total": 7,
+          "n_runs_after_filter": 5,
+          "all_samples_ms": [
+            123.46899999829475,
+            92.48500000103377,
+            69.0074000012828,
+            57.61450000136392,
+            60.79909999971278,
+            61.04269999923417,
+            66.55419999879086
+          ]
+        }
+      },
+      "speedup_vs_tifffile": 38.568711811767194,
+      "notes": "tifffile has no public tile-level API; comparison is full page decode (the workaround a user would write)"
+    },
+    "tiff_pyramid_crop_from_fullres": {
+      "opencodecs": {
+        "median_ms": 1.5293000033125281,
+        "min_ms": 1.49049999890849,
+        "max_ms": 1.5357000011135824,
+        "iqr_ms": 0.014299992471933365,
+        "noisy": false,
+        "n_runs_total": 7,
+        "n_runs_after_filter": 5,
+        "all_samples_ms": [
+          1.516300006187521,
+          1.7095000002882443,
+          1.4054999992367812,
+          1.5357000011135824,
+          1.5305999986594543,
+          1.49049999890849,
+          1.5293000033125281
+        ]
+      },
+      "reference": {
+        "tifffile_full_then_slice": {
+          "median_ms": 58.511300005193334,
+          "min_ms": 48.48360000323737,
+          "max_ms": 65.59489999926882,
+          "iqr_ms": 5.8260000005248,
+          "noisy": false,
+          "n_runs_total": 7,
+          "n_runs_after_filter": 7,
+          "all_samples_ms": [
+            56.087299999489915,
+            56.433000005199574,
+            58.511300005193334,
+            65.59489999926882,
+            61.913300000014715,
+            48.48360000323737,
+            59.77450000500539
+          ]
+        }
+      },
+      "speedup_vs_tifffile": 38.26018431861335
+    },
+    "ndtiff_index_parse_synthetic_10k": {
+      "opencodecs": {
+        "median_ms": 5.27094999779365,
+        "min_ms": 5.222800005867612,
+        "max_ms": 5.314000001817476,
+        "iqr_ms": 0.016500001947861165,
+        "noisy": false,
+        "n_runs_total": 7,
+        "n_runs_after_filter": 6,
+        "all_samples_ms": [
+          5.314000001817476,
+          5.2774999930989,
+          5.261300000711344,
+          5.264400002488401,
+          5.222800005867612,
+          5.652400002873037,
+          5.277800002659205
+        ]
+      },
+      "reference": {
+        "ndstorage": {
+          "median_ms": 44.425399999454385,
+          "min_ms": 44.30629999842495,
+          "max_ms": 44.83349999645725,
+          "iqr_ms": 0.4552999962470494,
+          "noisy": false,
+          "n_runs_total": 5,
+          "n_runs_after_filter": 4,
+          "all_samples_ms": [
+            44.83349999645725,
+            44.3782000002102,
+            45.21789999853354,
+            44.47259999869857,
+            44.30629999842495
+          ]
+        }
+      },
+      "speedup_vs_ndstorage": 8.428347834460633
+    },
+    "ndtiff_random_frame_read": {
+      "opencodecs": {
+        "median_ms": 4.398749999381835,
+        "min_ms": 4.381300001114141,
+        "max_ms": 4.452099994523451,
+        "iqr_ms": 0.06029999349266291,
+        "noisy": false,
+        "n_runs_total": 5,
+        "n_runs_after_filter": 4,
+        "all_samples_ms": [
+          4.391800001030788,
+          5.1888000016333535,
+          4.4056999977328815,
+          4.381300001114141,
+          4.452099994523451
+        ]
+      },
+      "reference": {
+        "ndstorage": {
+          "median_ms": 9.699499998532701,
+          "min_ms": 5.117699998663738,
+          "max_ms": 13.419599999906495,
+          "iqr_ms": 4.7439999907510355,
+          "noisy": true,
+          "n_runs_total": 5,
+          "n_runs_after_filter": 5,
+          "all_samples_ms": [
+            5.117699998663738,
+            9.699499998532701,
+            7.573400005639996,
+            13.419599999906495,
+            12.317399996391032
+          ]
+        }
+      },
+      "speedup_vs_ndstorage": 2.205058255162442
+    },
+    "ndtiff_write_50_frames": {
+      "opencodecs": {
+        "median_ms": 7972.806399993715,
+        "min_ms": 7637.271599996893,
+        "max_ms": 8610.686300002271,
+        "iqr_ms": 594.6914000014658,
+        "noisy": false,
+        "n_runs_total": 5,
+        "n_runs_after_filter": 5,
+        "all_samples_ms": [
+          7744.733799998357,
+          7972.806399993715,
+          8610.686300002271,
+          8339.425199999823,
+          7637.271599996893
+        ]
+      },
+      "reference": {
+        "ndstorage": {
+          "median_ms": 53.829600001336075,
+          "min_ms": 37.77879999688594,
+          "max_ms": 60.60299999808194,
+          "iqr_ms": 13.621899990539532,
+          "noisy": true,
+          "n_runs_total": 5,
+          "n_runs_after_filter": 5,
+          "all_samples_ms": [
+            60.60299999808194,
+            53.829600001336075,
+            56.93119999341434,
+            43.30930000287481,
+            37.77879999688594
+          ]
+        }
+      },
+      "speedup_vs_ndstorage": 0.006751650209564666,
+      "bytes_written": 16000000
+    },
+    "ndtiff_write_compressed_zstd": {
+      "error": "NotImplementedError: segment_compression: zstd backend (opencodecs.codecs._zstd) not built on this platform: No module named 'opencodecs.codecs._zstd'"
+    },
+    "h2h_zstd_10mb": {
+      "error": "ModuleNotFoundError: No module named 'opencodecs.codecs._zstd'"
+    },
+    "h2h_deflate_10mb": {
+      "error": "ModuleNotFoundError: No module named 'opencodecs.codecs._deflate'"
+    },
+    "h2h_lz4_10mb": {
+      "error": "ModuleNotFoundError: No module named 'opencodecs.codecs._lz4'"
+    },
+    "h2h_brotli_10mb": {
+      "error": "ModuleNotFoundError: No module named 'opencodecs.codecs._brotli'"
+    },
+    "h2h_blosc2_10mb": {
+      "error": "ModuleNotFoundError: No module named 'opencodecs.codecs._blosc2'"
+    },
+    "h2h_jpeg_4mp_rgb": {
+      "error": "ModuleNotFoundError: No module named 'opencodecs.codecs._jpeg'"
+    },
+    "h2h_png_4mp_rgb": {
+      "error": "ModuleNotFoundError: No module named 'opencodecs.codecs._png'"
+    },
+    "h2h_webp_4mp_rgb": {
+      "error": "ModuleNotFoundError: No module named 'opencodecs.codecs._webp'"
+    },
+    "h2h_jpeg2k_4mp_u16": {
+      "error": "ModuleNotFoundError: No module named 'opencodecs.codecs._jpeg2k'"
+    },
+    "h2h_qoi_4mp_rgb": {
+      "error": "ModuleNotFoundError: No module named 'opencodecs.codecs._qoi'"
+    },
+    "h2h_lerc_4mp_u16": {
+      "error": "RuntimeError: LERC subprocess failed: rc=1\nstderr=Traceback (most recent call last):\r\n  File \"<string>\", line 5, in <module>\r\nModuleNotFoundError: No module named 'opencodecs.codecs._lerc'\r\n"
+    },
+    "h2h_jxl_4mp_rgb": {
+      "error": "ModuleNotFoundError: No module named 'opencodecs.codecs._jxl'"
+    },
+    "ndtiff_write_compressed_zstd_large": {
+      "error": "NotImplementedError: segment_compression: zstd backend (opencodecs.codecs._zstd) not built on this platform: No module named 'opencodecs.codecs._zstd'"
+    },
+    "tier1_codecs_roundtrip_10mb": {
+      "size_mb": 10.48576,
+      "zstd": {
+        "skipped": "not built"
+      },
+      "lz4": {
+        "skipped": "not built"
+      },
+      "brotli": {
+        "skipped": "not built"
+      },
+      "blosc2": {
+        "skipped": "not built"
+      },
+      "deflate": {
+        "skipped": "not built"
+      },
+      "bitshuffle": {
+        "skipped": "not built"
+      }
+    },
+    "tiff_write_64mb": {
+      "error": "NotImplementedError: segment_compression: zstd backend (opencodecs.codecs._zstd) not built on this platform: No module named 'opencodecs.codecs._zstd'"
+    }
+  }
+}

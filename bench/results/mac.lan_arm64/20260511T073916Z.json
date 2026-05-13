@@ -1,0 +1,61 @@
+{
+  "timestamp": "20260511T073916Z",
+  "git_rev": "f2407e2",
+  "tier": "fast",
+  "system": {
+    "hostname": "mac.lan",
+    "platform": "macOS-26.4.1-arm64-i386-64bit",
+    "machine": "arm64",
+    "processor": "i386",
+    "python": "3.12.9",
+    "cpu_count": 20,
+    "cpu_model": "Apple M1 Ultra",
+    "ram_kb_max": 150929408,
+    "opencodecs_version": "0.2.0.dev0",
+    "git_rev": "f2407e2",
+    "ref_versions": {
+      "tifffile": "2026.3.3",
+      "ndstorage": "0.1.18",
+      "czifile": "2026.4.11",
+      "imagecodecs": "2026.3.6"
+    }
+  },
+  "workloads": {
+    "h2h_zstd_10mb": {
+      "error": "NameError: name 'enc_payload' is not defined"
+    },
+    "h2h_deflate_10mb": {
+      "error": "NameError: name 'enc_payload' is not defined"
+    },
+    "h2h_lz4_10mb": {
+      "error": "NameError: name 'enc_payload' is not defined"
+    },
+    "h2h_brotli_10mb": {
+      "error": "NameError: name 'enc_payload' is not defined"
+    },
+    "h2h_blosc2_10mb": {
+      "error": "NameError: name 'enc_payload' is not defined"
+    },
+    "h2h_jpeg_4mp_rgb": {
+      "error": "NameError: name 'enc_payload' is not defined"
+    },
+    "h2h_png_4mp_rgb": {
+      "error": "NameError: name 'enc_payload' is not defined"
+    },
+    "h2h_webp_4mp_rgb": {
+      "error": "NameError: name 'enc_payload' is not defined"
+    },
+    "h2h_jpeg2k_4mp_u16": {
+      "error": "NameError: name 'enc_payload' is not defined"
+    },
+    "h2h_qoi_4mp_rgb": {
+      "error": "NameError: name 'enc_payload' is not defined"
+    },
+    "h2h_lerc_4mp_u16": {
+      "skipped": "lerc static-library symbol clash with imagecodecs (cross-process bench TODO)"
+    },
+    "h2h_jxl_4mp_rgb": {
+      "error": "NameError: name 'enc_payload' is not defined"
+    }
+  }
+}

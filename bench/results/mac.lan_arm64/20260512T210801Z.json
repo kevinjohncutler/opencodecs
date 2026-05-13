@@ -1,0 +1,73 @@
+{
+  "timestamp": "20260512T210801Z",
+  "git_rev": "ad45385",
+  "tier": "medium",
+  "system": {
+    "hostname": "mac.lan",
+    "platform": "macOS-26.4.1-arm64-arm-64bit",
+    "machine": "arm64",
+    "processor": "arm",
+    "python": "3.12.9",
+    "cpu_count": 20,
+    "cpu_model": "Apple M1 Ultra",
+    "ram_kb_max": 150061056,
+    "opencodecs_version": "0.2.0.dev0",
+    "git_rev": "ad45385",
+    "ref_versions": {
+      "tifffile": "2026.3.3",
+      "ndstorage": "0.1.18",
+      "czifile": "2026.4.11",
+      "imagecodecs": "2026.3.6"
+    }
+  },
+  "workloads": {
+    "ndtiff_write_1gb": {
+      "opencodecs": {
+        "median_ms": 220.30425001867115,
+        "min_ms": 161.16037499159575,
+        "max_ms": 238.9988339273259,
+        "iqr_ms": 64.80750010814518,
+        "noisy": true,
+        "n_runs_total": 9,
+        "n_runs_after_filter": 9,
+        "all_samples_ms": [
+          227.70387504715472,
+          162.87200001534075,
+          220.30425001867115,
+          170.96837505232543,
+          238.9988339273259,
+          162.89637493900955,
+          228.95779099781066,
+          161.16037499159575,
+          221.5762499254197
+        ]
+      },
+      "reference": {
+        "ndstorage": {
+          "median_ms": 205.47895808704197,
+          "min_ms": 148.11533398460597,
+          "max_ms": 211.42770803999156,
+          "iqr_ms": 59.76858304347843,
+          "noisy": true,
+          "n_runs_total": 9,
+          "n_runs_after_filter": 7,
+          "all_samples_ms": [
+            148.11533398460597,
+            199.6409579878673,
+            205.47895808704197,
+            150.51454189233482,
+            210.28312493581325,
+            211.42770803999156,
+            145.5216669710353,
+            208.28612498007715,
+            144.46370804216713
+          ]
+        }
+      },
+      "speedup_vs_ndstorage": 0.9190555308172368,
+      "speedup_vs_ndstorage_median": 0.9327053748151808,
+      "bytes_written": 800000000,
+      "_note": "ratio from min_ms; median is bimodal under OS write-back"
+    }
+  }
+}

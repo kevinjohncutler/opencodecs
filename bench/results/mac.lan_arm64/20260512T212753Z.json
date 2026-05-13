@@ -1,0 +1,121 @@
+{
+  "timestamp": "20260512T212753Z",
+  "git_rev": "1550ab0",
+  "tier": "medium",
+  "system": {
+    "hostname": "mac.lan",
+    "platform": "macOS-26.4.1-arm64-arm-64bit",
+    "machine": "arm64",
+    "processor": "arm",
+    "python": "3.12.9",
+    "cpu_count": 20,
+    "cpu_model": "Apple M1 Ultra",
+    "ram_kb_max": 150913024,
+    "opencodecs_version": "0.2.0.dev0",
+    "git_rev": "1550ab0",
+    "ref_versions": {
+      "tifffile": "2026.3.3",
+      "ndstorage": "0.1.18",
+      "czifile": "2026.4.11",
+      "imagecodecs": "2026.3.6"
+    }
+  },
+  "workloads": {
+    "tiff_write_1gb": {
+      "opencodecs_none": {
+        "median_ms": 53.6533750128001,
+        "min_ms": 50.613375031389296,
+        "max_ms": 59.133416041731834,
+        "iqr_ms": 0.0,
+        "noisy": false,
+        "n_runs_total": 3,
+        "n_runs_after_filter": 3,
+        "all_samples_ms": [
+          53.6533750128001,
+          50.613375031389296,
+          59.133416041731834
+        ]
+      },
+      "opencodecs_zstd_l1": {
+        "median_ms": 79.3079590657726,
+        "min_ms": 77.69562501925975,
+        "max_ms": 82.13187498040497,
+        "iqr_ms": 0.0,
+        "noisy": false,
+        "n_runs_total": 3,
+        "n_runs_after_filter": 3,
+        "all_samples_ms": [
+          79.3079590657726,
+          82.13187498040497,
+          77.69562501925975
+        ]
+      },
+      "reference": {
+        "tifffile_none": {
+          "median_ms": 61.287624994292855,
+          "min_ms": 60.948707978241146,
+          "max_ms": 71.08670799061656,
+          "iqr_ms": 0.0,
+          "noisy": false,
+          "n_runs_total": 3,
+          "n_runs_after_filter": 3,
+          "all_samples_ms": [
+            71.08670799061656,
+            60.948707978241146,
+            61.287624994292855
+          ]
+        }
+      },
+      "speedup_vs_tifffile_none": 1.1422883458807849,
+      "bytes_written": 134217728
+    },
+    "ndtiff_write_1gb": {
+      "opencodecs": {
+        "median_ms": 219.5762919727713,
+        "min_ms": 160.58479202911258,
+        "max_ms": 246.40816601458937,
+        "iqr_ms": 65.94391691032797,
+        "noisy": true,
+        "n_runs_total": 9,
+        "n_runs_after_filter": 9,
+        "all_samples_ms": [
+          169.6443329565227,
+          246.40816601458937,
+          160.58479202911258,
+          233.35308395326138,
+          163.8605409534648,
+          219.5762919727713,
+          167.4091670429334,
+          223.33800001069903,
+          241.04216694831848
+        ]
+      },
+      "reference": {
+        "ndstorage": {
+          "median_ms": 204.87312448676676,
+          "min_ms": 197.42004200816154,
+          "max_ms": 210.6786660151556,
+          "iqr_ms": 7.917708018794656,
+          "noisy": false,
+          "n_runs_total": 9,
+          "n_runs_after_filter": 6,
+          "all_samples_ms": [
+            149.6310420334339,
+            197.42004200816154,
+            210.6786660151556,
+            151.49520803242922,
+            203.0657910509035,
+            202.50312495045364,
+            151.47895796690136,
+            206.68045792263,
+            210.4208329692483
+          ]
+        }
+      },
+      "speedup_vs_ndstorage": 1.229381932831915,
+      "speedup_vs_ndstorage_median": 0.9330384562290185,
+      "bytes_written": 800000000,
+      "_note": "ratio from min_ms; median is bimodal under OS write-back"
+    }
+  }
+}

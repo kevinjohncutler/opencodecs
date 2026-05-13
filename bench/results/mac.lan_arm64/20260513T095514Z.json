@@ -1,0 +1,387 @@
+{
+  "timestamp": "20260513T095514Z",
+  "git_rev": "ebbbb62",
+  "tier": "fast",
+  "system": {
+    "hostname": "mac.lan",
+    "platform": "macOS-26.4.1-arm64-arm-64bit",
+    "machine": "arm64",
+    "processor": "arm",
+    "python": "3.12.9",
+    "cpu_count": 20,
+    "cpu_model": "Apple M1 Ultra",
+    "ram_kb_max": 149012480,
+    "opencodecs_version": "0.2.0.dev0",
+    "git_rev": "ebbbb62",
+    "ref_versions": {
+      "tifffile": "2026.3.3",
+      "ndstorage": "0.1.18",
+      "czifile": "2026.4.11",
+      "imagecodecs": "2026.3.6"
+    }
+  },
+  "workloads": {
+    "tiff_random_tile_read": {
+      "opencodecs": {
+        "median_ms": 0.7044380763545632,
+        "min_ms": 0.6824168376624584,
+        "max_ms": 0.7364579942077398,
+        "iqr_ms": 0.014042016118764877,
+        "noisy": false,
+        "n_runs_total": 7,
+        "n_runs_after_filter": 6,
+        "all_samples_ms": [
+          0.7526250556111336,
+          0.7154589984565973,
+          0.7014169823378325,
+          0.7069171406328678,
+          0.6824168376624584,
+          0.7019590120762587,
+          0.7364579942077398
+        ]
+      },
+      "reference": {
+        "tifffile_full_page": {
+          "median_ms": 11.166520998813212,
+          "min_ms": 9.7805829718709,
+          "max_ms": 12.826791033148766,
+          "iqr_ms": 0.8288340177386999,
+          "noisy": false,
+          "n_runs_total": 7,
+          "n_runs_after_filter": 6,
+          "all_samples_ms": [
+            12.826791033148766,
+            11.661499971523881,
+            11.250542011111975,
+            10.832665953785181,
+            7.484707981348038,
+            11.08249998651445,
+            9.7805829718709
+          ]
+        }
+      },
+      "speedup_vs_tifffile": 15.851671528886511,
+      "notes": "tifffile has no public tile-level API; comparison is full page decode (the workaround a user would write)"
+    },
+    "tiff_pyramid_crop_from_fullres": {
+      "opencodecs": {
+        "median_ms": 0.48958417028188705,
+        "min_ms": 0.46570878475904465,
+        "max_ms": 0.567208044230938,
+        "iqr_ms": 0.06616697646677494,
+        "noisy": true,
+        "n_runs_total": 7,
+        "n_runs_after_filter": 7,
+        "all_samples_ms": [
+          0.567208044230938,
+          0.5282920319586992,
+          0.5341670475900173,
+          0.48958417028188705,
+          0.4789580125361681,
+          0.4680000711232424,
+          0.46570878475904465
+        ]
+      },
+      "reference": {
+        "tifffile_full_then_slice": {
+          "median_ms": 9.509500116109848,
+          "min_ms": 8.839166956022382,
+          "max_ms": 9.631125023588538,
+          "iqr_ms": 0.06120791658759117,
+          "noisy": false,
+          "n_runs_total": 7,
+          "n_runs_after_filter": 5,
+          "all_samples_ms": [
+            7.633207831531763,
+            9.509500116109848,
+            8.839166956022382,
+            9.527707938104868,
+            7.555958116427064,
+            9.466500021517277,
+            9.631125023588538
+          ]
+        }
+      },
+      "speedup_vs_tifffile": 19.423626606707032
+    },
+    "ndtiff_index_parse_synthetic_10k": {
+      "opencodecs": {
+        "median_ms": 4.623978980816901,
+        "min_ms": 4.556708969175816,
+        "max_ms": 4.7155418433249,
+        "iqr_ms": 0.10316609404981136,
+        "noisy": false,
+        "n_runs_total": 7,
+        "n_runs_after_filter": 6,
+        "all_samples_ms": [
+          4.66470792889595,
+          4.556708969175816,
+          4.561541834846139,
+          4.640582948923111,
+          4.7155418433249,
+          4.35774982906878,
+          4.6073750127106905
+        ]
+      },
+      "reference": {
+        "ndstorage": {
+          "median_ms": 28.396750101819634,
+          "min_ms": 27.348916977643967,
+          "max_ms": 28.972791973501444,
+          "iqr_ms": 0.5531657952815294,
+          "noisy": false,
+          "n_runs_total": 5,
+          "n_runs_after_filter": 5,
+          "all_samples_ms": [
+            28.396750101819634,
+            28.83949992246926,
+            28.28633412718773,
+            27.348916977643967,
+            28.972791973501444
+          ]
+        }
+      },
+      "speedup_vs_ndstorage": 6.14119359530542
+    },
+    "ndtiff_random_frame_read": {
+      "opencodecs": {
+        "median_ms": 1.2508330401033163,
+        "min_ms": 1.2454160023480654,
+        "max_ms": 1.2513750698417425,
+        "iqr_ms": 0.0,
+        "noisy": false,
+        "n_runs_total": 5,
+        "n_runs_after_filter": 3,
+        "all_samples_ms": [
+          1.2454160023480654,
+          1.2110830284655094,
+          1.2508330401033163,
+          1.2513750698417425,
+          1.282291952520609
+        ]
+      },
+      "reference": {
+        "ndstorage": {
+          "median_ms": 1.4664169866591692,
+          "min_ms": 1.3717080000787973,
+          "max_ms": 1.6931660939007998,
+          "iqr_ms": 0.1232498325407505,
+          "noisy": false,
+          "n_runs_total": 5,
+          "n_runs_after_filter": 5,
+          "all_samples_ms": [
+            1.5554169658571482,
+            1.6931660939007998,
+            1.4664169866591692,
+            1.4321671333163977,
+            1.3717080000787973
+          ]
+        }
+      },
+      "speedup_vs_ndstorage": 1.1723522961450124
+    },
+    "ndtiff_write_50_frames": {
+      "opencodecs": {
+        "median_ms": 8.74666590243578,
+        "min_ms": 4.2272089049220085,
+        "max_ms": 10.265083983540535,
+        "iqr_ms": 4.716500174254179,
+        "noisy": true,
+        "n_runs_total": 5,
+        "n_runs_after_filter": 5,
+        "all_samples_ms": [
+          4.2272089049220085,
+          4.366874927654862,
+          9.083375101909041,
+          8.74666590243578,
+          10.265083983540535
+        ]
+      },
+      "reference": {
+        "ndstorage": {
+          "median_ms": 8.386499946936965,
+          "min_ms": 6.250667152926326,
+          "max_ms": 10.03574999049306,
+          "iqr_ms": 1.0652090422809124,
+          "noisy": false,
+          "n_runs_total": 5,
+          "n_runs_after_filter": 5,
+          "all_samples_ms": [
+            6.250667152926326,
+            10.03574999049306,
+            8.386499946936965,
+            8.186290971934795,
+            9.251500014215708
+          ]
+        }
+      },
+      "speedup_vs_ndstorage": 0.9588224862460432,
+      "bytes_written": 16000000
+    },
+    "ndtiff_write_compressed_zstd": {
+      "opencodecs_none": {
+        "median_ms": 8.573750033974648,
+        "min_ms": 6.949207978323102,
+        "max_ms": 9.507957845926285,
+        "iqr_ms": 1.6659169923514128,
+        "noisy": false,
+        "n_runs_total": 5,
+        "n_runs_after_filter": 5,
+        "all_samples_ms": [
+          8.573750033974648,
+          9.507957845926285,
+          7.089124992489815,
+          8.755041984841228,
+          6.949207978323102
+        ]
+      },
+      "opencodecs_zstd_l1": {
+        "median_ms": 8.50779190659523,
+        "min_ms": 8.476792136207223,
+        "max_ms": 8.510875049978495,
+        "iqr_ms": 0.0,
+        "noisy": false,
+        "n_runs_total": 5,
+        "n_runs_after_filter": 3,
+        "all_samples_ms": [
+          8.997624972835183,
+          8.510875049978495,
+          8.476792136207223,
+          8.50779190659523,
+          8.262417046353221
+        ]
+      },
+      "opencodecs_zstd_l1_parallel": {
+        "median_ms": 8.316791849210858,
+        "min_ms": 8.096917066723108,
+        "max_ms": 8.776250062510371,
+        "iqr_ms": 0.2864580601453781,
+        "noisy": false,
+        "n_runs_total": 5,
+        "n_runs_after_filter": 5,
+        "all_samples_ms": [
+          8.096917066723108,
+          8.297292049974203,
+          8.776250062510371,
+          8.583750110119581,
+          8.316791849210858
+        ]
+      },
+      "encode_overhead": 0.9923069686988716,
+      "parallel_encode_overhead": 0.9700296621961735,
+      "parallel_speedup": 1.0229655930853307,
+      "bytes_written_raw": 16000000
+    },
+    "ndtiff_write_compressed_zstd_large": {
+      "opencodecs": {
+        "median_ms": 170.07879121229053,
+        "min_ms": 168.97208290174603,
+        "max_ms": 171.95870797149837,
+        "iqr_ms": 1.7311659175902605,
+        "noisy": false,
+        "n_runs_total": 5,
+        "n_runs_after_filter": 5,
+        "all_samples_ms": [
+          170.7493329886347,
+          168.97208290174603,
+          170.07879121229053,
+          169.01816707104445,
+          171.95870797149837
+        ]
+      },
+      "opencodecs_zstd_l1_parallel": {
+        "median_ms": 40.5778749845922,
+        "min_ms": 38.78250019624829,
+        "max_ms": 42.37033403478563,
+        "iqr_ms": 1.657084096223116,
+        "noisy": false,
+        "n_runs_total": 5,
+        "n_runs_after_filter": 5,
+        "all_samples_ms": [
+          38.78250019624829,
+          41.96025012061,
+          40.5778749845922,
+          42.37033403478563,
+          40.30316602438688
+        ]
+      },
+      "speedup_vs_serial": 4.191416905810643,
+      "bytes_written_raw": 67108864
+    },
+    "tiff_write_64mb": {
+      "opencodecs": {
+        "median_ms": 5.432187463156879,
+        "min_ms": 5.318041890859604,
+        "max_ms": 5.544791929423809,
+        "iqr_ms": 0.1884999219328165,
+        "noisy": false,
+        "n_runs_total": 5,
+        "n_runs_after_filter": 4,
+        "all_samples_ms": [
+          5.508082918822765,
+          5.318041890859604,
+          5.3562920074909925,
+          6.7093330435454845,
+          5.544791929423809
+        ]
+      },
+      "opencodecs_zstd_l1_serial": {
+        "median_ms": 9.731229511089623,
+        "min_ms": 9.685792028903961,
+        "max_ms": 9.77983302436769,
+        "iqr_ms": 0.061749015003442764,
+        "noisy": false,
+        "n_runs_total": 5,
+        "n_runs_after_filter": 4,
+        "all_samples_ms": [
+          9.744375012814999,
+          9.77983302436769,
+          10.025541065260768,
+          9.718084009364247,
+          9.685792028903961
+        ]
+      },
+      "opencodecs_none": {
+        "median_ms": 2.6073126355186105,
+        "min_ms": 2.513165818527341,
+        "max_ms": 2.6849578134715557,
+        "iqr_ms": 0.1044166274368763,
+        "noisy": false,
+        "n_runs_total": 5,
+        "n_runs_after_filter": 4,
+        "all_samples_ms": [
+          2.5805411860346794,
+          2.6340840850025415,
+          2.6849578134715557,
+          2.9646670445799828,
+          2.513165818527341
+        ]
+      },
+      "reference": {
+        "tifffile_zstd": {
+          "median_ms": 6.432709051296115,
+          "min_ms": 6.283791968598962,
+          "max_ms": 6.897208048030734,
+          "iqr_ms": 0.4886239767074585,
+          "noisy": false,
+          "n_runs_total": 5,
+          "n_runs_after_filter": 4,
+          "all_samples_ms": [
+            6.408584071323276,
+            6.456834031268954,
+            6.283791968598962,
+            5.83283300511539,
+            6.897208048030734
+          ]
+        }
+      },
+      "speedup_vs_tifffile": 1.1841839212886422,
+      "parallel_speedup_over_serial": 1.7914016364660554,
+      "compress_overhead": 2.0834430781931847,
+      "raw_mb": 8.388608,
+      "mb_per_s_zstd_parallel": 1544.2412576691559,
+      "mb_per_s_zstd_serial": 862.0296120279987,
+      "mb_per_s_none": 3217.338759351141
+    }
+  }
+}

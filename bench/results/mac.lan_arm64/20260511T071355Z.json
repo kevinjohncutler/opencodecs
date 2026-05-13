@@ -1,0 +1,82 @@
+{
+  "timestamp": "20260511T071355Z",
+  "git_rev": "5a97730",
+  "tier": "fast",
+  "system": {
+    "hostname": "mac.lan",
+    "platform": "macOS-26.4.1-arm64-arm-64bit",
+    "machine": "arm64",
+    "processor": "arm",
+    "python": "3.12.9",
+    "cpu_count": 20,
+    "cpu_model": "Apple M1 Ultra",
+    "ram_kb_max": 148226048,
+    "opencodecs_version": "0.2.0.dev0",
+    "git_rev": "5a97730",
+    "ref_versions": {
+      "tifffile": "2026.3.3",
+      "ndstorage": "0.1.18",
+      "czifile": "2026.4.11",
+      "imagecodecs": "2026.3.6"
+    }
+  },
+  "workloads": {
+    "tiff_write_64mb": {
+      "opencodecs_zstd_l1": {
+        "median_ms": 8.966916473582387,
+        "min_ms": 8.839916903525591,
+        "max_ms": 9.398041991516948,
+        "iqr_ms": 0.45066699385643005,
+        "noisy": false,
+        "n_runs_total": 5,
+        "n_runs_after_filter": 4,
+        "all_samples_ms": [
+          8.986457949504256,
+          8.947374997660518,
+          8.839916903525591,
+          9.398041991516948,
+          9.78745799511671
+        ]
+      },
+      "opencodecs_none": {
+        "median_ms": 1.8246249528601766,
+        "min_ms": 1.766667002812028,
+        "max_ms": 1.9841670291498303,
+        "iqr_ms": 0.08800008799880743,
+        "noisy": false,
+        "n_runs_total": 5,
+        "n_runs_after_filter": 5,
+        "all_samples_ms": [
+          1.9007920054718852,
+          1.9841670291498303,
+          1.8246249528601766,
+          1.8127919174730778,
+          1.766667002812028
+        ]
+      },
+      "reference": {
+        "tifffile_zstd": {
+          "median_ms": 5.202916509006172,
+          "min_ms": 5.0467499531805515,
+          "max_ms": 5.243167048320174,
+          "iqr_ms": 0.07345899939537048,
+          "noisy": false,
+          "n_runs_total": 5,
+          "n_runs_after_filter": 4,
+          "all_samples_ms": [
+            5.0467499531805515,
+            5.688666016794741,
+            5.243167048320174,
+            5.169708048924804,
+            5.236124969087541
+          ]
+        }
+      },
+      "speedup_vs_tifffile_zstd": 0.5802347467308957,
+      "compress_overhead": 4.914388822495476,
+      "raw_mb": 8.388608,
+      "mb_per_s_zstd": 935.5064279581333,
+      "mb_per_s_none": 4597.44233293012
+    }
+  }
+}

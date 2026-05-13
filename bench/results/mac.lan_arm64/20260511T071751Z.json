@@ -1,0 +1,79 @@
+{
+  "timestamp": "20260511T071751Z",
+  "git_rev": "5a97730",
+  "tier": "fast",
+  "system": {
+    "hostname": "mac.lan",
+    "platform": "macOS-26.4.1-arm64-arm-64bit",
+    "machine": "arm64",
+    "processor": "arm",
+    "python": "3.12.9",
+    "cpu_count": 20,
+    "cpu_model": "Apple M1 Ultra",
+    "ram_kb_max": 147193856,
+    "opencodecs_version": "0.2.0.dev0",
+    "git_rev": "5a97730",
+    "ref_versions": {
+      "tifffile": "2026.3.3",
+      "ndstorage": "0.1.18",
+      "czifile": "2026.4.11",
+      "imagecodecs": "2026.3.6"
+    }
+  },
+  "workloads": {
+    "ndtiff_write_compressed_zstd": {
+      "opencodecs_none": {
+        "median_ms": 4.252916551195085,
+        "min_ms": 4.184250021353364,
+        "max_ms": 4.286167095415294,
+        "iqr_ms": 0.03454205580055714,
+        "noisy": false,
+        "n_runs_total": 5,
+        "n_runs_after_filter": 4,
+        "all_samples_ms": [
+          4.53187501989305,
+          4.251625039614737,
+          4.184250021353364,
+          4.254208062775433,
+          4.286167095415294
+        ]
+      },
+      "opencodecs_zstd_l1": {
+        "median_ms": 8.234333479776978,
+        "min_ms": 8.013457991182804,
+        "max_ms": 8.44783300999552,
+        "iqr_ms": 0.30833296477794647,
+        "noisy": false,
+        "n_runs_total": 5,
+        "n_runs_after_filter": 4,
+        "all_samples_ms": [
+          8.329166914336383,
+          8.44783300999552,
+          17.45133299846202,
+          8.139500045217574,
+          8.013457991182804
+        ]
+      },
+      "opencodecs_zstd_l1_parallel": {
+        "median_ms": 8.948167087510228,
+        "min_ms": 7.932875072583556,
+        "max_ms": 9.526000008918345,
+        "iqr_ms": 1.2724169064313173,
+        "noisy": false,
+        "n_runs_total": 5,
+        "n_runs_after_filter": 5,
+        "all_samples_ms": [
+          7.932875072583556,
+          8.001791080459952,
+          9.526000008918345,
+          9.27420798689127,
+          8.948167087510228
+        ]
+      },
+      "encode_overhead": 1.9361615448257739,
+      "parallel_encode_overhead": 2.104007210062883,
+      "parallel_speedup": 0.920225717652321,
+      "bytes_written_raw": 16000000
+    }
+  }
+}

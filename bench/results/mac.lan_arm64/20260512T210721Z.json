@@ -1,0 +1,59 @@
+{
+  "timestamp": "20260512T210721Z",
+  "git_rev": "ad45385",
+  "tier": "medium",
+  "system": {
+    "hostname": "mac.lan",
+    "platform": "macOS-26.4.1-arm64-arm-64bit",
+    "machine": "arm64",
+    "processor": "arm",
+    "python": "3.12.9",
+    "cpu_count": 20,
+    "cpu_model": "Apple M1 Ultra",
+    "ram_kb_max": 149159936,
+    "opencodecs_version": "0.2.0.dev0",
+    "git_rev": "ad45385",
+    "ref_versions": {
+      "tifffile": "2026.3.3",
+      "ndstorage": "0.1.18",
+      "czifile": "2026.4.11",
+      "imagecodecs": "2026.3.6"
+    }
+  },
+  "workloads": {
+    "ndtiff_write_1gb": {
+      "opencodecs": {
+        "median_ms": 241.05358391534537,
+        "min_ms": 221.15770902018994,
+        "max_ms": 273.59154203440994,
+        "iqr_ms": 0.0,
+        "noisy": false,
+        "n_runs_total": 3,
+        "n_runs_after_filter": 3,
+        "all_samples_ms": [
+          221.15770902018994,
+          273.59154203440994,
+          241.05358391534537
+        ]
+      },
+      "reference": {
+        "ndstorage": {
+          "median_ms": 147.64816593378782,
+          "min_ms": 146.26862504519522,
+          "max_ms": 200.69966604933143,
+          "iqr_ms": 0.0,
+          "noisy": false,
+          "n_runs_total": 3,
+          "n_runs_after_filter": 3,
+          "all_samples_ms": [
+            147.64816593378782,
+            200.69966604933143,
+            146.26862504519522
+          ]
+        }
+      },
+      "speedup_vs_ndstorage": 0.612511805614306,
+      "bytes_written": 800000000
+    }
+  }
+}

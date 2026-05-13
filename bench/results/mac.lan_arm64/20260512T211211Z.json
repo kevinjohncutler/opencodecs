@@ -1,0 +1,159 @@
+{
+  "timestamp": "20260512T211211Z",
+  "git_rev": "ad45385",
+  "tier": "medium",
+  "system": {
+    "hostname": "mac.lan",
+    "platform": "macOS-26.4.1-arm64-arm-64bit",
+    "machine": "arm64",
+    "processor": "arm",
+    "python": "3.12.9",
+    "cpu_count": 20,
+    "cpu_model": "Apple M1 Ultra",
+    "ram_kb_max": 149405696,
+    "opencodecs_version": "0.2.0.dev0",
+    "git_rev": "ad45385",
+    "ref_versions": {
+      "tifffile": "2026.3.3",
+      "ndstorage": "0.1.18",
+      "czifile": "2026.4.11",
+      "imagecodecs": "2026.3.6"
+    }
+  },
+  "workloads": {
+    "tiff_write_1gb": {
+      "opencodecs_none": {
+        "median_ms": 55.22550002206117,
+        "min_ms": 52.595083019696176,
+        "max_ms": 57.03183403238654,
+        "iqr_ms": 0.0,
+        "noisy": false,
+        "n_runs_total": 3,
+        "n_runs_after_filter": 3,
+        "all_samples_ms": [
+          57.03183403238654,
+          55.22550002206117,
+          52.595083019696176
+        ]
+      },
+      "opencodecs_zstd_l1": {
+        "median_ms": 86.23450004961342,
+        "min_ms": 84.81887506786734,
+        "max_ms": 88.39900000020862,
+        "iqr_ms": 0.0,
+        "noisy": false,
+        "n_runs_total": 3,
+        "n_runs_after_filter": 3,
+        "all_samples_ms": [
+          88.39900000020862,
+          86.23450004961342,
+          84.81887506786734
+        ]
+      },
+      "reference": {
+        "tifffile_none": {
+          "median_ms": 54.34179096482694,
+          "min_ms": 52.67558398190886,
+          "max_ms": 70.1120839221403,
+          "iqr_ms": 0.0,
+          "noisy": false,
+          "n_runs_total": 3,
+          "n_runs_after_filter": 3,
+          "all_samples_ms": [
+            70.1120839221403,
+            52.67558398190886,
+            54.34179096482694
+          ]
+        }
+      },
+      "speedup_vs_tifffile_none": 0.9839981701047305,
+      "bytes_written": 134217728
+    },
+    "tiff_full_decode_1gb": {
+      "opencodecs": {
+        "median_ms": 27.564542018808424,
+        "min_ms": 27.13712491095066,
+        "max_ms": 27.738042059354484,
+        "iqr_ms": 0.17804198432713747,
+        "noisy": false,
+        "n_runs_total": 5,
+        "n_runs_after_filter": 4,
+        "all_samples_ms": [
+          27.560000075027347,
+          27.569083962589502,
+          27.738042059354484,
+          27.13712491095066,
+          26.75116597674787
+        ]
+      },
+      "reference": {
+        "tifffile": {
+          "median_ms": 34.90787500049919,
+          "min_ms": 32.73750003427267,
+          "max_ms": 36.87641699798405,
+          "iqr_ms": 2.2253328934311867,
+          "noisy": false,
+          "n_runs_total": 5,
+          "n_runs_after_filter": 5,
+          "all_samples_ms": [
+            36.87641699798405,
+            33.86012511327863,
+            34.90787500049919,
+            32.73750003427267,
+            36.085458006709814
+          ]
+        }
+      },
+      "speedup_vs_tifffile": 1.2664050422706137,
+      "bytes_decoded": 134217728
+    },
+    "ndtiff_write_1gb": {
+      "opencodecs": {
+        "median_ms": 218.86037499643862,
+        "min_ms": 159.26391689572483,
+        "max_ms": 236.2792920321226,
+        "iqr_ms": 65.24329097010195,
+        "noisy": true,
+        "n_runs_total": 9,
+        "n_runs_after_filter": 9,
+        "all_samples_ms": [
+          217.25850005168468,
+          163.38554199319333,
+          224.2844159482047,
+          160.6175840133801,
+          232.3199169477448,
+          228.62883296329528,
+          159.26391689572483,
+          218.86037499643862,
+          236.2792920321226
+        ]
+      },
+      "reference": {
+        "ndstorage": {
+          "median_ms": 209.53879202716053,
+          "min_ms": 206.32391690742224,
+          "max_ms": 214.8368749767542,
+          "iqr_ms": 6.258792011067271,
+          "noisy": false,
+          "n_runs_total": 9,
+          "n_runs_after_filter": 5,
+          "all_samples_ms": [
+            145.56587499100715,
+            207.20008295029402,
+            214.8368749767542,
+            145.62854205723852,
+            209.53879202716053,
+            150.16587497666478,
+            206.32391690742224,
+            213.4588749613613,
+            149.87466693855822
+          ]
+        }
+      },
+      "speedup_vs_ndstorage": 1.2954843817040433,
+      "speedup_vs_ndstorage_median": 0.9574085397165669,
+      "bytes_written": 800000000,
+      "_note": "ratio from min_ms; median is bimodal under OS write-back"
+    }
+  }
+}
