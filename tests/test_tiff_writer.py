@@ -417,3 +417,127 @@ def test_writer_pyramid_subifds_round_trips_through_tifffile(tmp_path):
         for i, lvl in enumerate(levels):
             tf_lvl = np.asarray(s.levels[i].asarray())
             np.testing.assert_array_equal(tf_lvl, lvl)
+
+
+# ---------------------------------------------------------------------------
+# Streaming write (TiffWriter(streaming=True).write_stream)
+# ---------------------------------------------------------------------------
+
+
+class _WriteOnlySink:
+    """File-like wrapper that only exposes ``write`` + ``close``.
+
+    Streaming tests use this to prove the writer never seeks: any
+    seek/tell access would raise AttributeError before write_stream
+    finishes.
+    """
+
+    def __init__(self):
+        self.chunks: list[bytes] = []
+
+    def write(self, data):
+        if isinstance(data, (bytes, bytearray)):
+            self.chunks.append(bytes(data))
+        else:
+            self.chunks.append(bytes(memoryview(data)))
+        return len(data)
+
+    def flush(self):
+        pass
+
+    def close(self):
+        pass
+
+    @property
+    def bytes(self) -> bytes:
+        return b"".join(self.chunks)
+
+
+@pytest.mark.parametrize("compression", ["none", "zstd", "deflate"])
+def test_write_stream_round_trip_seekable(tmp_path, compression):
+    """Streamed output decodes correctly via tifffile + our reader."""
+    _need_tiff()
+    rng = np.random.default_rng(0)
+    pages = [rng.integers(0, 4000, size=(128, 192), dtype=np.uint16)
+             for _ in range(4)]
+
+    buf = io.BytesIO()
+    with TiffWriter(buf, streaming=True) as w:
+        infos = w.write_stream(
+            pages, total_pages=len(pages),
+            tile=(64, 64), compression=compression,
+        )
+    assert len(infos) == len(pages)
+
+    data = buf.getvalue()
+    with tifffile.TiffFile(io.BytesIO(data)) as tf:
+        assert len(tf.pages) == len(pages)
+        for i, expected in enumerate(pages):
+            np.testing.assert_array_equal(tf.pages[i].asarray(), expected)
+
+    # Also through our own reader so we know the layout is consistent.
+    with TiffStream(data) as r:
+        for i, expected in enumerate(pages):
+            np.testing.assert_array_equal(r.page(i).asarray(), expected)
+
+
+def test_write_stream_to_unseekable_sink():
+    """Sink with no .seek() must work — proves no back-patching."""
+    rng = np.random.default_rng(1)
+    pages = [rng.integers(0, 4000, size=(96, 128), dtype=np.uint16)
+             for _ in range(3)]
+    sink = _WriteOnlySink()
+
+    with TiffWriter(sink, streaming=True) as w:
+        w.write_stream(
+            pages, total_pages=3,
+            tile=(64, 64), compression="zstd",
+        )
+
+    data = sink.bytes
+    with tifffile.TiffFile(io.BytesIO(data)) as tf:
+        assert len(tf.pages) == 3
+        for i, expected in enumerate(pages):
+            np.testing.assert_array_equal(tf.pages[i].asarray(), expected)
+
+
+def test_write_stream_single_page_strips():
+    """Single-page strip layout (no tile)."""
+    rng = np.random.default_rng(2)
+    arr = rng.integers(0, 255, size=(200, 256), dtype=np.uint8)
+    sink = _WriteOnlySink()
+    with TiffWriter(sink, streaming=True) as w:
+        w.write_stream([arr], total_pages=1, compression="none")
+    with tifffile.TiffFile(io.BytesIO(sink.bytes)) as tf:
+        np.testing.assert_array_equal(tf.pages[0].asarray(), arr)
+
+
+def test_write_stream_rejects_in_non_streaming_mode(tmp_path):
+    p = tmp_path / "x.tif"
+    with TiffWriter(p) as w:
+        with pytest.raises(Exception):
+            w.write_stream([np.zeros((4, 4), dtype=np.uint8)], total_pages=1)
+
+
+def test_write_page_rejected_in_streaming_mode():
+    sink = _WriteOnlySink()
+    with TiffWriter(sink, streaming=True) as w:
+        with pytest.raises(Exception):
+            w.write_page(np.zeros((4, 4), dtype=np.uint8))
+
+
+def test_write_stream_validates_total_pages_count():
+    """If the iterable doesn't yield the promised count, fail loudly."""
+    sink = _WriteOnlySink()
+    pages = [np.zeros((16, 16), dtype=np.uint8) for _ in range(2)]
+    with TiffWriter(sink, streaming=True) as w:
+        with pytest.raises(Exception):
+            w.write_stream(pages, total_pages=3)   # 2 yielded, 3 claimed
+
+
+def test_write_stream_rejects_extra_pages():
+    sink = _WriteOnlySink()
+    pages = [np.zeros((16, 16), dtype=np.uint8) for _ in range(3)]
+    with TiffWriter(sink, streaming=True) as w:
+        with pytest.raises(Exception):
+            w.write_stream(pages, total_pages=2)   # 3 yielded, 2 claimed
