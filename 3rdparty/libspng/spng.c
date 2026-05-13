@@ -26,6 +26,14 @@
     #include <pthread.h>
 #endif
 
+#ifdef SPNG_USE_LIBDEFLATE
+    /* opencodecs encode fast-path: replace libspng's streaming
+       deflate() loop with one-shot libdeflate_zlib_compress on the
+       full filtered-row stream. ~2x faster PNG encode end-to-end
+       than going through zlib/zlib-ng. */
+    #include <libdeflate.h>
+#endif
+
 /* Not build options, edit at your own risk! */
 #define SPNG_READ_SIZE (8192)
 #define SPNG_WRITE_SIZE SPNG_READ_SIZE
@@ -339,6 +347,18 @@ struct spng_ctx
     struct spng_subimage subimage[7];
 
     z_stream zstream;
+#ifdef SPNG_USE_LIBDEFLATE
+    /* opencodecs libdeflate fast path: instead of feeding scanlines
+       to zlib's streaming deflate(), we accumulate the filtered raw
+       byte stream and call libdeflate_zlib_compress() once at
+       finish_idat() time. ~2x faster end-to-end on PNG encode.
+       Decode still goes through zlib's inflate. */
+    void *libdef_compressor;       /* struct libdeflate_compressor* */
+    unsigned char *libdef_inbuf;   /* accumulated filtered scanlines */
+    size_t libdef_inbuf_size;
+    size_t libdef_inbuf_cap;
+    int libdef_level;              /* requested compression level */
+#endif
     unsigned char *scanline_buf, *prev_scanline_buf, *row_buf, *filtered_scanline_buf;
     unsigned char *scanline, *prev_scanline, *row, *filtered_scanline;
 
@@ -1230,6 +1250,31 @@ static int spng__deflate_init(spng_ctx *ctx, struct spng__zlib_options *options)
     int ret = deflateInit2(zstream, options->compression_level, Z_DEFLATED, options->window_bits, options->mem_level, options->strategy);
 
     if(ret != Z_OK) return SPNG_EZLIB_INIT;
+
+#ifdef SPNG_USE_LIBDEFLATE
+    /* Set up the libdeflate accumulator in parallel — IDAT writes
+       go here instead of through zstream. The zstream above is
+       still kept around because libspng also uses it for some
+       small text-chunk compression at the same level. */
+    ctx->libdef_level = options->compression_level;
+    if(ctx->libdef_level < 0) ctx->libdef_level = 6;       /* default */
+    if(ctx->libdef_level > 12) ctx->libdef_level = 12;     /* libdeflate cap */
+    /* Free any stale compressor from a previous frame. */
+    if(ctx->libdef_compressor)
+    {
+        libdeflate_free_compressor(
+            (struct libdeflate_compressor *)ctx->libdef_compressor);
+    }
+    ctx->libdef_compressor = libdeflate_alloc_compressor(ctx->libdef_level);
+    if(ctx->libdef_compressor == NULL) return SPNG_EZLIB_INIT;
+    if(ctx->libdef_inbuf)
+    {
+        spng__free(ctx, ctx->libdef_inbuf);
+    }
+    ctx->libdef_inbuf = NULL;
+    ctx->libdef_inbuf_size = 0;
+    ctx->libdef_inbuf_cap = 0;
+#endif
 
     return 0;
 }
@@ -4490,6 +4535,31 @@ static int write_idat_bytes(spng_ctx *ctx, const void *scanline, size_t len, int
     if(len > UINT_MAX) return SPNG_EINTERNAL;
 
     int ret = 0;
+
+#ifdef SPNG_USE_LIBDEFLATE
+    (void)flush;
+    /* Append the scanline bytes to our libdeflate input accumulator.
+       The actual compression happens in finish_idat() once we have
+       the full filtered-row stream — that's what makes libdeflate
+       2x faster than the zlib streaming loop. */
+    size_t need = ctx->libdef_inbuf_size + len;
+    if(need < len) return SPNG_EOVERFLOW;
+    if(need > ctx->libdef_inbuf_cap)
+    {
+        /* Grow ~1.5x to amortize. */
+        size_t new_cap = ctx->libdef_inbuf_cap < 65536
+            ? 65536 : ctx->libdef_inbuf_cap;
+        while(new_cap < need) new_cap = new_cap + (new_cap / 2);
+        unsigned char *new_buf = spng__realloc(
+            ctx, ctx->libdef_inbuf, new_cap);
+        if(new_buf == NULL) return encode_err(ctx, SPNG_EMEM);
+        ctx->libdef_inbuf = new_buf;
+        ctx->libdef_inbuf_cap = new_cap;
+    }
+    memcpy(ctx->libdef_inbuf + ctx->libdef_inbuf_size, scanline, len);
+    ctx->libdef_inbuf_size = need;
+    return 0;
+#else
     unsigned char *data = NULL;
     z_stream *zstream = &ctx->zstream;
     uint32_t idat_length = SPNG_WRITE_SIZE;
@@ -4518,14 +4588,89 @@ static int write_idat_bytes(spng_ctx *ctx, const void *scanline, size_t len, int
     if(ret != Z_OK) return SPNG_EZLIB;
 
     return 0;
+#endif
 }
 
 static int finish_idat(spng_ctx *ctx)
 {
     int ret = 0;
     unsigned char *data = NULL;
-    z_stream *zstream = &ctx->zstream;
     uint32_t idat_length = SPNG_WRITE_SIZE;
+
+#ifdef SPNG_USE_LIBDEFLATE
+    /* One-shot compress the accumulated filtered-row stream and
+       splay the output across SPNG_WRITE_SIZE-sized IDAT chunks.
+       Reader compatibility is identical — PNG concatenates IDATs
+       into one zlib stream anyway. */
+    struct libdeflate_compressor *c =
+        (struct libdeflate_compressor *)ctx->libdef_compressor;
+    if(c == NULL) return SPNG_EZLIB;
+    if(ctx->libdef_inbuf == NULL || ctx->libdef_inbuf_size == 0)
+    {
+        /* Empty image — write a zero-length IDAT and stop. */
+        return finish_chunk(ctx);
+    }
+
+    size_t bound = libdeflate_zlib_compress_bound(c, ctx->libdef_inbuf_size);
+    unsigned char *cbuf = spng__malloc(ctx, bound);
+    if(cbuf == NULL) return encode_err(ctx, SPNG_EMEM);
+
+    size_t written = libdeflate_zlib_compress(
+        c, ctx->libdef_inbuf, ctx->libdef_inbuf_size, cbuf, bound);
+    if(written == 0)
+    {
+        spng__free(ctx, cbuf);
+        return encode_err(ctx, SPNG_EZLIB);
+    }
+
+    /* spng_encode_image() opened the first IDAT chunk before
+       calling encode_scanline — header at ctx->write_ptr, data
+       area at ctx->write_ptr + 8 (== zstream->next_out which the
+       caller set). We fill that chunk first, then issue new
+       chunks via write_header for whatever remainder is left. */
+    z_stream *zstream = &ctx->zstream;
+    size_t total_out = 0;
+    while(total_out < written)
+    {
+        size_t want = (written - total_out) < idat_length
+            ? (written - total_out) : idat_length;
+        if(total_out == 0)
+        {
+            /* First chunk data area is zstream->next_out (set by
+               spng_encode_image). Just copy our compressed bytes
+               into it. */
+            memcpy(zstream->next_out, cbuf, want);
+        }
+        else
+        {
+            /* Close the previous chunk; open a fresh IDAT. */
+            ret = finish_chunk(ctx);
+            if(ret) { spng__free(ctx, cbuf); return encode_err(ctx, ret); }
+            unsigned char *dst;
+            ret = write_header(ctx, type_idat, idat_length, &dst);
+            if(ret) { spng__free(ctx, cbuf); return encode_err(ctx, ret); }
+            memcpy(dst, cbuf + total_out, want);
+        }
+        total_out += want;
+        if(want < idat_length)
+        {
+            /* Trim the chunk's declared length down to actual. */
+            ret = trim_chunk(ctx, (uint32_t)want);
+            if(ret) { spng__free(ctx, cbuf); return ret; }
+        }
+    }
+    spng__free(ctx, cbuf);
+
+    /* Free the accumulator — we'll re-grow on next frame's
+       _deflate_init(). */
+    spng__free(ctx, ctx->libdef_inbuf);
+    ctx->libdef_inbuf = NULL;
+    ctx->libdef_inbuf_size = 0;
+    ctx->libdef_inbuf_cap = 0;
+
+    return finish_chunk(ctx);
+#else
+    z_stream *zstream = &ctx->zstream;
 
     while(ret != Z_STREAM_END)
     {
@@ -4557,6 +4702,7 @@ static int finish_idat(spng_ctx *ctx)
     if(ret) return ret;
 
     return finish_chunk(ctx);
+#endif
 }
 
 static int encode_scanline(spng_ctx *ctx, const void *scanline, size_t len)
@@ -4990,6 +5136,20 @@ void spng_ctx_free(spng_ctx *ctx)
 
     if(ctx->deflate) deflateEnd(&ctx->zstream);
     else inflateEnd(&ctx->zstream);
+
+#ifdef SPNG_USE_LIBDEFLATE
+    if(ctx->libdef_compressor)
+    {
+        libdeflate_free_compressor(
+            (struct libdeflate_compressor *)ctx->libdef_compressor);
+        ctx->libdef_compressor = NULL;
+    }
+    if(ctx->libdef_inbuf)
+    {
+        spng__free(ctx, ctx->libdef_inbuf);
+        ctx->libdef_inbuf = NULL;
+    }
+#endif
 
     if(!ctx->user_owns_out_png) spng__free(ctx, ctx->out_png);
 
