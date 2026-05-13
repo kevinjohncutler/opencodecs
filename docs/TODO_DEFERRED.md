@@ -145,9 +145,34 @@ git log for `2026-05-11` for the night's shipped commits.
   uses the entire upstream h5py decode path (filters, fill values,
   reference resolution) instead of reimplementing it.
 
+## libdeflate backend (faster than zlib-ng for one-shot deflate)
+
+* **Status**: deferred. `_deflate.pyx` + vendored libspng now both link
+  to zlib-ng-compat (commits c15d3b6 + 027e267 on 2026-05-13). That
+  gives ~1.3-1.4× over stdlib zlib on macOS.
+* **Use case**: imagecodecs uses `libdeflate` (different lib, by
+  ebiggers) and beats us by ~2× on PNG-encode of highly-compressible
+  content. libdeflate is designed for one-shot encode/decode (no
+  streaming) and outperforms zlib-ng for the typical image-codec
+  workload.
+* **Source**: https://github.com/ebiggers/libdeflate (MIT). Brew has
+  it (`brew install libdeflate`, ~340 KB).
+* **Sketch**:
+  1. Write `src/opencodecs/codecs/_libdeflate.pyx` wrapping the
+     `libdeflate_alloc_compressor` / `libdeflate_deflate_compress`
+     entry points. API is small, no Cython gymnastics required.
+  2. Switch `_deflate.pyx`'s default to libdeflate when available,
+     falling through to zlib-ng-compat → stdlib zlib.
+  3. Update libspng's vendored copy to use libdeflate (it has a
+     `SPNG_USE_LIBDEFLATE` define).
+  4. Bench h2h_png_4mp_rgb and h2h_deflate_10mb — expected to close
+     the 0.45-0.89× imagecodecs gap.
+* **Effort**: ~3-4 hours. Quick win for image-write-heavy users.
+
 ## zlib-ng / ISA-L deflate swap
 
-* **Status**: deferred; current `_deflate.pyx` uses system libz.
+* **Status**: zlib-ng-compat path A SHIPPED (commits c15d3b6 + 027e267).
+  ISA-L path B still deferred.
 * **Use case**: ~1.5-2× speedup on deflate / gzip / PNG-encode
   byte-stream paths; matches what imagecodecs gets on
   `conda-forge` (which uses zlib-ng-compat).
