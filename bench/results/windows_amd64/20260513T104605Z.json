@@ -1,0 +1,545 @@
+{
+  "timestamp": "20260513T104605Z",
+  "git_rev": "unknown",
+  "tier": "fast",
+  "system": {
+    "hostname": "WIN11-LTSC",
+    "platform": "Windows-10-10.0.26100-SP0",
+    "machine": "AMD64",
+    "processor": "AMD64 Family 23 Model 49 Stepping 0, AuthenticAMD",
+    "python": "3.11.9",
+    "cpu_count": 4,
+    "opencodecs_version": "0.2.0.dev0",
+    "git_rev": "unknown",
+    "ref_versions": {
+      "tifffile": "2026.3.3",
+      "ndstorage": "0.1.18",
+      "czifile": "2019.7.2.3",
+      "imagecodecs": "2026.3.6"
+    }
+  },
+  "workloads": {
+    "tiff_random_tile_read": {
+      "opencodecs": {
+        "median_ms": 1.4572000000043772,
+        "min_ms": 1.4305000004242174,
+        "max_ms": 1.4851999949314632,
+        "iqr_ms": 0.025899993488565087,
+        "noisy": false,
+        "n_runs_total": 7,
+        "n_runs_after_filter": 7,
+        "all_samples_ms": [
+          1.4698999948450364,
+          1.4440000013564713,
+          1.4572000000043772,
+          1.4639000000897795,
+          1.4851999949314632,
+          1.4305000004242174,
+          1.4572000000043772
+        ]
+      },
+      "reference": {
+        "tifffile_full_page": {
+          "median_ms": 53.67290000140201,
+          "min_ms": 50.67530000087572,
+          "max_ms": 58.93480000668205,
+          "iqr_ms": 6.185599995660596,
+          "noisy": false,
+          "n_runs_total": 7,
+          "n_runs_after_filter": 7,
+          "all_samples_ms": [
+            53.67290000140201,
+            50.67530000087572,
+            58.93480000668205,
+            53.195899999991525,
+            58.318199997302145,
+            54.03450000449084,
+            52.13260000164155
+          ]
+        }
+      },
+      "speedup_vs_tifffile": 36.832898710706004,
+      "notes": "tifffile has no public tile-level API; comparison is full page decode (the workaround a user would write)"
+    },
+    "tiff_pyramid_crop_from_fullres": {
+      "opencodecs": {
+        "median_ms": 1.3758499990217388,
+        "min_ms": 1.370699996186886,
+        "max_ms": 1.3813999976264313,
+        "iqr_ms": 0.005800000508315861,
+        "noisy": false,
+        "n_runs_total": 7,
+        "n_runs_after_filter": 4,
+        "all_samples_ms": [
+          1.4071999976295047,
+          1.3483000002452172,
+          1.3813999976264313,
+          1.370699996186886,
+          1.376100000925362,
+          1.3755999971181154,
+          1.472999996622093
+        ]
+      },
+      "reference": {
+        "tifffile_full_then_slice": {
+          "median_ms": 56.090299993229564,
+          "min_ms": 48.33890000008978,
+          "max_ms": 59.1532999969786,
+          "iqr_ms": 10.221999997156672,
+          "noisy": false,
+          "n_runs_total": 7,
+          "n_runs_after_filter": 7,
+          "all_samples_ms": [
+            48.414600001706276,
+            57.04150000383379,
+            51.17049999535084,
+            48.33890000008978,
+            58.63659999886295,
+            59.1532999969786,
+            56.090299993229564
+          ]
+        }
+      },
+      "speedup_vs_tifffile": 40.76774360076394
+    },
+    "ndtiff_index_parse_synthetic_10k": {
+      "opencodecs": {
+        "median_ms": 5.189250001421897,
+        "min_ms": 5.087200006528292,
+        "max_ms": 5.380300004617311,
+        "iqr_ms": 0.12849999620812014,
+        "noisy": false,
+        "n_runs_total": 7,
+        "n_runs_after_filter": 6,
+        "all_samples_ms": [
+          5.087200006528292,
+          5.153899997822009,
+          5.280199999106117,
+          5.618200004391838,
+          5.1517000028979965,
+          5.2246000050217845,
+          5.380300004617311
+        ]
+      },
+      "reference": {
+        "ndstorage": {
+          "median_ms": 44.662699998298194,
+          "min_ms": 43.941000003542285,
+          "max_ms": 45.96719999972265,
+          "iqr_ms": 1.5140000032261014,
+          "noisy": false,
+          "n_runs_total": 5,
+          "n_runs_after_filter": 5,
+          "all_samples_ms": [
+            44.44089999742573,
+            45.95490000065183,
+            44.662699998298194,
+            43.941000003542285,
+            45.96719999972265
+          ]
+        }
+      },
+      "speedup_vs_ndstorage": 8.60677361585205
+    },
+    "ndtiff_random_frame_read": {
+      "opencodecs": {
+        "median_ms": 4.579799999191891,
+        "min_ms": 4.577599996991921,
+        "max_ms": 4.581100001814775,
+        "iqr_ms": 0.0,
+        "noisy": false,
+        "n_runs_total": 5,
+        "n_runs_after_filter": 3,
+        "all_samples_ms": [
+          4.581100001814775,
+          4.569600001559593,
+          4.577599996991921,
+          5.2500000019790605,
+          4.579799999191891
+        ]
+      },
+      "reference": {
+        "ndstorage": {
+          "median_ms": 4.981700003554579,
+          "min_ms": 4.747599996335339,
+          "max_ms": 5.654699998558499,
+          "iqr_ms": 0.31680000392952934,
+          "noisy": false,
+          "n_runs_total": 5,
+          "n_runs_after_filter": 5,
+          "all_samples_ms": [
+            4.747599996335339,
+            5.106000004161615,
+            5.654699998558499,
+            4.981700003554579,
+            4.789200000232086
+          ]
+        }
+      },
+      "speedup_vs_ndstorage": 1.0877549247638767
+    },
+    "ndtiff_write_50_frames": {
+      "opencodecs": {
+        "median_ms": 7612.1698999995715,
+        "min_ms": 7353.892799997993,
+        "max_ms": 7907.049800000095,
+        "iqr_ms": 455.34369999950286,
+        "noisy": false,
+        "n_runs_total": 5,
+        "n_runs_after_filter": 5,
+        "all_samples_ms": [
+          7612.1698999995715,
+          7353.892799997993,
+          7894.873899997037,
+          7907.049800000095,
+          7439.5301999975345
+        ]
+      },
+      "reference": {
+        "ndstorage": {
+          "median_ms": 43.07960000005551,
+          "min_ms": 38.754299996071495,
+          "max_ms": 55.946699998457916,
+          "iqr_ms": 13.103799996315502,
+          "noisy": true,
+          "n_runs_total": 5,
+          "n_runs_after_filter": 4,
+          "all_samples_ms": [
+            890.8135000019684,
+            55.946699998457916,
+            43.3162999979686,
+            38.754299996071495,
+            42.842900002142414
+          ]
+        }
+      },
+      "speedup_vs_ndstorage": 0.005659306159214593,
+      "bytes_written": 16000000
+    },
+    "ndtiff_write_compressed_zstd": {
+      "opencodecs_none": {
+        "median_ms": 7671.147400003974,
+        "min_ms": 7637.30879999639,
+        "max_ms": 7682.287499999802,
+        "iqr_ms": 0.0,
+        "noisy": false,
+        "n_runs_total": 5,
+        "n_runs_after_filter": 3,
+        "all_samples_ms": [
+          7671.147400003974,
+          7682.287499999802,
+          6647.436699997343,
+          8381.144499995571,
+          7637.30879999639
+        ]
+      },
+      "opencodecs_zstd_l1": {
+        "median_ms": 7487.388399997144,
+        "min_ms": 6943.326900000102,
+        "max_ms": 7748.637900003814,
+        "iqr_ms": 306.2941000025603,
+        "noisy": false,
+        "n_runs_total": 5,
+        "n_runs_after_filter": 5,
+        "all_samples_ms": [
+          7280.055700000958,
+          7748.637900003814,
+          6943.326900000102,
+          7487.388399997144,
+          7586.349800003518
+        ]
+      },
+      "opencodecs_zstd_l1_parallel": {
+        "median_ms": 7801.928399996541,
+        "min_ms": 7521.025500005635,
+        "max_ms": 7991.439100005664,
+        "iqr_ms": 361.50260000431444,
+        "noisy": false,
+        "n_runs_total": 5,
+        "n_runs_after_filter": 5,
+        "all_samples_ms": [
+          7615.0913999954355,
+          7991.439100005664,
+          7801.928399996541,
+          7521.025500005635,
+          7976.59399999975
+        ]
+      },
+      "encode_overhead": 0.9760454348710944,
+      "parallel_encode_overhead": 1.0170484274611251,
+      "parallel_speedup": 0.9596843262494518,
+      "bytes_written_raw": 16000000
+    },
+    "h2h_zstd_10mb": {
+      "raw_mb": 10.48576,
+      "encoded_mb_oc": 8.963973,
+      "encoded_mb_ic": 8.965473,
+      "opencodecs_encode_ms": 15.112699999008328,
+      "imagecodecs_encode_ms": 18.477900004654657,
+      "speedup_vs_imagecodecs_encode": 1.2226736457328702,
+      "opencodecs_decode_ms": 14.977149996411754,
+      "imagecodecs_decode_ms": 16.81980000284966,
+      "speedup_vs_imagecodecs_decode": 1.123030750635426,
+      "opencodecs_encode_mb_per_s": 693.8376332943856,
+      "imagecodecs_encode_mb_per_s": 567.4757411479982,
+      "opencodecs_decode_mb_per_s": 700.117178669653,
+      "imagecodecs_decode_mb_per_s": 623.4176386296788,
+      "opencodecs": {
+        "median_ms": 15.112699999008328,
+        "min_ms": 14.99580000381684,
+        "max_ms": 15.345200001320336,
+        "iqr_ms": 0.29070000164210796,
+        "noisy": false,
+        "n_runs_total": 7,
+        "n_runs_after_filter": 7,
+        "all_samples_ms": [
+          15.000699997472111,
+          15.112699999008328,
+          15.345200001320336,
+          14.99580000381684,
+          15.163299998675939,
+          15.291399999114219,
+          15.028100002382416
+        ]
+      },
+      "reference": {
+        "imagecodecs_encode": {
+          "median_ms": 18.477900004654657,
+          "min_ms": 16.68960000097286,
+          "max_ms": 23.65049999934854,
+          "iqr_ms": 5.507700007001404,
+          "noisy": true,
+          "n_runs_total": 7,
+          "n_runs_after_filter": 7,
+          "all_samples_ms": [
+            18.20909999514697,
+            18.014299996139016,
+            16.68960000097286,
+            18.477900004654657,
+            21.450400003232062,
+            23.52200000314042,
+            23.65049999934854
+          ]
+        },
+        "imagecodecs_decode": {
+          "median_ms": 16.81980000284966,
+          "min_ms": 15.870799994445406,
+          "max_ms": 17.406500002834946,
+          "iqr_ms": 0.8018000007723458,
+          "noisy": false,
+          "n_runs_total": 7,
+          "n_runs_after_filter": 7,
+          "all_samples_ms": [
+            17.223100003320724,
+            16.519400000106543,
+            16.81980000284966,
+            16.421300002548378,
+            17.406500002834946,
+            16.915300002438016,
+            15.870799994445406
+          ]
+        },
+        "opencodecs_decode": {
+          "median_ms": 14.977149996411754,
+          "min_ms": 14.450800001213793,
+          "max_ms": 16.013500004191883,
+          "iqr_ms": 1.2095999991288409,
+          "noisy": false,
+          "n_runs_total": 7,
+          "n_runs_after_filter": 6,
+          "all_samples_ms": [
+            16.013500004191883,
+            20.12980000290554,
+            14.450800001213793,
+            14.785999999730848,
+            15.08569999714382,
+            14.868599995679688,
+            15.995599998859689
+          ]
+        }
+      },
+      "speedup_vs_imagecodecs": 1.1730766359046958
+    },
+    "h2h_deflate_10mb": {
+      "error": "ModuleNotFoundError: No module named 'opencodecs.codecs._deflate'"
+    },
+    "h2h_lz4_10mb": {
+      "error": "ModuleNotFoundError: No module named 'opencodecs.codecs._lz4'"
+    },
+    "h2h_brotli_10mb": {
+      "error": "ModuleNotFoundError: No module named 'opencodecs.codecs._brotli'"
+    },
+    "h2h_blosc2_10mb": {
+      "error": "ModuleNotFoundError: No module named 'opencodecs.codecs._blosc2'"
+    },
+    "h2h_jpeg_4mp_rgb": {
+      "error": "ModuleNotFoundError: No module named 'opencodecs.codecs._jpeg'"
+    },
+    "h2h_png_4mp_rgb": {
+      "error": "ModuleNotFoundError: No module named 'opencodecs.codecs._png'"
+    },
+    "h2h_webp_4mp_rgb": {
+      "error": "ModuleNotFoundError: No module named 'opencodecs.codecs._webp'"
+    },
+    "h2h_jpeg2k_4mp_u16": {
+      "error": "ModuleNotFoundError: No module named 'opencodecs.codecs._jpeg2k'"
+    },
+    "h2h_qoi_4mp_rgb": {
+      "error": "ModuleNotFoundError: No module named 'opencodecs.codecs._qoi'"
+    },
+    "h2h_lerc_4mp_u16": {
+      "error": "RuntimeError: LERC subprocess failed: rc=1\nstderr=Traceback (most recent call last):\r\n  File \"<string>\", line 5, in <module>\r\nModuleNotFoundError: No module named 'opencodecs.codecs._lerc'\r\n"
+    },
+    "h2h_jxl_4mp_rgb": {
+      "error": "ModuleNotFoundError: No module named 'opencodecs.codecs._jxl'"
+    },
+    "ndtiff_write_compressed_zstd_large": {
+      "opencodecs": {
+        "median_ms": 7406.344600000011,
+        "min_ms": 6713.31640000426,
+        "max_ms": 8083.022099999653,
+        "iqr_ms": 661.1839999895892,
+        "noisy": false,
+        "n_runs_total": 5,
+        "n_runs_after_filter": 5,
+        "all_samples_ms": [
+          7351.939500003937,
+          8013.123499993526,
+          6713.31640000426,
+          8083.022099999653,
+          7406.344600000011
+        ]
+      },
+      "opencodecs_zstd_l1_parallel": {
+        "median_ms": 7653.398700000253,
+        "min_ms": 7280.456799999229,
+        "max_ms": 8881.839499998023,
+        "iqr_ms": 848.1671000045026,
+        "noisy": false,
+        "n_runs_total": 5,
+        "n_runs_after_filter": 5,
+        "all_samples_ms": [
+          7505.765699999756,
+          8353.932800004259,
+          7653.398700000253,
+          7280.456799999229,
+          8881.839499998023
+        ]
+      },
+      "speedup_vs_serial": 0.9677196877251105,
+      "bytes_written_raw": 67108864
+    },
+    "tier1_codecs_roundtrip_10mb": {
+      "size_mb": 10.48576,
+      "zstd": {
+        "encode": {
+          "median_ms": 14.59170000089216,
+          "min_ms": 14.569899998605251,
+          "max_ms": 14.674500002001878,
+          "iqr_ms": 0.0971000044955872,
+          "noisy": false,
+          "n_runs_total": 5,
+          "n_runs_after_filter": 4,
+          "all_samples_ms": [
+            21.518299996387213,
+            14.674500002001878,
+            14.569899998605251,
+            14.57739999750629,
+            14.60600000427803
+          ]
+        },
+        "mb_per_s": 718.6112652644232
+      },
+      "lz4": {
+        "skipped": "not built"
+      },
+      "brotli": {
+        "skipped": "not built"
+      },
+      "blosc2": {
+        "skipped": "not built"
+      },
+      "deflate": {
+        "skipped": "not built"
+      },
+      "bitshuffle": {
+        "skipped": "not built"
+      }
+    },
+    "tiff_write_64mb": {
+      "opencodecs": {
+        "median_ms": 27.941200001805555,
+        "min_ms": 25.589400000171736,
+        "max_ms": 29.62890000344487,
+        "iqr_ms": 2.4438000036752783,
+        "noisy": false,
+        "n_runs_total": 5,
+        "n_runs_after_filter": 5,
+        "all_samples_ms": [
+          29.62890000344487,
+          25.589400000171736,
+          26.72799999709241,
+          29.17180000076769,
+          27.941200001805555
+        ]
+      },
+      "opencodecs_zstd_l1_serial": {
+        "median_ms": 23.385100001178216,
+        "min_ms": 21.6396000032546,
+        "max_ms": 24.058499999227934,
+        "iqr_ms": 0.9390999985043891,
+        "noisy": false,
+        "n_runs_total": 5,
+        "n_runs_after_filter": 4,
+        "all_samples_ms": [
+          23.119400000723545,
+          23.650800001632888,
+          33.39920000144048,
+          24.058499999227934,
+          21.6396000032546
+        ]
+      },
+      "opencodecs_none": {
+        "median_ms": 17.653400005656295,
+        "min_ms": 17.304300003161188,
+        "max_ms": 18.208399997092783,
+        "iqr_ms": 0.1940000001923181,
+        "noisy": false,
+        "n_runs_total": 5,
+        "n_runs_after_filter": 5,
+        "all_samples_ms": [
+          17.653400005656295,
+          18.208399997092783,
+          17.304300003161188,
+          17.598899998120032,
+          17.79289999831235
+        ]
+      },
+      "reference": {
+        "tifffile_zstd": {
+          "median_ms": 25.826899996900465,
+          "min_ms": 25.350600000820123,
+          "max_ms": 27.12469999823952,
+          "iqr_ms": 0.8516000016243197,
+          "noisy": false,
+          "n_runs_total": 5,
+          "n_runs_after_filter": 5,
+          "all_samples_ms": [
+            25.350600000820123,
+            26.60650000325404,
+            27.12469999823952,
+            25.75490000162972,
+            25.826899996900465
+          ]
+        }
+      },
+      "speedup_vs_tifffile": 0.9243303793405987,
+      "parallel_speedup_over_serial": 0.8369397162493764,
+      "compress_overhead": 1.5827659257056979,
+      "raw_mb": 8.388608,
+      "mb_per_s_zstd_parallel": 300.2236124238733,
+      "mb_per_s_zstd_serial": 358.7159344872314,
+      "mb_per_s_none": 475.18370383678047
+    }
+  }
+}
