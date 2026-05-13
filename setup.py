@@ -652,6 +652,7 @@ def _build_deflate_extension() -> Extension:
     library_dirs = list(_lib_dirs_for_probes())
     libraries = [_libname("z", "zlib")]
     extra_link_args: list[str] = []
+    define_macros: list[tuple[str, str]] = []
     if zng_compat_prefix is not None:
         include_dirs.insert(0, str(zng_compat_prefix / "include"))
         # macOS distutils prepends -L<SDK>/usr/lib before our paths,
@@ -671,6 +672,26 @@ def _build_deflate_extension() -> Extension:
     else:
         include_dirs.extend(_resolve_include_dirs("zlib.h"))
 
+    # libdeflate detection — preferred over zlib (any flavour) for
+    # one-shot encode/decode. Probe Homebrew + system paths.
+    ld_prefix = _find_libdeflate_prefix()
+    if ld_prefix is not None:
+        include_dirs.insert(0, str(ld_prefix / "include"))
+        define_macros.append(("OPENCODECS_HAVE_LIBDEFLATE", "1"))
+        # Same SDK-stub-dodging dance: pass the dylib by absolute path
+        # so distutils' implicit -L<SDK>/usr/lib doesn't beat us to
+        # it. On Linux just add -ldeflate and let the rpath handle it.
+        if sys.platform == "darwin":
+            ld_dylib = ld_prefix / "lib" / "libdeflate.dylib"
+            if ld_dylib.exists():
+                extra_link_args.append(str(ld_dylib))
+            else:
+                library_dirs.insert(0, str(ld_prefix / "lib"))
+                libraries.append("deflate")
+        else:
+            library_dirs.insert(0, str(ld_prefix / "lib"))
+            libraries.append("deflate")
+
     return Extension(
         name="opencodecs.codecs._deflate",
         sources=["src/opencodecs/codecs/_deflate.pyx"],
@@ -678,8 +699,31 @@ def _build_deflate_extension() -> Extension:
         library_dirs=library_dirs,
         libraries=libraries,
         extra_link_args=extra_link_args,
+        define_macros=define_macros,
         language="c",
     )
+
+
+def _find_libdeflate_prefix() -> Path | None:
+    """Locate libdeflate's install prefix. Brew/system/conda."""
+    candidates = (
+        Path("/opt/homebrew/opt/libdeflate"),
+        Path("/usr/local/opt/libdeflate"),
+        Path(os.environ.get("CONDA_PREFIX", "")),
+        Path("/usr/local"),
+        Path("/usr"),
+    )
+    for c in candidates:
+        if not str(c):
+            continue
+        if (c / "include" / "libdeflate.h").is_file() and (
+            (c / "lib" / "libdeflate.dylib").exists()
+            or (c / "lib" / "libdeflate.so").exists()
+            or (c / "lib" / "libdeflate.so.0").exists()
+            or (c / "Library" / "lib" / "libdeflate.lib").exists()
+        ):
+            return c
+    return None
 
 
 def _build_png_ext() -> Extension:

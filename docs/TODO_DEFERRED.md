@@ -145,29 +145,36 @@ git log for `2026-05-11` for the night's shipped commits.
   uses the entire upstream h5py decode path (filters, fill values,
   reference resolution) instead of reimplementing it.
 
-## libdeflate backend (faster than zlib-ng for one-shot deflate)
+## libdeflate backend
 
-* **Status**: deferred. `_deflate.pyx` + vendored libspng now both link
-  to zlib-ng-compat (commits c15d3b6 + 027e267 on 2026-05-13). That
-  gives ~1.3-1.4× over stdlib zlib on macOS.
-* **Use case**: imagecodecs uses `libdeflate` (different lib, by
-  ebiggers) and beats us by ~2× on PNG-encode of highly-compressible
-  content. libdeflate is designed for one-shot encode/decode (no
-  streaming) and outperforms zlib-ng for the typical image-codec
-  workload.
-* **Source**: https://github.com/ebiggers/libdeflate (MIT). Brew has
-  it (`brew install libdeflate`, ~340 KB).
-* **Sketch**:
-  1. Write `src/opencodecs/codecs/_libdeflate.pyx` wrapping the
-     `libdeflate_alloc_compressor` / `libdeflate_deflate_compress`
-     entry points. API is small, no Cython gymnastics required.
-  2. Switch `_deflate.pyx`'s default to libdeflate when available,
-     falling through to zlib-ng-compat → stdlib zlib.
-  3. Update libspng's vendored copy to use libdeflate (it has a
-     `SPNG_USE_LIBDEFLATE` define).
-  4. Bench h2h_png_4mp_rgb and h2h_deflate_10mb — expected to close
-     the 0.45-0.89× imagecodecs gap.
-* **Effort**: ~3-4 hours. Quick win for image-write-heavy users.
+* **Status**: `_deflate.pyx` libdeflate backend SHIPPED. PNG side
+  (libspng) is still on zlib/zlib-ng.
+* **What's done** (this commit + subsequent):
+  * `_deflate.pyx` has a compile-time backend selector
+    (`-DOPENCODECS_HAVE_LIBDEFLATE=1`) that switches to libdeflate's
+    `libdeflate_zlib_compress` / `libdeflate_zlib_decompress` when
+    setup.py finds the library. Falls through to zlib (system or
+    zlib-ng-compat) otherwise.
+  * `_deflate.backend()` returns `"libdeflate"` or `"zlib"` for
+    runtime introspection.
+  * 25 cross-validation tests confirm bit-exact interop with stdlib
+    zlib + imagecodecs (every encode decodes through every backend).
+  * Measured wins on macOS M1 Ultra:
+    * raw deflate encode 10MB random: 2.20× faster than imagecodecs
+      (which also uses libdeflate, so it's also build-/version-delta;
+      vs stdlib zlib it's 1.92×)
+    * raw deflate decode 10MB random: 7.11× faster
+    * `bench/h2h_deflate_10mb`: 2.67× (was 1.74× pre-libdeflate)
+* **What's left — libspng still uses zlib**:
+  * libspng has no `SPNG_USE_LIBDEFLATE` upstream flag (only
+    `SPNG_USE_MINIZ`). To get libdeflate into PNG-encode we'd need
+    to patch its internal `deflate()` / `inflate()` calls.
+  * That's ~6-8 hr of careful editing in the vendored
+    `3rdparty/libspng/spng.c` — defer unless there's an active PNG-
+    write-heavy workload to chase.
+  * Current PNG-encode benches ~0.91× vs imagecodecs (parity-ish);
+    that's because imagecodecs's PNG path uses its own libspng+
+    libdeflate combo. Acceptable for now.
 
 ## zlib-ng / ISA-L deflate swap
 
