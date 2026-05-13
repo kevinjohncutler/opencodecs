@@ -145,6 +145,36 @@ git log for `2026-05-11` for the night's shipped commits.
   uses the entire upstream h5py decode path (filters, fill values,
   reference resolution) instead of reimplementing it.
 
+## libspng filter_sum SIMD vectorization
+
+* **Status**: deferred. Bench-tracked PNG workloads
+  (`h2h_png_4mp_rgb`) are winning at 1.14x vs imagecodecs; the
+  filter-bound gap shows up only on off-bench workloads.
+* **What's measured** (2026-05-13, 4MP uint16 gradient = filter-
+  dominated; 8 MB raw, ~13 KB encoded):
+
+  | filter setting       | opencodecs | imagecodecs |
+  |----------------------|----------:|----------:|
+  | `none` (no score)    |  11.4 ms  |  17 ms    |
+  | `up` (single, no score) |  28 ms  |  16 ms    |
+  | `fast` (NONE+SUB+UP) | 106 ms    |  33 ms    |
+  | `all` (5 filters)    | 154 ms    |  47 ms    |
+
+* **Root cause**: libspng's `filter_sum` is a per-byte switch
+  statement on each candidate filter. imagecodecs uses libpng,
+  which ships SIMD-vectorized filter scoring (NEON + SSE).
+* **Sketch**:
+  1. Add `filter_sum_neon` (arm64) and `filter_sum_sse` (x86) in
+     a sibling file `3rdparty/libspng/filter_sum_simd.c` that
+     ships alongside the vendored libspng.
+  2. `#ifdef SPNG_USE_SIMD_FILTER_SUM` block in
+     `get_best_filter` (spng.c line ~1711) dispatches to the
+     SIMD variants per architecture.
+  3. Bench until 4MP uint16 gradient hits parity.
+* **Effort**: ~1-2 hr focused SIMD work. Off the bench-tracked
+  workload, so prioritise only if a user surfaces filter-bound
+  PNG-encode wall-clock.
+
 ## libdeflate backend
 
 * **Status**: `_deflate.pyx` libdeflate backend SHIPPED. PNG side
