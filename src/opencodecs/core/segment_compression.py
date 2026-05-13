@@ -115,15 +115,17 @@ _DECODER_MOD: dict[int, str] = {
 
 
 # Some codecs have asymmetric encode/decode attribute names
-# (e.g. _tiff exports ``lzw_decode`` but no ``lzw_encode`` — LZW
-# encode is rare in our use cases and not implemented yet).
+# (e.g. _tiff exports ``lzw_decode`` / ``lzw_encode`` and
+# ``packbits_decode``; PackBits encode is still not implemented).
 _DECODE_FN: dict[int, str] = {
     LZW:       "lzw_decode",
     PACKBITS:  "packbits_decode",
 }
 _ENCODE_FN: dict[int, str] = {
-    # LZW + PackBits encode not implemented in opencodecs.codecs._tiff
-    # yet — encoders that emit these would have to vendor one.
+    # PackBits encode is the last asymmetric pair — rarely seen in
+    # the wild and not worth vendoring; encoders that need it can
+    # always fall back to none/deflate.
+    LZW:       "lzw_encode",
     DEFLATE:   "encode",
     ADOBE_DEFLATE: "encode",
     ZSTD:      "encode",

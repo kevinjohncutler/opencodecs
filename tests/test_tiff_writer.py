@@ -165,7 +165,7 @@ def test_writer_rgb(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("compression", ["deflate", "zstd"])
+@pytest.mark.parametrize("compression", ["deflate", "zstd", "lzw"])
 @pytest.mark.parametrize("dtype", [np.uint8, np.uint16, np.int32, np.float32])
 def test_writer_byte_stream_compression_roundtrip(tmp_path, compression, dtype):
     _need_tiff()
@@ -188,7 +188,7 @@ def test_writer_byte_stream_compression_roundtrip(tmp_path, compression, dtype):
     np.testing.assert_array_equal(tifffile.imread(str(p)), arr)
 
 
-@pytest.mark.parametrize("compression", ["deflate", "zstd"])
+@pytest.mark.parametrize("compression", ["deflate", "zstd", "lzw"])
 def test_writer_compression_reduces_size(tmp_path, compression):
     p_raw = tmp_path / "raw.tif"
     p_cmp = tmp_path / f"{compression}.tif"
@@ -453,7 +453,7 @@ class _WriteOnlySink:
         return b"".join(self.chunks)
 
 
-@pytest.mark.parametrize("compression", ["none", "zstd", "deflate"])
+@pytest.mark.parametrize("compression", ["none", "zstd", "deflate", "lzw"])
 def test_write_stream_round_trip_seekable(tmp_path, compression):
     """Streamed output decodes correctly via tifffile + our reader."""
     _need_tiff()
@@ -541,3 +541,108 @@ def test_write_stream_rejects_extra_pages():
     with TiffWriter(sink, streaming=True) as w:
         with pytest.raises(Exception):
             w.write_stream(pages, total_pages=2)   # 3 yielded, 2 claimed
+
+
+# ---------------------------------------------------------------------------
+# BigTIFF (64-bit offsets, magic=43)
+# ---------------------------------------------------------------------------
+
+
+def test_bigtiff_single_page_round_trip(tmp_path):
+    """BigTIFF single page: header has magic=43 and round-trips via tifffile."""
+    p = tmp_path / "big.tif"
+    arr = np.random.default_rng(0).integers(
+        0, 4000, size=(256, 384), dtype=np.uint16
+    )
+    with TiffWriter(p, bigtiff=True) as w:
+        w.write_page(arr, tile=(64, 64), compression="zstd")
+    # Header inspection.
+    data = p.read_bytes()
+    assert data[:2] == b"II"
+    assert int.from_bytes(data[2:4], "little") == 43
+    assert int.from_bytes(data[4:6], "little") == 8   # offset-size = 8
+    assert int.from_bytes(data[6:8], "little") == 0   # constant
+    # tifffile reads it as BigTIFF.
+    with tifffile.TiffFile(str(p)) as tf:
+        assert tf.is_bigtiff
+        np.testing.assert_array_equal(tf.pages[0].asarray(), arr)
+
+
+def test_bigtiff_multi_page_chain(tmp_path):
+    """BigTIFF 8-byte next-IFD pointers stitch the IFD chain correctly."""
+    p = tmp_path / "multi.tif"
+    pages = [np.random.default_rng(i).integers(
+        0, 4000, size=(64, 96), dtype=np.uint16
+    ) for i in range(5)]
+    with TiffWriter(p, bigtiff=True) as w:
+        for arr in pages:
+            w.write_page(arr, tile=(64, 64), compression="zstd")
+    with tifffile.TiffFile(str(p)) as tf:
+        assert tf.is_bigtiff
+        assert len(tf.pages) == len(pages)
+        for i, arr in enumerate(pages):
+            np.testing.assert_array_equal(tf.pages[i].asarray(), arr)
+
+
+@pytest.mark.parametrize("dtype", [np.uint8, np.uint16, np.int16,
+                                   np.uint32, np.float32])
+def test_bigtiff_dtype_round_trip(tmp_path, dtype):
+    """All standard dtypes round-trip in BigTIFF mode."""
+    p = tmp_path / f"dt_{dtype.__name__}.tif"
+    rng = np.random.default_rng(0)
+    if np.issubdtype(dtype, np.floating):
+        arr = rng.standard_normal(size=(64, 96)).astype(dtype)
+    else:
+        info = np.iinfo(dtype)
+        hi = min(int(info.max), 4000)
+        lo = max(int(info.min), -4000)
+        arr = rng.integers(lo, hi + 1, size=(64, 96)).astype(dtype)
+    with TiffWriter(p, bigtiff=True) as w:
+        w.write_page(arr, tile=(64, 64), compression="zstd")
+    with tifffile.TiffFile(str(p)) as tf:
+        np.testing.assert_array_equal(tf.pages[0].asarray(), arr)
+
+
+def test_bigtiff_strip_layout(tmp_path):
+    """BigTIFF with strips (not tiles) — exercises the T_LONG8 strip offsets path."""
+    p = tmp_path / "strip.tif"
+    arr = np.random.default_rng(0).integers(
+        0, 4000, size=(200, 300), dtype=np.uint16
+    )
+    with TiffWriter(p, bigtiff=True) as w:
+        w.write_page(arr, rows_per_strip=20, compression="zstd")
+    with tifffile.TiffFile(str(p)) as tf:
+        assert tf.is_bigtiff
+        np.testing.assert_array_equal(tf.pages[0].asarray(), arr)
+
+
+def test_bigtiff_streaming_round_trip():
+    """BigTIFF + streaming mode together — emits 16-byte header with magic=43
+    and 8-byte next-IFD pointers in IFD-before-pixels order."""
+    rng = np.random.default_rng(0)
+    pages = [rng.integers(0, 4000, size=(96, 128), dtype=np.uint16)
+             for _ in range(4)]
+    sink = _WriteOnlySink()
+    with TiffWriter(sink, bigtiff=True, streaming=True) as w:
+        w.write_stream(pages, total_pages=4, tile=(64, 64),
+                       compression="zstd")
+    data = sink.bytes
+    assert int.from_bytes(data[2:4], "little") == 43
+    with tifffile.TiffFile(io.BytesIO(data)) as tf:
+        assert tf.is_bigtiff
+        assert len(tf.pages) == len(pages)
+        for i, p in enumerate(pages):
+            np.testing.assert_array_equal(tf.pages[i].asarray(), p)
+
+
+def test_bigtiff_decodes_via_our_reader(tmp_path):
+    """Our TiffStream reader must also decode BigTIFF output."""
+    _need_tiff()
+    p = tmp_path / "ours.tif"
+    arr = np.random.default_rng(0).integers(
+        0, 4000, size=(192, 256), dtype=np.uint16
+    )
+    with TiffWriter(p, bigtiff=True) as w:
+        w.write_page(arr, tile=(64, 64), compression="zstd")
+    with TiffStream(str(p)) as r:
+        np.testing.assert_array_equal(r.page(0).asarray(), arr)

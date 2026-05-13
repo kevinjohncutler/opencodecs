@@ -994,8 +994,11 @@ extensions = [
     # already-built compression extensions at runtime.
     Extension(
         name="opencodecs.codecs._tiff",
-        sources=["src/opencodecs/codecs/_tiff.pyx"],
-        include_dirs=[str(PKG_CODECS)],
+        sources=[
+            "src/opencodecs/codecs/_tiff.pyx",
+            "3rdparty/imcd_lzw/lzw.c",
+        ],
+        include_dirs=[str(PKG_CODECS), "3rdparty/imcd_lzw"],
         language="c",
     ),
     # NDTiff index parser — Cython nogil walk of the Micro-Manager

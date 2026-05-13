@@ -67,10 +67,15 @@ T_LONG      = 4
 T_RATIONAL  = 5
 T_FLOAT     = 11
 T_DOUBLE    = 12
+# BigTIFF-only types (TIFF Technical Note 2 / Adobe BigTIFF spec).
+T_LONG8     = 16   # 8-byte unsigned int (== uint64)
+T_SLONG8    = 17   # 8-byte signed int   (== int64)
+T_IFD8      = 18   # 8-byte IFD offset
 
 _TYPE_SIZE = {
     T_BYTE: 1, T_ASCII: 1, T_SHORT: 2, T_LONG: 4,
     T_RATIONAL: 8, T_FLOAT: 4, T_DOUBLE: 8,
+    T_LONG8: 8, T_SLONG8: 8, T_IFD8: 8,
 }
 
 # Photometric interpretation codes (TIFF 6 §8).
@@ -181,6 +186,10 @@ def _value_bytes_for(
         return struct.pack(f"{bo}{len(values)}f", *values)
     if type_code == T_DOUBLE:
         return struct.pack(f"{bo}{len(values)}d", *values)
+    if type_code == T_LONG8 or type_code == T_IFD8:
+        return struct.pack(f"{bo}{len(values)}Q", *values)
+    if type_code == T_SLONG8:
+        return struct.pack(f"{bo}{len(values)}q", *values)
     raise TiffWriterError(f"unsupported TIFF tag type {type_code}")
 
 
@@ -253,9 +262,10 @@ class TiffWriter:
     path) or any of the supported codecs for compressed output.
     """
 
-    # Hard cap matching the 32-bit offset format. Files larger than
-    # this will raise; BigTIFF support is deferred.
-    _MAX_OFFSET = (1 << 32) - 1
+    # 4 GiB cap for classic 32-bit TIFF offsets. Effectively unlimited
+    # for BigTIFF (64-bit offsets cap at 16 EiB).
+    _CLASSIC_MAX_OFFSET = (1 << 32) - 1
+    _BIGTIFF_MAX_OFFSET = (1 << 64) - 1
 
     def __init__(
         self,
@@ -263,6 +273,7 @@ class TiffWriter:
         *,
         byte_order: str = "<",
         streaming: bool = False,
+        bigtiff: bool = False,
     ):
         if byte_order not in ("<", ">"):
             raise TiffWriterError(
@@ -270,6 +281,44 @@ class TiffWriter:
             )
         self._byte_order = byte_order
         self._streaming = bool(streaming)
+        self._bigtiff = bool(bigtiff)
+        # Per-format structural constants. Layout differences between
+        # classic TIFF and BigTIFF are encoded here so the rest of the
+        # writer parameterizes on them.
+        if self._bigtiff:
+            # BigTIFF (Adobe BigTIFF spec / TIFF Tech Note 2):
+            #   header = 16 bytes
+            #     2B byte order, 2B magic=43, 2B byte-size-of-offsets=8,
+            #     2B constant=0, 8B first-IFD offset
+            #   entry = 20 bytes (was 12): tag(2) + type(2) + count(8) +
+            #           value/offset(8)
+            #   ifd  = 8B entry-count + 20*N entries + 8B next-IFD offset
+            #   inline payload fits in the 8-byte value slot.
+            self._magic = 43
+            self._header_size = 16
+            self._entry_count_size = 8
+            self._entry_count_fmt = "Q"      # u64
+            self._entry_size = 20
+            self._offset_size = 8
+            self._offset_fmt = "Q"           # u64
+            self._inline_max = 8
+            # Offsets and counts that could overflow 32-bit use T_LONG8.
+            # ImageWidth/ImageLength fit easily in T_LONG even for
+            # 4-billion-pixel images; the type only matters for
+            # strip/tile offsets/counts.
+            self._offset_type = T_LONG8
+            self._max_offset = self._BIGTIFF_MAX_OFFSET
+        else:
+            self._magic = 42
+            self._header_size = 8
+            self._entry_count_size = 2
+            self._entry_count_fmt = "H"      # u16
+            self._entry_size = 12
+            self._offset_size = 4
+            self._offset_fmt = "I"           # u32
+            self._inline_max = 4
+            self._offset_type = T_LONG
+            self._max_offset = self._CLASSIC_MAX_OFFSET
         # Two backing storage modes:
         #   1. path → raw fd (os.write / os.writev / os.pwrite) — bypasses
         #      Python BufferedWriter so per-segment writes hit the kernel
@@ -615,12 +664,13 @@ class TiffWriter:
         if metadata is not None:
             add(TAG_IMAGE_DESCRIPTION, T_ASCII, (metadata,))
         if not is_tiled:
-            # Strip offsets / counts populated below after layout.
-            add(TAG_STRIP_OFFSETS, T_LONG, tuple(offsets))
+            # Strip offsets / counts: T_LONG in classic, T_LONG8 in
+            # BigTIFF (8-byte u64 per entry, supports >4 GiB files).
+            add(TAG_STRIP_OFFSETS, self._offset_type, tuple(offsets))
         add(TAG_SAMPLES_PER_PIXEL, T_SHORT, (int(samples_per_pixel),))
         if not is_tiled:
             add(TAG_ROWS_PER_STRIP, T_LONG, (int(strip_h_for_tag),))
-            add(TAG_STRIP_BYTE_COUNTS, T_LONG, tuple(byte_counts))
+            add(TAG_STRIP_BYTE_COUNTS, self._offset_type, tuple(byte_counts))
         if resolution is not None:
             x_res, y_res = resolution
             add(TAG_X_RESOLUTION, T_RATIONAL,
@@ -641,8 +691,8 @@ class TiffWriter:
         if is_tiled:
             add(TAG_TILE_WIDTH,       T_LONG, (tile_w,))
             add(TAG_TILE_LENGTH,      T_LONG, (tile_h,))
-            add(TAG_TILE_OFFSETS,     T_LONG, tuple(offsets))
-            add(TAG_TILE_BYTE_COUNTS, T_LONG, tuple(byte_counts))
+            add(TAG_TILE_OFFSETS,     self._offset_type, tuple(offsets))
+            add(TAG_TILE_BYTE_COUNTS, self._offset_type, tuple(byte_counts))
         # SampleFormat is required for non-uint8 dtypes. tifffile
         # always writes it; we follow suit for round-trip stability.
         sf_tuple = (sample_format,) * samples_per_pixel
@@ -738,15 +788,22 @@ class TiffWriter:
                 f"total_pages must be >= 1; got {total_pages}"
             )
 
-        # Header: first IFD lives immediately after the 8-byte header.
-        # We know that *before* writing any page bytes, so we can emit
-        # the header up-front with the correct first-IFD offset and
-        # never patch it.
+        # Header: first IFD lives immediately after the header (offset
+        # = ``self._header_size``, which is 8 for classic / 16 for
+        # BigTIFF). We know that *before* writing any page bytes, so
+        # we can emit the header up-front with the correct first-IFD
+        # offset and never patch it.
         bo = self._byte_order
         bo_mark = b"II" if bo == "<" else b"MM"
-        magic = struct.pack(bo + "H", 42)
-        first_ifd_off = struct.pack(bo + "I", 8)
-        self._write(bo_mark + magic + first_ifd_off)
+        magic = struct.pack(bo + "H", self._magic)
+        first_ifd_off_val = self._header_size
+        if self._bigtiff:
+            const_block = struct.pack(bo + "HH", 8, 0)  # offset-size, const
+            first_ifd_off = struct.pack(bo + "Q", first_ifd_off_val)
+            self._write(bo_mark + magic + const_block + first_ifd_off)
+        else:
+            first_ifd_off = struct.pack(bo + "I", first_ifd_off_val)
+            self._write(bo_mark + magic + first_ifd_off)
         self._wrote_header = True
 
         infos: list[dict] = []
@@ -999,28 +1056,32 @@ class TiffWriter:
         # ---- Add placeholder strip/tile entries (real offsets after layout) ----
         # We need their PAYLOAD LENGTHS now so we can compute total IFD
         # ext-blob size, but the actual offset values can stay 0 since
-        # we'll overwrite them once pixel_base is known.
-        sb_payload_len = 4 * n_segments  # T_LONG = 4 bytes per element
-        bc_payload_len = 4 * n_segments
+        # we'll overwrite them once pixel_base is known. Type is
+        # T_LONG (4B) in classic, T_LONG8 (8B) in BigTIFF.
+        offset_type = self._offset_type
         if is_tiled:
-            # TileOffsets, TileByteCounts entries: payloads will be
-            # n_segments LONGs each.
             sb_tag, bc_tag = TAG_TILE_OFFSETS, TAG_TILE_BYTE_COUNTS
         else:
             sb_tag, bc_tag = TAG_STRIP_OFFSETS, TAG_STRIP_BYTE_COUNTS
-        add(sb_tag, T_LONG, tuple([0] * n_segments))
-        add(bc_tag, T_LONG, tuple(byte_counts))
+        add(sb_tag, offset_type, tuple([0] * n_segments))
+        add(bc_tag, offset_type, tuple(byte_counts))
 
         # ---- Compute IFD layout + pixel base ----
         entries.sort(key=lambda e: e.tag)
         n_entries = len(entries)
-        ifd_struct_size = 2 + 12 * n_entries + 4
+        # Layout: entry_count + entry_size*N + offset_size.
+        ifd_struct_size = (
+            self._entry_count_size + self._entry_size * n_entries
+            + self._offset_size
+        )
 
-        # Predict ext-blob layout: every entry whose payload > 4 bytes
-        # spills out-of-line, in entry order, each blob word-aligned.
+        # Predict ext-blob layout: every entry whose payload exceeds
+        # the inline slot width spills out-of-line, each blob word-
+        # aligned.
+        inline_max = self._inline_max
         ext_total = 0
         for ent in entries:
-            if len(ent.payload) > 4:
+            if len(ent.payload) > inline_max:
                 ext_total += len(ent.payload)
                 if ext_total % 2:
                     ext_total += 1
@@ -1034,20 +1095,20 @@ class TiffWriter:
             real_offsets.append(cursor)
             cursor += n
         # cursor is now where pixels END.
-        if cursor > self._MAX_OFFSET:
+        if cursor > self._max_offset:
             raise TiffWriterError(
-                f"classic TIFF: page would push file past 4 GiB at offset "
-                f"{cursor}; BigTIFF (64-bit offsets) is required but "
-                f"not yet supported by TiffWriter"
+                f"page would push file past {'16 EiB' if self._bigtiff else '4 GiB'} "
+                f"at offset {cursor}"
+                + ("" if self._bigtiff
+                   else "; pass bigtiff=True to enable 64-bit offsets")
             )
 
-        # Find the strip/tile-offsets entry we added with placeholder
-        # zeros, and re-build it in place with real values. We can't
-        # mutate entry.payload directly (it's bytes); construct a new
-        # entry and swap.
+        # Swap in the real strip/tile-offsets entry.
         for i, ent in enumerate(entries):
             if ent.tag == sb_tag:
-                entries[i] = _IFDEntry(sb_tag, T_LONG, tuple(real_offsets), bo)
+                entries[i] = _IFDEntry(
+                    sb_tag, self._offset_type, tuple(real_offsets), bo,
+                )
                 break
 
         # ---- Compute next-IFD offset ----
@@ -1057,30 +1118,37 @@ class TiffWriter:
             next_ifd_off = cursor
             if next_ifd_off % 2:
                 next_ifd_off += 1
-            if next_ifd_off > self._MAX_OFFSET:
+            if next_ifd_off > self._max_offset:
                 raise TiffWriterError(
-                    "classic TIFF: next IFD would land past 4 GiB"
+                    "next IFD would land past the format's max offset"
                 )
 
         # ---- Pack IFD struct + ext blobs ----
         entry_blocks = bytearray()
         ext_blobs: list[bytes] = []
         ext_cursor = ifd_off + ifd_struct_size
+        offset_fmt = self._offset_fmt
 
         for ent in entries:
             payload = ent.payload
-            if len(payload) <= 4:
-                slot = payload + b"\x00" * (4 - len(payload))
+            if len(payload) <= inline_max:
+                slot = payload + b"\x00" * (inline_max - len(payload))
             else:
-                slot = struct.pack(bo + "I", ext_cursor)
+                slot = struct.pack(bo + offset_fmt, ext_cursor)
                 ext_blobs.append(payload)
                 ext_cursor += len(payload)
                 if ext_cursor % 2:
                     ext_blobs.append(b"\x00")
                     ext_cursor += 1
-            entry_blocks.extend(struct.pack(
-                bo + "HHI", ent.tag, ent.type_code, ent.count,
-            ))
+            # Entry header: tag(2) + type(2) + count(4 or 8) + slot(4 or 8)
+            if self._bigtiff:
+                entry_blocks.extend(struct.pack(
+                    bo + "HHQ", ent.tag, ent.type_code, ent.count,
+                ))
+            else:
+                entry_blocks.extend(struct.pack(
+                    bo + "HHI", ent.tag, ent.type_code, ent.count,
+                ))
             entry_blocks.extend(slot)
 
         # Sanity: predicted ext_total must match actual placement.
@@ -1092,9 +1160,9 @@ class TiffWriter:
             )
 
         ifd_struct = bytearray()
-        ifd_struct.extend(struct.pack(bo + "H", n_entries))
+        ifd_struct.extend(struct.pack(bo + self._entry_count_fmt, n_entries))
         ifd_struct.extend(entry_blocks)
-        ifd_struct.extend(struct.pack(bo + "I", next_ifd_off))
+        ifd_struct.extend(struct.pack(bo + self._offset_fmt, next_ifd_off))
 
         # ---- Emit IFD + ext blobs + pixel segments (one scatter call) ----
         # Pad to align next-IFD start if needed (between this page's
@@ -1231,14 +1299,33 @@ class TiffWriter:
     # ------------------------------------------------------------------
 
     def _write_header(self) -> None:
-        """Bytes 0..7 = classic TIFF header. First-IFD offset slot
-        starts as 0; patched when the first page is written."""
-        bo_mark = b"II" if self._byte_order == "<" else b"MM"
-        magic = struct.pack(self._byte_order + "H", 42)
-        first_ifd_off = struct.pack(self._byte_order + "I", 0)
-        self._write(bo_mark + magic + first_ifd_off)
-        # The "first IFD" pointer slot is at offset 4..7.
-        self._next_ifd_offset_slot = 4
+        """Write the TIFF/BigTIFF file header.
+
+        Classic TIFF (8 bytes):
+          0..1: byte order ('II' or 'MM')
+          2..3: magic = 42
+          4..7: first-IFD offset (32-bit) — patched once first page lands
+
+        BigTIFF (16 bytes):
+          0..1:   byte order
+          2..3:   magic = 43
+          4..5:   byte-size-of-offsets = 8
+          6..7:   constant = 0
+          8..15:  first-IFD offset (64-bit) — patched once first page lands
+        """
+        bo = self._byte_order
+        bo_mark = b"II" if bo == "<" else b"MM"
+        magic = struct.pack(bo + "H", self._magic)
+        if self._bigtiff:
+            const_block = struct.pack(bo + "HH", 8, 0)  # offset-size, const
+            first_ifd_off = struct.pack(bo + "Q", 0)
+            self._write(bo_mark + magic + const_block + first_ifd_off)
+            self._header_first_ifd_slot = 8
+        else:
+            first_ifd_off = struct.pack(bo + "I", 0)
+            self._write(bo_mark + magic + first_ifd_off)
+            self._header_first_ifd_slot = 4
+        self._next_ifd_offset_slot = self._header_first_ifd_slot
         self._wrote_header = True
 
     def _coerce_byte_order(self, arr: np.ndarray) -> np.ndarray:
@@ -1314,7 +1401,7 @@ class TiffWriter:
         return encode_segment(buf, cmp_code, level=level)
 
     def _ensure_room(self, n: int) -> None:
-        if self._pos + n > self._MAX_OFFSET:
+        if self._pos + n > self._max_offset:
             raise TiffWriterError(
                 "classic TIFF: writing this segment would push the file "
                 "past 4 GiB; BigTIFF (64-bit offsets) is required but "
@@ -1432,71 +1519,83 @@ class TiffWriter:
 
     def _write_ifd(self, entries: list[_IFDEntry]) -> int:
         """Write a complete IFD block (entries + out-of-line value
-        blobs + 4-byte next-pointer) at the current file position.
+        blobs + next-IFD pointer) at the current file position.
 
         Returns the absolute offset of the IFD start (which is what
-        the previous IFD's "next" pointer slot must be patched to)."""
+        the previous IFD's "next" pointer slot must be patched to).
+
+        Classic vs BigTIFF differ in:
+          * IFD struct = ``entry_count_size + entry_size*N + offset_size``
+          * Entry slot width (4 vs 8) controls inline-vs-out-of-line
+          * count and slot fields are u32 vs u64
+        """
         # Sort entries by tag ascending (TIFF 6 §2 requirement).
         entries.sort(key=lambda e: e.tag)
 
         bo = self._byte_order
         n_entries = len(entries)
-        if n_entries > 0xFFFF:
+        if not self._bigtiff and n_entries > 0xFFFF:
             raise TiffWriterError(
                 f"too many tags ({n_entries}); classic TIFF caps at 65535"
             )
 
-        # IFD layout:
-        #   2 bytes : entry count
-        #   12 * n  : entries (each 2 tag + 2 type + 4 count + 4 value/offset)
-        #   4 bytes : next-IFD offset (0 for last)
-        #   N bytes : out-of-line value blobs, in entry order, word-aligned
-        # Align IFD start to an even byte boundary (TIFF 6 §2).
+        # Word-align IFD start (TIFF 6 §2).
         if self._pos % 2:
             self._write(b"\x00")
         ifd_off = self._pos
-        ifd_struct_size = 2 + 12 * n_entries + 4
+        ifd_struct_size = (
+            self._entry_count_size + self._entry_size * n_entries
+            + self._offset_size
+        )
         ext_data_off = ifd_off + ifd_struct_size
 
-        # Decide for each entry whether its payload fits in the 4-byte
-        # value slot (inline) or needs an out-of-line offset.
+        # Decide for each entry whether its payload fits in the slot
+        # (inline, ≤ self._inline_max bytes) or needs an out-of-line offset.
         entry_blocks = bytearray()
         ext_blobs: list[bytes] = []
         ext_cursor = ext_data_off
+        slot_pad = self._inline_max
 
         for ent in entries:
             payload = ent.payload
-            if len(payload) <= 4:
-                # Inline: right-pad to 4 bytes. TIFF 6 §2 stores values
-                # left-justified in the slot when the type's items fit;
-                # short / byte / ascii follow this convention.
-                slot = payload + b"\x00" * (4 - len(payload))
+            if len(payload) <= slot_pad:
+                # Inline: right-pad to the slot width.
+                slot = payload + b"\x00" * (slot_pad - len(payload))
             else:
-                # Out-of-line; entry stores ext_cursor as a uint32.
-                if ext_cursor > self._MAX_OFFSET:
+                # Out-of-line; entry stores ext_cursor as a 4-or-8 byte uint.
+                if ext_cursor > self._max_offset:
                     raise TiffWriterError(
-                        f"classic TIFF: IFD out-of-line value at offset "
-                        f"{ext_cursor} would exceed 4 GiB"
+                        f"TIFF: IFD out-of-line value at offset "
+                        f"{ext_cursor} would exceed "
+                        f"{'16 EiB' if self._bigtiff else '4 GiB'}"
                     )
-                slot = struct.pack(bo + "I", ext_cursor)
-                # Word-align each blob.
+                slot = struct.pack(bo + self._offset_fmt, ext_cursor)
                 ext_blobs.append(payload)
                 ext_cursor += len(payload)
+                # Word-align each blob.
                 if ext_cursor % 2:
                     ext_blobs.append(b"\x00")
                     ext_cursor += 1
-            entry_blocks.extend(struct.pack(
-                bo + "HHI", ent.tag, ent.type_code, ent.count,
-            ))
+            # Entry header: tag(2) + type(2) + count(4 or 8) + slot(4 or 8)
+            if self._bigtiff:
+                entry_blocks.extend(struct.pack(
+                    bo + "HHQ", ent.tag, ent.type_code, ent.count,
+                ))
+            else:
+                entry_blocks.extend(struct.pack(
+                    bo + "HHI", ent.tag, ent.type_code, ent.count,
+                ))
             entry_blocks.extend(slot)
 
         # Pack entry count + entries + next-IFD slot (placeholder 0).
         out = bytearray()
-        out.extend(struct.pack(bo + "H", n_entries))
+        out.extend(struct.pack(bo + self._entry_count_fmt, n_entries))
         out.extend(entry_blocks)
         # Remember slot location for next-IFD patch.
-        next_slot_off = ifd_off + 2 + 12 * n_entries
-        out.extend(struct.pack(bo + "I", 0))   # next-IFD = 0 initially
+        next_slot_off = (
+            ifd_off + self._entry_count_size + self._entry_size * n_entries
+        )
+        out.extend(struct.pack(bo + self._offset_fmt, 0))  # next-IFD = 0
 
         # Write IFD struct + external blobs as one scatter-gather
         # syscall (raw-fd path) or a serial sequence (file-like).
@@ -1515,12 +1614,17 @@ class TiffWriter:
         first-IFD slot) to point to ``this_ifd_off``.
 
         Uses ``os.pwrite`` on the raw-fd path so we don't perturb the
-        sequential cursor — one syscall instead of seek+write+seek."""
+        sequential cursor — one syscall instead of seek+write+seek.
+        Slot width is ``self._offset_size`` (4 for classic, 8 for
+        BigTIFF)."""
         if self._n_pages == 0:
-            slot = 4   # Header's first-IFD slot lives at bytes 4..7.
+            # Header's first-IFD slot: bytes 4..7 (classic) or 8..15 (BigTIFF).
+            slot = self._header_first_ifd_slot
         else:
             slot = self._prev_next_slot
-        self._pwrite(slot, struct.pack(self._byte_order + "I", this_ifd_off))
+        self._pwrite(slot, struct.pack(
+            self._byte_order + self._offset_fmt, this_ifd_off,
+        ))
         # The slot we'll patch NEXT time is the next-IFD slot of the
         # IFD we just wrote. _write_ifd recorded it in self._next_ifd_offset_slot.
         self._prev_next_slot = self._next_ifd_offset_slot
