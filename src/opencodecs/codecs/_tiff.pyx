@@ -39,6 +39,18 @@ from libc.string cimport memcpy
 import struct as _struct
 
 
+# Vendored TIFF LZW encoder (imagecodecs imcd, BSD-3) — see
+# ``3rdparty/imcd_lzw/lzw.c``. Decoder is implemented in pure Cython
+# below; encoder is C because the bit-stream + dictionary management
+# is far easier to read and audit in the original form.
+cdef extern from "lzw.h" nogil:
+    ssize_t opencodecs_lzw_encode_size(ssize_t srcsize)
+    ssize_t opencodecs_lzw_encode(
+        const uint8_t* src, ssize_t srcsize,
+        uint8_t* dst, ssize_t dstsize,
+    )
+
+
 # ---------------------------------------------------------------------------
 # TIFF data-type sizes (per TIFF 6.0 §2 + TIFF 2.0 BigTIFF additions).
 # ---------------------------------------------------------------------------
@@ -699,6 +711,50 @@ cdef inline uint32_t _lzw_read_bits(
         n_left -= take
     bit_pos[0] = bp
     return v
+
+
+def lzw_encode(data) -> bytes:
+    """Encode bytes as a TIFF-flavor LZW strip / tile.
+
+    Variable-width (9..12 bit) MSB-first codes with CLEAR / EOI
+    markers — compatible with libtiff, tifffile, and any TIFF reader
+    that handles ``Compression = 5``. The implementation is the
+    vendored imagecodecs ``imcd_lzw_encode`` (BSD-3); the matching
+    decoder lives in ``lzw_decode`` below.
+    """
+    cdef:
+        const uint8_t[::1] src
+        ssize_t srcsize
+        ssize_t dstsize
+        ssize_t written
+        bytes out
+        uint8_t* dst
+
+    try:
+        src = data
+    except (TypeError, ValueError, BufferError):
+        src = bytes(data)
+    srcsize = src.shape[0]
+    dstsize = opencodecs_lzw_encode_size(srcsize)
+    # encode_size can return very small values for zero-byte input;
+    # bottom-out at 3 to keep the LZW_WRITE_DST sanity check happy
+    # (needs at least CLEAR + EOI).
+    if dstsize < 16:
+        dstsize = 16
+    out = PyBytes_FromStringAndSize(NULL, dstsize)
+    dst = <uint8_t*> PyBytes_AsString(out)
+
+    if srcsize == 0:
+        with nogil:
+            written = opencodecs_lzw_encode(NULL, 0, dst, dstsize)
+    else:
+        with nogil:
+            written = opencodecs_lzw_encode(&src[0], srcsize, dst, dstsize)
+    if written < 0:
+        raise RuntimeError(
+            f"lzw_encode: vendored encoder returned error {written}"
+        )
+    return out[:written]
 
 
 def lzw_decode(data, expected_size: int = -1) -> bytes:
