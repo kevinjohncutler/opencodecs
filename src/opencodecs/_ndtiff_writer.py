@@ -334,10 +334,15 @@ class NDTiffWriter:
         flags = os.O_RDWR | os.O_CREAT | os.O_TRUNC | getattr(os, "O_BINARY", 0)
         self._fd = os.open(str(self._cur_path), flags, 0o644)
         if sys.platform == "win32":  # pragma: no cover - covered by win-vm bench
-            # NTFS-friendly pre-extend: writes one byte at the
-            # final position; the gap stays sparse via VDL semantics.
-            os.lseek(self._fd, _MAX_FILE_SIZE - 1, os.SEEK_SET)
-            os.write(self._fd, b"\x00")
+            # On Windows NTFS we *skip* the 4 GiB pre-extension
+            # entirely. Both ``os.ftruncate`` and ``lseek + write
+            # sentinel`` perturb the file's valid-data-length so that
+            # the close-time ``ftruncate(actual)`` measurably stalls
+            # (3.9 s -> 7.7 s bimodal in win-vm/qcow2). The on-demand
+            # extension path is fast and correct; we only lose the
+            # marginal contiguous-extent hint that pre-allocation
+            # would have given the filesystem.
+            pass
         else:
             try:
                 os.ftruncate(self._fd, _MAX_FILE_SIZE)

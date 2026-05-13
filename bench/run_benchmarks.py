@@ -60,6 +60,19 @@ from typing import Any, Callable
 
 import numpy as np
 
+
+# Windows default console codepage is cp1252 — the per-workload progress
+# lines below use a few non-ASCII characters (arrows, ×). Force the
+# script's stdout to UTF-8 so we don't crash with UnicodeEncodeError
+# under PowerShell / cmd. errors="replace" keeps us alive if the
+# terminal still can't render a glyph.
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:  # pragma: no cover - non-text streams (e.g. piped to a buffer)
+    pass
+
+
 # ---------------------------------------------------------------------------
 # Workload registry
 # ---------------------------------------------------------------------------
