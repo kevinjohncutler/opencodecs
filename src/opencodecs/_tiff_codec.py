@@ -804,7 +804,7 @@ class TiffStream(Reader):
 
 
 class TiffCodec(Codec):
-    """Native TIFF reader (no libtiff dependency)."""
+    """Native TIFF reader + writer (no libtiff dependency)."""
 
     name = "tiff"
     file_extensions = (".tif", ".tiff", ".btf")
@@ -812,7 +812,7 @@ class TiffCodec(Codec):
 
     has_native = True
     has_delegate = False
-    can_encode = False    # reader-only for now (encode in a future tier)
+    can_encode = True
     can_decode = True
     multi_frame = True
     chunked = True
@@ -837,6 +837,39 @@ class TiffCodec(Codec):
 
     def open(self, src: Any, **opts) -> TiffStream:
         return TiffStream(src, **opts)
+
+    def encode(self, data: Any, *, dest=None, **opts) -> bytes | None:
+        """Encode a numpy array as TIFF, either to ``dest`` or to bytes.
+
+        Accepts any TiffWriter write_page() options as kwargs:
+        ``compression`` (str: 'none', 'deflate', 'lzw', 'zstd', etc.),
+        ``tile=(h, w)``, ``photometric=...``, ``predictor=...``,
+        ``bigtiff=True``, ``byte_order='<'|'>'``.
+        """
+        from ._tiff_writer import TiffWriter
+
+        if not isinstance(data, np.ndarray):
+            data = np.asarray(data)
+
+        # Separate constructor-level kwargs from write_page-level kwargs.
+        ctor_opts = {}
+        for key in ("bigtiff", "byte_order"):
+            if key in opts:
+                ctor_opts[key] = opts.pop(key)
+
+        if dest is None:
+            buf = io.BytesIO()
+            with TiffWriter(buf, **ctor_opts) as w:
+                w.write_page(data, **opts)
+            return buf.getvalue()
+        with TiffWriter(dest, **ctor_opts) as w:
+            w.write_page(data, **opts)
+        return None
+
+    def open_writer(self, dest, **opts):
+        """Open a multi-page TiffWriter for streaming/multi-frame output."""
+        from ._tiff_writer import TiffWriter
+        return TiffWriter(dest, **opts)
 
 
 __all__ = ["TiffCodec", "TiffStream", "TiffPage"]
