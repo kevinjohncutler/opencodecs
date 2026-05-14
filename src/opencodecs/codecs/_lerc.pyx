@@ -223,10 +223,23 @@ def decode(data) -> 'np.ndarray':
     out = np.empty(shape, dtype=dtype)
     cdef cnp.ndarray out_arr = out
 
+    # LERC blobs can carry validity masks (n_masks > 0). When present,
+    # the decoder needs a destination buffer of n_cols*n_rows*n_masks
+    # bytes; passing NULL with a masked blob returns status=2
+    # (ErrCode_BufferTooSmall). Allocate locally and discard — masks
+    # are useful info but our decode() contract is "decode pixel data".
+    # If a future caller wants the mask, add an `out_mask=` keyword.
+    cdef cnp.ndarray mask_arr = None
+    cdef unsigned char* mask_ptr = NULL
+    if n_masks > 0:
+        mask_arr = np.empty(
+            (n_masks, n_rows, n_cols), dtype=np.uint8)
+        mask_ptr = <unsigned char*> mask_arr.data
+
     with nogil:
         rc = lerc_decode(
             <const unsigned char*> &src[0], blobsize,
-            0, NULL,
+            n_masks, mask_ptr,
             n_depth, n_cols, n_rows, n_bands, data_type,
             <void*> out_arr.data,
         )
