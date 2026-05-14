@@ -54,6 +54,7 @@ class _FsStore:
     """Local-filesystem store. Each key is a path relative to ``root``."""
 
     __slots__ = ("root",)
+    supports_range = True
 
     def __init__(self, root: str | Path):
         self.root = Path(root)
@@ -64,6 +65,23 @@ class _FsStore:
     def __getitem__(self, key: str) -> bytes:
         with open(self.root / key, "rb") as f:
             return f.read()
+
+    def read_range(self, key: str, offset: int, n: int) -> bytes:
+        """Read `n` bytes starting at `offset` from the file backing
+        `key`. Negative `offset` is "last |offset| bytes" (file tail).
+        For multi-GB shards this avoids materializing the whole file in
+        memory just to read a 16 KB inner chunk."""
+        path = self.root / key
+        with open(path, "rb") as f:
+            if offset < 0:
+                size = path.stat().st_size
+                f.seek(max(0, size + offset))
+            else:
+                f.seek(offset)
+            return f.read(n)
+
+    def size_of(self, key: str) -> int:
+        return (self.root / key).stat().st_size
 
 
 class _HttpStore:
@@ -93,7 +111,9 @@ class _HttpStore:
         "_cache", "_cache_max", "_cache_used",
         "_missing",  # keys that 404'd, cached so we don't refetch
         "_stats",
+        "_size_cache",   # key -> total object size in bytes (HEAD result)
     )
+    supports_range = True
 
     def __init__(
         self,
@@ -115,6 +135,7 @@ class _HttpStore:
         self._missing: set[str] = set()
         self._stats = {"hits": 0, "misses": 0, "bytes_fetched": 0,
                        "requests": 0}
+        self._size_cache: dict[str, int] = {}
 
     def __contains__(self, key: str) -> bool:
         if key in self._cache or key in self._missing:
@@ -194,6 +215,72 @@ class _HttpStore:
             _k, _v = self._cache.popitem(last=False)
             self._cache_used -= len(_v)
 
+    def read_range(self, key: str, offset: int, n: int) -> bytes:
+        """HTTP Range request for `n` bytes of `key` starting at
+        `offset`. ``offset < 0`` means "the last |offset| bytes" via
+        ``Range: bytes=-N``. The whole-object LRU cache is bypassed —
+        range fetches go straight to the wire and aren't stored
+        (they're for shard indexes + sub-chunks, both already cached
+        at higher levels).
+
+        Returns the body of the 206 response. 404 → KeyError, other
+        HTTP errors propagate.
+        """
+        if key in self._missing:
+            raise KeyError(key)
+        # Build the Range header. Spec note: ``bytes=offset-end``,
+        # inclusive both sides; ``bytes=-N`` means "the last N bytes".
+        if offset < 0:
+            range_hdr = f"bytes={offset}"
+        else:
+            range_hdr = f"bytes={offset}-{offset + n - 1}"
+        req = urllib.request.Request(
+            self._url(key),
+            headers={**self._headers, "Range": range_hdr},
+        )
+        self._stats["requests"] += 1
+        opener = self._opener or urllib.request.build_opener()
+        try:
+            with opener.open(req, timeout=self._timeout) as resp:
+                # Some servers ignore Range and return 200 with the
+                # whole body. Honour that: slice down to what we asked
+                # for so callers see the contract uniformly.
+                body = resp.read()
+                if resp.status == 200 and len(body) > n:
+                    if offset < 0:
+                        body = body[offset:]
+                    else:
+                        body = body[offset:offset + n]
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                self._missing.add(key)
+                raise KeyError(key) from None
+            raise
+        self._stats["bytes_fetched"] += len(body)
+        return body
+
+    def size_of(self, key: str) -> int:
+        """Total size of object `key`. Cached after the first lookup.
+        Used by callers that need to compute an absolute offset
+        relative to the end of a shard."""
+        if key in self._size_cache:
+            return self._size_cache[key]
+        req = urllib.request.Request(
+            self._url(key), method="HEAD", headers=self._headers,
+        )
+        self._stats["requests"] += 1
+        opener = self._opener or urllib.request.build_opener()
+        with opener.open(req, timeout=self._timeout) as resp:
+            cl = resp.headers.get("Content-Length")
+            if cl is None:
+                raise RuntimeError(
+                    f"_HttpStore.size_of: server didn't return "
+                    f"Content-Length for {key}"
+                )
+            size = int(cl)
+        self._size_cache[key] = size
+        return size
+
 
 class _NotFound(Exception):
     """Raised inside _HttpStore when a key 404s; translated to KeyError
@@ -208,14 +295,23 @@ class _CallableStore:
     The callable should raise ``KeyError(key)`` for missing keys.
     """
 
-    __slots__ = ("_fetch", "_keyset")
+    __slots__ = ("_fetch", "_keyset", "_range_fetch")
 
     def __init__(self, fetch: Callable[[str], bytes],
-                 keys: set[str] | None = None):
+                 keys: set[str] | None = None,
+                 range_fetch: Callable[[str, int, int], bytes] | None = None):
         self._fetch = fetch
         # Optional pre-known key set; if None, every membership test
         # round-trips through the fetch callable.
         self._keyset = keys
+        # Optional range-read callable (key, offset, n) -> bytes. When
+        # supplied, sharded reads avoid downloading the whole shard.
+        # offset may be negative (last |offset| bytes).
+        self._range_fetch = range_fetch
+
+    @property
+    def supports_range(self) -> bool:
+        return self._range_fetch is not None
 
     def __contains__(self, key: str) -> bool:
         if self._keyset is not None:
@@ -228,6 +324,16 @@ class _CallableStore:
 
     def __getitem__(self, key: str) -> bytes:
         return self._fetch(key)
+
+    def read_range(self, key: str, offset: int, n: int) -> bytes:
+        if self._range_fetch is not None:
+            return self._range_fetch(key, offset, n)
+        # Fallback: full fetch then slice. Caller decides whether to
+        # use this store with sharded data given that tradeoff.
+        full = self._fetch(key)
+        if offset < 0:
+            return bytes(full)[offset:]
+        return bytes(full)[offset:offset + n]
 
 
 # ---------------------------------------------------------------------------
@@ -390,6 +496,14 @@ class OmeZarrArray:
         else:
             self._root = None
             self._store = store
+
+        # Per-shard parsed-index cache: shard_key -> tuple of
+        # (offset, nbytes) pairs in shard-local row-major order.
+        # Sharded reads check this first; on a miss they range-request
+        # just the index footer instead of the whole shard.
+        self._shard_index_cache: "OrderedDict[str, tuple[int, ...]]" = (
+            OrderedDict())
+        self._shard_index_cache_max = 64   # entries, not bytes
 
         # Try Zarr v3 first (zarr.json); fall back to v2 (.zarray).
         if "zarr.json" in self._store:
@@ -590,6 +704,15 @@ class OmeZarrArray:
         marker). The index is itself encoded by ``index_codecs`` —
         commonly ``[bytes, crc32c]``, where the crc32c codec just
         appends a 4-byte trailing checksum.
+
+        Fast path: when the store supports byte-range reads
+        (``store.supports_range == True``), we fetch ONLY the index
+        footer (~16 bytes per inner chunk) and ONLY the specific
+        inner chunk we need. Indexes are cached per-shard so reading
+        many inner chunks from the same shard pays the index cost
+        once. For a 256 MB shard with 16 KB chunks (4096 inner
+        chunks), reading one chunk over HTTP drops from ~256 MB to
+        ~80 KB on the wire.
         """
         shard_shape = self._shard_shape
         assert shard_shape is not None
@@ -612,39 +735,69 @@ class OmeZarrArray:
         shard_key = self._chunk_key(shard_idx)
         if shard_key not in self._store:
             return np.full(self.chunks, self.fill_value, dtype=self.dtype)
-        shard_bytes = self._store[shard_key]
 
-        # Decode the index. Number of inner chunks per shard.
+        # Index size + presence-of-CRC are deterministic from the
+        # array metadata.
         n_inner = 1
         for cps in chunks_per_shard:
             n_inner *= cps
-        index_bytes_len = n_inner * 16     # u64 offset + u64 nbytes
-        # crc32c codec appends 4 bytes to the index
         has_crc = any(
             c.get("name") == "crc32c" for c in self._shard_index_codecs
         )
-        if has_crc:
-            index_bytes_len += 4
+        index_bytes_len = n_inner * 16 + (4 if has_crc else 0)
 
+        # Linear position of our inner chunk in the shard's row-major
+        # chunk grid.
+        lin = 0
+        for w, cps in zip(within, chunks_per_shard):
+            lin = lin * cps + w
+
+        EMPTY = (1 << 64) - 1
+        supports_range = getattr(self._store, "supports_range", False)
+
+        # ---- Range-aware fast path ----
+        if supports_range:
+            pairs = self._shard_index_cache.get(shard_key)
+            if pairs is None:
+                # Pull just the index footer or header.
+                if self._shard_index_location == "end":
+                    index_raw = self._store.read_range(
+                        shard_key, -index_bytes_len, index_bytes_len)
+                else:
+                    index_raw = self._store.read_range(
+                        shard_key, 0, index_bytes_len)
+                if has_crc:
+                    index_raw = bytes(index_raw)[:-4]
+                import struct as _struct
+                pairs = _struct.unpack(f"<{n_inner * 2}Q", index_raw)
+                # Bounded LRU on the parsed indexes.
+                self._shard_index_cache[shard_key] = pairs
+                if len(self._shard_index_cache) > self._shard_index_cache_max:
+                    self._shard_index_cache.popitem(last=False)
+            else:
+                # Touch for LRU recency.
+                self._shard_index_cache.move_to_end(shard_key)
+
+            offset = pairs[lin * 2]
+            nbytes = pairs[lin * 2 + 1]
+            if offset == EMPTY or nbytes == EMPTY:
+                return np.full(
+                    self.chunks, self.fill_value, dtype=self.dtype)
+            chunk_raw = self._store.read_range(shard_key, offset, nbytes)
+            return self._decode_chunk(chunk_raw)
+
+        # ---- Fallback: download the whole shard, slice in memory ----
+        shard_bytes = self._store[shard_key]
         if self._shard_index_location == "end":
             index_raw = bytes(shard_bytes[-index_bytes_len:])
         else:
             index_raw = bytes(shard_bytes[:index_bytes_len])
         if has_crc:
-            index_raw = index_raw[:-4]   # drop CRC trailer
-
-        # Parse (offset, nbytes) pairs in row-major shard-local order.
+            index_raw = index_raw[:-4]
         import struct as _struct
-        pairs = _struct.unpack(
-            f"<{n_inner * 2}Q", index_raw,
-        )
-        # Compute the linear index of our inner chunk within the shard.
-        lin = 0
-        for w, cps in zip(within, chunks_per_shard):
-            lin = lin * cps + w
+        pairs = _struct.unpack(f"<{n_inner * 2}Q", index_raw)
         offset = pairs[lin * 2]
         nbytes = pairs[lin * 2 + 1]
-        EMPTY = (1 << 64) - 1
         if offset == EMPTY or nbytes == EMPTY:
             return np.full(self.chunks, self.fill_value, dtype=self.dtype)
         chunk_raw = bytes(shard_bytes[offset:offset + nbytes])
