@@ -427,10 +427,17 @@ class TiffPage:
             return arr
         if self.predictor == 2:
             # Horizontal differencing reverse. Cython kernels work in-
-            # place on contiguous (rows, cols, samples) views.
+            # place on contiguous (rows, cols, samples) views, so the
+            # buffer must be C-contig AND writable. frombuffer() returns
+            # read-only views by default; copy when needed.
             view = arr if arr.ndim == 3 else arr.reshape(arr.shape[0], arr.shape[1], 1)
-            if not view.flags["C_CONTIGUOUS"]:
+            if not view.flags["C_CONTIGUOUS"] or not view.flags["WRITEABLE"]:
                 view = np.ascontiguousarray(view)
+                # ascontiguousarray of a writable already-contig array is
+                # a no-op (same view), but on a frombuffer view it
+                # copies — and the copy is writable. Make sure.
+                if not view.flags["WRITEABLE"]:
+                    view = view.copy()
                 arr = view.reshape(arr.shape) if view is not arr else arr
             if view.dtype == np.uint8:
                 _tiff_undo_horizontal_u8(view)
