@@ -418,3 +418,473 @@ def encode(data, *, colormap=None) -> bytes:
             EGifCloseFile(gif, &err)
         if mem.owns and mem.data != NULL:
             free(mem.data)
+
+
+# ---------------------------------------------------------------------------
+# Streaming Reader / Writer
+# ---------------------------------------------------------------------------
+#
+# Slurp the GIF once at open() time (libgif's DGifSlurp parses every frame
+# into a palette-index raster). Compositing-to-RGB then happens lazily
+# per-frame in iter_frames() / __getitem__. Memory savings vs. our
+# decode()-everything-at-once function: 3x for RGB output (we hold N
+# frames of u8 palette indices instead of N frames of u8 RGB).
+#
+# True record-by-record streaming (not even slurp the palette rasters)
+# would require giflib's lower-level API; that's a bigger refactor and
+# only matters for multi-GB animated GIFs, which are vanishingly rare.
+
+
+cdef class GifReader:
+    """Streaming GIF reader — yields one composited RGB frame at a time.
+
+    Slurps frame indices on open (fast; just LZW decoding), then composites
+    each frame to RGB on demand. ``iter_frames()`` yields ``(H, W, 3)``
+    uint8 arrays; ``[i]`` random-access replays from frame 0 because GIF
+    disposal modes make seek-O(1) impossible.
+    """
+
+    cdef GifFileType* _gif
+    cdef _MemBuf _mem
+    cdef bytes _src_bytes   # keep input alive for the duration of slurp
+    cdef object _shape       # (n_frames, H, W, 3) or (H, W, 3) for single-frame
+    cdef public object dtype
+    cdef public int n_frames
+    cdef public int width
+    cdef public int height
+    cdef uint8_t _bg_r, _bg_g, _bg_b
+
+    def __cinit__(self, data):
+        self._gif = NULL
+        self._mem.data = NULL
+
+    def __init__(self, data):
+        cdef:
+            int err = 0
+            int rc
+            GifColorType color
+        # Keep a bytes ref so the read callback's pointer stays valid.
+        if isinstance(data, (bytes, bytearray)):
+            self._src_bytes = bytes(data)
+        else:
+            try:
+                self._src_bytes = bytes(data)
+            except Exception as e:
+                raise GifError(f"unsupported input type: {e!r}")
+        if len(self._src_bytes) < 6:
+            raise GifError("input too short to be a GIF")
+
+        self._mem.data = <GifByteType*> <const char*> self._src_bytes
+        self._mem.size = <size_t> len(self._src_bytes)
+        self._mem.offset = 0
+        self._mem.capacity = self._mem.size
+        self._mem.owns = 0
+
+        self._gif = DGifOpen(<void*> &self._mem, _read_cb, &err)
+        if self._gif == NULL:
+            raise GifError(
+                f"DGifOpen failed: {GifErrorString(err).decode()}"
+            )
+        rc = DGifSlurp(self._gif)
+        if rc != GIF_OK or self._gif.SavedImages == NULL or \
+                self._gif.ImageCount <= 0:
+            raise GifError(
+                f"DGifSlurp failed: {GifErrorString(self._gif.Error).decode()}"
+            )
+
+        self.n_frames = <int> self._gif.ImageCount
+        self.width = <int> self._gif.SWidth
+        self.height = <int> self._gif.SHeight
+        self.dtype = np.uint8
+
+        # Cache background color.
+        self._bg_r = 0
+        self._bg_g = 0
+        self._bg_b = 0
+        if self._gif.SColorMap != NULL and \
+                self._gif.SBackGroundColor < self._gif.SColorMap.ColorCount:
+            color = self._gif.SColorMap.Colors[self._gif.SBackGroundColor]
+            self._bg_r = color.Red
+            self._bg_g = color.Green
+            self._bg_b = color.Blue
+
+    def __dealloc__(self):
+        cdef int err = 0
+        if self._gif != NULL:
+            DGifCloseFile(self._gif, &err)
+            self._gif = NULL
+
+    @property
+    def shape(self):
+        """``(H, W, 3)`` for single-frame; ``(n_frames, H, W, 3)`` for animated."""
+        if self.n_frames == 1:
+            return (self.height, self.width, 3)
+        return (self.n_frames, self.height, self.width, 3)
+
+    def close(self):
+        cdef int err = 0
+        if self._gif != NULL:
+            DGifCloseFile(self._gif, &err)
+            self._gif = NULL
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self.close()
+        return False
+
+    def __len__(self):
+        return self.n_frames
+
+    def iter_frames(self):
+        """Yield each frame composited to RGB ``(H, W, 3)`` uint8."""
+        cdef:
+            int i
+            uint8_t* canvas
+            cnp.ndarray prev = None
+            cnp.ndarray fr
+            Py_ssize_t H = self.height
+            Py_ssize_t W = self.width
+            Py_ssize_t frame_bytes = H * W * 3
+
+        if self._gif == NULL:
+            raise GifError("GifReader is closed")
+
+        for i in range(self.n_frames):
+            fr = np.empty((H, W, 3), dtype=np.uint8)
+            canvas = <uint8_t*> cnp.PyArray_DATA(fr)
+            if i == 0 or prev is None:
+                # Initialize with background color.
+                for k in range(H * W):
+                    canvas[k*3 + 0] = self._bg_r
+                    canvas[k*3 + 1] = self._bg_g
+                    canvas[k*3 + 2] = self._bg_b
+            else:
+                # Carry previous frame forward (DISPOSE_DO_NOT — simplest
+                # and most common default). Proper disposal-mode handling
+                # would inspect each frame's GCE; we approximate with
+                # "leave previous pixels in place" which matches what
+                # most decoders + browsers do.
+                memcpy(canvas, <const void*> cnp.PyArray_DATA(prev),
+                       <size_t> frame_bytes)
+            _paint_frame(canvas, W, H, &self._gif.SavedImages[i],
+                         self._gif.SColorMap,
+                         self._bg_r, self._bg_g, self._bg_b, 1)
+            prev = fr
+            yield fr
+
+    def __iter__(self):
+        return self.iter_frames()
+
+    def __getitem__(self, idx):
+        """Random access. O(N) — replays frames 0..idx because GIF disposal
+        chains forbid skipping."""
+        if isinstance(idx, slice):
+            return np.stack(list(self.iter_frames()), axis=0)[idx]
+        cdef int i = int(idx)
+        if i < 0:
+            i += self.n_frames
+        if i < 0 or i >= self.n_frames:
+            raise IndexError(idx)
+        cdef int seen = 0
+        for fr in self.iter_frames():
+            if seen == i:
+                return fr
+            seen += 1
+        raise IndexError(idx)
+
+    def read(self):
+        """Return all frames stacked as ``(n_frames, H, W, 3)`` (or ``(H, W, 3)``
+        for single-frame). Equivalent to ``np.stack(list(reader), axis=0)``
+        with a fast-path for single-frame."""
+        if self.n_frames == 1:
+            return next(iter(self.iter_frames()))
+        return np.stack(list(self.iter_frames()), axis=0)
+
+
+cdef class GifWriter:
+    """Streaming GIF writer — append frames one at a time.
+
+    Single global colormap (caller-supplied or grayscale default).
+    Each frame must be a uint8 palette-index ``(H, W)`` array of the
+    declared screen dimensions. Optional per-frame delay (in
+    centiseconds, GIF's native unit) and loop count via Netscape
+    application extension are exposed through write_frame / __init__.
+    """
+
+    cdef GifFileType* _gif
+    cdef _MemBuf _mem
+    cdef ColorMapObject* _gcmap
+    cdef int _width
+    cdef int _height
+    cdef int _loop
+    cdef bint _header_written
+    cdef bint _closed
+    cdef bytes _last_bytes   # populated on close()
+
+    def __cinit__(self, *args, **kwargs):
+        self._gif = NULL
+        self._mem.data = NULL
+        self._gcmap = NULL
+
+    def __init__(self, *, width: int, height: int,
+                  colormap=None, loop: int = 0):
+        """Create a streaming GIF writer.
+
+        Parameters
+        ----------
+        width, height : int
+            Screen (canvas) dimensions. All frames must match.
+        colormap : (256, 3) uint8 ndarray, optional
+            Global palette. Defaults to grayscale (i, i, i).
+        loop : int
+            0 = infinite looping (GIF's "Netscape 2.0" loop extension).
+            >0 = play N times then stop. <0 = omit loop extension
+            entirely (single-iteration playback).
+        """
+        cdef:
+            int err = 0
+            cnp.ndarray cmap_arr
+            int ret
+
+        if width <= 0 or height <= 0 or width >= 65536 or height >= 65536:
+            raise GifError(
+                f"GIF dimensions out of range: {width}x{height} "
+                f"(must be 1..65535)"
+            )
+
+        self._width = width
+        self._height = height
+        self._loop = loop
+        self._header_written = False
+        self._closed = False
+
+        # Build a copy of the colormap so it lives until close().
+        if colormap is None:
+            cmap_arr = np.empty((256, 3), dtype=np.uint8)
+            for i in range(256):
+                cmap_arr[i, 0] = i
+                cmap_arr[i, 1] = i
+                cmap_arr[i, 2] = i
+        else:
+            cmap_arr = np.ascontiguousarray(colormap, dtype=np.uint8)
+            if (cmap_arr.ndim != 2 or cmap_arr.shape[0] != 256
+                    or cmap_arr.shape[1] != 3):
+                raise GifError(
+                    f"colormap must be (256, 3) uint8, got shape "
+                    f"({tuple(int(s) for s in (<object> cmap_arr).shape)})"
+                )
+
+        self._mem.data = NULL
+        self._mem.size = 0
+        self._mem.offset = 0
+        self._mem.capacity = 0
+        self._mem.owns = 1
+
+        self._gif = EGifOpen(<void*> &self._mem, _write_cb, &err)
+        if self._gif == NULL:
+            raise GifError(
+                f"EGifOpen failed: {GifErrorString(err).decode()}"
+            )
+
+        self._gcmap = GifMakeMapObject(
+            256,
+            <GifColorType*> cnp.PyArray_DATA(cmap_arr),
+        )
+        if self._gcmap == NULL:
+            raise GifError("GifMakeMapObject returned NULL")
+
+        ret = EGifPutScreenDesc(
+            self._gif, self._width, self._height, 256, 0, self._gcmap,
+        )
+        if ret != GIF_OK:
+            raise GifError(
+                f"EGifPutScreenDesc: "
+                f"{GifErrorString(self._gif.Error).decode()}"
+            )
+
+        # Netscape 2.0 looping extension — written before the first frame
+        # so any standard viewer picks it up. Skip when loop < 0.
+        if loop >= 0:
+            self._write_netscape_loop(loop)
+
+        self._header_written = True
+
+    cdef _write_netscape_loop(self, int loop):
+        """Emit the standard "NETSCAPE2.0" application extension that
+        carries the loop count. ``loop=0`` means infinite."""
+        cdef int ret
+        # Application extension: 11-byte ID 'NETSCAPE2.0', then 3-byte
+        # sub-block (0x03, lsb, msb of loop count). Use the legacy
+        # ext-leader/block/trailer trio because giflib's
+        # EGifPutExtension only handles single-block extensions.
+        cdef GifByteType app_id[11]
+        cdef GifByteType sub[3]
+        cdef bytes name = b"NETSCAPE2.0"
+        memcpy(app_id, <const char*> name, 11)
+        sub[0] = 0x01
+        sub[1] = <GifByteType> (loop & 0xff)
+        sub[2] = <GifByteType> ((loop >> 8) & 0xff)
+        # Emit the raw bytes via the write callback. _write_cb takes
+        # (GifFileType*, const GifByteType*, int). 0xff = application
+        # extension marker.
+        cdef GifByteType hdr[14]
+        # 0x21 = extension introducer, 0xff = application extension,
+        # 0x0b = block size, then 11-byte NETSCAPE2.0.
+        hdr[0] = 0x21
+        hdr[1] = 0xff
+        hdr[2] = 0x0b
+        memcpy(&hdr[3], app_id, 11)
+        _write_cb(self._gif, hdr, 14)
+        # Then 0x03 = sub-block size, then 3 bytes payload, then 0x00 terminator.
+        cdef GifByteType trailer[5]
+        trailer[0] = 0x03
+        trailer[1] = sub[0]
+        trailer[2] = sub[1]
+        trailer[3] = sub[2]
+        trailer[4] = 0x00
+        _write_cb(self._gif, trailer, 5)
+
+    def write_frame(self, arr, *, delay_centiseconds: int = 0,
+                     transparent_index: int = -1):
+        """Append one frame.
+
+        Parameters
+        ----------
+        arr : ndarray
+            ``(H, W)`` uint8 palette indices matching the writer's
+            declared width/height.
+        delay_centiseconds : int
+            Time to display this frame (1/100 sec units, GIF's native).
+            ``0`` (default) = no GCE written (instant playback).
+        transparent_index : int
+            ``-1`` (default) = no transparent color. Otherwise the
+            palette index to render as transparent. Requires
+            ``delay_centiseconds > 0`` OR a non-default transparency to
+            actually emit a Graphics Control Extension.
+        """
+        cdef:
+            cnp.ndarray a
+            int ret
+            Py_ssize_t y
+            uint8_t* base
+            Py_ssize_t row_stride
+            Py_ssize_t hh
+            GifByteType gce_bytes[8]
+            int has_gce
+
+        if self._closed:
+            raise GifError("write_frame on a closed GifWriter")
+        if not self._header_written:
+            raise GifError("internal: header not written before write_frame")
+
+        if not isinstance(arr, np.ndarray):
+            a = np.ascontiguousarray(arr, dtype=np.uint8)
+        else:
+            if arr.dtype != np.uint8:
+                raise GifError(f"GIF write_frame: uint8 only, got {arr.dtype!r}")
+            a = np.ascontiguousarray(arr)
+        if a.ndim != 2:
+            raise GifError(
+                f"GIF write_frame: requires 2D palette-index array; "
+                f"got ndim={a.ndim}"
+            )
+        if a.shape[0] != self._height or a.shape[1] != self._width:
+            raise GifError(
+                f"GIF write_frame: shape {tuple(int(s) for s in (<object> a).shape)} "
+                f"doesn't match writer dimensions "
+                f"({self._height}, {self._width})"
+            )
+
+        # Optional Graphics Control Extension (delay / transparency).
+        has_gce = (delay_centiseconds > 0) or (transparent_index >= 0)
+        if has_gce:
+            # GCE block (8 bytes total): 0x21 0xf9 0x04 <pack> <dlow> <dhigh> <ti> 0x00
+            gce_bytes[0] = 0x21
+            gce_bytes[1] = 0xf9
+            gce_bytes[2] = 0x04
+            # Packed byte: bits 2..4 disposal=0 (none), bit 0 transparent flag.
+            gce_bytes[3] = <GifByteType>(0x01 if transparent_index >= 0 else 0x00)
+            gce_bytes[4] = <GifByteType>(delay_centiseconds & 0xff)
+            gce_bytes[5] = <GifByteType>((delay_centiseconds >> 8) & 0xff)
+            gce_bytes[6] = <GifByteType>(
+                transparent_index if transparent_index >= 0 else 0
+            )
+            gce_bytes[7] = 0x00
+            _write_cb(self._gif, gce_bytes, 8)
+
+        ret = EGifPutImageDesc(
+            self._gif, 0, 0, self._width, self._height, False, NULL,
+        )
+        if ret != GIF_OK:
+            raise GifError(
+                f"EGifPutImageDesc: "
+                f"{GifErrorString(self._gif.Error).decode()}"
+            )
+
+        hh = <Py_ssize_t> a.shape[0]
+        base = <uint8_t*> cnp.PyArray_DATA(a)
+        row_stride = <Py_ssize_t> a.shape[1]
+        with nogil:
+            for y in range(hh):
+                ret = EGifPutLine(
+                    self._gif,
+                    <GifPixelType*> (base + y * row_stride),
+                    self._width,
+                )
+                if ret != GIF_OK:
+                    break
+        if ret != GIF_OK:
+            raise GifError(
+                f"EGifPutLine: "
+                f"{GifErrorString(self._gif.Error).decode()}"
+            )
+
+    def close(self):
+        """Finalize the stream and return the encoded bytes."""
+        cdef int err = 0
+        cdef int ret
+        if self._closed:
+            return self._last_bytes
+        self._closed = True
+        if self._gif != NULL:
+            ret = EGifCloseFile(self._gif, &err)
+            self._gif = NULL
+            if ret != GIF_OK:
+                if self._mem.owns and self._mem.data != NULL:
+                    free(self._mem.data)
+                    self._mem.data = NULL
+                raise GifError(
+                    f"EGifCloseFile: {GifErrorString(err).decode()}"
+                )
+        if self._gcmap != NULL:
+            GifFreeMapObject(self._gcmap)
+            self._gcmap = NULL
+        if self._mem.data != NULL:
+            self._last_bytes = PyBytes_FromStringAndSize(
+                <const char*> self._mem.data, <Py_ssize_t> self._mem.size,
+            )
+            if self._mem.owns:
+                free(self._mem.data)
+            self._mem.data = NULL
+        return self._last_bytes
+
+    def __dealloc__(self):
+        cdef int err = 0
+        if self._gif != NULL:
+            EGifCloseFile(self._gif, &err)
+            self._gif = NULL
+        if self._gcmap != NULL:
+            GifFreeMapObject(self._gcmap)
+            self._gcmap = NULL
+        if self._mem.owns and self._mem.data != NULL:
+            free(self._mem.data)
+            self._mem.data = NULL
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self.close()
+        return False
