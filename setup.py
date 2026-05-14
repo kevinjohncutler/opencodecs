@@ -281,7 +281,9 @@ _OC_USER_CACHE = Path.home() / (
         + "/opencodecs"
     )
 )
-for _libdir in ("sz3", "pcodec", "sperr", "brunsli", "lerc", "zstd", "brotli"):
+for _libdir in (
+    "sz3", "pcodec", "sperr", "brunsli", "lerc", "zstd", "brotli", "giflib",
+):
     _p = _OC_USER_CACHE / _libdir
     if (_p / "include").is_dir():
         _PROBE_PREFIXES.insert(0, _p)
@@ -1292,9 +1294,10 @@ extensions = [
         ),
         language="c",
     ),
-    # GIF via giflib (libgif 5.x or 6.x; Homebrew / libgif-dev). Static
-    # and animated decode (composited to RGB), single-frame encode from
-    # palette indices.
+    # GIF via giflib. Per-user cache build preferred (Homebrew's
+    # libgif 6.x is built portable / -O2; a tuned 5.2.2 -O3+LTO build
+    # is measurably faster on LZW). Absolute-dylib link bypasses macOS
+    # sysconfig's -L/opt/homebrew/lib prepend.
     Extension(
         name="opencodecs.codecs._gif",
         sources=["src/opencodecs/codecs/_gif.pyx"],
@@ -1304,7 +1307,22 @@ extensions = [
             *_resolve_include_dirs("gif_lib.h"),
         ],
         library_dirs=_lib_dirs_for_probes(),
-        libraries=["gif"],
+        libraries=(
+            []
+            if (_OC_USER_CACHE / "giflib" / "lib" / "libgif.7.2.0.dylib").exists()
+               or (_OC_USER_CACHE / "giflib" / "lib" / "libgif.so").exists()
+            else ["gif"]
+        ),
+        extra_link_args=(
+            [
+                str(_OC_USER_CACHE / "giflib" / "lib" / (
+                    "libgif.7.2.0.dylib" if sys.platform == "darwin"
+                    else "libgif.so"
+                )),
+                f"-Wl,-rpath,{_OC_USER_CACHE / 'giflib' / 'lib'}",
+            ]
+            if (_OC_USER_CACHE / "giflib" / "lib").is_dir() else []
+        ),
         define_macros=[("NPY_NO_DEPRECATED_API", "NPY_1_7_API_VERSION")],
         language="c",
     ),

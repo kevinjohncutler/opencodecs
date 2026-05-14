@@ -47,6 +47,7 @@ VERSIONS=(
     "zstd            1.5.7"
     "lz4             1.10.0"
     "brotli          1.1.0"
+    "giflib          5.2.2"
     "libdeflate      1.23"
 
     # Image (small to medium)
@@ -279,6 +280,37 @@ build_lz4() {
 # Same pattern as zstd above — per-lib cache prefix + -O3 + LTO. Pinned
 # at brotli 1.1.0 (current upstream stable) for ABI consistency with
 # imagecodecs.
+build_giflib() {
+    # giflib 5.2.2 (matches what imagecodecs vendors). The 6.x branch on
+    # Homebrew is API-compatible but Homebrew builds with -O2 portable
+    # flags; we want -O3 + LTO + hidden-visibility on the same source
+    # to close the encode gap vs imagecodecs.
+    local v="${VERSIONS_MAP[giflib]}"
+    is_built giflib "$v" && { echo "  giflib $v already built"; return; }
+    echo "==> giflib $v"
+    local src
+    src=$(fetch_tar giflib "$v" \
+        "https://sourceforge.net/projects/giflib/files/giflib-$v.tar.gz/download")
+    local prefix
+    if [ "$(uname)" = "Darwin" ]; then
+        prefix="${HOME}/Library/Caches/opencodecs/giflib"
+    else
+        prefix="${XDG_CACHE_HOME:-$HOME/.cache}/opencodecs/giflib"
+    fi
+    local oflags="-O3 -DNDEBUG -fomit-frame-pointer -fvisibility=hidden -flto"
+    if [ "$(uname)" = "Darwin" ]; then
+        oflags="$oflags -mcpu=apple-m1"
+    fi
+    ( cd "$src" && make clean >/dev/null 2>&1 || true \
+        && OFLAGS="$oflags" make -j"$JOBS" all \
+        && make PREFIX="$prefix" install-include install-lib )
+    if [ "$(uname)" = "Darwin" ]; then
+        install_name_tool -id @rpath/libgif.7.dylib \
+            "$prefix/lib/libgif.7.2.0.dylib"
+    fi
+    mark_built giflib "$v"
+}
+
 build_brotli() {
     local v="${VERSIONS_MAP[brotli]}"
     is_built brotli "$v" && { echo "  brotli $v already built"; return; }
@@ -637,6 +669,7 @@ ORDERED=(
     lz4
     brotli
     libdeflate
+    giflib
     libpng
     libjpeg-turbo
     libwebp
@@ -666,6 +699,7 @@ for name in "${ORDERED[@]}"; do
             lz4)             build_lz4 ;;
             brotli)          build_brotli ;;
             libdeflate)      build_libdeflate ;;
+            giflib)          build_giflib ;;
             libpng)          build_libpng ;;
             libjpeg-turbo)   build_libjpeg_turbo ;;
             libwebp)         build_libwebp ;;
