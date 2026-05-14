@@ -640,7 +640,19 @@ cdef class GifReader:
         cdef:
             int err = 0
             int rc
+            int lzw_min_code_size = 0
+            int blk_len
+            int code_byte = 0
             GifColorType color
+            GifRecordType rec_type
+            GifByteType* code_block
+            GifByteType* ext_block
+            SavedImage* img
+            Py_ssize_t pix_count
+            uint8_t* lzw_buf = NULL
+            size_t lzw_buf_cap = 0
+            size_t lzw_buf_len = 0
+            uint8_t* raster
         # Keep a bytes ref so the read callback's pointer stays valid.
         if isinstance(data, (bytes, bytearray)):
             self._src_bytes = bytes(data)
@@ -663,12 +675,108 @@ cdef class GifReader:
             raise GifError(
                 f"DGifOpen failed: {GifErrorString(err).decode()}"
             )
-        rc = DGifSlurp(self._gif)
-        if rc != GIF_OK or self._gif.SavedImages == NULL or \
-                self._gif.ImageCount <= 0:
-            raise GifError(
-                f"DGifSlurp failed: {GifErrorString(self._gif.Error).decode()}"
-            )
+
+        # Replacement for DGifSlurp: walk records ourselves and run
+        # raw LZW sub-blocks through oc_giflzw (1.5-1.6x faster than
+        # libgif's reference LZW). For each frame we malloc a raster
+        # buffer + decode into it + attach to giflib's SavedImage so
+        # DGifCloseFile cleans it up via its standard FreeSavedImages
+        # path (giflib free()s RasterBits, which matches our malloc).
+        try:
+            while True:
+                if DGifGetRecordType(self._gif, &rec_type) != GIF_OK:
+                    raise GifError(
+                        f"DGifGetRecordType: "
+                        f"{GifErrorString(self._gif.Error).decode()}"
+                    )
+                if rec_type == TERMINATE_RECORD_TYPE:
+                    break
+                if rec_type == UNDEFINED_RECORD_TYPE or \
+                        rec_type == SCREEN_DESC_RECORD_TYPE:
+                    continue
+                if rec_type == EXTENSION_RECORD_TYPE:
+                    # Let giflib parse the extension blocks into the
+                    # current image's ExtensionBlocks list — we don't
+                    # touch the LZW for extensions, just walk through.
+                    if DGifGetExtension(
+                        self._gif, &code_byte, &ext_block,
+                    ) != GIF_OK:
+                        raise GifError("DGifGetExtension failed")
+                    while ext_block != NULL:
+                        if DGifGetExtensionNext(
+                            self._gif, &ext_block,
+                        ) != GIF_OK:
+                            raise GifError("DGifGetExtensionNext failed")
+                    continue
+                if rec_type != IMAGE_DESC_RECORD_TYPE:
+                    continue
+
+                # IMAGE_DESC: giflib parses geometry + local palette
+                # into a new SavedImages[] entry.
+                if DGifGetImageDesc(self._gif) != GIF_OK:
+                    raise GifError(
+                        f"DGifGetImageDesc: "
+                        f"{GifErrorString(self._gif.Error).decode()}"
+                    )
+                img = &self._gif.SavedImages[self._gif.ImageCount - 1]
+                pix_count = <Py_ssize_t> img.ImageDesc.Width * \
+                            <Py_ssize_t> img.ImageDesc.Height
+
+                # Pull raw LZW sub-blocks → flat buffer.
+                if DGifGetCode(
+                    self._gif, &lzw_min_code_size, &code_block,
+                ) != GIF_OK:
+                    raise GifError(
+                        f"DGifGetCode: "
+                        f"{GifErrorString(self._gif.Error).decode()}"
+                    )
+                lzw_buf_len = 0
+                while code_block != NULL:
+                    blk_len = <int> code_block[0]
+                    if lzw_buf_len + <size_t> blk_len > lzw_buf_cap:
+                        if lzw_buf_cap == 0:
+                            lzw_buf_cap = 65536
+                        while lzw_buf_len + <size_t> blk_len > lzw_buf_cap:
+                            lzw_buf_cap *= 2
+                        lzw_buf = <uint8_t*> realloc(lzw_buf, lzw_buf_cap)
+                        if lzw_buf == NULL:
+                            raise MemoryError("oom growing LZW buffer")
+                    memcpy(
+                        lzw_buf + lzw_buf_len,
+                        code_block + 1,
+                        <size_t> blk_len,
+                    )
+                    lzw_buf_len += <size_t> blk_len
+                    if DGifGetCodeNext(self._gif, &code_block) != GIF_OK:
+                        raise GifError(
+                            f"DGifGetCodeNext: "
+                            f"{GifErrorString(self._gif.Error).decode()}"
+                        )
+
+                # Decode into a fresh malloc'd raster — giflib's
+                # cleanup will free() it via FreeSavedImages.
+                raster = <uint8_t*> malloc(<size_t> pix_count)
+                if raster == NULL:
+                    raise MemoryError("oom for frame raster")
+                with nogil:
+                    rc = oc_giflzw_decode(
+                        lzw_min_code_size,
+                        lzw_buf, lzw_buf_len,
+                        raster, <size_t> pix_count,
+                    )
+                if rc != 0:
+                    free(raster)
+                    raise GifError(f"oc_giflzw_decode failed: rc={rc}")
+                # Hand ownership to giflib by assigning RasterBits.
+                if img.RasterBits != NULL:
+                    free(img.RasterBits)
+                img.RasterBits = <GifByteType*> raster
+        finally:
+            if lzw_buf != NULL:
+                free(lzw_buf)
+
+        if self._gif.SavedImages == NULL or self._gif.ImageCount <= 0:
+            raise GifError("no frames found in GIF")
 
         self.n_frames = <int> self._gif.ImageCount
         self.width = <int> self._gif.SWidth

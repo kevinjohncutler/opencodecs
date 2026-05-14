@@ -80,7 +80,17 @@ class GifCodec(Codec):
         return _write_dest(out, dest)
 
     def decode(self, src: Any, *, asrgb: bool = True, **opts) -> np.ndarray:
-        return _gif_decode(_read_src(src), asrgb=bool(asrgb))
+        # For RGB output (the common case) we route through GifReader,
+        # which uses our custom oc_giflzw decoder (~1.5x faster than
+        # libgif's reference + handles multi-frame). For asrgb=False
+        # (raw palette indices, single-frame only) keep the original
+        # libgif-based path — palette mode doesn't need compositing.
+        if not asrgb:
+            return _gif_decode(_read_src(src), asrgb=False)
+        if GifReader is None:  # pragma: no cover
+            return _gif_decode(_read_src(src), asrgb=True)
+        with GifReader(_read_src(src)) as r:
+            return r.read()
 
     def open(self, src: Any, **opts):
         """Return a streaming :class:`GifReader` for ``src``.
