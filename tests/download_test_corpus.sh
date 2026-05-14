@@ -28,7 +28,9 @@ cd "$ROOT"
 mkdir -p \
     .test_data/czi .test_data/ome_tiff .test_data/ome_zarr \
     .test_data/png/pngsuite .test_data/png/kodak24 \
-    .test_data/dicom .test_data/fits .test_data/heif .test_data/lerc
+    .test_data/dicom .test_data/fits .test_data/heif .test_data/lerc \
+    .test_data/tiff/libtiff_pics .test_data/tiff/cog \
+    .test_data/tiff/geotiff .test_data/tiff/wsi
 
 # Download helper that skips if the file already exists with non-zero size.
 fetch() {
@@ -114,6 +116,54 @@ fetch \
 fetch \
     "https://raw.githubusercontent.com/nokiatech/heif_conformance/master/conformance_files/C001.heic" \
     ".test_data/heif/C001.heic"
+
+# ----- libtiff pics-3.8.0: canonical TIFF compatibility corpus (~3.5 MB) -----
+# Covers compression variants (NONE, PACKBITS, LZW, DEFLATE, CCITT,
+# OLD-JPEG), bit depths (1/4/8), color types (gray, RGB, palette),
+# strip vs tile layout, and multi-page. The de-facto reference set for
+# any TIFF reader.
+PICS_TARBALL=".test_data/tiff/pics-3.8.0.tar.gz"
+fetch \
+    "https://download.osgeo.org/libtiff/pics-3.8.0.tar.gz" \
+    "$PICS_TARBALL"
+if [ ! -f ".test_data/tiff/libtiff_pics/cramps.tif" ]; then
+    echo "[extract] $PICS_TARBALL -> .test_data/tiff/libtiff_pics/"
+    tar -xzf "$PICS_TARBALL" -C .test_data/tiff/libtiff_pics/ \
+        --strip-components=1
+fi
+
+# ----- COG: real Cloud-Optimized GeoTIFFs from rio-cogeo's test corpus -----
+# These are byte-exact COG layouts (overviews-first then header+IFD,
+# tiled, sized to be tile-aligned). The 2000px file has full pyramid;
+# image_float and image_colormap exercise the dtype + colormap paths.
+fetch \
+    "https://raw.githubusercontent.com/cogeotiff/rio-cogeo/master/tests/fixtures/image_2000px.tif" \
+    ".test_data/tiff/cog/image_2000px.tif"
+fetch \
+    "https://raw.githubusercontent.com/cogeotiff/rio-cogeo/master/tests/fixtures/image_float.tif" \
+    ".test_data/tiff/cog/image_float.tif"
+fetch \
+    "https://raw.githubusercontent.com/cogeotiff/rio-cogeo/master/tests/fixtures/image_colormap.tif" \
+    ".test_data/tiff/cog/image_colormap.tif"
+
+# ----- GeoTIFF: ECW Cylindrical Equal-Area + USGS DEM (~5.5 MB) -----
+# cea.tif is tile-based with full GeoKeys; i30dem.tif is a strip-based
+# elevation model. Together they exercise both layout types as
+# emitted by GDAL.
+fetch \
+    "https://download.osgeo.org/geotiff/samples/gdal_eg/cea.tif" \
+    ".test_data/tiff/geotiff/cea.tif"
+fetch \
+    "https://download.osgeo.org/geotiff/samples/usgs/i30dem.tif" \
+    ".test_data/tiff/geotiff/i30dem.tif"
+
+# ----- Aperio WSI: CMU-1-Small-Region.svs (~1.9 MB) -----
+# Real pathology whole-slide image (SVS = TIFF with Aperio extensions).
+# Multi-page pyramid + JPEG-compressed tiles. The smallest public
+# Aperio sample.
+fetch \
+    "https://openslide.cs.cmu.edu/download/openslide-testdata/Aperio/CMU-1-Small-Region.svs" \
+    ".test_data/tiff/wsi/CMU-1-Small-Region.svs"
 
 # ----- LERC: ESRI's reference test data (~230 KB total) -----
 # Two files from the LERC repo: a float32 raster (DEM elevation) and a
