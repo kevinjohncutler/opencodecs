@@ -1,0 +1,1047 @@
+{
+  "timestamp": "20260513T204340Z",
+  "git_rev": "dfff55d",
+  "tier": "fast",
+  "system": {
+    "hostname": "mac.lan",
+    "platform": "macOS-26.4.1-arm64-arm-64bit",
+    "machine": "arm64",
+    "processor": "arm",
+    "python": "3.12.9",
+    "cpu_count": 20,
+    "cpu_model": "Apple M1 Ultra",
+    "ram_kb_max": 149569536,
+    "opencodecs_version": "0.2.0.dev0",
+    "git_rev": "dfff55d",
+    "ref_versions": {
+      "tifffile": "2026.3.3",
+      "ndstorage": "0.1.18",
+      "czifile": "2026.4.11",
+      "imagecodecs": "2026.3.6"
+    }
+  },
+  "workloads": {
+    "h2h_zstd_10mb": {
+      "raw_mb": 10.48576,
+      "encoded_mb_oc": 8.965473,
+      "encoded_mb_ic": 8.965473,
+      "opencodecs_encode_ms": 10.873021092265844,
+      "imagecodecs_encode_ms": 10.408146074041724,
+      "speedup_vs_imagecodecs_encode": 0.9572450918397654,
+      "opencodecs_decode_ms": 9.800250176340342,
+      "imagecodecs_decode_ms": 9.811208117753267,
+      "speedup_vs_imagecodecs_decode": 1.0011181287432214,
+      "opencodecs_encode_mb_per_s": 964.3833035014244,
+      "imagecodecs_encode_mb_per_s": 1007.4570365755961,
+      "opencodecs_decode_mb_per_s": 1069.9481963546818,
+      "imagecodecs_decode_mb_per_s": 1068.753192690525,
+      "opencodecs": {
+        "median_ms": 10.873021092265844,
+        "min_ms": 10.100082959979773,
+        "max_ms": 11.544666951522231,
+        "iqr_ms": 1.089543104171753,
+        "noisy": false,
+        "n_runs_total": 7,
+        "n_runs_after_filter": 6,
+        "all_samples_ms": [
+          11.544666951522231,
+          10.22116607055068,
+          10.94812504015863,
+          10.79791714437306,
+          10.100082959979773,
+          43.85008313693106,
+          11.310709174722433
+        ]
+      },
+      "reference": {
+        "imagecodecs_encode": {
+          "median_ms": 10.408146074041724,
+          "min_ms": 10.187500156462193,
+          "max_ms": 10.86091692559421,
+          "iqr_ms": 0.1745831687003374,
+          "noisy": false,
+          "n_runs_total": 7,
+          "n_runs_after_filter": 6,
+          "all_samples_ms": [
+            10.86091692559421,
+            11.091791093349457,
+            10.49070805311203,
+            10.416292119771242,
+            10.316124884411693,
+            10.187500156462193,
+            10.400000028312206
+          ]
+        },
+        "imagecodecs_decode": {
+          "median_ms": 9.811208117753267,
+          "min_ms": 9.33312508277595,
+          "max_ms": 10.033832862973213,
+          "iqr_ms": 0.23866700939834118,
+          "noisy": false,
+          "n_runs_total": 7,
+          "n_runs_after_filter": 7,
+          "all_samples_ms": [
+            9.33312508277595,
+            9.82537493109703,
+            9.638624964281917,
+            9.811208117753267,
+            9.58670792169869,
+            10.033832862973213,
+            9.817833080887794
+          ]
+        },
+        "opencodecs_decode": {
+          "median_ms": 9.800250176340342,
+          "min_ms": 9.775415994226933,
+          "max_ms": 9.854417061433196,
+          "iqr_ms": 0.04758313298225403,
+          "noisy": false,
+          "n_runs_total": 7,
+          "n_runs_after_filter": 5,
+          "all_samples_ms": [
+            9.995333151891828,
+            9.795666905120015,
+            9.456665953621268,
+            9.84325003810227,
+            9.800250176340342,
+            9.775415994226933,
+            9.854417061433196
+          ]
+        }
+      },
+      "speedup_vs_imagecodecs": 0.978043287348505
+    },
+    "h2h_deflate_10mb": {
+      "raw_mb": 10.48576,
+      "encoded_mb_oc": 8.980936,
+      "encoded_mb_ic": 8.997938,
+      "opencodecs_encode_ms": 109.34593749698251,
+      "imagecodecs_encode_ms": 292.4488125136122,
+      "speedup_vs_imagecodecs_encode": 2.6745283748807087,
+      "opencodecs_decode_ms": 22.430875105783343,
+      "imagecodecs_decode_ms": 43.474625097587705,
+      "speedup_vs_imagecodecs_decode": 1.9381600090305287,
+      "opencodecs_encode_mb_per_s": 95.89528646447759,
+      "imagecodecs_encode_mb_per_s": 35.85502676476737,
+      "opencodecs_decode_mb_per_s": 467.46994713980024,
+      "imagecodecs_decode_mb_per_s": 241.19264919392782,
+      "opencodecs": {
+        "median_ms": 109.34593749698251,
+        "min_ms": 108.69283298961818,
+        "max_ms": 109.66024990193546,
+        "iqr_ms": 0.5990001372992992,
+        "noisy": false,
+        "n_runs_total": 7,
+        "n_runs_after_filter": 6,
+        "all_samples_ms": [
+          109.34425005689263,
+          107.9013328999281,
+          109.66024990193546,
+          109.51187508180737,
+          108.91287494450808,
+          109.3476249370724,
+          108.69283298961818
+        ]
+      },
+      "reference": {
+        "imagecodecs_encode": {
+          "median_ms": 292.4488125136122,
+          "min_ms": 291.26137495040894,
+          "max_ms": 293.07037498801947,
+          "iqr_ms": 0.8570421487092972,
+          "noisy": false,
+          "n_runs_total": 7,
+          "n_runs_after_filter": 6,
+          "all_samples_ms": [
+            292.4142919946462,
+            293.07037498801947,
+            292.48333303257823,
+            292.5111250951886,
+            291.6540829464793,
+            291.26137495040894,
+            324.4844588916749
+          ]
+        },
+        "imagecodecs_decode": {
+          "median_ms": 43.474625097587705,
+          "min_ms": 42.762125143781304,
+          "max_ms": 44.154792092740536,
+          "iqr_ms": 0.510042067617178,
+          "noisy": false,
+          "n_runs_total": 7,
+          "n_runs_after_filter": 7,
+          "all_samples_ms": [
+            43.27495885081589,
+            43.474625097587705,
+            44.154792092740536,
+            42.762125143781304,
+            43.264374835416675,
+            43.77441690303385,
+            43.52337494492531
+          ]
+        },
+        "opencodecs_decode": {
+          "median_ms": 22.430875105783343,
+          "min_ms": 22.271540947258472,
+          "max_ms": 22.678500041365623,
+          "iqr_ms": 0.3078330773860216,
+          "noisy": false,
+          "n_runs_total": 7,
+          "n_runs_after_filter": 7,
+          "all_samples_ms": [
+            22.430875105783343,
+            22.506584180518985,
+            22.665000054985285,
+            22.678500041365623,
+            22.42920803837478,
+            22.357166977599263,
+            22.271540947258472
+          ]
+        }
+      },
+      "speedup_vs_imagecodecs": 2.5491847235964276
+    },
+    "h2h_lz4_10mb": {
+      "raw_mb": 10.48576,
+      "encoded_mb_oc": 10.486419,
+      "encoded_mb_ic": 10.486419,
+      "opencodecs_encode_ms": 2.776332898065448,
+      "imagecodecs_encode_ms": 2.7921658474951982,
+      "speedup_vs_imagecodecs_encode": 1.0057028281589657,
+      "opencodecs_decode_ms": 0.27804216369986534,
+      "imagecodecs_decode_ms": 0.28662499971687794,
+      "speedup_vs_imagecodecs_decode": 1.0308688290394596,
+      "opencodecs_encode_mb_per_s": 3776.838147653868,
+      "imagecodecs_encode_mb_per_s": 3755.42162347075,
+      "opencodecs_decode_mb_per_s": 37712.84132042265,
+      "imagecodecs_decode_mb_per_s": 36583.54997071997,
+      "opencodecs": {
+        "median_ms": 2.776332898065448,
+        "min_ms": 2.629708033055067,
+        "max_ms": 2.9127919115126133,
+        "iqr_ms": 0.1476658508181572,
+        "noisy": false,
+        "n_runs_total": 7,
+        "n_runs_after_filter": 7,
+        "all_samples_ms": [
+          2.9127919115126133,
+          2.9070829041302204,
+          2.776332898065448,
+          2.766542136669159,
+          2.759417053312063,
+          2.629708033055067,
+          2.8364588506519794
+        ]
+      },
+      "reference": {
+        "imagecodecs_encode": {
+          "median_ms": 2.7921658474951982,
+          "min_ms": 2.7510831132531166,
+          "max_ms": 2.801500027999282,
+          "iqr_ms": 0.006417045369744301,
+          "noisy": false,
+          "n_runs_total": 7,
+          "n_runs_after_filter": 5,
+          "all_samples_ms": [
+            2.7924999594688416,
+            2.730584004893899,
+            2.7921658474951982,
+            2.801500027999282,
+            2.7860829140990973,
+            2.8905828949064016,
+            2.7510831132531166
+          ]
+        },
+        "imagecodecs_decode": {
+          "median_ms": 0.28662499971687794,
+          "min_ms": 0.2679170574992895,
+          "max_ms": 0.3660409711301327,
+          "iqr_ms": 0.05670799873769283,
+          "noisy": true,
+          "n_runs_total": 7,
+          "n_runs_after_filter": 7,
+          "all_samples_ms": [
+            0.32312492839992046,
+            0.28262496925890446,
+            0.28662499971687794,
+            0.28358306735754013,
+            0.2679170574992895,
+            0.3660409711301327,
+            0.3393329679965973
+          ]
+        },
+        "opencodecs_decode": {
+          "median_ms": 0.27804216369986534,
+          "min_ms": 0.25054183788597584,
+          "max_ms": 0.29925000853836536,
+          "iqr_ms": 0.03766617737710476,
+          "noisy": true,
+          "n_runs_total": 7,
+          "n_runs_after_filter": 7,
+          "all_samples_ms": [
+            0.25054183788597584,
+            0.27804216369986534,
+            0.2569998614490032,
+            0.2942080609500408,
+            0.26733288541436195,
+            0.29925000853836536,
+            0.294666038826108
+          ]
+        }
+      },
+      "speedup_vs_imagecodecs": 1.0079937090085629
+    },
+    "h2h_brotli_10mb": {
+      "raw_mb": 10.48576,
+      "encoded_mb_oc": 8.962334,
+      "encoded_mb_ic": 8.962334,
+      "opencodecs_encode_ms": 61.56935461331159,
+      "imagecodecs_encode_ms": 57.13433295022696,
+      "speedup_vs_imagecodecs_encode": 0.9279670594090367,
+      "opencodecs_decode_ms": 49.89908286370337,
+      "imagecodecs_decode_ms": 50.71875010617077,
+      "speedup_vs_imagecodecs_decode": 1.016426499154429,
+      "opencodecs_encode_mb_per_s": 170.3081032090749,
+      "imagecodecs_encode_mb_per_s": 183.52817751691887,
+      "opencodecs_decode_mb_per_s": 210.13933319458565,
+      "imagecodecs_decode_mb_per_s": 206.74326512482875,
+      "opencodecs": {
+        "median_ms": 61.56935461331159,
+        "min_ms": 59.280583169311285,
+        "max_ms": 64.6010001655668,
+        "iqr_ms": 2.889665775001049,
+        "noisy": false,
+        "n_runs_total": 7,
+        "n_runs_after_filter": 6,
+        "all_samples_ms": [
+          59.88329206593335,
+          59.280583169311285,
+          64.6010001655668,
+          62.772957840934396,
+          91.64725011214614,
+          61.065959045663476,
+          62.0727501809597
+        ]
+      },
+      "reference": {
+        "imagecodecs_encode": {
+          "median_ms": 57.13433295022696,
+          "min_ms": 56.47462513297796,
+          "max_ms": 58.61149984411895,
+          "iqr_ms": 0.5724590737372637,
+          "noisy": false,
+          "n_runs_total": 7,
+          "n_runs_after_filter": 6,
+          "all_samples_ms": [
+            59.94237493723631,
+            57.07095796242356,
+            57.55849997512996,
+            56.47462513297796,
+            58.61149984411895,
+            57.19770793803036,
+            56.9860409013927
+          ]
+        },
+        "imagecodecs_decode": {
+          "median_ms": 50.71875010617077,
+          "min_ms": 47.99637501128018,
+          "max_ms": 51.487999968230724,
+          "iqr_ms": 1.5957090072333813,
+          "noisy": false,
+          "n_runs_total": 7,
+          "n_runs_after_filter": 7,
+          "all_samples_ms": [
+            49.83858298510313,
+            51.487999968230724,
+            50.320749869570136,
+            51.43429199233651,
+            51.04095791466534,
+            47.99637501128018,
+            50.71875010617077
+          ]
+        },
+        "opencodecs_decode": {
+          "median_ms": 49.89908286370337,
+          "min_ms": 49.56387495622039,
+          "max_ms": 50.529916072264314,
+          "iqr_ms": 0.698666088283062,
+          "noisy": false,
+          "n_runs_total": 7,
+          "n_runs_after_filter": 7,
+          "all_samples_ms": [
+            49.56387495622039,
+            49.63591694831848,
+            50.529916072264314,
+            50.21895794197917,
+            49.89908286370337,
+            50.306125078350306,
+            49.607458990067244
+          ]
+        }
+      },
+      "speedup_vs_imagecodecs": 0.9675661155529993
+    },
+    "h2h_blosc2_10mb": {
+      "raw_mb": 10.48576,
+      "encoded_mb_oc": 10.485792,
+      "encoded_mb_ic": 8.055966,
+      "opencodecs_encode_ms": 4.6177085023373365,
+      "imagecodecs_encode_ms": 54.77370787411928,
+      "speedup_vs_imagecodecs_encode": 11.861664253253444,
+      "opencodecs_decode_ms": 0.2935000229626894,
+      "imagecodecs_decode_ms": 7.456791820004582,
+      "speedup_vs_imagecodecs_decode": 25.406443736300872,
+      "opencodecs_encode_mb_per_s": 2270.771313237387,
+      "imagecodecs_encode_mb_per_s": 191.4378340808757,
+      "opencodecs_decode_mb_per_s": 35726.607085591204,
+      "imagecodecs_decode_mb_per_s": 1406.202593972049,
+      "opencodecs": {
+        "median_ms": 4.6177085023373365,
+        "min_ms": 4.528500139713287,
+        "max_ms": 4.644916858524084,
+        "iqr_ms": 0.0841252040117979,
+        "noisy": false,
+        "n_runs_total": 7,
+        "n_runs_after_filter": 6,
+        "all_samples_ms": [
+          4.620000021532178,
+          4.549499833956361,
+          4.633625037968159,
+          4.615416983142495,
+          4.644916858524084,
+          4.415999865159392,
+          4.528500139713287
+        ]
+      },
+      "reference": {
+        "imagecodecs_encode": {
+          "median_ms": 54.77370787411928,
+          "min_ms": 54.24929107539356,
+          "max_ms": 55.59087498113513,
+          "iqr_ms": 0.8861660026013851,
+          "noisy": false,
+          "n_runs_total": 7,
+          "n_runs_after_filter": 7,
+          "all_samples_ms": [
+            54.97858300805092,
+            55.59087498113513,
+            54.589167004451156,
+            54.77370787411928,
+            54.24929107539356,
+            55.185207864269614,
+            54.29904186166823
+          ]
+        },
+        "imagecodecs_decode": {
+          "median_ms": 7.456791820004582,
+          "min_ms": 7.320416159927845,
+          "max_ms": 7.75137497112155,
+          "iqr_ms": 0.19162497483193874,
+          "noisy": false,
+          "n_runs_total": 7,
+          "n_runs_after_filter": 7,
+          "all_samples_ms": [
+            7.75137497112155,
+            7.54595804028213,
+            7.456791820004582,
+            7.3543330654501915,
+            7.452958961948752,
+            7.539666956290603,
+            7.320416159927845
+          ]
+        },
+        "opencodecs_decode": {
+          "median_ms": 0.2935000229626894,
+          "min_ms": 0.2426248975098133,
+          "max_ms": 0.33591710962355137,
+          "iqr_ms": 0.04854192957282066,
+          "noisy": true,
+          "n_runs_total": 7,
+          "n_runs_after_filter": 7,
+          "all_samples_ms": [
+            0.2426248975098133,
+            0.26537501253187656,
+            0.2980001736432314,
+            0.2935000229626894,
+            0.3139169421046972,
+            0.33591710962355137,
+            0.2878329250961542
+          ]
+        }
+      },
+      "speedup_vs_imagecodecs": 12.671117378450592
+    },
+    "h2h_jpeg_4mp_rgb": {
+      "raw_mb": 12.582912,
+      "encoded_mb_oc": 3.170461,
+      "encoded_mb_ic": 3.170461,
+      "opencodecs_encode_ms": 17.052542185410857,
+      "imagecodecs_encode_ms": 18.2453750167042,
+      "speedup_vs_imagecodecs_encode": 1.0699504401351876,
+      "opencodecs_decode_ms": 30.266312533058226,
+      "imagecodecs_decode_ms": 29.968166956678033,
+      "speedup_vs_imagecodecs_decode": 0.9901492599716419,
+      "opencodecs_encode_mb_per_s": 737.8906829953596,
+      "imagecodecs_encode_mb_per_s": 689.6494036696948,
+      "opencodecs_decode_mb_per_s": 415.7398423166475,
+      "imagecodecs_decode_mb_per_s": 419.8759309566665,
+      "opencodecs": {
+        "median_ms": 17.052542185410857,
+        "min_ms": 16.742708859965205,
+        "max_ms": 17.406499944627285,
+        "iqr_ms": 0.5093337967991829,
+        "noisy": false,
+        "n_runs_total": 5,
+        "n_runs_after_filter": 5,
+        "all_samples_ms": [
+          17.332749906927347,
+          17.052542185410857,
+          16.742708859965205,
+          16.823416110128164,
+          17.406499944627285
+        ]
+      },
+      "reference": {
+        "imagecodecs_encode": {
+          "median_ms": 18.2453750167042,
+          "min_ms": 17.980125034227967,
+          "max_ms": 18.35775002837181,
+          "iqr_ms": 0.28845900669693947,
+          "noisy": false,
+          "n_runs_total": 5,
+          "n_runs_after_filter": 5,
+          "all_samples_ms": [
+            18.35775002837181,
+            17.980125034227967,
+            18.350624945014715,
+            18.062165938317776,
+            18.2453750167042
+          ]
+        },
+        "imagecodecs_decode": {
+          "median_ms": 29.968166956678033,
+          "min_ms": 29.91095813922584,
+          "max_ms": 30.086124781519175,
+          "iqr_ms": 0.10737497359514236,
+          "noisy": false,
+          "n_runs_total": 5,
+          "n_runs_after_filter": 5,
+          "all_samples_ms": [
+            29.968166956678033,
+            30.086124781519175,
+            30.04699992015958,
+            29.939624946564436,
+            29.91095813922584
+          ]
+        },
+        "opencodecs_decode": {
+          "median_ms": 30.266312533058226,
+          "min_ms": 30.2432500757277,
+          "max_ms": 30.295917065814137,
+          "iqr_ms": 0.03570900298655033,
+          "noisy": false,
+          "n_runs_total": 5,
+          "n_runs_after_filter": 4,
+          "all_samples_ms": [
+            30.260208062827587,
+            29.98283295892179,
+            30.295917065814137,
+            30.272417003288865,
+            30.2432500757277
+          ]
+        }
+      },
+      "speedup_vs_imagecodecs": 1.0189076269963893
+    },
+    "h2h_png_4mp_rgb": {
+      "raw_mb": 12.582912,
+      "encoded_mb_oc": 12.6073,
+      "encoded_mb_ic": 12.607295,
+      "opencodecs_encode_ms": 314.39056247472763,
+      "imagecodecs_encode_ms": 285.3971045697108,
+      "speedup_vs_imagecodecs_encode": 0.907778854184443,
+      "opencodecs_decode_ms": 3.587687504477799,
+      "imagecodecs_decode_ms": 11.526083573698997,
+      "speedup_vs_imagecodecs_decode": 3.2126776814628566,
+      "opencodecs_encode_mb_per_s": 40.02318613177672,
+      "imagecodecs_encode_mb_per_s": 44.089136850113036,
+      "opencodecs_decode_mb_per_s": 3507.2486063223864,
+      "imagecodecs_decode_mb_per_s": 1091.690158200184,
+      "opencodecs": {
+        "median_ms": 314.39056247472763,
+        "min_ms": 313.2666249293834,
+        "max_ms": 315.7144580036402,
+        "iqr_ms": 1.8410829361528158,
+        "noisy": false,
+        "n_runs_total": 5,
+        "n_runs_after_filter": 4,
+        "all_samples_ms": [
+          315.7144580036402,
+          313.2666249293834,
+          314.9077498819679,
+          313.87337506748736,
+          341.4183338172734
+        ]
+      },
+      "reference": {
+        "imagecodecs_encode": {
+          "median_ms": 285.3971045697108,
+          "min_ms": 284.7643340937793,
+          "max_ms": 285.50529084168375,
+          "iqr_ms": 0.2092067152261734,
+          "noisy": false,
+          "n_runs_total": 5,
+          "n_runs_after_filter": 4,
+          "all_samples_ms": [
+            284.0704161208123,
+            284.7643340937793,
+            285.50529084168375,
+            285.498125012964,
+            285.2960841264576
+          ]
+        },
+        "imagecodecs_decode": {
+          "median_ms": 11.526083573698997,
+          "min_ms": 11.469708057120442,
+          "max_ms": 11.647666106000543,
+          "iqr_ms": 0.12954091653227806,
+          "noisy": false,
+          "n_runs_total": 5,
+          "n_runs_after_filter": 4,
+          "all_samples_ms": [
+            11.049499968066812,
+            11.469708057120442,
+            11.53404195792973,
+            11.647666106000543,
+            11.518125189468265
+          ]
+        },
+        "opencodecs_decode": {
+          "median_ms": 3.587687504477799,
+          "min_ms": 3.5238328855484724,
+          "max_ms": 3.598500043153763,
+          "iqr_ms": 0.016458099707961082,
+          "noisy": false,
+          "n_runs_total": 5,
+          "n_runs_after_filter": 4,
+          "all_samples_ms": [
+            3.5238328855484724,
+            3.4811249934136868,
+            3.598500043153763,
+            3.593333065509796,
+            3.5820419434458017
+          ]
+        }
+      },
+      "speedup_vs_imagecodecs": 0.9337845848350553
+    },
+    "h2h_webp_4mp_rgb": {
+      "raw_mb": 12.582912,
+      "encoded_mb_oc": 2.587168,
+      "encoded_mb_ic": 2.587168,
+      "opencodecs_encode_ms": 614.7275839466602,
+      "imagecodecs_encode_ms": 584.4949580496177,
+      "speedup_vs_imagecodecs_encode": 0.9508194740458146,
+      "opencodecs_decode_ms": 150.6627919152379,
+      "imagecodecs_decode_ms": 147.60691719129682,
+      "speedup_vs_imagecodecs_decode": 0.9797171240151961,
+      "opencodecs_encode_mb_per_s": 20.469086354016316,
+      "imagecodecs_encode_mb_per_s": 21.52783668483217,
+      "opencodecs_decode_mb_per_s": 83.517050494319,
+      "imagecodecs_decode_mb_per_s": 85.24608629074406,
+      "opencodecs": {
+        "median_ms": 614.7275839466602,
+        "min_ms": 611.7919581010938,
+        "max_ms": 615.6586250290275,
+        "iqr_ms": 0.0,
+        "noisy": false,
+        "n_runs_total": 5,
+        "n_runs_after_filter": 3,
+        "all_samples_ms": [
+          643.7615829054266,
+          614.7275839466602,
+          615.6586250290275,
+          648.762916913256,
+          611.7919581010938
+        ]
+      },
+      "reference": {
+        "imagecodecs_encode": {
+          "median_ms": 584.4949580496177,
+          "min_ms": 581.5842500887811,
+          "max_ms": 610.4769171215594,
+          "iqr_ms": 28.715125983580947,
+          "noisy": false,
+          "n_runs_total": 5,
+          "n_runs_after_filter": 4,
+          "all_samples_ms": [
+            581.5842500887811,
+            610.4769171215594,
+            587.228124961257,
+            581.7617911379784,
+            619.5422080345452
+          ]
+        },
+        "imagecodecs_decode": {
+          "median_ms": 147.60691719129682,
+          "min_ms": 146.93466597236693,
+          "max_ms": 148.48312502726912,
+          "iqr_ms": 1.0255419183522463,
+          "noisy": false,
+          "n_runs_total": 5,
+          "n_runs_after_filter": 5,
+          "all_samples_ms": [
+            147.97783293761313,
+            147.60691719129682,
+            148.48312502726912,
+            146.93466597236693,
+            146.95229101926088
+          ]
+        },
+        "opencodecs_decode": {
+          "median_ms": 150.6627919152379,
+          "min_ms": 149.77504196576774,
+          "max_ms": 151.1757499538362,
+          "iqr_ms": 0.9368339087814093,
+          "noisy": false,
+          "n_runs_total": 5,
+          "n_runs_after_filter": 5,
+          "all_samples_ms": [
+            149.77504196576774,
+            151.1757499538362,
+            149.82587494887412,
+            150.76270885765553,
+            150.6627919152379
+          ]
+        }
+      },
+      "speedup_vs_imagecodecs": 0.9565078139589909
+    },
+    "h2h_jpeg2k_4mp_u16": {
+      "raw_mb": 8.388608,
+      "encoded_mb_oc": 0.838361,
+      "encoded_mb_ic": 6.734519,
+      "opencodecs_encode_ms": 727.2358960472047,
+      "imagecodecs_encode_ms": 702.4193750694394,
+      "speedup_vs_imagecodecs_encode": 0.9658755554935444,
+      "opencodecs_decode_ms": 109.7544590011239,
+      "imagecodecs_decode_ms": 700.7671247702092,
+      "speedup_vs_imagecodecs_decode": 6.384862457050908,
+      "opencodecs_encode_mb_per_s": 11.534920162213083,
+      "imagecodecs_encode_mb_per_s": 11.94244962159639,
+      "opencodecs_decode_mb_per_s": 76.43068059689583,
+      "imagecodecs_decode_mb_per_s": 11.970607215272455,
+      "opencodecs": {
+        "median_ms": 727.2358960472047,
+        "min_ms": 720.0538329780102,
+        "max_ms": 732.0197080262005,
+        "iqr_ms": 5.653540836647153,
+        "noisy": false,
+        "n_runs_total": 5,
+        "n_runs_after_filter": 4,
+        "all_samples_ms": [
+          732.0197080262005,
+          728.1056249048561,
+          757.5183338485658,
+          720.0538329780102,
+          726.3661671895534
+        ]
+      },
+      "reference": {
+        "imagecodecs_encode": {
+          "median_ms": 702.4193750694394,
+          "min_ms": 702.2884590551257,
+          "max_ms": 702.4561669677496,
+          "iqr_ms": 0.0,
+          "noisy": false,
+          "n_runs_total": 5,
+          "n_runs_after_filter": 3,
+          "all_samples_ms": [
+            702.4193750694394,
+            702.4561669677496,
+            734.1722080018371,
+            705.114042153582,
+            702.2884590551257
+          ]
+        },
+        "imagecodecs_decode": {
+          "median_ms": 700.7671247702092,
+          "min_ms": 699.3582909926772,
+          "max_ms": 702.3255419917405,
+          "iqr_ms": 0.0,
+          "noisy": false,
+          "n_runs_total": 5,
+          "n_runs_after_filter": 3,
+          "all_samples_ms": [
+            700.7671247702092,
+            735.0563339423388,
+            702.3255419917405,
+            699.3582909926772,
+            730.1862919703126
+          ]
+        },
+        "opencodecs_decode": {
+          "median_ms": 109.7544590011239,
+          "min_ms": 108.30891691148281,
+          "max_ms": 112.02845792286098,
+          "iqr_ms": 2.0391668658703566,
+          "noisy": false,
+          "n_runs_total": 5,
+          "n_runs_after_filter": 5,
+          "all_samples_ms": [
+            112.02845792286098,
+            110.97404197789729,
+            108.30891691148281,
+            109.7544590011239,
+            108.93487511202693
+          ]
+        }
+      },
+      "speedup_vs_imagecodecs": 1.676466749438979
+    },
+    "h2h_qoi_4mp_rgb": {
+      "raw_mb": 12.582912,
+      "encoded_mb_oc": 16.768974,
+      "encoded_mb_ic": 16.768974,
+      "opencodecs_encode_ms": 17.252958146855235,
+      "imagecodecs_encode_ms": 16.563395969569683,
+      "speedup_vs_imagecodecs_encode": 0.9600322349700221,
+      "opencodecs_decode_ms": 7.971104001626372,
+      "imagecodecs_decode_ms": 7.651604479178786,
+      "speedup_vs_imagecodecs_decode": 0.9599177827334335,
+      "opencodecs_encode_mb_per_s": 729.3191053322955,
+      "imagecodecs_encode_mb_per_s": 759.6818927179766,
+      "opencodecs_decode_mb_per_s": 1578.5657792738202,
+      "imagecodecs_decode_mb_per_s": 1644.4801916042672,
+      "opencodecs": {
+        "median_ms": 17.252958146855235,
+        "min_ms": 16.895916080102324,
+        "max_ms": 17.445874866098166,
+        "iqr_ms": 0.36087585613131523,
+        "noisy": false,
+        "n_runs_total": 5,
+        "n_runs_after_filter": 5,
+        "all_samples_ms": [
+          17.445874866098166,
+          17.43058394640684,
+          16.895916080102324,
+          17.069708090275526,
+          17.252958146855235
+        ]
+      },
+      "reference": {
+        "imagecodecs_encode": {
+          "median_ms": 16.563395969569683,
+          "min_ms": 16.50845888070762,
+          "max_ms": 16.645582858473063,
+          "iqr_ms": 0.10716589167714119,
+          "noisy": false,
+          "n_runs_total": 5,
+          "n_runs_after_filter": 4,
+          "all_samples_ms": [
+            16.050750156864524,
+            16.645582858473063,
+            16.53841696679592,
+            16.588374972343445,
+            16.50845888070762
+          ]
+        },
+        "imagecodecs_decode": {
+          "median_ms": 7.651604479178786,
+          "min_ms": 7.312375120818615,
+          "max_ms": 7.70183396525681,
+          "iqr_ms": 0.09245891124010086,
+          "noisy": false,
+          "n_runs_total": 5,
+          "n_runs_after_filter": 4,
+          "all_samples_ms": [
+            7.186291040852666,
+            7.312375120818615,
+            7.70183396525681,
+            7.693833904340863,
+            7.609375054016709
+          ]
+        },
+        "opencodecs_decode": {
+          "median_ms": 7.971104001626372,
+          "min_ms": 7.648458005860448,
+          "max_ms": 8.111082948744297,
+          "iqr_ms": 0.18404191359877586,
+          "noisy": false,
+          "n_runs_total": 5,
+          "n_runs_after_filter": 4,
+          "all_samples_ms": [
+            8.856625063344836,
+            8.015166968107224,
+            7.927041035145521,
+            8.111082948744297,
+            7.648458005860448
+          ]
+        }
+      },
+      "speedup_vs_imagecodecs": 0.9599960667003875
+    },
+    "h2h_lerc_4mp_u16": {
+      "raw_mb": 8.0,
+      "opencodecs_encode_ms": 48.49618801381439,
+      "imagecodecs_encode_ms": 45.46920908614993,
+      "speedup_vs_imagecodecs_encode": 0.9375831575297793,
+      "opencodecs_decode_ms": 11.787082999944687,
+      "imagecodecs_decode_ms": 10.021416004747152,
+      "speedup_vs_imagecodecs_decode": 0.8502032271083677,
+      "opencodecs_encode_mb_per_s": 164.96141918868258,
+      "imagecodecs_encode_mb_per_s": 175.94324072896237,
+      "opencodecs_decode_mb_per_s": 678.7090580457898,
+      "imagecodecs_decode_mb_per_s": 798.2903809412157,
+      "opencodecs": {
+        "median_ms": 48.49618801381439,
+        "min_ms": 48.15100017003715,
+        "max_ms": 49.14254113100469,
+        "iqr_ms": 0.7515822071582079,
+        "noisy": false,
+        "n_runs_total": 5,
+        "n_runs_after_filter": 4,
+        "all_samples_ms": [
+          48.15100017003715,
+          48.39095892384648,
+          48.601417103782296,
+          49.14254113100469,
+          81.40116697177291
+        ]
+      },
+      "reference": {
+        "imagecodecs_encode": {
+          "median_ms": 45.46920908614993,
+          "min_ms": 44.624040834605694,
+          "max_ms": 46.145291067659855,
+          "iqr_ms": 1.1457919608801603,
+          "noisy": false,
+          "n_runs_total": 5,
+          "n_runs_after_filter": 5,
+          "all_samples_ms": [
+            45.46920908614993,
+            46.145291067659855,
+            44.90670817904174,
+            44.624040834605694,
+            46.052500139921904
+          ]
+        },
+        "imagecodecs_decode": {
+          "median_ms": 10.021416004747152,
+          "min_ms": 9.956707945093513,
+          "max_ms": 10.235792025923729,
+          "iqr_ms": 0.21787593141198158,
+          "noisy": false,
+          "n_runs_total": 5,
+          "n_runs_after_filter": 4,
+          "all_samples_ms": [
+            9.956707945093513,
+            10.024915914982557,
+            10.355375008657575,
+            10.017916094511747,
+            10.235792025923729
+          ]
+        },
+        "opencodecs_decode": {
+          "median_ms": 11.787082999944687,
+          "min_ms": 11.448000092059374,
+          "max_ms": 11.938875075429678,
+          "iqr_ms": 0.2962497528642416,
+          "noisy": false,
+          "n_runs_total": 5,
+          "n_runs_after_filter": 5,
+          "all_samples_ms": [
+            11.852499796077609,
+            11.448000092059374,
+            11.556250043213367,
+            11.787082999944687,
+            11.938875075429678
+          ]
+        }
+      },
+      "speedup_vs_imagecodecs": 0.9204979119038162
+    },
+    "h2h_jxl_4mp_rgb": {
+      "raw_mb": 12.582912,
+      "encoded_mb_oc": 4.306683,
+      "encoded_mb_ic": 13.403404,
+      "opencodecs_encode_ms": 137.82937498763204,
+      "imagecodecs_encode_ms": 3188.445709180087,
+      "speedup_vs_imagecodecs_encode": 23.13328134489617,
+      "opencodecs_decode_ms": 40.83075001835823,
+      "imagecodecs_decode_ms": 521.875896025449,
+      "speedup_vs_imagecodecs_decode": 12.781442804523659,
+      "opencodecs_encode_mb_per_s": 91.29339809550115,
+      "imagecodecs_encode_mb_per_s": 3.9464093629606487,
+      "opencodecs_decode_mb_per_s": 308.1724434241962,
+      "imagecodecs_decode_mb_per_s": 24.110927704900938,
+      "opencodecs": {
+        "median_ms": 137.82937498763204,
+        "min_ms": 125.98987482488155,
+        "max_ms": 143.17083405330777,
+        "iqr_ms": 10.991833871230483,
+        "noisy": false,
+        "n_runs_total": 5,
+        "n_runs_after_filter": 5,
+        "all_samples_ms": [
+          142.05129188485444,
+          125.98987482488155,
+          137.82937498763204,
+          131.05945801362395,
+          143.17083405330777
+        ]
+      },
+      "reference": {
+        "imagecodecs_encode": {
+          "median_ms": 3188.445709180087,
+          "min_ms": 3181.0114169493318,
+          "max_ms": 3198.35349987261,
+          "iqr_ms": 0.0,
+          "noisy": false,
+          "n_runs_total": 5,
+          "n_runs_after_filter": 3,
+          "all_samples_ms": [
+            3188.445709180087,
+            3291.7672919575125,
+            3181.0114169493318,
+            3280.334583017975,
+            3198.35349987261
+          ]
+        },
+        "imagecodecs_decode": {
+          "median_ms": 521.875896025449,
+          "min_ms": 520.1983330771327,
+          "max_ms": 523.596707964316,
+          "iqr_ms": 1.9529988057911396,
+          "noisy": false,
+          "n_runs_total": 5,
+          "n_runs_after_filter": 4,
+          "all_samples_ms": [
+            521.6437091585249,
+            523.596707964316,
+            553.7216670345515,
+            522.1080828923732,
+            520.1983330771327
+          ]
+        },
+        "opencodecs_decode": {
+          "median_ms": 40.83075001835823,
+          "min_ms": 32.53749990835786,
+          "max_ms": 44.894499937072396,
+          "iqr_ms": 3.7696249783039093,
+          "noisy": false,
+          "n_runs_total": 5,
+          "n_runs_after_filter": 5,
+          "all_samples_ms": [
+            32.53749990835786,
+            40.83075001835823,
+            41.018374962732196,
+            44.894499937072396,
+            37.24874998442829
+          ]
+        }
+      },
+      "speedup_vs_imagecodecs": 20.76748577826828
+    }
+  }
+}

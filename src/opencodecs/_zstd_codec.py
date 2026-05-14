@@ -43,12 +43,13 @@ class ZstdCodec(Codec):
         return _zstd_check_signature(head)
 
     def encode(self, data: Any, *, dest=None, level: int | None = None,
+               numthreads: int | None = None,
                **opts) -> bytes | None:
         # Accept ndarrays too — flatten via tobytes(). For arrays the
         # caller is responsible for remembering shape/dtype.
         if isinstance(data, np.ndarray):
             data = data.tobytes()
-        compressed = _zstd_encode(data, level=level)
+        compressed = _zstd_encode(data, level=level, numthreads=numthreads)
         return _write_dest(compressed, dest)
 
     def decode(self, src: Any, **opts) -> bytes:

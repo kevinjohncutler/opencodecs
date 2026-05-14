@@ -281,7 +281,7 @@ _OC_USER_CACHE = Path.home() / (
         + "/opencodecs"
     )
 )
-for _libdir in ("sz3", "pcodec"):
+for _libdir in ("sz3", "pcodec", "sperr", "brunsli", "lerc", "zstd", "brotli"):
     _p = _OC_USER_CACHE / _libdir
     if (_p / "include").is_dir():
         _PROBE_PREFIXES.insert(0, _p)
@@ -763,14 +763,21 @@ def _find_libdeflate_prefix() -> Path | None:
         Path("/usr/local"),
         Path("/usr"),
     ])
+    # Linux multiarch layout: lib/<triple>/. Probe a few common triples.
+    posix_lib_subdirs = (
+        "lib",
+        "lib/x86_64-linux-gnu",
+        "lib/aarch64-linux-gnu",
+        "lib64",
+    )
     for c in candidates:
         if not str(c) or str(c) == ".":
             continue
         # POSIX layout: <prefix>/include/libdeflate.h
-        if (c / "include" / "libdeflate.h").is_file() and (
-            (c / "lib" / "libdeflate.dylib").exists()
-            or (c / "lib" / "libdeflate.so").exists()
-            or (c / "lib" / "libdeflate.so.0").exists()
+        if (c / "include" / "libdeflate.h").is_file() and any(
+            (c / s / name).exists()
+            for s in posix_lib_subdirs
+            for name in ("libdeflate.dylib", "libdeflate.so", "libdeflate.so.0")
         ):
             return c
         # conda-Windows layout: <prefix>/Library/include/libdeflate.h
@@ -951,9 +958,11 @@ extensions = [
         ],
         language="c",
     ),
-    # zstd: links against system libzstd (Homebrew on Mac, libzstd-dev on
-    # Ubuntu, $CONDA_PREFIX otherwise). No vendoring; zstd's ABI is
-    # stable across versions.
+    # zstd: per-user cache build preferred (Homebrew libzstd is built
+    # without IPO and benches 5% slower than an `-O3 + LTO` rebuild).
+    # macOS sysconfig prepends `-L/opt/homebrew/lib` ahead of our
+    # library_dirs so `-lzstd` always finds Homebrew; pass the absolute
+    # dylib path via extra_link_args to bypass `-l` resolution.
     Extension(
         name="opencodecs.codecs._zstd",
         sources=["src/opencodecs/codecs/_zstd.pyx"],
@@ -962,7 +971,22 @@ extensions = [
             *_resolve_include_dirs("zstd.h"),
         ],
         library_dirs=_lib_dirs_for_probes(),
-        libraries=["zstd"],
+        libraries=(
+            []
+            if (_OC_USER_CACHE / "zstd" / "lib" / "libzstd.1.5.7.dylib").exists()
+               or (_OC_USER_CACHE / "zstd" / "lib" / "libzstd.so").exists()
+            else ["zstd"]
+        ),
+        extra_link_args=(
+            [
+                str(_OC_USER_CACHE / "zstd" / "lib" / (
+                    "libzstd.1.5.7.dylib" if sys.platform == "darwin"
+                    else "libzstd.so"
+                )),
+                f"-Wl,-rpath,{_OC_USER_CACHE / 'zstd' / 'lib'}",
+            ]
+            if (_OC_USER_CACHE / "zstd" / "lib").is_dir() else []
+        ),
         language="c",
     ),
     # lz4: links against system liblz4 (Homebrew on Mac, liblz4-dev on
@@ -978,8 +1002,10 @@ extensions = [
         libraries=["lz4"],
         language="c",
     ),
-    # brotli: links against system libbrotli (also a libjxl transitive dep,
-    # so already present on any system that built libjxl).
+    # brotli: per-user cache build preferred (same reason as zstd above).
+    # Homebrew currently ships brotli 1.2.0 but imagecodecs and most
+    # consumers stick to 1.1.0; the cache build pins 1.1.0 with
+    # `-O3 + LTO + apple-m1` tuning.
     Extension(
         name="opencodecs.codecs._brotli",
         sources=["src/opencodecs/codecs/_brotli.pyx"],
@@ -988,7 +1014,30 @@ extensions = [
             *_resolve_include_dirs("brotli/encode.h"),
         ],
         library_dirs=_lib_dirs_for_probes(),
-        libraries=["brotlienc", "brotlidec", "brotlicommon"],
+        libraries=(
+            []
+            if (_OC_USER_CACHE / "brotli" / "lib" / "libbrotlienc.1.1.0.dylib").exists()
+               or (_OC_USER_CACHE / "brotli" / "lib" / "libbrotlienc.so").exists()
+            else ["brotlienc", "brotlidec", "brotlicommon"]
+        ),
+        extra_link_args=(
+            [
+                str(_OC_USER_CACHE / "brotli" / "lib" / (
+                    "libbrotlienc.1.1.0.dylib" if sys.platform == "darwin"
+                    else "libbrotlienc.so"
+                )),
+                str(_OC_USER_CACHE / "brotli" / "lib" / (
+                    "libbrotlidec.1.1.0.dylib" if sys.platform == "darwin"
+                    else "libbrotlidec.so"
+                )),
+                str(_OC_USER_CACHE / "brotli" / "lib" / (
+                    "libbrotlicommon.1.1.0.dylib" if sys.platform == "darwin"
+                    else "libbrotlicommon.so"
+                )),
+                f"-Wl,-rpath,{_OC_USER_CACHE / 'brotli' / 'lib'}",
+            ]
+            if (_OC_USER_CACHE / "brotli" / "lib").is_dir() else []
+        ),
         language="c",
     ),
     # blosc2: links against system c-blosc2.
@@ -1099,10 +1148,15 @@ extensions = [
         ],
         language="c",
     ),
-    # WebP via libwebp.
+    # WebP via libwebp. We add a tiny C shim (webp_shim.c) so we can
+    # expose WebPConfig.thread_level — libwebp's simple WebPEncode*
+    # API doesn't take it.
     Extension(
         name="opencodecs.codecs._webp",
-        sources=["src/opencodecs/codecs/_webp.pyx"],
+        sources=[
+            "src/opencodecs/codecs/_webp.pyx",
+            "src/opencodecs/codecs/webp_shim.c",
+        ],
         include_dirs=[
             str(PKG_CODECS),
             numpy.get_include(),
@@ -1238,6 +1292,42 @@ extensions = [
         ),
         language="c",
     ),
+    # Brunsli (lossless JPEG transcoder, ~20% smaller storage): per-user
+    # cache when built via bench/build_codec_libs.sh.
+    Extension(
+        name="opencodecs.codecs._brunsli",
+        sources=["src/opencodecs/codecs/_brunsli.pyx"],
+        include_dirs=[
+            str(PKG_CODECS),
+            *_resolve_include_dirs("brunsli/encode.h"),
+        ],
+        library_dirs=_lib_dirs_for_probes(),
+        libraries=["brunslienc-c", "brunslidec-c"],
+        extra_link_args=(
+            [f"-Wl,-rpath,{_OC_USER_CACHE / 'brunsli' / 'lib'}"]
+            if (_OC_USER_CACHE / "brunsli" / "lib").is_dir() else []
+        ),
+        language="c",
+    ),
+    # SPERR (wavelet-based error-bounded lossy compressor): system
+    # libSPERR, or per-user cache when built via bench/build_codec_libs.sh.
+    Extension(
+        name="opencodecs.codecs._sperr",
+        sources=["src/opencodecs/codecs/_sperr.pyx"],
+        include_dirs=[
+            str(PKG_CODECS),
+            numpy.get_include(),
+            *_resolve_include_dirs("SPERR_C_API.h"),
+        ],
+        library_dirs=_lib_dirs_for_probes(),
+        libraries=["SPERR"],
+        define_macros=[("NPY_NO_DEPRECATED_API", "NPY_1_7_API_VERSION")],
+        extra_link_args=(
+            [f"-Wl,-rpath,{_OC_USER_CACHE / 'sperr' / 'lib'}"]
+            if (_OC_USER_CACHE / "sperr" / "lib").is_dir() else []
+        ),
+        language="c",
+    ),
     # ZFP (lossy floating-point compression): system libzfp.
     Extension(
         name="opencodecs.codecs._zfp",
@@ -1252,7 +1342,16 @@ extensions = [
         define_macros=[("NPY_NO_DEPRECATED_API", "NPY_1_7_API_VERSION")],
         language="c",
     ),
-    # LERC (Esri Limited Error Raster Compression): system liblerc.
+    # LERC (Esri Limited Error Raster Compression): per-user cache
+    # build preferred (Homebrew's libLerc is built `-O2` portable and
+    # measurably 15% slower than an `-O3 + LTO` rebuild; see
+    # bench/build_codec_libs.sh::build_lerc). Falls back to system
+    # liblerc when the cache copy isn't present.
+    #
+    # macOS link-order trap: sysconfig prepends `-L/opt/homebrew/lib`
+    # AHEAD of our library_dirs, so `-lLerc` always resolves to
+    # Homebrew. Pass the absolute dylib path via extra_link_args
+    # (libjxl uses the same trick).
     Extension(
         name="opencodecs.codecs._lerc",
         sources=["src/opencodecs/codecs/_lerc.pyx"],
@@ -1262,8 +1361,23 @@ extensions = [
             *_resolve_include_dirs("Lerc_c_api.h"),
         ],
         library_dirs=_lib_dirs_for_probes(),
-        libraries=["Lerc"],
+        libraries=(
+            []
+            if (_OC_USER_CACHE / "lerc" / "lib" / "libLerc.4.dylib").exists()
+               or (_OC_USER_CACHE / "lerc" / "lib" / "libLerc.so").exists()
+            else ["Lerc"]
+        ),
         define_macros=[("NPY_NO_DEPRECATED_API", "NPY_1_7_API_VERSION")],
+        extra_link_args=(
+            [
+                str(_OC_USER_CACHE / "lerc" / "lib" / (
+                    "libLerc.4.dylib" if sys.platform == "darwin"
+                    else "libLerc.so"
+                )),
+                f"-Wl,-rpath,{_OC_USER_CACHE / 'lerc' / 'lib'}",
+            ]
+            if (_OC_USER_CACHE / "lerc" / "lib").is_dir() else []
+        ),
         language="c",
     ),
     # AEC (CCSDS 121.0-B-2 adaptive entropy coding): system libaec.
@@ -1320,6 +1434,8 @@ _REQUIRED_HEADERS = {
     "opencodecs.codecs._lerc":   ("Lerc_c_api.h",),
     "opencodecs.codecs._zfp":    ("zfp.h",),
     "opencodecs.codecs._sz3":    ("SZ3c/sz3c.h",),
+    "opencodecs.codecs._sperr":  ("SPERR_C_API.h",),
+    "opencodecs.codecs._brunsli": ("brunsli/encode.h",),
     "opencodecs.codecs._pcodec": ("cpcodec.h",),
     "opencodecs.codecs._jpeg":   ("turbojpeg.h",),
     "opencodecs.codecs._webp":   ("webp/encode.h",),

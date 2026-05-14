@@ -1,0 +1,115 @@
+{
+  "timestamp": "20260514T061420Z",
+  "git_rev": "9fa1059",
+  "tier": "fast",
+  "system": {
+    "hostname": "mac.lan",
+    "platform": "macOS-26.4.1-arm64-arm-64bit",
+    "machine": "arm64",
+    "processor": "arm",
+    "python": "3.12.9",
+    "cpu_count": 20,
+    "cpu_model": "Apple M1 Ultra",
+    "ram_kb_max": 150667264,
+    "opencodecs_version": "0.2.0.dev0",
+    "git_rev": "9fa1059",
+    "ref_versions": {
+      "tifffile": "2026.3.3",
+      "ndstorage": "0.1.18",
+      "czifile": "2026.4.11",
+      "imagecodecs": "2026.3.6"
+    }
+  },
+  "workloads": {
+    "h2h_brotli_10mb": {
+      "raw_mb": 10.48576,
+      "encoded_mb_oc": 8.962334,
+      "encoded_mb_ic": 8.962334,
+      "opencodecs_encode_ms": 58.24454198591411,
+      "imagecodecs_encode_ms": 58.46729199402034,
+      "speedup_vs_imagecodecs_encode": 1.0038243928188173,
+      "opencodecs_decode_ms": 50.92383292503655,
+      "imagecodecs_decode_ms": 50.71879178285599,
+      "speedup_vs_imagecodecs_decode": 0.9959735720898621,
+      "opencodecs_encode_mb_per_s": 180.0299159796961,
+      "imagecodecs_encode_mb_per_s": 179.34403394418229,
+      "opencodecs_decode_mb_per_s": 205.91065907069043,
+      "imagecodecs_decode_mb_per_s": 206.74309523959138,
+      "opencodecs": {
+        "median_ms": 58.24454198591411,
+        "min_ms": 56.05608318001032,
+        "max_ms": 60.32029096968472,
+        "iqr_ms": 3.0741249211132526,
+        "noisy": false,
+        "n_runs_total": 7,
+        "n_runs_after_filter": 7,
+        "all_samples_ms": [
+          56.05608318001032,
+          56.5049999859184,
+          58.507125126197934,
+          60.32029096968472,
+          59.579124907031655,
+          57.5594580732286,
+          58.24454198591411
+        ]
+      },
+      "reference": {
+        "imagecodecs_encode": {
+          "median_ms": 58.46729199402034,
+          "min_ms": 55.522290989756584,
+          "max_ms": 59.39149996265769,
+          "iqr_ms": 2.4739999789744616,
+          "noisy": false,
+          "n_runs_total": 7,
+          "n_runs_after_filter": 7,
+          "all_samples_ms": [
+            58.5247918497771,
+            56.72283307649195,
+            58.46729199402034,
+            59.39149996265769,
+            59.19683305546641,
+            57.96870798803866,
+            55.522290989756584
+          ]
+        },
+        "imagecodecs_decode": {
+          "median_ms": 50.71879178285599,
+          "min_ms": 50.592583138495684,
+          "max_ms": 50.9804580360651,
+          "iqr_ms": 0.08091609925031662,
+          "noisy": false,
+          "n_runs_total": 7,
+          "n_runs_after_filter": 5,
+          "all_samples_ms": [
+            50.70733395405114,
+            50.9804580360651,
+            50.592583138495684,
+            48.11858292669058,
+            49.40266697667539,
+            50.788250053301454,
+            50.71879178285599
+          ]
+        },
+        "opencodecs_decode": {
+          "median_ms": 50.92383292503655,
+          "min_ms": 50.38695805706084,
+          "max_ms": 51.04812514036894,
+          "iqr_ms": 0.32091676257550716,
+          "noisy": false,
+          "n_runs_total": 7,
+          "n_runs_after_filter": 5,
+          "all_samples_ms": [
+            50.38695805706084,
+            50.96029187552631,
+            50.6393751129508,
+            51.04812514036894,
+            50.92383292503655,
+            72.20454211346805,
+            48.64191706292331
+          ]
+        }
+      },
+      "speedup_vs_imagecodecs": 1.0001622160808028
+    }
+  }
+}

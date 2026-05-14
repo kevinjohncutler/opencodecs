@@ -71,7 +71,9 @@ VERSIONS=(
     "lerc            4.1.0"
     "zfp             1.0.1"
     "SZ3             3.3.1"
+    "SPERR           0.8.5"
     "pcodec          1.0.2"
+    "brunsli         master"
 
     # Marquee codec — delegated to the dedicated script for parity with
     # the per-developer flow (some users only want to source-build libjxl
@@ -230,13 +232,35 @@ build_zlib() {
 }
 
 # ---- zstd ---------------------------------------------------------------
+# Install into the per-lib cache (`_OC_USER_CACHE/zstd`) with `-O3 + LTO`
+# so the wrapper picks it up via setup.py's absolute-dylib link. zstd's
+# Makefile build is preferred over CMake because it picks up the
+# upstream-tuned flags (`-fomit-frame-pointer`, etc.). Patches the
+# dylib install_name to `@rpath/` so the loader can resolve it after
+# we copy the .so off the SMB mount.
 build_zstd() {
     local v="${VERSIONS_MAP[zstd]}"
     is_built zstd "$v" && { echo "  zstd $v already built"; return; }
     echo "==> zstd $v"
     local src
     src=$(fetch_tar zstd "$v" "https://github.com/facebook/zstd/releases/download/v$v/zstd-$v.tar.gz")
-    cmake_build "$src/build/cmake" -DZSTD_BUILD_PROGRAMS=OFF -DZSTD_BUILD_STATIC=OFF
+    local zstd_prefix
+    if [ "$(uname)" = "Darwin" ]; then
+        zstd_prefix="${HOME}/Library/Caches/opencodecs/zstd"
+    else
+        zstd_prefix="${XDG_CACHE_HOME:-$HOME/.cache}/opencodecs/zstd"
+    fi
+    local cflags="-O3 -DNDEBUG -fomit-frame-pointer -flto"
+    if [ "$(uname)" = "Darwin" ]; then
+        cflags="$cflags -mcpu=apple-m1"
+    fi
+    ( cd "$src/lib" && make clean >/dev/null 2>&1 || true \
+        && make -j"$JOBS" CFLAGS="$cflags" libzstd \
+        && make PREFIX="$zstd_prefix" install )
+    if [ "$(uname)" = "Darwin" ]; then
+        install_name_tool -id @rpath/libzstd.1.dylib \
+            "$zstd_prefix/lib/libzstd.${v}.dylib"
+    fi
     mark_built zstd "$v"
 }
 
@@ -252,13 +276,37 @@ build_lz4() {
 }
 
 # ---- brotli -------------------------------------------------------------
+# Same pattern as zstd above — per-lib cache prefix + -O3 + LTO. Pinned
+# at brotli 1.1.0 (current upstream stable) for ABI consistency with
+# imagecodecs.
 build_brotli() {
     local v="${VERSIONS_MAP[brotli]}"
     is_built brotli "$v" && { echo "  brotli $v already built"; return; }
     echo "==> brotli $v"
     local src
     src=$(fetch_tar brotli "$v" "https://github.com/google/brotli/archive/refs/tags/v$v.tar.gz")
-    cmake_build "$src" -DBROTLI_DISABLE_TESTS=ON
+    local brotli_prefix
+    if [ "$(uname)" = "Darwin" ]; then
+        brotli_prefix="${HOME}/Library/Caches/opencodecs/brotli"
+    else
+        brotli_prefix="${XDG_CACHE_HOME:-$HOME/.cache}/opencodecs/brotli"
+    fi
+    local cflags="-O3 -DNDEBUG"
+    if [ "$(uname)" = "Darwin" ]; then
+        cflags="$cflags -mcpu=apple-m1"
+    fi
+    local build="$src/_build"
+    rm -rf "$build"
+    mkdir -p "$build"
+    ( cd "$build" && cmake "${CMAKE_GEN[@]}" \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_C_FLAGS_RELEASE="$cflags" \
+        -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON \
+        -DBUILD_SHARED_LIBS=ON \
+        -DBROTLI_DISABLE_TESTS=ON \
+        -DCMAKE_INSTALL_PREFIX="$brotli_prefix" \
+        "$src" \
+      && "${BUILD_TOOL[@]}" && "${INSTALL_TOOL[@]}" )
     mark_built brotli "$v"
 }
 
@@ -443,7 +491,30 @@ build_lerc() {
     echo "==> lerc $v"
     local src
     src=$(fetch_tar lerc "$v" "https://github.com/Esri/lerc/archive/refs/tags/v$v.tar.gz")
-    cmake_build "$src" -DLERC_BUILD_TESTING=OFF
+    # Build with -O3 + LTO into a per-lib cache subdir the setup.py
+    # probe (`_OC_USER_CACHE/lerc`) will pick up. Homebrew's libLerc
+    # is built -O2 portable and benches 15% slower on decode.
+    local prev_prefix="$CMAKE_INSTALL_PREFIX"
+    local prev_cflags="${CMAKE_C_FLAGS_RELEASE_OVERRIDE:-}"
+    local lerc_prefix
+    if [ "$(uname)" = "Darwin" ]; then
+        lerc_prefix="${HOME}/Library/Caches/opencodecs/lerc"
+    else
+        lerc_prefix="${XDG_CACHE_HOME:-$HOME/.cache}/opencodecs/lerc"
+    fi
+    local build="$src/_build"
+    rm -rf "$build"
+    mkdir -p "$build"
+    ( cd "$build" && cmake "${CMAKE_GEN[@]}" \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_C_FLAGS_RELEASE="-O3 -DNDEBUG" \
+        -DCMAKE_CXX_FLAGS_RELEASE="-O3 -DNDEBUG" \
+        -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON \
+        -DBUILD_SHARED_LIBS=ON \
+        -DLERC_BUILD_TESTING=OFF \
+        -DCMAKE_INSTALL_PREFIX="$lerc_prefix" \
+        "$src" \
+      && "${BUILD_TOOL[@]}" && "${INSTALL_TOOL[@]}" )
     mark_built lerc "$v"
 }
 
@@ -469,6 +540,37 @@ build_SZ3() {
     # already built earlier in this script.
     cmake_build "$src" -DBUILD_SZ3_TESTS=OFF -DSZ3_USE_BUNDLED_ZSTD=OFF
     mark_built SZ3 "$v"
+}
+
+# ---- SPERR (wavelet-based scientific compressor) ----------------------
+build_SPERR() {
+    local v="${VERSIONS_MAP[SPERR]}"
+    is_built SPERR "$v" && { echo "  SPERR $v already built"; return; }
+    echo "==> SPERR $v"
+    local src
+    src=$(fetch_tar SPERR "$v" \
+        "https://github.com/NCAR/SPERR/archive/refs/tags/v$v.tar.gz")
+    cmake_build "$src" -DBUILD_CLI_UTILITIES=OFF -DUSE_OMP=ON
+    mark_built SPERR "$v"
+}
+
+# ---- Brunsli (lossless JPEG transcoder) -------------------------------
+# Brunsli's top-level CMake pulls in vintage googletest; modern CMake
+# refuses it without an explicit policy floor.
+build_brunsli() {
+    local v="${VERSIONS_MAP[brunsli]}"
+    is_built brunsli "$v" && { echo "  brunsli $v already built"; return; }
+    echo "==> brunsli $v"
+    local src
+    # Brunsli has no release tags; tar of the master branch is the
+    # supported source.
+    src=$(fetch_tar brunsli "$v" \
+        "https://github.com/google/brunsli/archive/refs/heads/$v.tar.gz")
+    cmake_build "$src" \
+        -DBUILD_TESTING=OFF \
+        -DBRUNSLI_EMSCRIPTEN=OFF \
+        -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+    mark_built brunsli "$v"
 }
 
 # ---- pcodec (Rust cdylib via cargo) ------------------------------------
@@ -550,7 +652,9 @@ ORDERED=(
     lerc
     zfp
     SZ3
+    SPERR
     pcodec
+    brunsli
     libjxl
 )
 
@@ -577,7 +681,9 @@ for name in "${ORDERED[@]}"; do
             lerc)            build_lerc ;;
             zfp)             build_zfp ;;
             SZ3)             build_SZ3 ;;
+            SPERR)           build_SPERR ;;
             pcodec)          build_pcodec ;;
+            brunsli)         build_brunsli ;;
             libjxl)          build_libjxl ;;
         esac
     fi

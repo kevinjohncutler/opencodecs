@@ -1061,6 +1061,124 @@ def bench_tiff_write_64mb():
     }
 
 
+@workload("hdf5_parallel_read_compressed", tier="fast", group="hdf5")
+def bench_hdf5_parallel_read():
+    """Parallel-decompress HDF5 read vs ``h5py``.
+
+    Build a 512 MB u16 chunked + gzip-4 dataset, then time:
+      * h5py's vanilla ``ds[...]`` (serialized by libhdf5's library lock)
+      * opencodecs's :meth:`HdfReader.read_parallel` (raw-chunk read +
+        N-worker decompress).
+
+    The win comes from moving the deflate decode out of libhdf5's lock.
+    """
+    try:
+        import h5py  # noqa: F401
+    except ImportError:
+        return {"skipped": "h5py not installed"}
+    import os
+    import tempfile
+    from opencodecs._hdf5_codec import HdfReader
+
+    arr = np.random.default_rng(0).integers(
+        0, 1000, size=(256, 1024, 1024), dtype=np.uint16,
+    )
+    fd, path = tempfile.mkstemp(suffix=".h5")
+    os.close(fd)
+    try:
+        with h5py.File(path, "w") as f:
+            f.create_dataset(
+                "img", data=arr, chunks=(8, 256, 256),
+                compression="gzip", compression_opts=4,
+            )
+        on_disk = os.path.getsize(path)
+
+        def h5py_serial():
+            with h5py.File(path, "r") as f:
+                _ = f["img"][:]
+
+        def oc_parallel():
+            r = HdfReader(path)
+            try:
+                _ = r.read_parallel(n_workers=None)
+            finally:
+                r.close()
+
+        oc_p = _time_fn(oc_parallel, n=3)
+        h5_t = _time_fn(h5py_serial, n=3)
+        raw_mb = arr.nbytes / 1e6
+        return {
+            "raw_mb": raw_mb,
+            "on_disk_mb": on_disk / 1e6,
+            "opencodecs": oc_p,
+            "reference": {"h5py": h5_t},
+            "speedup_vs_h5py": h5_t["median_ms"] / oc_p["median_ms"],
+            "mb_per_s_parallel": raw_mb / (oc_p["median_ms"] / 1000),
+            "mb_per_s_h5py": raw_mb / (h5_t["median_ms"] / 1000),
+        }
+    finally:
+        os.remove(path)
+
+
+@workload("omezarr_write_512mb_zstd", tier="fast", group="omezarr_write")
+def bench_omezarr_write():
+    """Write a 512 MB u16 array as Zarr v2 + zstd chunks.
+
+    Compares opencodecs serial (workers=1), parallel (workers=auto),
+    and ``zarr-python`` defaults. Confirms the parallel-chunk-encode
+    win documented in feedback_perf_patterns.
+    """
+    try:
+        import zarr  # noqa: F401
+        from numcodecs import Zstd
+    except ImportError:
+        return {"skipped": "zarr-python not installed"}
+    from opencodecs._omezarr_writer import write_zarr_array
+    import tempfile
+
+    arr = np.random.default_rng(0).integers(
+        0, 1000, size=(2048, 2048, 64), dtype=np.uint16,
+    )
+    chunks = (256, 256, 32)
+
+    def oc_serial():
+        with tempfile.TemporaryDirectory() as td:
+            write_zarr_array(td + "/a", arr, chunks=chunks,
+                             compressor="zstd", compression_level=3,
+                             workers=1, zarr_format=2)
+
+    def oc_parallel():
+        with tempfile.TemporaryDirectory() as td:
+            write_zarr_array(td + "/a", arr, chunks=chunks,
+                             compressor="zstd", compression_level=3,
+                             workers=None, zarr_format=2)
+
+    def zarr_py():
+        import zarr
+        from numcodecs import Zstd
+        with tempfile.TemporaryDirectory() as td:
+            z = zarr.open(td + "/a", mode="w", shape=arr.shape,
+                          chunks=chunks, dtype=arr.dtype,
+                          compressor=Zstd(level=3), zarr_format=2)
+            z[:] = arr
+
+    oc_p = _time_fn(oc_parallel, n=3)
+    oc_s = _time_fn(oc_serial, n=3)
+    zp = _time_fn(zarr_py, n=3)
+    raw_mb = arr.nbytes / 1e6
+    return {
+        "raw_mb": raw_mb,
+        "opencodecs": oc_p,
+        "opencodecs_serial": oc_s,
+        "reference": {"zarr_python": zp},
+        "speedup_vs_zarr_python": zp["median_ms"] / oc_p["median_ms"],
+        "parallel_speedup_over_serial":
+            oc_s["median_ms"] / oc_p["median_ms"],
+        "mb_per_s_parallel": raw_mb / (oc_p["median_ms"] / 1000),
+        "mb_per_s_serial": raw_mb / (oc_s["median_ms"] / 1000),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Medium-tier workloads (placeholders for the next session)
 # ---------------------------------------------------------------------------

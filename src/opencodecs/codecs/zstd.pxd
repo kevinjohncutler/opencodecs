@@ -29,3 +29,21 @@ cdef extern from 'zstd.h' nogil:
 
     int ZSTD_CONTENTSIZE_UNKNOWN
     int ZSTD_CONTENTSIZE_ERROR
+
+    # Advanced compress-context API (needed for multithreaded encode).
+    ctypedef struct ZSTD_CCtx:
+        pass
+    ctypedef enum ZSTD_cParameter:
+        ZSTD_c_compressionLevel
+        ZSTD_c_nbWorkers
+
+    ZSTD_CCtx* ZSTD_createCCtx()
+    size_t ZSTD_freeCCtx(ZSTD_CCtx* cctx)
+    size_t ZSTD_CCtx_setParameter(
+        ZSTD_CCtx* cctx, ZSTD_cParameter param, int value,
+    )
+    size_t ZSTD_compress2(
+        ZSTD_CCtx* cctx,
+        void* dst, size_t dstCapacity,
+        const void* src, size_t srcSize,
+    )

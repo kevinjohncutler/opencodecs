@@ -276,7 +276,7 @@ def decode_bc6h(data, *, width: int, height: int,
                     bcdec_bc6h_half(
                         block_p,
                         (<uint16_t*> cnp.PyArray_DATA(out)) + (by * 4) * (pitch // 2) + (bx * 4 * 3),
-                        pitch, is_signed,
+                        pitch, is_signed_c,
                     )
     elif format == "float":
         out = cnp.PyArray_EMPTY(3, shape3, cnp.NPY_FLOAT32, 0)
@@ -288,7 +288,7 @@ def decode_bc6h(data, *, width: int, height: int,
                     bcdec_bc6h_float(
                         block_p,
                         (<float*> cnp.PyArray_DATA(out)) + (by * 4) * (pitch // 4) + (bx * 4 * 3),
-                        pitch, is_signed,
+                        pitch, is_signed_c,
                     )
     else:
         raise BcdecError(

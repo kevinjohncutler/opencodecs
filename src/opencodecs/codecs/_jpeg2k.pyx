@@ -33,6 +33,7 @@ from openjpeg cimport (
     opj_stream_set_user_data, opj_stream_set_user_data_length,
     opj_read_header, opj_decode, opj_end_decompress,
     opj_start_compress, opj_encode, opj_end_compress,
+    opj_has_thread_support, opj_get_num_cpus, opj_codec_set_threads,
 )
 
 cnp.import_array()
@@ -127,8 +128,17 @@ cdef OPJ_BOOL _seek_write_cb(OPJ_OFF_T p_nb_bytes, void* p_user_data) noexcept n
 # ----- Public API -----
 
 
-def decode(data) -> np.ndarray:
-    """Decode JPEG-2000 (JP2 or J2K codestream) bytes to a numpy array."""
+def decode(data, *, numthreads: int | None = None) -> np.ndarray:
+    """Decode JPEG-2000 (JP2 or J2K codestream) bytes to a numpy array.
+
+    Parameters
+    ----------
+    numthreads : int, optional
+        Worker threads for OpenJPEG's parallel decoder. ``None``
+        defaults to ``opj_get_num_cpus() / 2`` (matches imagecodecs).
+        ``0`` or ``1`` forces single-threaded. Typical 2-4× speedup on
+        tiled / large-precinct JP2s.
+    """
     cdef:
         const uint8_t[::1] src
         OPJ_SIZE_T srcsize
@@ -139,6 +149,7 @@ def decode(data) -> np.ndarray:
         mem_buffer_read rdbuf
         OPJ_BOOL ok
         int codec_format
+        int _opj_n
         cnp.ndarray out
 
     if isinstance(data, (bytes, bytearray)):
@@ -178,6 +189,17 @@ def decode(data) -> np.ndarray:
         opj_set_default_decoder_parameters(&dparams)
         if not opj_setup_decoder(codec, &dparams):
             raise Jpeg2kError('opj_setup_decoder failed')
+
+        # Enable multithreaded T1 decoding when supported. Match
+        # imagecodecs's default: half the CPUs when numthreads is None.
+        if opj_has_thread_support():
+            if numthreads is None:
+                _opj_n = opj_get_num_cpus() // 2
+                if _opj_n < 1: _opj_n = 1
+            else:
+                _opj_n = int(numthreads)
+            if _opj_n > 1:
+                opj_codec_set_threads(codec, _opj_n)
 
         ok = opj_read_header(stream, codec, &image)
         if not ok or image == NULL:
@@ -277,12 +299,25 @@ cdef cnp.ndarray _image_to_ndarray(opj_image_t* image):
 
 
 def encode(data, *, level: int | None = None,
-           lossless: bool = False, codec: str = 'jp2') -> bytes:
+           lossless: bool = False, codec: str = 'jp2',
+           numthreads: int | None = None) -> bytes:
     """Encode a numpy array as JPEG-2000 (JP2 by default; ``codec='j2k'`` for
     raw codestream).
 
-    ``level`` controls compression: lower = more compressed, higher = better
-    quality. When ``lossless=True``, ``level`` is ignored.
+    Parameters
+    ----------
+    level : int, optional
+        Compression: lower = more compressed (default ~10 ratio).
+        Ignored when ``lossless=True``.
+    lossless : bool
+        Use the lossless 5/3 integer wavelet.
+    codec : {"jp2", "j2k"}
+        Container format. ``jp2`` is the boxed format; ``j2k`` is the raw
+        codestream that DICOM transfer syntaxes use.
+    numthreads : int, optional
+        Worker threads for OpenJPEG's parallel T1 encoder. ``None``
+        defaults to ``opj_get_num_cpus() / 2``. Typical 2-3× speedup on
+        tiled / large-precinct encodes.
     """
     cdef:
         cnp.ndarray arr
@@ -298,6 +333,7 @@ def encode(data, *, level: int | None = None,
         OPJ_INT32* comp_data
         bytes out
         int cf
+        int _opj_n
 
     if not isinstance(data, np.ndarray):
         arr = np.ascontiguousarray(data)
@@ -390,6 +426,16 @@ def encode(data, *, level: int | None = None,
         opj_destroy_codec(opj_codec)
         opj_image_destroy(image)
         raise Jpeg2kError('opj_setup_encoder failed')
+
+    # Enable multithreaded T1 encoding when libopenjp2 supports it.
+    if opj_has_thread_support():
+        if numthreads is None:
+            _opj_n = opj_get_num_cpus() // 2
+            if _opj_n < 1: _opj_n = 1
+        else:
+            _opj_n = int(numthreads)
+        if _opj_n > 1:
+            opj_codec_set_threads(opj_codec, _opj_n)
 
     wrbuf.data = NULL
     wrbuf.cap = 0

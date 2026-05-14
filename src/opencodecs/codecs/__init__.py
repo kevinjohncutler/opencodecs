@@ -48,6 +48,7 @@ _EXTENSIONS = (
     "_lerc",
     "_zfp",
     "_sz3",
+    "_sperr",       # SPERR wavelet-based error-bounded lossy (optional)
     "_pcodec",
     "_deflate",
     "_jpeg",
@@ -65,6 +66,7 @@ _EXTENSIONS = (
     "_charls",      # JPEG-LS (optional; built when libcharls is on system)
     "_openjph",     # HTJ2K / JPEG-2000 Part-15 (optional; needs OpenJPH)
     "_eer",         # Thermo Fisher EER cryo-EM event-list decoder (vendored)
+    "_brunsli",     # lossless JPEG transcoder (~20% smaller)
 )
 
 

@@ -129,6 +129,9 @@ cdef extern from 'heif_shim.h' nogil:
     heif_error heif_encoder_set_lossless(heif_encoder*, int)
     heif_error heif_encoder_set_parameter_string(
         heif_encoder*, const char* name, const char* value)
+    heif_error heif_encoder_set_parameter_integer(
+        heif_encoder*, const char* name, int value)
+    void heif_context_set_max_decoding_threads(heif_context*, int)
     heif_error heif_context_encode_image(
         heif_context*, const heif_image*, heif_encoder*,
         const heif_encoding_options*, heif_image_handle** out_handle,

@@ -91,7 +91,9 @@ int oc_b2nd_encode(
     /* do_bitshuffle == -1: no shuffle */
 
     blosc2_dparams dparams = BLOSC2_DPARAMS_DEFAULTS;
-    dparams.typesize = itemsize;
+    /* dparams.typesize was added in c-blosc2 3.x. The chunk schema carries
+     * its own typesize, so we don't need to set it here for decompression
+     * to work. Skip it for compat with system blosc2 2.x. */
 
     /* Use the default (non-contiguous in-memory) storage. b2nd_to_cframe
      * still serializes a non-contiguous schunk into a contiguous bytes

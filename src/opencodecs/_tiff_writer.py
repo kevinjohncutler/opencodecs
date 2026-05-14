@@ -1261,6 +1261,52 @@ class TiffWriter:
         )
         return [main_info] + sub_infos
 
+    def write_pyramid_auto(
+        self,
+        image: np.ndarray,
+        *,
+        pyramid_levels: int | None = None,
+        pyramid_min_size: int = 512,
+        pyramid_axes: tuple[int, ...] | str | None = None,
+        tile: tuple[int, int] | None = (256, 256),
+        compression: str | int = "none",
+        compression_level: int | None = None,
+        predictor: int = 1,
+        photometric: str | int = "auto",
+        metadata: str | None = None,
+        subifds: bool = False,
+    ) -> list[dict]:
+        """Write a pyramid built automatically from a single full-res image.
+
+        Opt-in convenience wrapper around :meth:`write_pyramid`. A
+        pyramid roughly adds ~33% on-disk size (2D, geometric series)
+        on top of the full-res page; the default ``pyramid_min_size=512``
+        auto-stops levels at that threshold so a 1024-px-wide input
+        produces just 2 levels (no surprise size bloat). Pass
+        ``pyramid_levels=N`` to force a specific depth.
+
+        See :func:`opencodecs._pyramid_build.make_pyramid_levels` for
+        the downsampling algorithm (2x2 mean pool on the trailing 2
+        spatial axes by default).
+        """
+        from ._pyramid_build import make_pyramid_levels
+        levels = make_pyramid_levels(
+            image,
+            levels=pyramid_levels,
+            min_size=pyramid_min_size,
+            axes=pyramid_axes,
+        )
+        return self.write_pyramid(
+            levels,
+            tile=tile,
+            compression=compression,
+            compression_level=compression_level,
+            predictor=predictor,
+            photometric=photometric,
+            metadata=metadata,
+            subifds=subifds,
+        )
+
     def close(self) -> None:
         """Patch a null next-IFD pointer for the last page and close
         the underlying file handle if we own it."""
