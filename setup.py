@@ -1292,6 +1292,22 @@ extensions = [
         ),
         language="c",
     ),
+    # GIF via giflib (libgif 5.x or 6.x; Homebrew / libgif-dev). Static
+    # and animated decode (composited to RGB), single-frame encode from
+    # palette indices.
+    Extension(
+        name="opencodecs.codecs._gif",
+        sources=["src/opencodecs/codecs/_gif.pyx"],
+        include_dirs=[
+            str(PKG_CODECS),
+            numpy.get_include(),
+            *_resolve_include_dirs("gif_lib.h"),
+        ],
+        library_dirs=_lib_dirs_for_probes(),
+        libraries=["gif"],
+        define_macros=[("NPY_NO_DEPRECATED_API", "NPY_1_7_API_VERSION")],
+        language="c",
+    ),
     # Brunsli (lossless JPEG transcoder, ~20% smaller storage): per-user
     # cache when built via bench/build_codec_libs.sh.
     Extension(
@@ -1436,6 +1452,7 @@ _REQUIRED_HEADERS = {
     "opencodecs.codecs._sz3":    ("SZ3c/sz3c.h",),
     "opencodecs.codecs._sperr":  ("SPERR_C_API.h",),
     "opencodecs.codecs._brunsli": ("brunsli/encode.h",),
+    "opencodecs.codecs._gif":    ("gif_lib.h",),
     "opencodecs.codecs._pcodec": ("cpcodec.h",),
     "opencodecs.codecs._jpeg":   ("turbojpeg.h",),
     "opencodecs.codecs._webp":   ("webp/encode.h",),

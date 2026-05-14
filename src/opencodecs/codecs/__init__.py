@@ -67,6 +67,7 @@ _EXTENSIONS = (
     "_openjph",     # HTJ2K / JPEG-2000 Part-15 (optional; needs OpenJPH)
     "_eer",         # Thermo Fisher EER cryo-EM event-list decoder (vendored)
     "_brunsli",     # lossless JPEG transcoder (~20% smaller)
+    "_gif",         # GIF via giflib
 )
 
 
