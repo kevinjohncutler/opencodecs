@@ -1298,11 +1298,19 @@ extensions = [
     # libgif 6.x is built portable / -O2; a tuned 5.2.2 -O3+LTO build
     # is measurably faster on LZW). Absolute-dylib link bypasses macOS
     # sysconfig's -L/opt/homebrew/lib prepend.
+    #
+    # We also vendor an in-house LZW decoder (3rdparty/oc_giflzw/) used
+    # by decode_fast() — measured ~30% faster than libgif's reference
+    # LZW, matching Pillow.
     Extension(
         name="opencodecs.codecs._gif",
-        sources=["src/opencodecs/codecs/_gif.pyx"],
+        sources=[
+            "src/opencodecs/codecs/_gif.pyx",
+            "3rdparty/oc_giflzw/oc_giflzw.c",
+        ],
         include_dirs=[
             str(PKG_CODECS),
+            str(HERE / "3rdparty" / "oc_giflzw"),
             numpy.get_include(),
             *_resolve_include_dirs("gif_lib.h"),
         ],

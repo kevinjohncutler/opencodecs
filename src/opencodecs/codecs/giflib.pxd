@@ -20,6 +20,13 @@ cdef extern from "gif_lib.h" nogil:
     int DISPOSE_BACKGROUND
     int DISPOSE_PREVIOUS
 
+    ctypedef enum GifRecordType:
+        UNDEFINED_RECORD_TYPE
+        SCREEN_DESC_RECORD_TYPE
+        IMAGE_DESC_RECORD_TYPE
+        EXTENSION_RECORD_TYPE
+        TERMINATE_RECORD_TYPE
+
     ctypedef struct GifColorType:
         GifByteType Red
         GifByteType Green
@@ -73,6 +80,28 @@ cdef extern from "gif_lib.h" nogil:
     GifFileType* DGifOpen(void* userPtr, InputFunc readFunc, int* Error)
     int DGifSlurp(GifFileType* GifFile)
     int DGifCloseFile(GifFileType* GifFile, int* ErrorCode)
+
+    # Record-by-record API — used by our fast LZW path. DGifGetCode
+    # returns RAW LZW sub-blocks (before giflib's reference decoder
+    # runs); we feed those to oc_giflzw which is faster.
+    int DGifGetRecordType(GifFileType* GifFile, GifRecordType* RecordType)
+    int DGifGetImageDesc(GifFileType* GifFile)
+    int DGifGetCode(
+        GifFileType* GifFile, int* GifCodeSize, GifByteType** GifCodeBlock,
+    )
+    int DGifGetCodeNext(GifFileType* GifFile, GifByteType** GifCodeBlock)
+    int DGifGetExtension(
+        GifFileType* GifFile, int* ExtCode, GifByteType** Extension,
+    )
+    int DGifGetExtensionNext(GifFileType* GifFile, GifByteType** Extension)
+
+
+cdef extern from "oc_giflzw.h" nogil:
+    int oc_giflzw_decode(
+        int min_code_size,
+        const uint8_t* input, size_t input_len,
+        uint8_t* output, size_t output_len,
+    )
 
     GifFileType* EGifOpen(void* userPtr, OutputFunc writeFunc, int* Error)
     int EGifCloseFile(GifFileType* GifFile, int* ErrorCode)
