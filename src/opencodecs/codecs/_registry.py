@@ -260,6 +260,15 @@ if "opencodecs.codecs._gif" in sys.modules:
 
 
 # ---------------------------------------------------------------------------
+# Snappy — fast block compression (libsnappy, Google)
+# ---------------------------------------------------------------------------
+
+if "opencodecs.codecs._snappy" in sys.modules:
+    from .._snappy_codec import SnappyCodec
+    register_codec(SnappyCodec())
+
+
+# ---------------------------------------------------------------------------
 # HDF5 — container reader (h5py wrapper, optional)
 # ---------------------------------------------------------------------------
 

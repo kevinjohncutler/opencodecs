@@ -960,6 +960,21 @@ extensions = [
         ],
         language="c",
     ),
+    # Snappy: links against system libsnappy (Homebrew on Mac,
+    # libsnappy-dev on Ubuntu). C API via snappy-c.h. Tiny wrapper —
+    # libsnappy is already SIMD-tuned, so we aim for parity with
+    # imagecodecs's binding rather than rewriting the codec.
+    Extension(
+        name="opencodecs.codecs._snappy",
+        sources=["src/opencodecs/codecs/_snappy.pyx"],
+        include_dirs=[
+            str(PKG_CODECS),
+            *_resolve_include_dirs("snappy-c.h"),
+        ],
+        library_dirs=_lib_dirs_for_probes(),
+        libraries=["snappy"],
+        language="c",
+    ),
     # zstd: per-user cache build preferred (Homebrew libzstd is built
     # without IPO and benches 5% slower than an `-O3 + LTO` rebuild).
     # macOS sysconfig prepends `-L/opt/homebrew/lib` ahead of our
@@ -1484,6 +1499,7 @@ _REQUIRED_HEADERS = {
     "opencodecs.codecs._sperr":  ("SPERR_C_API.h",),
     "opencodecs.codecs._brunsli": ("brunsli/encode.h",),
     "opencodecs.codecs._gif":    ("gif_lib.h",),
+    "opencodecs.codecs._snappy": ("snappy-c.h",),
     "opencodecs.codecs._pcodec": ("cpcodec.h",),
     "opencodecs.codecs._jpeg":   ("turbojpeg.h",),
     "opencodecs.codecs._webp":   ("webp/encode.h",),
