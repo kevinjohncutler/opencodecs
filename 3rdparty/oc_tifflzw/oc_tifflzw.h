@@ -38,6 +38,14 @@ extern "C" {
  *  -1 truncated input.
  *  -2 invalid LZW code (refers to entry not yet defined).
  *  -3 output overrun (more pixels than buffer).
+ *
+ * Bit order is auto-detected from the first byte: if the high bit is
+ * set, the stream uses MSB-first packing (the post-TIFF-6.0 standard,
+ * CLEAR=256 encodes as 0x80-prefixed in a 9-bit packed stream).
+ * Otherwise it uses LSB-first packing (the original libtiff
+ * "old-style" variant; CLEAR=256 encodes as 0x00 0x01 ... in 9-bit
+ * LSB-first). Both variants share CompressionTag=5 in the IFD, so the
+ * decoder has no other signal to switch on.
  */
 ptrdiff_t oc_tifflzw_decode(
     const uint8_t *input, size_t input_len,

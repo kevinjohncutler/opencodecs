@@ -55,9 +55,16 @@ ptrdiff_t oc_tifflzw_decode(
     int next_code = TIFF_EOI_CODE + 1;   /* = 258 */
     int prev_code = -1;
 
-    /* Bit accumulator — MSB-first within each byte. We use a 64-bit
-     * accumulator and shift OUT from the top after refilling from
-     * the high bits. */
+    /* Auto-detect bit ordering from the first byte. In an MSB-first
+     * 9-bit stream the first code (typically CLEAR=256 = 0x100)
+     * encodes as a byte whose high bit is set (0x80-0xFF). In the
+     * old-style LSB-first variant the first byte's high bit is 0. */
+    int lsb_first = 0;
+    if (input_len > 0 && (input[0] & 0x80) == 0) {
+        lsb_first = 1;
+    }
+
+    /* Bit accumulator. Layout depends on lsb_first. */
     uint64_t accum = 0;
     int accum_bits = 0;
     size_t in_pos = 0;
@@ -67,30 +74,54 @@ ptrdiff_t oc_tifflzw_decode(
     uint8_t stack[OC_LZW_STACK_SIZE];
 
     for (;;) {
-        /* TIFF off-by-one: code width grows when next_code would
-         * exceed the current width's representable range MINUS ONE.
-         * Check BEFORE reading the next code. */
-        if (code_size < 12 &&
-            next_code == ((1 << code_size) - 1)) {
+        /* TIFF LZW has two encoder dialects, both legal:
+         *   * "Early-change" (libtiff modern): grow width when
+         *     next_code == (1 << code_size) - 1.
+         *   * "Late-change" (post-Welch-canonical, used by GhostScript,
+         *     libtiff old, and the libtiff sample set): grow when
+         *     next_code == (1 << code_size).
+         * Both share CompressionTag=5 in the IFD. We pair the
+         * transition rule with the bit-order auto-detection: the
+         * old-style LSB-first variant ships with late-change; the
+         * post-TIFF-6.0 MSB-first variant ships with early-change.
+         * Check BEFORE reading the next code so the read happens at
+         * the post-grow width. */
+        int width_trigger = lsb_first
+            ? (1 << code_size)            /* late-change */
+            : ((1 << code_size) - 1);     /* early-change */
+        if (code_size < 12 && next_code == width_trigger) {
             code_size++;
         }
 
-        /* Refill the bit accumulator MSB-first. */
+        /* Refill the bit accumulator. MSB-first appends new bytes
+         * into the LOW bits and shifts the old contents UP; we then
+         * extract from the TOP. LSB-first appends new bytes into the
+         * HIGH bits (positioned by accum_bits) and shifts down; we
+         * extract from the BOTTOM. */
         while (accum_bits < code_size) {
             if (OC_UNLIKELY(in_pos >= input_len)) {
-                /* Truncated — treat as success if output complete. */
                 if (out_p == out_end) return (ptrdiff_t)(out_p - output);
                 return -1;
             }
-            accum = (accum << 8) | (uint64_t) input[in_pos++];
+            if (lsb_first) {
+                accum |= (uint64_t) input[in_pos++] << accum_bits;
+            } else {
+                accum = (accum << 8) | (uint64_t) input[in_pos++];
+            }
             accum_bits += 8;
         }
 
-        /* Extract the top `code_size` bits. */
-        int code = (int)((accum >> (accum_bits - code_size))
+        int code;
+        if (lsb_first) {
+            code = (int)(accum & ((1u << code_size) - 1));
+            accum >>= code_size;
+            accum_bits -= code_size;
+        } else {
+            code = (int)((accum >> (accum_bits - code_size))
                          & ((1u << code_size) - 1));
-        accum_bits -= code_size;
-        accum &= (1ULL << accum_bits) - 1;
+            accum_bits -= code_size;
+            accum &= (1ULL << accum_bits) - 1;
+        }
 
         if (OC_UNLIKELY(code == TIFF_EOI_CODE)) {
             return (ptrdiff_t)(out_p - output);
@@ -118,6 +149,9 @@ ptrdiff_t oc_tifflzw_decode(
 
         while (c >= 256) {
             if (OC_UNLIKELY(sp >= OC_LZW_STACK_SIZE)) return -2;
+            /* Guard against a corrupt chain (prefix table entry past
+             * OC_LZW_MAX_CODES) before the suffix/prefix reads OOB. */
+            if (OC_UNLIKELY(c >= OC_LZW_MAX_CODES)) return -2;
             stack[sp++] = suffix[c];
             c = prefix[c];
         }
