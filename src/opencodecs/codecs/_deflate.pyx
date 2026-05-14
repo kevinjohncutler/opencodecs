@@ -146,13 +146,13 @@ def encode(data, *, level: int | None = None) -> bytes:
     """Encode bytes-like input as a zlib stream."""
     cdef:
         const uint8_t[::1] src
+        const uint8_t[::1] dst_mv    # memoryview cast for output bytes
         size_t srcsize_s, dstcap_s, written
         uLong srcsize_z
         uLongf dstsize_z
         int rc, lvl
         bytes out
         const uint8_t* src_ptr = NULL
-        uint8_t* dst_ptr
         libdeflate_compressor* compressor = NULL
 
     try:
@@ -186,13 +186,18 @@ def encode(data, *, level: int | None = None) -> bytes:
         try:
             dstcap_s = libdeflate_zlib_compress_bound(compressor, srcsize_s)
             out = PyBytes_FromStringAndSize(NULL, <Py_ssize_t> dstcap_s)
-            dst_ptr = <uint8_t*> PyBytes_AsString(out)
+            # memoryview-cast + slice pattern (see _zstd.encode for the
+            # empirical rationale — faster than PyBytes_AsString +
+            # _PyBytes_Resize for multi-MB blobs).
+            dst_mv = out
             with nogil:
                 written = libdeflate_zlib_compress(
-                    compressor, src_ptr, srcsize_s, dst_ptr, dstcap_s,
+                    compressor, src_ptr, srcsize_s,
+                    <void*> &dst_mv[0], dstcap_s,
                 )
             if written == 0:
                 raise ZlibError("libdeflate_zlib_compress returned 0")
+            del dst_mv
             return out[:written]
         finally:
             with nogil:
@@ -204,11 +209,14 @@ def encode(data, *, level: int | None = None) -> bytes:
         lvl = Z_DEFAULT_COMPRESSION
     dstsize_z = compressBound(srcsize_z)
     out = PyBytes_FromStringAndSize(NULL, <Py_ssize_t> dstsize_z)
-    dst_ptr = <uint8_t*> PyBytes_AsString(out)
+    dst_mv = out
     with nogil:
-        rc = compress2(dst_ptr, &dstsize_z, src_ptr, srcsize_z, lvl)
+        rc = compress2(
+            <uint8_t*> &dst_mv[0], &dstsize_z, src_ptr, srcsize_z, lvl,
+        )
     if rc != Z_OK:
         raise ZlibError(f"compress2 failed: {rc}")
+    del dst_mv
     return out[:dstsize_z]
 
 

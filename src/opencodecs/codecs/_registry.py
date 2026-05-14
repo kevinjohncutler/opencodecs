@@ -208,6 +208,49 @@ if "opencodecs.codecs._heif" in sys.modules:
 
 
 # ---------------------------------------------------------------------------
+# JPEG-LS — native (CharLS); used heavily in DICOM
+# ---------------------------------------------------------------------------
+
+if "opencodecs.codecs._charls" in sys.modules:
+    from .._jpegls_codec import JpegLsCodec
+    register_codec(JpegLsCodec())
+
+
+# ---------------------------------------------------------------------------
+# MozJPEG — smaller-JPEG encoder (Mozilla libjpeg-turbo fork)
+# ---------------------------------------------------------------------------
+
+if "opencodecs.codecs._mozjpeg" in sys.modules:
+    from .._mozjpeg_codec import MozJpegCodec
+    register_codec(MozJpegCodec())
+
+
+# ---------------------------------------------------------------------------
+# HTJ2K — JPEG-2000 Part 15 high-throughput codestream (OpenJPH)
+# ---------------------------------------------------------------------------
+
+if "opencodecs.codecs._openjph" in sys.modules:
+    from .._htj2k_codec import Htj2kCodec
+    register_codec(Htj2kCodec())
+
+
+# ---------------------------------------------------------------------------
+# LZMA / XZ — stdlib (always available)
+# ---------------------------------------------------------------------------
+
+from .._lzma_codec import LzmaCodec
+register_codec(LzmaCodec())
+
+
+# ---------------------------------------------------------------------------
+# bzip2 — stdlib (always available)
+# ---------------------------------------------------------------------------
+
+from .._bz2_codec import Bz2Codec
+register_codec(Bz2Codec())
+
+
+# ---------------------------------------------------------------------------
 # HDF5 — container reader (h5py wrapper, optional)
 # ---------------------------------------------------------------------------
 
