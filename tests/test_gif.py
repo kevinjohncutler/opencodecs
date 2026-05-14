@@ -218,3 +218,57 @@ def test_gif_writer_double_close_returns_same_bytes():
     first = w.close()
     second = w.close()
     assert first == second
+
+
+# ---------------------------------------------------------------------------
+# decode_fast: opencodecs's custom LZW (oc_giflzw)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("shape", [
+    (256, 256), (1, 1), (512, 1024), (100, 100), (333, 777),
+])
+def test_decode_fast_byte_equal_to_libgif(shape):
+    """The custom LZW must produce byte-identical output to libgif's
+    reference decoder for every test image. Tested across a range of
+    shapes including 1x1, oddly-sized, and large."""
+    rng = np.random.default_rng(0)
+    arr = rng.integers(0, 256, shape, dtype=np.uint8)
+    blob = mod.encode(arr)
+    ref = mod.decode(blob, asrgb=False)
+    fast = mod.decode_fast(blob, asrgb=False)
+    np.testing.assert_array_equal(ref, fast)
+
+
+def test_decode_fast_rgb_output_matches():
+    arr = np.tile(np.arange(256, dtype=np.uint8), (64, 1))
+    blob = mod.encode(arr)
+    ref_rgb = mod.decode(blob, asrgb=True)
+    fast_rgb = mod.decode_fast(blob, asrgb=True)
+    np.testing.assert_array_equal(ref_rgb, fast_rgb)
+
+
+def test_decode_fast_with_custom_colormap():
+    """Custom palette → RGB compositing should still be correct."""
+    rng = np.random.default_rng(0)
+    cmap = rng.integers(0, 256, (256, 3), dtype=np.uint8)
+    arr = rng.integers(0, 256, (96, 128), dtype=np.uint8)
+    blob = mod.encode(arr, colormap=cmap)
+    fast_rgb = mod.decode_fast(blob)
+    expected = cmap[arr]
+    np.testing.assert_array_equal(fast_rgb, expected)
+
+
+def test_decode_fast_constant_image():
+    """All-zero image — edge case for LZW state machine."""
+    arr = np.zeros((64, 64), dtype=np.uint8)
+    blob = mod.encode(arr)
+    fast = mod.decode_fast(blob, asrgb=False)
+    np.testing.assert_array_equal(fast, arr)
+
+
+def test_decode_fast_constant_nonzero():
+    arr = np.full((48, 96), 200, dtype=np.uint8)
+    blob = mod.encode(arr)
+    fast = mod.decode_fast(blob, asrgb=False)
+    np.testing.assert_array_equal(fast, arr)
