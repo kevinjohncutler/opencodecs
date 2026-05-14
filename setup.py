@@ -1239,9 +1239,14 @@ extensions = [
         name="opencodecs.codecs._tiff",
         sources=[
             "src/opencodecs/codecs/_tiff.pyx",
-            "3rdparty/imcd_lzw/lzw.c",
+            "3rdparty/imcd_lzw/lzw.c",         # LZW encoder
+            "3rdparty/oc_tifflzw/oc_tifflzw.c",  # LZW decoder (ours)
         ],
-        include_dirs=[str(PKG_CODECS), "3rdparty/imcd_lzw"],
+        include_dirs=[
+            str(PKG_CODECS),
+            "3rdparty/imcd_lzw",
+            "3rdparty/oc_tifflzw",
+        ],
         language="c",
     ),
     # NDTiff index parser — Cython nogil walk of the Micro-Manager
