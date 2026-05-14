@@ -57,6 +57,9 @@ from ._rgbe import encode as rgbe_encode, decode as rgbe_decode, \
     imread as rgbe_imread, imwrite as rgbe_imwrite
 from ._czi_reader import CziPyramidReader
 from ._czi_writer import CziWriter, CziPyramidWriter
+from ._tiff_pyramid import TiffPyramidReader
+from ._tiff_http import HTTPDataSource, FileDataSource
+from .core.pyramid import PyramidReader, PyramidLevel
 
 
 def read(src: Any, *, format: str | None = None, **opts):
@@ -98,12 +101,73 @@ def open(  # noqa: A001
     return _resolve_codec(src, format=format).open(src, **opts)
 
 
+def open_pyramid(
+    src: Any,
+    *,
+    format: str | None = None,
+    **opts,
+) -> PyramidReader:
+    """Open `src` as a multi-resolution pyramid reader.
+
+    Dispatches by format/extension/URL:
+
+    * TIFF (.tif/.tiff/.btf, or http(s) URL ending in those) →
+      :class:`TiffPyramidReader`. For HTTP sources, range-requests
+      fetch only the COG tiles overlapping each :meth:`read_region`.
+    * Zarr (.zarr/ome.zarr) → :class:`OmeZarrPyramidDataset`
+    * CZI (.czi) → :class:`CziPyramidReader`
+    * NDTiff directory → :class:`NDTiffPyramidReader` (when available)
+
+    Examples
+    --------
+    Remote COG over HTTP::
+
+        with oc.open_pyramid("https://bucket/big.tif") as p:
+            overview = p.read_region(p.best_level_for(max_pixels_y=1024))
+
+    Local OME-TIFF or COG::
+
+        with oc.open_pyramid("scan.ome.tif") as p:
+            level = p.best_level_for(max_pixels_y=2048)
+            tile  = p.read_region(level, y=(0, 1024), x=(0, 1024))
+    """
+    fmt = (format or "").lower()
+    is_url = isinstance(src, str) and src.startswith(("http://", "https://"))
+    # Path → extension heuristic.
+    path_lower = ""
+    if isinstance(src, (str, os.PathLike)):
+        path_lower = str(src).lower()
+    if not fmt:
+        if is_url or any(path_lower.endswith(ext) for ext in
+                         (".tif", ".tiff", ".btf", ".ome.tif", ".ome.tiff")):
+            fmt = "tiff"
+        elif path_lower.endswith((".zarr", ".ome.zarr")):
+            fmt = "omezarr"
+        elif path_lower.endswith(".czi"):
+            fmt = "czi"
+    if fmt in ("tiff", "tif", "btf", "bigtiff", "cog", "ome-tiff"):
+        if is_url:
+            # Build an HTTPDataSource and feed it through read_at.
+            ds = HTTPDataSource(src, **opts.pop("http_opts", {}))
+            return TiffPyramidReader(ds, read_at=ds.read_at, **opts)
+        return TiffPyramidReader(src, **opts)
+    if fmt in ("omezarr", "ome-zarr", "zarr"):
+        return OmeZarrPyramidDataset(src, **opts)
+    if fmt == "czi":
+        return CziPyramidReader(src, **opts)
+    raise ValueError(
+        f"open_pyramid: cannot determine format for src={src!r}; "
+        f"pass format='tiff'|'omezarr'|'czi'"
+    )
+
+
 __all__ = [
     # Top-level unified API
-    "read", "write", "open",
+    "read", "write", "open", "open_pyramid",
     "list_codecs", "has_codec", "get_codec",
     # Core types (subclassable)
     "Codec", "Reader", "Writer", "register_codec",
+    "PyramidReader", "PyramidLevel",
     # Color
     "ColorSpec", "parse_color",
     # Errors
@@ -113,6 +177,8 @@ __all__ = [
     "JxlReader", "JxlWriter",
     "jxl_encode", "jxl_decode", "jxl_iter_frames", "jxl_open",
     "TiffWriter", "tiff_imwrite",
+    "TiffPyramidReader",
+    "HTTPDataSource", "FileDataSource",
     "OmeZarrArray", "OmeZarrPyramidDataset",
     "write_zarr_array", "write_omezarr_pyramid",
     "FitsStream", "FitsHDU", "fits_imread",
