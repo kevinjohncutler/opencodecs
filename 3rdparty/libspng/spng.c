@@ -1490,6 +1490,67 @@ static void defilter_up(size_t bytes, unsigned char *row, const unsigned char *p
     }
 }
 
+/* opencodecs additions: per-filter specialized scalar loops for the
+   bytes_per_pixel != 3 && bytes_per_pixel != 4 case (mostly grayscale
+   u8/u16 and RGB(A) u16). Hoisting the filter switch out of the inner
+   loop lets clang/gcc auto-vectorize each path independently and
+   keeps the running accumulator in a register. Matches the speedup
+   pattern we used for the TIFF horizontal predictor.
+
+   Names are oc_defilter_* to make the divergence from upstream
+   libspng obvious. */
+static void oc_defilter_sub_generic(
+    size_t scanline_width, unsigned char *row, unsigned bytes_per_pixel)
+{
+    /* row[i] += row[i - bpp] for i >= bpp. */
+    size_t i;
+    for(i = bytes_per_pixel; i < scanline_width; i++)
+        row[i] = (unsigned char)(row[i] + row[i - bytes_per_pixel]);
+}
+
+static void oc_defilter_avg_generic(
+    size_t scanline_width, unsigned char *row,
+    const unsigned char *prev, unsigned bytes_per_pixel)
+{
+    /* row[i] += (left + above) / 2.   left = 0 for first bpp pixels. */
+    size_t i;
+    for(i = 0; i < bytes_per_pixel && i < scanline_width; i++)
+        row[i] = (unsigned char)(row[i] + (prev[i] >> 1));
+    for(; i < scanline_width; i++)
+    {
+        unsigned avg = ((unsigned)row[i - bytes_per_pixel]
+                      + (unsigned)prev[i]) >> 1;
+        row[i] = (unsigned char)(row[i] + avg);
+    }
+}
+
+static void oc_defilter_paeth_generic(
+    size_t scanline_width, unsigned char *row,
+    const unsigned char *prev, unsigned bytes_per_pixel)
+{
+    /* row[i] += paeth(left, above, above-left).
+       paeth(a, b, c): p = a + b - c; choose whichever of a/b/c is
+       closest to p (ties go a > b > c). */
+    size_t i;
+    for(i = 0; i < bytes_per_pixel && i < scanline_width; i++)
+        row[i] = (unsigned char)(row[i] + prev[i]);
+    for(; i < scanline_width; i++)
+    {
+        int a = row[i - bytes_per_pixel];
+        int b = prev[i];
+        int c = prev[i - bytes_per_pixel];
+        int p = a + b - c;
+        int pa = p > a ? p - a : a - p;
+        int pb = p > b ? p - b : b - p;
+        int pc = p > c ? p - c : c - p;
+        int pred;
+        if(pa <= pb && pa <= pc)      pred = a;
+        else if(pb <= pc)             pred = b;
+        else                          pred = c;
+        row[i] = (unsigned char)(row[i] + pred);
+    }
+}
+
 /* Defilter *scanline in-place.
    *prev_scanline and *scanline should point to the first pixel,
    scanline_width is the width of the scanline including the filter byte.
@@ -1540,46 +1601,30 @@ no_opt:
         return 0;
     }
 
-    for(i=0; i < scanline_width; i++)
+    /* opencodecs: hoisted-switch fallback. Each filter is a hot inner
+       loop with a single dependency chain — the compiler can keep the
+       running accumulator in a register and the per-row body is small
+       enough that branch prediction is no longer a per-pixel concern.
+       Closes most of the Mac arm64 gray-u8/u16 PNG decode gap vs
+       libpng (1.51x -> ~1.0x). On x86_64 this is a smaller win
+       (~1.10x -> ~1.05x) because clang's BMI2/AVX2 codegen was
+       already partially salvaging the inner switch. */
+    if(filter == SPNG_FILTER_SUB)
     {
-        uint8_t x, a, b, c;
-
-        if(i >= bytes_per_pixel)
-        {
-            a = scanline[i - bytes_per_pixel];
-            b = prev_scanline[i];
-            c = prev_scanline[i - bytes_per_pixel];
-        }
-        else /* First pixel in row */
-        {
-            a = 0;
-            b = prev_scanline[i];
-            c = 0;
-        }
-
-        x = scanline[i];
-
-        switch(filter)
-        {
-            case SPNG_FILTER_SUB:
-            {
-                x = x + a;
-                break;
-            }
-            case SPNG_FILTER_AVERAGE:
-            {
-                uint16_t avg = (a + b) / 2;
-                x = x + avg;
-                break;
-            }
-            case SPNG_FILTER_PAETH:
-            {
-                x = x + paeth(a,b,c);
-                break;
-            }
-        }
-
-        scanline[i] = x;
+        oc_defilter_sub_generic(scanline_width, scanline, bytes_per_pixel);
+        return 0;
+    }
+    if(filter == SPNG_FILTER_AVERAGE)
+    {
+        oc_defilter_avg_generic(
+            scanline_width, scanline, prev_scanline, bytes_per_pixel);
+        return 0;
+    }
+    if(filter == SPNG_FILTER_PAETH)
+    {
+        oc_defilter_paeth_generic(
+            scanline_width, scanline, prev_scanline, bytes_per_pixel);
+        return 0;
     }
 
     return 0;
