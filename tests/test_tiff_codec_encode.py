@@ -105,6 +105,31 @@ def test_encode_predictor(codec):
     assert np.array_equal(dec, arr)
 
 
+@pytest.mark.parametrize("compression", ["deflate", "lzw", "zstd"])
+def test_encode_predictor_rgb(codec, compression):
+    """Regression: predictor=2 on RGB used to fail at decode time because
+    frombuffer() returned a read-only view that the predictor kernel
+    couldn't mutate. Fixed in _undo_predictor by copying to a writable
+    buffer when needed."""
+    rng = np.random.default_rng(0)
+    arr = rng.integers(0, 256, (128, 128, 3), dtype=np.uint8)
+    enc = codec.encode(
+        arr, compression=compression, predictor=2, photometric="rgb",
+    )
+    dec = codec.decode(enc)
+    assert np.array_equal(dec, arr), f"compression={compression} failed"
+
+
+def test_encode_predictor_rgba(codec):
+    rng = np.random.default_rng(1)
+    arr = rng.integers(0, 256, (128, 128, 4), dtype=np.uint8)
+    enc = codec.encode(
+        arr, compression="deflate", predictor=2, photometric="rgb",
+    )
+    dec = codec.decode(enc)
+    assert np.array_equal(dec, arr)
+
+
 def test_multi_page_via_open_writer(codec, tmp_path):
     """open_writer() returns a TiffWriter for multi-page output."""
     out = tmp_path / "multi.tif"
