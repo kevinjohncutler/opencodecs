@@ -93,3 +93,128 @@ def test_gif_codec_adapter_roundtrip():
 def test_gif_decode_short_input():
     with pytest.raises(mod.GifError, match="too short"):
         mod.decode(b"abc")
+
+
+# ---------------------------------------------------------------------------
+# Streaming: GifReader + GifWriter
+# ---------------------------------------------------------------------------
+
+
+def test_gif_streaming_decode_single_frame():
+    arr = np.tile(np.arange(256, dtype=np.uint8), (32, 1))
+    blob = mod.encode(arr)
+    r = mod.GifReader(blob)
+    try:
+        assert r.n_frames == 1
+        assert r.shape == (32, 256, 3)
+        frames = list(r.iter_frames())
+        assert len(frames) == 1
+        assert frames[0].shape == (32, 256, 3)
+        np.testing.assert_array_equal(frames[0][..., 0], arr)
+    finally:
+        r.close()
+
+
+def test_gif_streaming_multi_frame_roundtrip():
+    """Encode 5 frames via GifWriter, decode via GifReader.iter_frames."""
+    H, W, N = 48, 64, 5
+    w = mod.GifWriter(width=W, height=H, loop=0)
+    frames_in = []
+    for f in range(N):
+        a = np.full((H, W), f * 30, dtype=np.uint8)
+        a[f*9:(f+1)*9, :] = 200
+        frames_in.append(a)
+        w.write_frame(a, delay_centiseconds=10)
+    blob = w.close()
+    assert blob[:6] in (b"GIF87a", b"GIF89a")
+
+    r = mod.GifReader(blob)
+    try:
+        assert r.n_frames == N
+        assert r.shape == (N, H, W, 3)
+        # iter_frames
+        out = list(r.iter_frames())
+        assert len(out) == N
+        for f in range(N):
+            # Each frame should have the highlighted band at the right rows.
+            band = out[f][f*9:(f+1)*9, :, 0]
+            assert (band == 200).all(), f"frame {f}: highlight wrong"
+    finally:
+        r.close()
+
+
+def test_gif_reader_random_access():
+    """``reader[i]`` returns the i-th frame; identical to iter_frames()[i]."""
+    H, W, N = 32, 32, 4
+    w = mod.GifWriter(width=W, height=H, loop=0)
+    for f in range(N):
+        a = np.full((H, W), f * 50, dtype=np.uint8)
+        w.write_frame(a)
+    blob = w.close()
+    r = mod.GifReader(blob)
+    try:
+        seq = list(r.iter_frames())
+        for i in range(N):
+            np.testing.assert_array_equal(r[i], seq[i])
+        # Negative index.
+        np.testing.assert_array_equal(r[-1], seq[-1])
+        # Out of range.
+        with pytest.raises(IndexError):
+            r[N]
+    finally:
+        r.close()
+
+
+def test_gif_reader_read_returns_stack():
+    H, W, N = 24, 32, 3
+    w = mod.GifWriter(width=W, height=H, loop=-1)  # no Netscape loop ext
+    for f in range(N):
+        w.write_frame(np.full((H, W), f * 80, dtype=np.uint8))
+    blob = w.close()
+    r = mod.GifReader(blob)
+    try:
+        stack = r.read()
+        assert stack.shape == (N, H, W, 3)
+    finally:
+        r.close()
+
+
+def test_gif_codec_open_returns_streaming_reader():
+    """The unified Codec.open(...) API yields a GifReader."""
+    import opencodecs as oc
+    arr = np.tile(np.arange(256, dtype=np.uint8), (24, 1))
+    blob = oc.write(None, arr, format="gif")
+    with oc.get_codec("gif").open(blob) as r:
+        assert hasattr(r, "iter_frames")
+        assert r.n_frames == 1
+        frame, = list(r.iter_frames())
+        assert frame.shape == (24, 256, 3)
+
+
+def test_gif_codec_advertises_streaming():
+    import opencodecs as oc
+    gif = oc.get_codec("gif")
+    assert gif.streaming_decode is True
+    assert gif.multi_frame is True
+
+
+def test_gif_writer_rejects_wrong_dimensions():
+    w = mod.GifWriter(width=64, height=48)
+    with pytest.raises(mod.GifError, match="doesn't match writer dimensions"):
+        w.write_frame(np.zeros((47, 64), dtype=np.uint8))
+    w.close()
+
+
+def test_gif_writer_rejects_3d_input():
+    w = mod.GifWriter(width=32, height=32)
+    with pytest.raises(mod.GifError, match="2D"):
+        w.write_frame(np.zeros((32, 32, 3), dtype=np.uint8))
+    w.close()
+
+
+def test_gif_writer_double_close_returns_same_bytes():
+    w = mod.GifWriter(width=16, height=16, loop=-1)
+    w.write_frame(np.zeros((16, 16), dtype=np.uint8))
+    first = w.close()
+    second = w.close()
+    assert first == second
