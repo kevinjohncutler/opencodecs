@@ -37,6 +37,7 @@ def encode(data, *, level: int | None = None) -> bytes:
     """Encode bytes-like input as a brotli stream."""
     cdef:
         const uint8_t[::1] src
+        const uint8_t[::1] dst   # memoryview view onto the output bytes
         size_t srcsize
         size_t dstcap
         size_t encoded_size
@@ -44,7 +45,6 @@ def encode(data, *, level: int | None = None) -> bytes:
         BROTLI_BOOL ok
         bytes out
         const uint8_t* src_ptr = NULL
-        uint8_t* dst_ptr
 
     try:
         src = data
@@ -65,17 +65,24 @@ def encode(data, *, level: int | None = None) -> bytes:
         # to a generous bound; brotli rarely expands by more than ~0.04%.
         dstcap = srcsize + (srcsize >> 4) + 64
     out = PyBytes_FromStringAndSize(NULL, <Py_ssize_t> dstcap)
-    dst_ptr = <uint8_t*> PyBytes_AsString(out)
+    # bytes → uint8_t[::1] memoryview cast (instead of PyBytes_AsString);
+    # combined with the ``out[:encoded_size]`` slice + ``del dst`` below
+    # this matches imagecodecs's encode-output pattern and is measurably
+    # faster than the PyBytes_AsString + _PyBytes_Resize alternative on
+    # 10 MB+ payloads. See _zstd.encode() for the empirical comparison.
+    dst = out
     if srcsize > 0:
         src_ptr = <const uint8_t*> &src[0]
     encoded_size = dstcap
     with nogil:
         ok = BrotliEncoderCompress(
             quality, BROTLI_DEFAULT_WINDOW, BROTLI_MODE_GENERIC,
-            srcsize, src_ptr, &encoded_size, dst_ptr,
+            srcsize, src_ptr, &encoded_size,
+            <uint8_t*> &dst[0],
         )
     if ok == BROTLI_FALSE:
         raise BrotliError('BrotliEncoderCompress failed')
+    del dst
     return out[:encoded_size]
 
 

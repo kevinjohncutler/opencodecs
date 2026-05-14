@@ -26,10 +26,20 @@ from __future__ import annotations
 
 import json
 import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Iterable
 
 import numpy as np
+
+
+def _resolve_workers(workers: int | None) -> int:
+    """Translate None / negative → cpu_count(); clamp to >=1."""
+    if workers is None or int(workers) <= 0:
+        n = os.cpu_count() or 1
+    else:
+        n = int(workers)
+    return max(1, n)
 
 
 # Public name → (v2 numcodecs-id, v3 codec name).
@@ -106,6 +116,7 @@ def write_zarr_array(
     compression_level: int | None = None,
     zarr_format: int = 2,
     fill_value: int | float = 0,
+    workers: int | None = None,
 ) -> None:
     """Write a single Zarr array (v2 or v3) to ``path``.
 
@@ -129,6 +140,11 @@ def write_zarr_array(
     compression_level : passed through to the codec.
     zarr_format : 2 (NGFF v0.4) or 3 (NGFF v0.5).
     fill_value : Zarr fill value for absent chunks. Defaults to 0.
+    workers : int, optional
+        Parallel encode workers (ThreadPoolExecutor). ``None`` or ``<=0``
+        uses ``os.cpu_count()``; ``1`` forces serial. Chunk encoders
+        release the GIL (zstd, blosc2, gzip's zlib path all do),
+        producing near-linear speedup on multi-core machines.
     """
     root = Path(path)
     root.mkdir(parents=True, exist_ok=True)
@@ -138,10 +154,13 @@ def write_zarr_array(
             f"chunks rank {len(chunks)} != array rank {arr.ndim}"
         )
 
+    n_workers = _resolve_workers(workers)
     if zarr_format == 2:
-        _write_v2(root, arr, chunks, compressor, compression_level, fill_value)
+        _write_v2(root, arr, chunks, compressor, compression_level,
+                  fill_value, n_workers)
     elif zarr_format == 3:
-        _write_v3(root, arr, chunks, compressor, compression_level, fill_value)
+        _write_v3(root, arr, chunks, compressor, compression_level,
+                  fill_value, n_workers)
     else:
         raise OmeZarrWriterError(
             f"zarr_format must be 2 or 3 (got {zarr_format})"
@@ -182,9 +201,26 @@ def _make_chunk_bytes(
     return np.ascontiguousarray(block).tobytes()
 
 
+def _encode_one_chunk_v2(args):
+    """Worker: cut + compress one chunk → (key_path, encoded_bytes)."""
+    arr, slc, chunks, fill_value, compressor, level, key_path = args
+    raw = _make_chunk_bytes(arr, slc, chunks, fill_value)
+    out = _encode_chunk(raw, compressor, level)
+    return key_path, out
+
+
+def _encode_one_chunk_v3(args):
+    """Worker (v3 layout)."""
+    arr, slc, chunks, fill_value, compressor, level, key_path = args
+    raw = _make_chunk_bytes(arr, slc, chunks, fill_value)
+    out = _encode_chunk(raw, compressor, level)
+    return key_path, out
+
+
 def _write_v2(
     root: Path, arr: np.ndarray, chunks: tuple[int, ...],
     compressor: str, level: int | None, fill_value,
+    n_workers: int = 1,
 ) -> None:
     v2_id = _CODEC_NAME_MAP.get(compressor, (compressor, None))[0]
     metadata = {
@@ -216,16 +252,29 @@ def _write_v2(
     (root / ".zattrs").write_text("{}")
 
     sep = "."
-    for idx, slc in _chunk_iter(arr.shape, chunks):
-        raw = _make_chunk_bytes(arr, slc, chunks, fill_value)
-        out = _encode_chunk(raw, compressor, level)
-        key = sep.join(str(i) for i in idx)
-        (root / key).write_bytes(out)
+    tasks = [
+        (arr, slc, chunks, fill_value, compressor, level,
+         root / sep.join(str(i) for i in idx))
+        for idx, slc in _chunk_iter(arr.shape, chunks)
+    ]
+
+    if n_workers <= 1 or len(tasks) <= 1:
+        for t in tasks:
+            key_path, out = _encode_one_chunk_v2(t)
+            key_path.write_bytes(out)
+        return
+
+    with ThreadPoolExecutor(max_workers=n_workers) as pool:
+        futures = [pool.submit(_encode_one_chunk_v2, t) for t in tasks]
+        for fut in as_completed(futures):
+            key_path, out = fut.result()
+            key_path.write_bytes(out)
 
 
 def _write_v3(
     root: Path, arr: np.ndarray, chunks: tuple[int, ...],
     compressor: str, level: int | None, fill_value,
+    n_workers: int = 1,
 ) -> None:
     """Zarr v3 ``zarr.json`` + chunk files at ``c/<i>/<j>/...``."""
     codecs: list[dict] = [
@@ -272,14 +321,35 @@ def _write_v3(
     }
     (root / "zarr.json").write_text(json.dumps(metadata))
 
+    tasks = []
     for idx, slc in _chunk_iter(arr.shape, chunks):
-        raw = _make_chunk_bytes(arr, slc, chunks, fill_value)
-        out = _encode_chunk(raw, compressor, level)
         sub = root / "c"
         for i in idx:
             sub = sub / str(i)
-        sub.parent.mkdir(parents=True, exist_ok=True)
-        sub.write_bytes(out)
+        tasks.append((arr, slc, chunks, fill_value, compressor, level, sub))
+
+    # Pre-create chunk-key parent dirs serially so worker writes are
+    # collision-free. With v3's slash-separated chunk keys most chunks
+    # share parent dirs; doing this once avoids EEXIST races + mkdir
+    # overhead in the hot path.
+    seen_parents = set()
+    for *_, sub in tasks:
+        p = sub.parent
+        if p not in seen_parents:
+            p.mkdir(parents=True, exist_ok=True)
+            seen_parents.add(p)
+
+    if n_workers <= 1 or len(tasks) <= 1:
+        for t in tasks:
+            key_path, out = _encode_one_chunk_v3(t)
+            key_path.write_bytes(out)
+        return
+
+    with ThreadPoolExecutor(max_workers=n_workers) as pool:
+        futures = [pool.submit(_encode_one_chunk_v3, t) for t in tasks]
+        for fut in as_completed(futures):
+            key_path, out = fut.result()
+            key_path.write_bytes(out)
 
 
 # ---------------------------------------------------------------------------
@@ -297,6 +367,7 @@ def write_omezarr_pyramid(
     zarr_format: int = 2,
     axes: list[dict] | None = None,
     fill_value: int | float = 0,
+    workers: int | None = None,
 ) -> None:
     """Write a full OME-NGFF pyramid (group + N arrays + multiscales
     metadata) round-trippable through ``OmeZarrPyramidDataset``.
@@ -377,11 +448,74 @@ def write_omezarr_pyramid(
             compression_level=compression_level,
             zarr_format=zarr_format,
             fill_value=fill_value,
+            workers=workers,
         )
+
+
+def write_omezarr_pyramid_auto(
+    path: str | Path,
+    image: np.ndarray,
+    *,
+    pyramid_levels: int | None = None,
+    pyramid_min_size: int = 512,
+    pyramid_axes: tuple[int, ...] | str | None = None,
+    chunks: tuple[int, ...] | None = None,
+    compressor: str = "zstd",
+    compression_level: int | None = None,
+    zarr_format: int = 2,
+    axes: list[dict] | None = None,
+    fill_value: int | float = 0,
+    workers: int | None = None,
+) -> None:
+    """Write a multi-scale OME-NGFF pyramid built automatically from a
+    single full-res image (opt-in convenience wrapper around
+    :func:`write_omezarr_pyramid`).
+
+    A pyramid adds ~33% on-disk size (2D, geometric series) on top of
+    the full-res image. The default ``pyramid_min_size=512`` auto-stops
+    when an axis would drop below that — so a 1024×1024 input yields
+    just 2 levels (no surprise size bloat). Pass ``pyramid_levels=N``
+    to override and force a specific depth.
+
+    Parameters
+    ----------
+    path
+        Group directory.
+    image
+        Single full-resolution array. Downsampled internally via 2x2
+        mean pool on the trailing 2 spatial axes (override via
+        ``pyramid_axes``).
+    pyramid_levels
+        Total levels including full-res. ``None`` (default) auto-stops
+        at ``pyramid_min_size``.
+    pyramid_min_size
+        Smallest spatial dimension allowed in the smallest level.
+    pyramid_axes
+        Override which axes to downsample. See
+        :func:`opencodecs._pyramid_build.make_pyramid_levels`.
+
+    All other keyword arguments are forwarded to
+    :func:`write_omezarr_pyramid` unchanged.
+    """
+    from ._pyramid_build import make_pyramid_levels
+    levels = make_pyramid_levels(
+        image,
+        levels=pyramid_levels,
+        min_size=pyramid_min_size,
+        axes=pyramid_axes,
+    )
+    write_omezarr_pyramid(
+        path, levels,
+        chunks=chunks, compressor=compressor,
+        compression_level=compression_level,
+        zarr_format=zarr_format, axes=axes,
+        fill_value=fill_value, workers=workers,
+    )
 
 
 __all__ = [
     "write_zarr_array",
     "write_omezarr_pyramid",
+    "write_omezarr_pyramid_auto",
     "OmeZarrWriterError",
 ]

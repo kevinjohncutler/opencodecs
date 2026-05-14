@@ -40,14 +40,19 @@ class Jpeg2kCodec(Codec):
 
     def encode(self, data: Any, *, dest=None, level: int | None = None,
                lossless: bool = False, codec: str = "jp2",
+               numthreads: int | None = None,
                **opts) -> bytes | None:
         if not isinstance(data, np.ndarray):
             data = np.asarray(data)
-        encoded = _jp2_encode(data, level=level, lossless=lossless, codec=codec)
+        encoded = _jp2_encode(
+            data, level=level, lossless=lossless, codec=codec,
+            numthreads=numthreads,
+        )
         return _write_dest(encoded, dest)
 
-    def decode(self, src: Any, **opts) -> np.ndarray:
-        return _jp2_decode(_read_src(src))
+    def decode(self, src: Any, *, numthreads: int | None = None,
+               **opts) -> np.ndarray:
+        return _jp2_decode(_read_src(src), numthreads=numthreads)
 
 
 

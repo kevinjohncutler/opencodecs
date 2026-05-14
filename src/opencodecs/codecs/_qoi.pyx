@@ -22,6 +22,7 @@ external library dependencies.
 import numpy as np
 cimport numpy as cnp
 
+from cpython.bytes cimport PyBytes_FromStringAndSize
 from libc.stdlib cimport free
 from libc.string cimport memcpy
 from libc.stdint cimport int32_t, uint8_t
@@ -49,6 +50,7 @@ def encode(data, *, srgb: bool = True) -> bytes:
         void* buffer = NULL
         int channels
         bytes out
+        const uint8_t[::1] dst
 
     src = np.ascontiguousarray(data)
     if src.dtype != np.uint8:
@@ -73,10 +75,17 @@ def encode(data, *, srgb: bool = True) -> bytes:
         buffer = _c_qoi_encode(<const void*> src.data, &desc, &out_len)
     if buffer == NULL:
         raise QoiError('qoi_encode returned NULL')
+    # Allocate the output bytes at the exact size + memcpy with GIL
+    # released (matches imagecodecs's pattern; a hair faster than the
+    # single `(<char*> buffer)[:out_len]` slice on multi-MB blobs).
+    out = PyBytes_FromStringAndSize(NULL, <Py_ssize_t> out_len)
+    dst = out
     try:
-        out = (<char*> buffer)[:out_len]
+        with nogil:
+            memcpy(<void*> &dst[0], <const void*> buffer, <size_t> out_len)
     finally:
         free(buffer)
+    del dst
     return out
 
 
@@ -88,6 +97,8 @@ def decode(data) -> cnp.ndarray:
         void* buffer = NULL
         int srcsize
         cnp.ndarray dst
+        void* dst_data
+        size_t nbytes
 
     if isinstance(data, (bytes, bytearray)):
         src = data
@@ -106,8 +117,12 @@ def decode(data) -> cnp.ndarray:
     try:
         shape = (int(desc.height), int(desc.width), int(desc.channels))
         dst = np.empty(shape, dtype=np.uint8)
-        memcpy(<void*> dst.data, <const void*> buffer,
-               <size_t> dst.nbytes)
+        dst_data = <void*> dst.data
+        nbytes = <size_t> dst.nbytes
+        # Release GIL during the bulk copy — for a 12 MB RGB blob this
+        # is a real win because the memcpy itself is 2-3 ms.
+        with nogil:
+            memcpy(dst_data, <const void*> buffer, nbytes)
     finally:
         free(buffer)
     return dst

@@ -37,6 +37,8 @@ from heif cimport (
     heif_encoder, heif_encoder_release,
     heif_encoder_set_lossy_quality, heif_encoder_set_lossless,
     heif_encoder_set_parameter_string,
+    heif_encoder_set_parameter_integer,
+    heif_context_set_max_decoding_threads,
     heif_context_encode_image,
     heif_writer, heif_context_write,
     heif_error,
@@ -65,12 +67,20 @@ cdef _ensure_init():
         _heif_initialized = True
 
 
-def decode(data) -> np.ndarray:
+def decode(data, *, numthreads: int | None = None) -> np.ndarray:
     """Decode HEIF/HEIC bytes to a numpy array.
 
     Returns uint8 for 8-bit HEIFs, uint16 for 10/12-bit HEIFs (values
     left-aligned to the source bit_depth — i.e. for 10-bit the array
     contains values 0..1023, not shifted into the upper bits).
+
+    Parameters
+    ----------
+    numthreads : int, optional
+        Max worker threads for the HEVC decoder. ``None`` (default)
+        leaves libheif's compile-time default (typically 4). ``0`` or
+        ``1`` forces single-threaded. Larger values give near-linear
+        speedup on 4K+ images.
     """
     cdef:
         const uint8_t[::1] src
@@ -87,6 +97,7 @@ def decode(data) -> np.ndarray:
         cnp.ndarray out
         cnp.npy_intp shape[3]
         int y
+        int _heif_n
         size_t row_bytes_out
 
     _ensure_init()
@@ -101,6 +112,10 @@ def decode(data) -> np.ndarray:
     if ctx == NULL:
         raise HeifError('heif_context_alloc failed')
     try:
+        if numthreads is not None:
+            _heif_n = int(numthreads)
+            if _heif_n < 1: _heif_n = 1
+            heif_context_set_max_decoding_threads(ctx, _heif_n)
         err = heif_context_read_from_memory_without_copy(
             ctx, &src[0], srcsize, NULL)
         if err.code != 0:
@@ -204,7 +219,8 @@ cdef heif_error _writer_cb(
 
 def encode(data, *, level: int | None = None,
            lossless: bool = False, color=None,
-           bit_depth: int | None = None) -> bytes:
+           bit_depth: int | None = None,
+           numthreads: int | None = None) -> bytes:
     """Encode an array as HEIC.
 
     Parameters
@@ -224,6 +240,10 @@ def encode(data, *, level: int | None = None,
         Override bit depth (8, 10, 12). Default: 8 for uint8 input, 10 for
         uint16 input. uint16 values must be left-aligned within bit_depth's
         range (e.g. for 10-bit: values 0..1023, not shifted to upper bits).
+    numthreads : int, optional
+        Worker threads for the HEVC encoder (``threads`` parameter on the
+        x265 / kvazaar plugin). ``None`` (default) leaves the encoder
+        plugin's own default. Typical 2-6× speedup on 4K+ encodes.
     """
     cdef:
         cnp.ndarray arr
@@ -330,6 +350,13 @@ def encode(data, *, level: int | None = None,
         if err.code != 0:
             raise HeifError(
                 f'get_encoder_for_format(HEVC): {err.message.decode()}')
+
+        if numthreads is not None and int(numthreads) > 0:
+            # x265 / kvazaar plugins accept a `threads` int parameter.
+            # The set_parameter call returns an error if the plugin
+            # doesn't expose this knob — ignore it (default behavior wins).
+            heif_encoder_set_parameter_integer(
+                enc, b'threads', int(numthreads))
 
         if lossless:
             heif_encoder_set_lossless(enc, 1)

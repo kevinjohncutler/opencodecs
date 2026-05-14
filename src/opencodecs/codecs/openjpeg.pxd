@@ -103,6 +103,7 @@ cdef extern from 'openjpeg.h' nogil:
         OPJ_UINT32 max_comp_size
 
     OPJ_BOOL opj_has_thread_support()
+    int opj_get_num_cpus()
 
     opj_image_t* opj_image_create(
         OPJ_UINT32 numcmpts, opj_image_cmptparm* cmptparms,
@@ -139,6 +140,7 @@ cdef extern from 'openjpeg.h' nogil:
 
     opj_codec_t* opj_create_decompress(CODEC_FORMAT format)
     opj_codec_t* opj_create_compress(CODEC_FORMAT format)
+    OPJ_BOOL opj_codec_set_threads(opj_codec_t* p_codec, int num_threads)
     void opj_destroy_codec(opj_codec_t* p_codec)
 
     void opj_set_default_decoder_parameters(opj_dparameters_t* parameters)

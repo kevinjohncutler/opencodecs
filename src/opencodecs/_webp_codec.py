@@ -38,10 +38,16 @@ class WebpCodec(Codec):
         return _webp_check_signature(head)
 
     def encode(self, data: Any, *, dest=None, level: int | None = None,
-               lossless: bool = False, **opts) -> bytes | None:
+               lossless: bool = False,
+               numthreads: int | None = None,
+               method: int = -1,
+               **opts) -> bytes | None:
         if not isinstance(data, np.ndarray):
             data = np.asarray(data)
-        encoded = _webp_encode(data, level=level, lossless=lossless)
+        encoded = _webp_encode(
+            data, level=level, lossless=lossless,
+            numthreads=numthreads, method=method,
+        )
         return _write_dest(encoded, dest)
 
     def decode(self, src: Any, **opts) -> np.ndarray:

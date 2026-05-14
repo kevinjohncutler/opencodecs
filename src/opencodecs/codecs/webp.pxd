@@ -75,3 +75,13 @@ cdef extern from 'webp/decode.h' nogil:
         WebPBitstreamFeatures* features,
     )
 
+
+# opencodecs shim — advanced encode API behind a single C function.
+cdef extern from "webp_shim.h" nogil:
+    int oc_webp_encode(
+        const uint8_t* rgb_buf, int width, int height, int stride,
+        int has_alpha, int lossless, float quality,
+        int thread_level, int method,
+        uint8_t** out_ptr, size_t* out_size,
+    )
+    void oc_webp_free(void* ptr)

@@ -127,6 +127,24 @@ if "opencodecs.codecs._sz3" in sys.modules:
 
 
 # ---------------------------------------------------------------------------
+# SPERR — wavelet-based error-bounded lossy compressor (libSPERR)
+# ---------------------------------------------------------------------------
+
+if "opencodecs.codecs._sperr" in sys.modules:
+    from .._sperr_codec import SperrCodec
+    register_codec(SperrCodec())
+
+
+# ---------------------------------------------------------------------------
+# Brunsli — lossless JPEG transcoder (~20% smaller)
+# ---------------------------------------------------------------------------
+
+if "opencodecs.codecs._brunsli" in sys.modules:
+    from .._brunsli_codec import BrunsliCodec
+    register_codec(BrunsliCodec())
+
+
+# ---------------------------------------------------------------------------
 # pcodec — modern (2024+) lossless numerical compressor (Rust cdylib)
 # ---------------------------------------------------------------------------
 

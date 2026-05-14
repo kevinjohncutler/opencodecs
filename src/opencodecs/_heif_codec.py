@@ -40,15 +40,19 @@ class HeifCodec(Codec):
 
     def encode(self, data: Any, *, dest=None, level: int | None = None,
                lossless: bool = False, color=None,
-               bit_depth: int | None = None, **opts) -> bytes | None:
+               bit_depth: int | None = None,
+               numthreads: int | None = None,
+               **opts) -> bytes | None:
         if not isinstance(data, np.ndarray):
             data = np.asarray(data)
         encoded = _heif_encode(data, level=level, lossless=lossless,
-                               color=color, bit_depth=bit_depth)
+                               color=color, bit_depth=bit_depth,
+                               numthreads=numthreads)
         return _write_dest(encoded, dest)
 
-    def decode(self, src: Any, **opts) -> np.ndarray:
-        return _heif_decode(_read_src(src))
+    def decode(self, src: Any, *, numthreads: int | None = None,
+               **opts) -> np.ndarray:
+        return _heif_decode(_read_src(src), numthreads=numthreads)
 
 
 

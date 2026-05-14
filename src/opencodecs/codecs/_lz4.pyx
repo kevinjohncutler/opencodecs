@@ -31,12 +31,12 @@ def encode(data, *, level: int | None = None) -> bytes:
     """Encode bytes-like input as an LZ4 frame."""
     cdef:
         const uint8_t[::1] src
+        const uint8_t[::1] dst   # memoryview into output bytes
         size_t srcsize
         size_t dstcap
         size_t ret
         LZ4F_preferences_t prefs
         bytes out
-        void* dst_ptr
         const void* src_ptr = NULL
 
     try:
@@ -59,12 +59,18 @@ def encode(data, *, level: int | None = None) -> bytes:
 
     dstcap = LZ4F_compressFrameBound(srcsize, &prefs)
     out = PyBytes_FromStringAndSize(NULL, <Py_ssize_t> dstcap)
-    dst_ptr = <void*> PyBytes_AsString(out)
+    # See _zstd.encode for why we use a memoryview cast (`dst = out`)
+    # + ``del dst`` + ``out[:ret]`` slice rather than the PyBytes_AsString
+    # + _PyBytes_Resize pattern — measurably faster on multi-MB outputs.
+    dst = out
     with nogil:
-        ret = LZ4F_compressFrame(dst_ptr, dstcap, src_ptr, srcsize, &prefs)
+        ret = LZ4F_compressFrame(
+            <void*> &dst[0], dstcap, src_ptr, srcsize, &prefs,
+        )
     if LZ4F_isError(ret):
         raise Lz4Error(
             f'LZ4F_compressFrame: {LZ4F_getErrorName(ret).decode()}')
+    del dst
     return out[:ret]
 
 
@@ -72,6 +78,7 @@ def decode(data) -> bytes:
     """Decode an LZ4 frame to bytes."""
     cdef:
         const uint8_t[::1] src
+        const uint8_t[::1] dst_mv     # memoryview cast for the output bytes
         size_t srcsize, src_consumed, src_remaining
         size_t dst_size, dst_used
         size_t ret
@@ -122,12 +129,14 @@ def decode(data) -> bytes:
         if info.contentSize > 0:
             dst_size = <size_t> info.contentSize
             out = PyBytes_FromStringAndSize(NULL, <Py_ssize_t> dst_size)
-            dst_ptr = <void*> PyBytes_AsString(out)
+            # Memoryview cast for the output pointer — same pattern as
+            # encode (see _zstd.pyx for the empirical rationale).
+            dst_mv = out
             dst_used = dst_size
             src_remaining = srcsize - src_consumed
             with nogil:
                 ret = LZ4F_decompress(
-                    dctx, dst_ptr, &dst_used,
+                    dctx, <void*> &dst_mv[0], &dst_used,
                     <const void*> (&src[0] + src_consumed), &src_remaining,
                     NULL)
             if LZ4F_isError(ret):
@@ -137,6 +146,10 @@ def decode(data) -> bytes:
                 raise Lz4Error(
                     'LZ4F_decompress: contentSize header was wrong '
                     '(decoder requests more input)')
+            del dst_mv
+            # When dst_used == dst_size (the common case for valid
+            # frames), this slice is a CPython no-op — returns ``out``
+            # itself, no alloc / no memcpy.
             return out[:dst_used]
 
         # No content-size hint — chunked decode into a bytearray. Use a

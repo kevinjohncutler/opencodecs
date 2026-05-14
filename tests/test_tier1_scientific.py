@@ -292,6 +292,75 @@ def test_sz3_rejects_integer_dtype():
 
 
 # ---------------------------------------------------------------------------
+# sperr — wavelet-based error-bounded lossy (2D / 3D float only)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("shape", [(128, 128), (32, 64, 64)])
+def test_sperr_pwe_mode_respects_budget(shape):
+    _need("sperr")
+    rng = np.random.default_rng(0)
+    arr = rng.random(shape).astype(np.float32)
+    blob = oc.write(None, arr, format="sperr", mode="pwe", pwe=1e-3)
+    back = oc.read(blob, format="sperr")
+    assert back.shape == arr.shape
+    assert back.dtype == arr.dtype
+    # SPERR's point-wise error bound is exact within numerical tolerance.
+    assert np.abs(arr - back).max() <= 1e-3 + 1e-6
+
+
+@pytest.mark.parametrize("dtype", [np.float32, np.float64])
+def test_sperr_dtype_roundtrip_2d(dtype):
+    _need("sperr")
+    arr = np.random.default_rng(0).random((128, 128)).astype(dtype)
+    blob = oc.write(None, arr, format="sperr", mode="psnr", psnr=80)
+    back = oc.read(blob, format="sperr")
+    assert back.dtype == arr.dtype
+    assert back.shape == arr.shape
+    np.testing.assert_allclose(back, arr, atol=5e-3)
+
+
+def test_sperr_3d_compresses_smooth_field():
+    """3D wavelet compression should beat 4x on a smooth sinusoidal field."""
+    _need("sperr")
+    coords = np.linspace(0, 6 * np.pi, 64, dtype=np.float32)
+    x, y, z = np.meshgrid(coords, coords, coords, indexing="ij")
+    arr = (np.sin(x) * np.cos(y) + np.sin(z)).astype(np.float32)
+    blob = oc.write(None, arr, format="sperr", mode="psnr", psnr=70)
+    back = oc.read(blob, format="sperr")
+    ratio = arr.nbytes / len(blob)
+    # On this smooth field, SPERR at PSNR=70 dB easily compresses >10x.
+    assert ratio > 4.0, f"expected >4x compression, got {ratio:.2f}x"
+    # Reconstruction PSNR should clear the requested 70 dB by a comfortable margin.
+    mse = float(((arr - back) ** 2).mean())
+    psnr = 20 * np.log10(arr.max() / np.sqrt(mse))
+    assert psnr >= 65.0, f"PSNR target=70 dB but got {psnr:.1f} dB"
+
+
+def test_sperr_rejects_integer_dtype():
+    _need("sperr")
+    arr = np.arange(64 * 64, dtype=np.int32).reshape(64, 64)
+    with pytest.raises(ValueError, match="float32/float64"):
+        oc.write(None, arr, format="sperr")
+
+
+def test_sperr_rejects_unsupported_ndim():
+    _need("sperr")
+    arr = np.zeros((16,), dtype=np.float32)  # 1D unsupported
+    with pytest.raises(ValueError, match="ndim must be 2 or 3"):
+        oc.write(None, arr, format="sperr")
+
+
+def test_sperr_signature_round_trips():
+    _need("sperr")
+    arr = np.random.default_rng(0).random((32, 32)).astype(np.float32)
+    blob = oc.write(None, arr, format="sperr", mode="psnr", psnr=80)
+    assert isinstance(blob, (bytes, bytearray))
+    # opencodecs SPERR preamble: 4-byte ASCII 'SPRR'.
+    assert bytes(blob[:4]) == b"SPRR"
+
+
+# ---------------------------------------------------------------------------
 # pcodec — modern lossless numerical compressor
 # ---------------------------------------------------------------------------
 
