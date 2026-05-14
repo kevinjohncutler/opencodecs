@@ -68,6 +68,7 @@ _EXTENSIONS = (
     "_eer",         # Thermo Fisher EER cryo-EM event-list decoder (vendored)
     "_brunsli",     # lossless JPEG transcoder (~20% smaller)
     "_gif",         # GIF via giflib
+    "_snappy",      # Snappy block compression via libsnappy
 )
 
 
