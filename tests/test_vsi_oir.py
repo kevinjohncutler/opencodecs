@@ -146,3 +146,48 @@ def test_vsi_ets_partial_parse():
     assert stack["height"] == 260
     assert stack["level_count"] == 6
     assert stack["n_components"] == 4
+
+
+# ---------------------------------------------------------------------------
+# Experimental raw-record decode (uint16 frames; not yet verified
+# against ground truth)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(not OIR_SAMPLE.exists(), reason=_HINT)
+def test_oir_raw_records_decode_experimental():
+    """raw_records() returns one uint16 ndarray per frame record.
+    The 99 frame records have plausible microscopy-data values
+    (3..1023 range, low mean). NOT verified against ground truth —
+    the per-record shape is a best-effort heuristic."""
+    records = oc.get_codec("oir").raw_records(str(OIR_SAMPLE))
+    assert len(records) == 99
+    # First three frame records: two large + one small
+    assert records[0].dtype == np.uint16
+    assert records[0].shape == (237, 512)   # 242688 bytes
+    assert records[2].shape == (256, 76)    # 38912 bytes (thumbnail?)
+    # Values look like 10-bit microscopy data
+    assert 0 <= records[0].min() < 100
+    assert 500 < records[0].max() < 1024
+
+
+@pytest.mark.skipif(
+    not (CORPUS / "vsi" / "_metadataTest_01_" / "stack1"
+         / "frame_t_0.ets").exists(),
+    reason=_HINT,
+)
+def test_ets_levels_decode_experimental():
+    """read_ets_levels() decodes each entry from the .ets pyramid
+    index as a uint16 ndarray. The corpus sample has 4 decodable
+    levels (some level-index records have zero size). Not yet
+    verified against ground truth."""
+    from opencodecs._ets import read_ets_levels
+    levels = read_ets_levels(
+        str(CORPUS / "vsi" / "_metadataTest_01_"
+            / "stack1" / "frame_t_0.ets"))
+    assert len(levels) >= 1
+    assert levels[0].dtype == np.uint16
+    assert levels[0].shape == (260, 216)
+    # Values look reasonable
+    assert levels[0].mean() > 0
+    assert levels[0].max() < 65535
