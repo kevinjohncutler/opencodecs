@@ -297,9 +297,10 @@ if "opencodecs.codecs._zstd" in sys.modules:
 
 try:
     from .._nd2_codec import Nd2Codec as _Nd2Codec
-    if _Nd2Codec.has_delegate:
-        register_codec(_Nd2Codec())
-except ImportError:  # pragma: no cover - nd2-missing branch
+    # Always register — has_native=True (raw ND2 works without the
+    # nd2 package); has_delegate handles legacy + compressed variants.
+    register_codec(_Nd2Codec())
+except ImportError:  # pragma: no cover - import-time error branch
     pass
 
 

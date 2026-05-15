@@ -350,6 +350,17 @@ class HTTPDataSource(DataSource):
                             self._total_size = int(cr.rsplit("/", 1)[1])
                         except ValueError:
                             pass
+                    elif resp.status == 200:
+                        # Server returned the WHOLE file (didn't honor
+                        # Range, or didn't advertise it). The
+                        # Content-Length header is the file size in
+                        # that case — we may as well learn it.
+                        cl = resp.getheader("Content-Length")
+                        if cl is not None:
+                            try:
+                                self._total_size = int(cl)
+                            except ValueError:
+                                pass
                 data = resp.read()
                 self._total_requests += 1
                 self._total_bytes_fetched += len(data)
@@ -395,6 +406,13 @@ class HTTPDataSource(DataSource):
                         self._total_size = int(cr.rsplit("/", 1)[1])
                     except ValueError:
                         pass
+                elif resp.status == 200:
+                    cl = resp.headers.get("Content-Length")
+                    if cl is not None:
+                        try:
+                            self._total_size = int(cl)
+                        except ValueError:
+                            pass
             data = resp.read()
         self._total_bytes_fetched += len(data)
         return data
