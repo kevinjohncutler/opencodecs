@@ -212,6 +212,18 @@ def decode(data) -> bytes:
     orig_size, bps, block, rsi, flags = _unpack_header(bytes(src[:_HEADER_LEN]))
     if orig_size == 0:
         return b''
+    # The header is the first 16 bytes of the input; for a corrupt or
+    # adversarial blob those bytes can encode an absurd ``orig_size``
+    # (uint64 read of random bytes -> ~10**18). Forwarding that to
+    # PyBytes_FromStringAndSize attempts a multi-exabyte malloc which
+    # aborts under ASAN and OOM-kills otherwise. Cap at 16 GiB — well
+    # above any plausible single-call decode for the scientific data
+    # libaec is used on, but small enough to bail fast on garbage.
+    if orig_size > (1 << 34):
+        raise AecError(
+            f"aec header: orig_size {orig_size} exceeds 16 GiB sanity cap "
+            "(input is probably corrupt or not an AEC blob)"
+        )
 
     out_size = <Py_ssize_t> orig_size
     out = PyBytes_FromStringAndSize(NULL, out_size)
