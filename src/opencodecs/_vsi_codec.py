@@ -24,7 +24,7 @@ This codec wires VSI into the registry so:
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 import numpy as np
 
@@ -69,13 +69,40 @@ class VsiCodec(Codec):
         with self.open(src, **opts) as reader:
             return reader.read()
 
-    def open(self, src: Any, **opts) -> Reader:
-        # The .vsi top-level container is a TIFF. Delegate to our
-        # native TIFF reader, which handles JPEG-in-TIFF compression
-        # (the typical thumbnail encoding) and exposes the pages
-        # iterator for any extra IFDs.
+    def open(self, src: Any, *, mode: str = "auto",
+             **opts) -> Reader:
+        """Open a VSI for reading.
+
+        ``mode``:
+          * ``"auto"`` (default): if a sibling ``_NAME_/stackN/frame_t.ets``
+            tree exists, decode the full-resolution stack natively.
+            Otherwise (or for the second IFD of the index), return
+            the TIFF thumbnail reader.
+          * ``"thumbnail"``: always return the TIFF thumbnail.
+          * ``"ets"``: always decode the .ets stack(s); fails when
+            no companion is present.
+        """
         from ._tiff_codec import TiffStream
-        return TiffStream(src, **opts)
+        if mode == "thumbnail":
+            return TiffStream(src, **opts)
+        if not isinstance(src, (str, Path)):
+            # Bytes / file-like don't have a sibling .ets path
+            return TiffStream(src, **opts)
+        # Look for a companion _NAME_/stack*/frame_t_*.ets tree
+        p = Path(src)
+        companion = p.parent / f"_{p.stem}_"
+        ets_files = []
+        if companion.is_dir():
+            for sd in sorted(companion.iterdir()):
+                if sd.is_dir():
+                    ets_files.extend(sorted(sd.glob("frame_t_*.ets")))
+        if not ets_files:
+            if mode == "ets":
+                raise FileNotFoundError(
+                    f"VSI: no .ets companion found at {companion}")
+            return TiffStream(src, **opts)
+        # ETS mode (default when companion present)
+        return _VsiEtsReader(p, ets_files)
 
     def info(self, src: Any) -> dict:
         """Partial-parse the VSI index + every .ets companion in the
@@ -116,6 +143,55 @@ class VsiCodec(Codec):
                     })
         out["ets_stacks"] = stacks
         return out
+
+
+class _VsiEtsReader(Reader):
+    """Native VSI reader: concatenates planes from each
+    ``frame_t_N.ets`` companion file."""
+
+    def __init__(self, vsi_path: Path, ets_files: list[Path]):
+        from ._ets import decode_ets
+        self._vsi_path = vsi_path
+        self._ets_files = list(ets_files)
+        self._decode_ets = decode_ets
+        # Probe the first .ets to learn geometry; assume all match.
+        first = decode_ets(str(ets_files[0]))
+        self._plane_height = int(first.shape[1])
+        self._plane_width = int(first.shape[2])
+        self._first = first
+        per_stack = first.shape[0]
+        self.n_frames = per_stack * len(ets_files)
+        self.shape = (
+            self.n_frames, self._plane_height, self._plane_width)
+        self.dtype = first.dtype
+        self.is_chunked = False
+
+    def iter_frames(self) -> Iterator[np.ndarray]:
+        yielded = 0
+        for i, ets_path in enumerate(self._ets_files):
+            stack = self._first if i == 0 else self._decode_ets(
+                str(ets_path))
+            for j in range(stack.shape[0]):
+                yield stack[j]
+                yielded += 1
+
+    def read(self) -> np.ndarray:
+        chunks = [self._first]
+        for ets_path in self._ets_files[1:]:
+            chunks.append(self._decode_ets(str(ets_path)))
+        if len(chunks) == 1:
+            return chunks[0]
+        return np.concatenate(chunks, axis=0)
+
+    def close(self) -> None:
+        self._first = None
+
+    def __enter__(self) -> "_VsiEtsReader":
+        return self
+
+    def __exit__(self, *_) -> bool:
+        self.close()
+        return False
 
 
 __all__ = ["VsiCodec"]

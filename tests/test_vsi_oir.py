@@ -52,22 +52,41 @@ def test_vsi_signature_detection():
     assert codec.signature(b"not tiff") is False
 
 
-@pytest.mark.skipif(not VSI_SAMPLE.exists(), reason=_HINT)
-def test_vsi_decode_via_tiff_reader():
-    """The VSI top-level container is a TIFF. Our TIFF reader
-    decodes the thumbnail / overview image directly."""
+@pytest.mark.skipif(
+    not (CORPUS / "vsi" / "_metadataTest_01_" / "stack1"
+         / "frame_t_0.ets").exists(),
+    reason=_HINT,
+)
+def test_vsi_full_native_decode():
+    """Native VSI decode (with .ets companion present) returns the
+    full pyramid stack. Ground truth (bftools): 5T × 18Z × 2C
+    × 216×260 uint16 = 180 planes."""
     arr = oc.read(str(VSI_SAMPLE), format="vsi")
-    # Olympus metadataTest_01.vsi is a 216x260x3 RGB thumbnail
-    assert arr.ndim == 3
-    assert arr.shape[2] == 3
-    assert arr.dtype == np.uint8
+    assert arr.shape == (180, 216, 260)
+    assert arr.dtype == np.uint16
 
 
 @pytest.mark.skipif(not VSI_SAMPLE.exists(), reason=_HINT)
-def test_vsi_extension_dispatch():
-    """oc.read('foo.vsi') picks VsiCodec without format= override."""
-    arr = oc.read(str(VSI_SAMPLE))
+def test_vsi_thumbnail_mode():
+    """mode='thumbnail' returns the TIFF index thumbnail rather
+    than the .ets stack."""
+    with oc.get_codec("vsi").open(str(VSI_SAMPLE), mode="thumbnail") as r:
+        arr = r.read()
+    assert arr.shape == (216, 260, 3)
     assert arr.dtype == np.uint8
+
+
+@pytest.mark.skipif(
+    not (CORPUS / "vsi" / "_metadataTest_01_" / "stack1"
+         / "frame_t_0.ets").exists(),
+    reason=_HINT,
+)
+def test_vsi_extension_dispatch():
+    """oc.read('foo.vsi') picks VsiCodec without format= override.
+    With .ets companion present this gives the full 180-plane stack."""
+    arr = oc.read(str(VSI_SAMPLE))
+    assert arr.shape == (180, 216, 260)
+    assert arr.dtype == np.uint16
 
 
 # ---------------------------------------------------------------------------
@@ -79,10 +98,10 @@ def test_oir_codec_registered():
     assert "oir" in [c["name"] for c in oc.list_codecs()]
 
 
-def test_oir_codec_advertises_no_decode():
+def test_oir_codec_advertises_native_decode():
     entry = next(c for c in oc.list_codecs() if c["name"] == "oir")
-    assert entry["native"] is False
-    assert entry["decode"] is False
+    assert entry["native"] is True
+    assert entry["decode"] is True
     assert entry["encode"] is False
 
 
@@ -98,12 +117,27 @@ def test_oir_signature_detection():
 
 
 @pytest.mark.skipif(not OIR_SAMPLE.exists(), reason=_HINT)
-def test_oir_decode_raises_clearly():
-    """OIR decode raises NotImplementedError with a clear message —
-    not a confusing low-level error. Users get the message even
-    via the top-level oc.read API."""
-    with pytest.raises(NotImplementedError, match="OIR"):
-        oc.read(str(OIR_SAMPLE), format="oir")
+def test_oir_native_decode_shape_and_dtype():
+    """Native OIR decode produces the right shape + dtype.
+    Ground truth (bftools): 32 planes × 512×512 uint16.
+    """
+    arr = oc.read(str(OIR_SAMPLE), format="oir")
+    assert arr.shape == (32, 512, 512)
+    assert arr.dtype == np.uint16
+    # 10-bit data → values in [0, 1023]
+    assert arr.min() >= 0
+    assert arr.max() < 1024
+
+
+@pytest.mark.skipif(not OIR_SAMPLE.exists(), reason=_HINT)
+def test_oir_streaming_reader_per_frame():
+    """The streaming reader yields one plane per iter_frames()."""
+    full = oc.read(str(OIR_SAMPLE), format="oir")
+    with oc.get_codec("oir").open(str(OIR_SAMPLE)) as r:
+        assert r.n_frames == 32
+        for i, frame in enumerate(r.iter_frames()):
+            assert np.array_equal(frame, full[i]), (
+                f"streamed frame {i} differs from full read")
 
 
 @pytest.mark.skipif(not OIR_SAMPLE.exists(), reason=_HINT)
@@ -142,8 +176,8 @@ def test_vsi_ets_partial_parse():
     assert len(info["ets_stacks"]) == 1
     stack = info["ets_stacks"][0]
     assert stack["magic_ok"] is True
-    assert stack["width"] == 216
-    assert stack["height"] == 260
+    assert stack["width"] == 260
+    assert stack["height"] == 216
     assert stack["level_count"] == 6
     assert stack["n_components"] == 4
 
@@ -176,18 +210,12 @@ def test_oir_raw_records_decode_experimental():
          / "frame_t_0.ets").exists(),
     reason=_HINT,
 )
-def test_ets_levels_decode_experimental():
-    """read_ets_levels() decodes each entry from the .ets pyramid
-    index as a uint16 ndarray. The corpus sample has 4 decodable
-    levels (some level-index records have zero size). Not yet
-    verified against ground truth."""
-    from opencodecs._ets import read_ets_levels
-    levels = read_ets_levels(
+def test_ets_decode_full_native():
+    """decode_ets() returns the full plane stack from one .ets file.
+    Verified byte-identical to bftools on the OME corpus sample."""
+    from opencodecs._ets import decode_ets
+    arr = decode_ets(
         str(CORPUS / "vsi" / "_metadataTest_01_"
             / "stack1" / "frame_t_0.ets"))
-    assert len(levels) >= 1
-    assert levels[0].dtype == np.uint16
-    assert levels[0].shape == (260, 216)
-    # Values look reasonable
-    assert levels[0].mean() > 0
-    assert levels[0].max() < 65535
+    assert arr.shape == (180, 216, 260)
+    assert arr.dtype == np.uint16
