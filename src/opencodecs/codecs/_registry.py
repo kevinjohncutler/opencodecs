@@ -310,9 +310,11 @@ except ImportError:  # pragma: no cover - import-time error branch
 
 try:
     from .._lif_codec import LifCodec as _LifCodec
-    if _LifCodec.has_delegate:
-        register_codec(_LifCodec())
-except ImportError:  # pragma: no cover - readlif-missing branch
+    # Always register — native parser handles typical LIFs without
+    # readlif; readlif is the fallback for files with LAS-X frame-
+    # order overrides.
+    register_codec(_LifCodec())
+except ImportError:  # pragma: no cover - import-time error branch
     pass
 
 
@@ -322,9 +324,10 @@ except ImportError:  # pragma: no cover - readlif-missing branch
 
 try:
     from .._oib_codec import OibCodec as _OibCodec
-    if _OibCodec.has_delegate:
-        register_codec(_OibCodec())
-except ImportError:  # pragma: no cover - oiffile-missing branch
+    # Always register — native OLE2+TIFF reader handles OIB without
+    # oiffile; oiffile is the fallback for OIF directory variants.
+    register_codec(_OibCodec())
+except ImportError:  # pragma: no cover - import-time error branch
     pass
 
 

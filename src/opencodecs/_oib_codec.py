@@ -19,6 +19,7 @@ from typing import Any, Iterator
 import numpy as np
 
 from .core.codec import Codec, Reader
+from .core.io import DataSource
 
 try:
     import oiffile as _oif
@@ -77,16 +78,30 @@ class OibReader(Reader):
 
 
 class OibCodec(Codec):
-    """Olympus OIB / OIF container codec — FluoView confocal microscopy."""
+    """Olympus OIB / OIF container codec — FluoView confocal microscopy.
+
+    Two backends:
+      * ``opencodecs._oib_native.OibNativeReader`` — pure-Python parser
+        for the OLE2 / Compound File Binary container that backs OIB.
+        Decodes the per-frame TIFF streams through our native TIFF
+        reader. Works on local paths AND ``HTTPDataSource`` (range
+        reads → only the OLE2 directory + the requested frame's
+        TIFF stream are fetched).
+      * ``oiffile`` package — full-featured delegate. Used as a
+        fallback. Also the only path for OIF (directory-based)
+        variants since the native OLE2 parser only handles OIB.
+
+    ``open(src)`` tries native first, falls back to the delegate.
+    """
 
     name = "oib"
     file_extensions = (".oib", ".oif")
     aliases = ("oif",)
 
-    has_native = False
+    has_native = True
     has_delegate = _HAVE_OIFFILE
     can_encode = False
-    can_decode = _HAVE_OIFFILE
+    can_decode = True
     multi_frame = True
     chunked = False
     streaming_decode = True
@@ -110,14 +125,45 @@ class OibCodec(Codec):
         with self.open(src, **opts) as reader:
             return reader.read()
 
-    def open(self, src: Any, **opts) -> Reader:
+    def open(self, src: Any, *, backend: str | None = None,
+             **opts) -> Reader:
+        """Open OIB / OIF for reading.
+
+        ``backend``:
+          * ``None`` (default): native first, fall back to oiffile.
+          * ``"native"``: force the native parser. Won't handle OIF
+            (directory variant) — that requires oiffile.
+          * ``"oiffile"``: force the oiffile delegate.
+        """
+        if backend in (None, "native"):
+            try:
+                from ._oib_native import OibNativeReader
+                if isinstance(src, (str, Path)) or isinstance(src, DataSource):
+                    return OibNativeReader(src)
+                # bytes / file-like: spill to a temp file
+                import os, tempfile
+                if isinstance(src, (bytes, bytearray, memoryview)):
+                    fd, tmp = tempfile.mkstemp(suffix=".oib")
+                    os.write(fd, bytes(src))
+                    os.close(fd)
+                    return OibNativeReader(tmp)
+                if hasattr(src, "read"):
+                    data = src.read()
+                    fd, tmp = tempfile.mkstemp(suffix=".oib")
+                    os.write(fd, data)
+                    os.close(fd)
+                    return OibNativeReader(tmp)
+            except (NotImplementedError, ValueError, KeyError) as e:
+                if backend == "native":
+                    raise
+                # Fall through to delegate (e.g. OIF directory variant)
         if not _HAVE_OIFFILE:
             raise ImportError(
-                "oiffile is required for OIB / OIF support: "
-                "pip install oiffile")
+                "OIB: native parser couldn't handle this source and "
+                "oiffile is not installed. pip install oiffile for "
+                "fallback support of OIF (directory) variants.")
         if isinstance(src, (str, Path)):
             return OibReader(src)
-        # oiffile reads from a path; spill bytes/file-likes to a temp.
         import os, tempfile
         if isinstance(src, (bytes, bytearray, memoryview)):
             fd, tmp = tempfile.mkstemp(suffix=".oib")

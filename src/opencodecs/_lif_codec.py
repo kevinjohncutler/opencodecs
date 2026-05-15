@@ -148,16 +148,30 @@ class LifReader(Reader):
 
 
 class LifCodec(Codec):
-    """Leica LIF container codec — multi-image confocal microscopy."""
+    """Leica LIF container codec — multi-image confocal microscopy.
+
+    Two backends:
+      * ``opencodecs._lif_native.LifNativeReader`` — pure-Python parser
+        for the LIF binary container + UTF-16 XML metadata. Reshapes
+        each memory block via the XML's per-axis BytesInc strides.
+        Decodes typical LIFs correctly (single image, simple Z/T/C
+        layout). Doesn't yet honor LAS-X frame-order overrides
+        (combined scan types, mosaic with per-tile flip).
+      * ``readlif`` package — full-featured delegate (handles every
+        LIF quirk). Used as fallback.
+
+    ``open(src)`` detects whether the file uses any of the
+    frame-order-altering metadata and routes accordingly.
+    """
 
     name = "lif"
     file_extensions = (".lif",)
     aliases = ()
 
-    has_native = False
+    has_native = True
     has_delegate = _HAVE_READLIF
     can_encode = False
-    can_decode = _HAVE_READLIF
+    can_decode = True
     multi_frame = True
     chunked = False
     streaming_decode = True
@@ -179,13 +193,50 @@ class LifCodec(Codec):
             return reader.read()
 
     def open(self, src: Any, *, image: int | str | None = None,
-             **opts) -> Reader:
+             backend: str | None = None, **opts) -> Reader:
+        """Open a LIF for reading.
+
+        ``backend``:
+          * ``None`` (default): try native first, fall back to readlif
+            when the file uses LAS-X frame-order overrides (mosaic
+            scan-type combination etc.) that the native parser
+            doesn't yet honor.
+          * ``"native"``: force the native parser.
+          * ``"readlif"``: force the readlif delegate.
+        """
+        if backend in (None, "native") and image is None:
+            try:
+                from ._lif_native import LifNativeReader, LifFileParser
+                if isinstance(src, (str, Path)):
+                    # Heuristic: route through delegate when the XML
+                    # advertises features the native parser doesn't
+                    # handle yet — multi-mosaic (n_mosaic > 1), or
+                    # multiple ATLConfocalSettingDefinition blocks
+                    # (combined scan types).
+                    parser = LifFileParser(str(src))
+                    if backend == "native" or _native_can_handle(parser):
+                        return LifNativeReader(str(src), image=image)
+                    # Discard the partial parser; readlif re-opens.
+                    parser = None  # noqa: F841
+                else:
+                    # Spill bytes / file-like to a temp file.
+                    tmp = _spill_to_temp(src)
+                    if tmp is not None:
+                        parser = LifFileParser(tmp)
+                        if backend == "native" or _native_can_handle(parser):
+                            return LifNativeReader(tmp, image=image)
+            except (ValueError, ImportError) as e:
+                if backend == "native":
+                    raise
+                # Fall through to delegate
         if not _HAVE_READLIF:
             raise ImportError(
-                "readlif is required for LIF support: pip install readlif")
+                "LIF: native parser couldn't handle this file and the "
+                "readlif package isn't installed. pip install readlif "
+                "for fallback support of files with frame-order "
+                "overrides.")
         if isinstance(src, (str, Path)):
             return LifReader(src, image=image)
-        # readlif only takes paths; spill to a temp file otherwise.
         import os, tempfile
         if isinstance(src, (bytes, bytearray, memoryview)):
             fd, tmp = tempfile.mkstemp(suffix=".lif")
@@ -199,6 +250,49 @@ class LifCodec(Codec):
             os.close(fd)
             return LifReader(tmp, image=image)
         raise TypeError(f"unsupported LIF source: {type(src).__name__}")
+
+
+def _native_can_handle(parser) -> bool:
+    """Heuristic: decide whether the native parser will produce
+    correct output for this LIF, or whether we should delegate to
+    readlif. We delegate when the file uses LAS-X features that
+    permute / reorient frames in ways the native parser doesn't
+    honor yet:
+
+      * Multi-mosaic / TileScan (n_mosaic > 1 for any image)
+      * Multiple ATLConfocalSettingDefinition blocks (combined scan
+        types — the LAS-X "frameOrderCombinedScanTypes" quirk)
+    """
+    if not parser.images:
+        return False
+    # Mosaic detection: any image's M axis has > 1 element.
+    for img in parser.images:
+        for label, n, _ in img.axis_order:
+            if label == "M" and n > 1:
+                return False
+    # Multiple ATL settings (different scan modes combined in one file).
+    if parser.xml.count("<ATLConfocalSettingDefinition") > 1:
+        return False
+    return True
+
+
+def _spill_to_temp(src) -> str | None:
+    """Write a bytes / file-like LIF source to a temp file so the
+    native parser can mmap it. Returns the path, or None for
+    unsupported source types."""
+    import os, tempfile
+    if isinstance(src, (bytes, bytearray, memoryview)):
+        fd, tmp = tempfile.mkstemp(suffix=".lif")
+        os.write(fd, bytes(src))
+        os.close(fd)
+        return tmp
+    if hasattr(src, "read"):
+        data = src.read()
+        fd, tmp = tempfile.mkstemp(suffix=".lif")
+        os.write(fd, data)
+        os.close(fd)
+        return tmp
+    return None
 
 
 __all__ = ["LifCodec", "LifReader", "LifError"]
