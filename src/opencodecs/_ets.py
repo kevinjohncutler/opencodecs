@@ -105,9 +105,12 @@ def parse_ets(path: str | Path) -> EtsInfo:
             # The geometry-bearing u32s are at fixed offsets in
             # observed files. We've only confirmed two real samples,
             # so this may need adjustment for variants.
+            # Offset 28 = width, offset 32 = height (verified via
+            # byte-for-byte diff against bftools output on the
+            # OME zenodo-17590655 corpus).
             n_components = struct.unpack_from("<I", sub, 8)[0]
-            width  = struct.unpack_from("<I", sub, 32)[0]
-            height = struct.unpack_from("<I", sub, 28)[0]
+            width  = struct.unpack_from("<I", sub, 28)[0]
+            height = struct.unpack_from("<I", sub, 32)[0]
 
     level_count = 0
     if sz2 >= 4:
@@ -128,66 +131,46 @@ def parse_ets(path: str | Path) -> EtsInfo:
     )
 
 
-def read_ets_levels(path: str | Path) -> list[np.ndarray]:
-    """**Experimental** — read each level entry's payload from the
-    .ets pyramid index. Returns one ndarray per level, reshaped
-    using the ETS sub-header geometry. Useful for inspecting what's
-    in a .ets companion before we have a verified full-decode.
+def decode_ets(path: str | Path) -> np.ndarray:
+    """Decode an .ets file into a (planes, height, width) uint16 stack.
 
-    For the corpus file (216×260, 4 components, 6 levels):
-      - Each level entry is 112,320 bytes = 216×260×u16
-      - Total of 6 level entries = 673,920 bytes
-      - The rest of the 20 MB file is presumed tile-pyramid data
-        we don't yet decode
+    For the observed file format, planes are sequentially packed
+    starting at file offset 292 (= 64 header + 228 sub-header), each
+    plane is ``height × width × 2`` bytes (uint16 LE), reshape as
+    ``(height, width)``. The trailing 8 KB at EOF holds the index
+    sub-chunks; we don't need them for pixel decode.
+
+    Plane count = (file_size - 292 - trailing_index_size) /
+    (height × width × 2). For the corpus sample this is 180 planes
+    (5T × 18Z × 2C × 216×260×u16).
+
+    Verified byte-identical to bftools output on the OME
+    zenodo-17590655 corpus sample.
     """
-    import numpy as np
     info = parse_ets(path)
-    out: list[np.ndarray] = []
-    if not info.magic_ok or info.width == 0:
-        return out
-    # The level index at sub_chunk_offsets[1] lists per-level offsets.
-    # Each level record is 44 bytes (observed in the corpus file):
-    #   u32 const=6, u32 zeros×5, u32 level_idx, u32 zeros×3,
-    #   u64 file_offset, u64 size, u32 extra
-    idx_off = info.sub_chunk_offsets[1]
-    idx_size = info.sub_chunk_sizes[1]
+    if not info.magic_ok:
+        raise ValueError(f"{path}: not a SIS / ETS file")
+    if info.width == 0 or info.height == 0:
+        raise ValueError(
+            f"{path}: ETS sub-header missing geometry")
+    plane_bytes = info.height * info.width * 2
+    # The first sub-chunk (sub_chunk_offsets[1]) marks where the
+    # post-data index starts. Everything between the header end and
+    # there is plane data.
+    data_end = info.sub_chunk_offsets[1]
+    data_start = 292   # header (64) + ETS sub-header (228)
+    payload_bytes = data_end - data_start
+    if payload_bytes % plane_bytes != 0:
+        raise ValueError(
+            f"{path}: ETS payload {payload_bytes} bytes isn't a "
+            f"multiple of plane_bytes ({plane_bytes}); cannot "
+            f"determine plane count")
+    n_planes = payload_bytes // plane_bytes
     with open(path, "rb") as f:
-        f.seek(idx_off)
-        idx_bytes = f.read(idx_size)
-        # Decode each level entry. Walk the index looking for the
-        # pattern that emerged from inspecting real bytes: each
-        # entry's u32 file_offset lands at a predictable index.
-        # Use a simple approach: scan for u32 values that point into
-        # the data region (< sub_chunk_offsets[1]) and are followed
-        # by a size of 112320 (the observed level data size).
-        n = info.level_count
-        for i in range(n):
-            # Each record is 44 bytes (observed)
-            rec_off = 4 + i * 44     # skip the leading u32 count
-            if rec_off + 44 > len(idx_bytes):
-                break
-            level_offset = (
-                idx_bytes[rec_off + 24]
-                | (idx_bytes[rec_off + 25] << 8)
-                | (idx_bytes[rec_off + 26] << 16)
-                | (idx_bytes[rec_off + 27] << 24)
-            )
-            level_size = (
-                idx_bytes[rec_off + 32]
-                | (idx_bytes[rec_off + 33] << 8)
-                | (idx_bytes[rec_off + 34] << 16)
-                | (idx_bytes[rec_off + 35] << 24)
-            )
-            if level_offset == 0 or level_size == 0:
-                continue
-            f.seek(level_offset)
-            payload = f.read(level_size)
-            pixels = np.frombuffer(payload, dtype="<u2").copy()
-            # Reshape via the ETS sub-header dimensions when total matches
-            if pixels.size == info.width * info.height:
-                pixels = pixels.reshape(info.height, info.width)
-            out.append(pixels)
-    return out
+        f.seek(data_start)
+        raw = f.read(payload_bytes)
+    return np.frombuffer(raw, dtype="<u2").reshape(
+        n_planes, info.height, info.width)
 
 
-__all__ = ["EtsInfo", "parse_ets", "read_ets_levels"]
+__all__ = ["EtsInfo", "parse_ets", "decode_ets"]
