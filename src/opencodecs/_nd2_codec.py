@@ -102,16 +102,32 @@ class Nd2Reader(Reader):
 
 
 class Nd2Codec(Codec):
-    """ND2 container codec — Nikon NIS-Elements multi-dim microscopy."""
+    """ND2 container codec — Nikon NIS-Elements multi-dim microscopy.
+
+    Two backends:
+      * ``opencodecs._nd2_native.Nd2NativeReader`` — pure-Python parser
+        for the v3 chunk container. Works on local paths AND
+        ``HTTPDataSource`` (range reads = only fetches the FILEMAP +
+        ImageAttributes + the specific frames the caller wants).
+        Decodes raw / uncompressed pixel data; doesn't handle legacy
+        ND2 or compressed (JPEG / JPEG-XR) variants.
+      * ``nd2`` package — full-featured delegate (supports every
+        compression + legacy variants). Used as fallback.
+
+    ``open(src)`` tries native first, falls back to the delegate on
+    NotImplementedError. So users get HTTP range reads + zero
+    delegate-dep behaviour transparently when the file is in a
+    supported configuration, and full coverage when it isn't.
+    """
 
     name = "nd2"
     file_extensions = (".nd2",)
     aliases = ()
 
-    has_native = False
+    has_native = True
     has_delegate = _HAVE_ND2
     can_encode = False
-    can_decode = _HAVE_ND2
+    can_decode = True
     multi_frame = True
     chunked = True
     streaming_decode = True
@@ -146,14 +162,53 @@ class Nd2Codec(Codec):
         with self.open(src, **opts) as reader:
             return reader.read()
 
-    def open(self, src: Any, **opts) -> Reader:
+    def open(self, src: Any, *, backend: str | None = None,
+             **opts) -> Reader:
+        """Open the ND2 for reading.
+
+        ``backend``:
+          * ``None`` (default): try native first, fall back to nd2.
+          * ``"native"``: force the native parser.
+          * ``"nd2"``: force the nd2 delegate.
+        """
+        # Native handles file paths AND DataSource instances (HTTP /
+        # mmap / S3). The delegate only handles file paths.
+        if backend in (None, "native"):
+            try:
+                from ._nd2_native import Nd2NativeReader
+                from .core.io import DataSource
+                if isinstance(src, (str, Path)) or isinstance(src, DataSource):
+                    return Nd2NativeReader(src)
+                # bytes / file-like: spill to a temp file so the
+                # native reader's FileDataSource can mmap-style read.
+                import os, tempfile
+                if isinstance(src, (bytes, bytearray, memoryview)):
+                    fd, tmp = tempfile.mkstemp(suffix=".nd2")
+                    os.write(fd, bytes(src))
+                    os.close(fd)
+                    return Nd2NativeReader(tmp)
+                if hasattr(src, "read"):
+                    data = src.read()
+                    fd, tmp = tempfile.mkstemp(suffix=".nd2")
+                    os.write(fd, data)
+                    os.close(fd)
+                    return Nd2NativeReader(tmp)
+            except (NotImplementedError, ValueError) as e:
+                if backend == "native":
+                    raise
+                # Fall through to delegate
+                _fallback_reason = str(e)
+            else:
+                raise TypeError(
+                    f"unsupported ND2 source: {type(src).__name__}")
+
         if not _HAVE_ND2:
             raise ImportError(
-                "nd2 is required for ND2 support: pip install nd2")
+                "ND2: native parser failed and `nd2` package is not "
+                "installed. pip install nd2 for delegate fallback "
+                "support of legacy / compressed ND2 variants.")
         if isinstance(src, (str, Path)):
             return Nd2Reader(src)
-        # ND2File only accepts a path; spill bytes/file-likes to a temp
-        # file the same way HdfCodec does for h5py.
         import os, tempfile
         if isinstance(src, (bytes, bytearray, memoryview)):
             fd, tmp = tempfile.mkstemp(suffix=".nd2")
