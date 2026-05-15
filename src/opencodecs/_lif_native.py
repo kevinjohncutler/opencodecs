@@ -56,7 +56,6 @@ LIF binary structure (per Leica LAS-X SDK + observed bytes):
 
 from __future__ import annotations
 
-import os
 import re
 import struct
 import xml.etree.ElementTree as ET
@@ -67,6 +66,7 @@ from typing import Any, Iterator
 import numpy as np
 
 from .core.codec import Reader
+from .core.io import DataSource, coerce_data_source
 
 
 _MAGIC = b"\x70\x00\x00\x00"
@@ -150,10 +150,15 @@ class LifFileParser:
     enumerates memory blocks lazily, decodes individual images on
     request."""
 
-    def __init__(self, path: str | Path):
-        self._path = str(path)
-        with open(self._path, "rb") as f:
-            self._data = memoryview(f.read())
+    def __init__(self, src: Any):
+        # Accept either a path or a DataSource (FileDataSource for
+        # local, HTTPDataSource for remote). Image pixel data is
+        # fetched on demand from the source via read_at(), so the
+        # entire file never has to be in memory — HTTPDataSource only
+        # transfers the XML header (~10 KB) and each block header
+        # (~30 bytes) at open() time. Block payloads are pulled later
+        # when array_for_image() is called.
+        self._src, self._owns_src, self._size = coerce_data_source(src)
         self.xml: str = self._parse_xml_header()
         self.blocks: dict[str, LifMemoryBlock] = self._scan_blocks()
         self.images: list[LifImage] = self._parse_images_from_xml()
@@ -161,45 +166,52 @@ class LifFileParser:
     # ----- header / block walk -----
 
     def _parse_xml_header(self) -> str:
-        d = self._data
-        if d[0:4] != _MAGIC:
+        # First 13 bytes: 4-byte magic, 4-byte size, test byte,
+        # 4-byte xml_chars.
+        hdr = self._src.read_at(0, 13)
+        if hdr[0:4] != _MAGIC:
             raise ValueError(
-                f"LIF: bad magic at offset 0: {bytes(d[0:4]).hex()}"
+                f"LIF: bad magic at offset 0: {hdr[0:4].hex()}"
             )
-        # bytes 4-7: block payload size (we don't need it)
-        if d[8] != _TEST:
+        if hdr[8] != _TEST:
             raise ValueError(
-                f"LIF: bad test byte at offset 8: {d[8]:#x}"
+                f"LIF: bad test byte at offset 8: {hdr[8]:#x}"
             )
-        xml_chars = struct.unpack_from("<I", d, 9)[0]
+        xml_chars = struct.unpack_from("<I", hdr, 9)[0]
         xml_bytes = xml_chars * 2
-        return bytes(d[13:13 + xml_bytes]).decode("utf-16-le")
+        return self._src.read_at(13, xml_bytes).decode("utf-16-le")
 
     def _scan_blocks(self) -> dict[str, LifMemoryBlock]:
-        d = self._data
-        xml_chars = struct.unpack_from("<I", d, 9)[0]
+        # Re-read xml_chars from the file header so we can compute the
+        # offset of the first memory block without depending on a cached
+        # copy of self.xml's length (decode-roundtrip can shift bytes).
+        hdr = self._src.read_at(9, 4)
+        xml_chars = struct.unpack_from("<I", hdr, 0)[0]
         off = 13 + xml_chars * 2
         blocks: dict[str, LifMemoryBlock] = {}
-        while off < len(d):
-            if d[off:off + 4] != _MAGIC:
+        while off < self._size:
+            # Each block header is 22 + desc_chars*2 bytes. Read a
+            # generous prefix first (covers most descriptor strings)
+            # then refetch if the actual desc_chars is bigger.
+            prefix = self._src.read_at(off, 22)
+            if prefix[0:4] != _MAGIC:
                 raise ValueError(
                     f"LIF: bad memblock magic at offset {off}: "
-                    f"{bytes(d[off:off+4]).hex()}"
+                    f"{prefix[0:4].hex()}"
                 )
-            if d[off + 8] != _TEST:
+            if prefix[8] != _TEST:
                 raise ValueError(
                     f"LIF: bad memblock test1 byte at {off + 8}"
                 )
-            mem_size = struct.unpack_from("<Q", d, off + 9)[0]
-            if d[off + 17] != _TEST:
+            mem_size = struct.unpack_from("<Q", prefix, 9)[0]
+            if prefix[17] != _TEST:
                 raise ValueError(
                     f"LIF: bad memblock test2 byte at {off + 17}"
                 )
-            desc_chars = struct.unpack_from("<I", d, off + 18)[0]
-            desc = bytes(
-                d[off + 22:off + 22 + desc_chars * 2]
-            ).decode("utf-16-le")
-            data_off = off + 22 + desc_chars * 2
+            desc_chars = struct.unpack_from("<I", prefix, 18)[0]
+            desc_bytes = desc_chars * 2
+            desc = self._src.read_at(off + 22, desc_bytes).decode("utf-16-le")
+            data_off = off + 22 + desc_bytes
             blocks[desc] = LifMemoryBlock(
                 name=desc, offset=data_off, size=mem_size,
             )
@@ -301,7 +313,7 @@ class LifFileParser:
                 f"LIF: image {image.name!r} references missing "
                 f"memory block {image.memblock_id!r}"
             )
-        buf = bytes(self._data[block.offset:block.offset + block.size])
+        buf = self._src.read_at(block.offset, block.size)
         flat = np.frombuffer(buf, dtype=image.dtype).copy()
 
         # Compute shape using the SORTED axis_order + channels.
@@ -342,10 +354,10 @@ class LifFileParser:
 class LifNativeReader(Reader):
     """Native-Python LIF reader (no readlif dependency)."""
 
-    def __init__(self, path: str | Path, image: int | str | None = None):
-        self._parser = LifFileParser(path)
+    def __init__(self, src: Any, image: int | str | None = None):
+        self._parser = LifFileParser(src)
         if not self._parser.images:
-            raise ValueError(f"LIF: no image elements found in {path}")
+            raise ValueError(f"LIF: no image elements found in {src}")
         self._image_idx = self._resolve_image(
             image if image is not None else 0
         )
@@ -395,7 +407,11 @@ class LifNativeReader(Reader):
         return self._parser.array_for_image(self._image)
 
     def close(self) -> None:
-        self._parser._data = b""
+        if self._parser._owns_src:
+            try:
+                self._parser._src.close()
+            except Exception:
+                pass
 
     def __enter__(self) -> "LifNativeReader":
         return self

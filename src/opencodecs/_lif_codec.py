@@ -207,15 +207,17 @@ class LifCodec(Codec):
         if backend in (None, "native") and image is None:
             try:
                 from ._lif_native import LifNativeReader, LifFileParser
-                if isinstance(src, (str, Path)):
+                from .core.io import DataSource
+                if isinstance(src, (str, Path, DataSource)):
                     # Heuristic: route through delegate when the XML
                     # advertises features the native parser doesn't
                     # handle yet — multi-mosaic (n_mosaic > 1), or
                     # multiple ATLConfocalSettingDefinition blocks
                     # (combined scan types).
-                    parser = LifFileParser(str(src))
+                    src_for_parse = str(src) if isinstance(src, (str, Path)) else src
+                    parser = LifFileParser(src_for_parse)
                     if backend == "native" or _native_can_handle(parser):
-                        return LifNativeReader(str(src), image=image)
+                        return LifNativeReader(src_for_parse, image=image)
                     # Discard the partial parser; readlif re-opens.
                     parser = None  # noqa: F841
                 else:

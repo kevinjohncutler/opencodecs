@@ -89,6 +89,22 @@ def test_native_lif_first_frame_matches_readlif():
     )
 
 
+@pytest.mark.skipif(not LIF_SAMPLE.exists(), reason=_HINT)
+def test_native_lif_via_data_source_matches_path():
+    """Opening through a FileDataSource (the same primitive used by
+    HTTPDataSource for remote LIFs) reproduces the same pixels as
+    opening through a path. Confirms read_at-based parsing/decode is
+    byte-equivalent to the legacy whole-file read."""
+    from opencodecs._lif_native import LifNativeReader
+    from opencodecs._tiff_http import FileDataSource
+    arr_path = LifNativeReader(str(LIF_SAMPLE)).read()
+    ds = FileDataSource(str(LIF_SAMPLE))
+    arr_ds = LifNativeReader(ds).read()
+    assert np.array_equal(arr_path, arr_ds)
+    assert arr_ds.shape == arr_path.shape
+    assert arr_ds.dtype == arr_path.dtype
+
+
 @pytest.mark.xfail(
     reason="LIF frame-order XML attributes (LAS-X tile-scan workflows) "
            "override natural memory-stride ordering for mosaic / Z / T "
