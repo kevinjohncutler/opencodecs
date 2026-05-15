@@ -253,6 +253,43 @@ class LifCodec(Codec):
             return LifReader(tmp, image=image)
         raise TypeError(f"unsupported LIF source: {type(src).__name__}")
 
+    def info(self, src: Any) -> dict:
+        """Partial-parse: returns ``{file_size, n_images, n_memblocks,
+        images: [{name, shape, dtype, n_channels}, ...]}``.
+
+        Reads only the XML header + memory-block index — for an HTTP
+        LIF this is a handful of small range requests instead of
+        downloading the file.
+        """
+        from ._lif_native import LifFileParser
+        from .core.io import DataSource
+        if isinstance(src, (str, Path, DataSource)):
+            parser = LifFileParser(src if isinstance(src, DataSource) else str(src))
+        else:
+            tmp = _spill_to_temp(src)
+            if tmp is None:
+                raise TypeError(
+                    f"unsupported LIF source: {type(src).__name__}")
+            parser = LifFileParser(tmp)
+        return {
+            "file_size": parser._size,
+            "n_images": len(parser.images),
+            "n_memblocks": len(parser.blocks),
+            "xml_chars": len(parser.xml),
+            "images": [
+                {
+                    "name": im.name,
+                    "dtype": str(im.dtype),
+                    "n_channels": im.n_channels,
+                    "axis_order": [
+                        (label, n) for (label, n, _) in im.axis_order
+                    ],
+                    "memblock_id": im.memblock_id,
+                }
+                for im in parser.images
+            ],
+        }
+
 
 def _native_can_handle(parser) -> bool:
     """Heuristic: decide whether the native parser will produce

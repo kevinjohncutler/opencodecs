@@ -195,3 +195,19 @@ def test_nd2_codec_lists_native_and_delegate():
     """codec.has_native=True and codec.has_delegate reflects nd2 install."""
     entry = next(c for c in oc.list_codecs() if c["name"] == "nd2")
     assert entry["native"] is True
+
+
+@pytest.mark.skipif(not ND2_SAMPLE.exists(), reason=_HINT)
+def test_nd2_codec_info_returns_geometry_without_decode():
+    """``codec.info(path)`` reads only the FILEMAP + ImageAttributes
+    and returns geometry — same partial-parse contract as OirCodec /
+    VsiCodec. No frame bytes are touched."""
+    info = oc.get_codec("nd2").info(str(ND2_SAMPLE))
+    assert info["n_frames"] > 0
+    assert info["width"] > 0 and info["height"] > 0
+    assert info["dtype"] in ("uint8", "uint16", "float32")
+    assert info["n_chunks"] > 0
+    # bits_in_memory is the storage width; bits_significant is the
+    # actual pixel resolution (e.g. 12-bit pixels stored in u16).
+    assert info["bits_in_memory"] in (8, 16, 32)
+    assert 0 < info["bits_significant"] <= info["bits_in_memory"]

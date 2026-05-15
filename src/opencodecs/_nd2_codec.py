@@ -223,5 +223,39 @@ class Nd2Codec(Codec):
             return Nd2Reader(tmp)
         raise TypeError(f"unsupported ND2 source: {type(src).__name__}")
 
+    def info(self, src: Any) -> dict:
+        """Partial-parse: open the file just far enough to read the
+        FILEMAP + ImageAttributes (~tens of KB) and return geometry
+        without decoding any frame. Same contract as
+        :meth:`OirCodec.info` / :meth:`VsiCodec.info` — accepts a
+        path or a :class:`DataSource`; HTTP-backed sources only
+        fetch the bytes the parser needs."""
+        from ._nd2_native import Nd2FileParser
+        from .core.io import DataSource
+        if isinstance(src, (str, Path, DataSource)):
+            parser = Nd2FileParser(src)
+        elif isinstance(src, (bytes, bytearray, memoryview)):
+            import os, tempfile
+            fd, tmp = tempfile.mkstemp(suffix=".nd2")
+            os.write(fd, bytes(src))
+            os.close(fd)
+            parser = Nd2FileParser(tmp)
+        else:
+            raise TypeError(
+                f"unsupported ND2 source: {type(src).__name__}")
+        attrs = parser.attributes
+        return {
+            "file_size": parser._size,
+            "n_frames": attrs.sequence_count,
+            "width": attrs.width,
+            "height": attrs.height,
+            "n_channels": attrs.n_channels,
+            "bits_significant": attrs.bits_significant,
+            "bits_in_memory": attrs.bits_in_memory,
+            "compression": attrs.compression,
+            "dtype": str(attrs.dtype),
+            "n_chunks": len(parser.chunks),
+        }
+
 
 __all__ = ["Nd2Codec", "Nd2Reader", "Nd2Error"]
