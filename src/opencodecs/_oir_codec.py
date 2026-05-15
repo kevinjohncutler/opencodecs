@@ -51,30 +51,10 @@ from typing import Any
 import numpy as np
 
 from .core.codec import Codec, Reader
-from .core.io import DataSource
+from .core.io import coerce_data_source
 
 
 _OIR_MAGIC = b"OLYMPUSRAWFORMAT"
-
-
-def _src_from(src: Any) -> tuple[DataSource, bool, int]:
-    """Coerce a path or DataSource to (DataSource, owns_src, size)."""
-    if isinstance(src, DataSource):
-        size = getattr(src, "size", None)
-        if size is None:
-            size = getattr(src, "total_size", None)
-        if size is None:
-            src.read_at(0, 4)
-            size = getattr(src, "total_size", None)
-        if size is None:
-            raise RuntimeError(
-                "OIR: DataSource didn't expose total_size")
-        return src, False, int(size)
-    if isinstance(src, (str, os.PathLike)):
-        from ._tiff_http import FileDataSource
-        ds = FileDataSource(str(src))
-        return ds, True, int(ds.size)
-    raise TypeError(f"OIR: unsupported source {type(src).__name__}")
 
 
 def _read_oir_info(src: Any) -> dict:
@@ -97,7 +77,7 @@ def _read_oir_info(src: Any) -> dict:
       - First 3 records are calibration ("REF_LSM0_*_{0,1,2}")
       - The remaining 96 records = 32 Z-planes × 3 records
     """
-    ds, owns, file_size = _src_from(src)
+    ds, owns, file_size = coerce_data_source(src)
     try:
         hdr = ds.read_at(0, 64)
         if hdr[:16] != _OIR_MAGIC:
@@ -197,7 +177,7 @@ def _decode_oir_planes(src: Any) -> np.ndarray:
     wire bytes = sum of payload sizes (= raw plane bytes) +
     open overhead — same shape as ND2/OIB's HTTP behavior.
     """
-    ds, owns, _ = _src_from(src)
+    ds, owns, _ = coerce_data_source(src)
     try:
         info = _read_oir_info(ds)
         fr = info["frame_records"]
@@ -251,7 +231,7 @@ def _read_oir_raw_records(src: Any) -> list[np.ndarray]:
     records, we reshape as 512 × 237 (matches the byte count).
     Doesn't match the XML's stated 512 × 512 geometry; further
     interpretation requires a ground-truth reference."""
-    ds, owns, _ = _src_from(src)
+    ds, owns, _ = coerce_data_source(src)
     try:
         info = _read_oir_info(ds)
         out: list[np.ndarray] = []
@@ -331,7 +311,7 @@ class OirNativeReader(Reader):
     upfront."""
 
     def __init__(self, src: Any):
-        self._ds, self._owns_src, _ = _src_from(src)
+        self._ds, self._owns_src, _ = coerce_data_source(src)
         info = _read_oir_info(self._ds)
         fr = info["frame_records"]
         head_skip = sum(1 for r in fr if r["name"].startswith("REF_"))

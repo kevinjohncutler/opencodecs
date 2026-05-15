@@ -323,9 +323,54 @@ def coalesce_ranges(
     return merged, splits
 
 
+def coerce_data_source(src: Any) -> tuple["DataSource", bool, int]:
+    """Normalize a path / DataSource argument into ``(ds, owns, size)``.
+
+    Used by every native vendor parser (ND2, OIR, ETS, OLE2, …) to
+    accept either a filesystem path or a DataSource (HTTPDataSource,
+    FileDataSource, custom backends). Returns:
+
+    * ``ds`` — a :class:`DataSource` instance to do ``read_at`` calls
+      against
+    * ``owns`` — True if this helper opened the DataSource and the
+      caller should ``close()`` it when done; False when the caller
+      passed in a DataSource and is responsible for its lifecycle
+    * ``size`` — total byte size; surfaced via ``.size`` (FileDataSource),
+      ``.total_size`` (HTTPDataSource), or by forcing an opening read
+
+    Raises :class:`TypeError` for unsupported source types.
+    """
+    if isinstance(src, DataSource):
+        size = getattr(src, "size", None)
+        if size is None:
+            size = getattr(src, "total_size", None)
+        if size is None:
+            # HTTPDataSource discovers total_size on first range read.
+            src.read_at(0, 4)
+            size = getattr(src, "total_size", None)
+        if size is None:
+            raise RuntimeError(
+                f"{type(src).__name__}: total size not discoverable "
+                f"(no .size or .total_size attribute, and an initial "
+                f"read didn't populate one)"
+            )
+        return src, False, int(size)
+    if isinstance(src, (str, os.PathLike)):
+        # Local import to avoid pulling _tiff_http into modules that
+        # only use the abstract DataSource ABC.
+        from .._tiff_http import FileDataSource
+        ds = FileDataSource(str(src))
+        return ds, True, int(ds.size)
+    raise TypeError(
+        f"unsupported source: {type(src).__name__}; pass a path or "
+        f"a DataSource (HTTPDataSource / FileDataSource / ...)"
+    )
+
+
 __all__ = [
     "BackgroundChunkReader",
     "DataSource",
     "Range",
     "coalesce_ranges",
+    "coerce_data_source",
 ]
