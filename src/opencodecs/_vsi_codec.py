@@ -77,5 +77,45 @@ class VsiCodec(Codec):
         from ._tiff_codec import TiffStream
         return TiffStream(src, **opts)
 
+    def info(self, src: Any) -> dict:
+        """Partial-parse the VSI index + every .ets companion in the
+        sibling ``_NAME_/stackN/`` tree. Returns geometry info
+        without decoding pixel data. Useful for inspecting what's
+        in a VSI before committing to a full decode."""
+        from pathlib import Path
+        from ._ets import parse_ets
+        p = Path(src)
+        out: dict = {"vsi_path": str(p)}
+        # Top-level TIFF
+        from ._tiff_codec import TiffStream
+        try:
+            with TiffStream(str(p)) as stream:
+                page0 = stream.page(0)
+                out["index_shape"] = page0.shape
+                out["index_dtype"] = str(page0.dtype)
+        except Exception as e:
+            out["index_error"] = str(e)
+        # Sibling _NAME_/stackN/frame_t_*.ets
+        companion = p.parent / f"_{p.stem}_"
+        stacks = []
+        if companion.is_dir():
+            for sd in sorted(companion.iterdir()):
+                if not sd.is_dir():
+                    continue
+                for ets_path in sorted(sd.glob("frame_t_*.ets")):
+                    info = parse_ets(ets_path)
+                    stacks.append({
+                        "stack": sd.name,
+                        "path": str(ets_path),
+                        "file_size": info.file_size,
+                        "width": info.width,
+                        "height": info.height,
+                        "n_components": info.n_components,
+                        "level_count": info.level_count,
+                        "magic_ok": info.magic_ok,
+                    })
+        out["ets_stacks"] = stacks
+        return out
+
 
 __all__ = ["VsiCodec"]

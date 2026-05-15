@@ -209,10 +209,16 @@ fetch \
 # ----- VSI: Olympus CellSens virtual-slide index (~110 KB) -----
 # Real Olympus VSI from the OME mirror. The top-level .vsi file is
 # a TIFF (II*\0 magic) containing the thumbnail + metadata; full-res
-# pixel data lives in a sibling ".../_NAME_/stackN/frame_t.ets" tree.
+# pixel data lives in a sibling ".../_NAME_/stackN/frame_t_N.ets"
+# tree. We fetch the index AND the .ets companion so the VSI tests
+# can exercise the SIS/ETS partial parser too.
 fetch \
     "https://downloads.openmicroscopy.org/images/CellSens/zenodo-17590655/metadataTest_01.vsi" \
     ".test_data/vsi/metadataTest_01.vsi"
+mkdir -p .test_data/vsi/_metadataTest_01_/stack1
+fetch \
+    "https://downloads.openmicroscopy.org/images/CellSens/zenodo-17590655/_metadataTest_01_/stack1/frame_t_0.ets" \
+    ".test_data/vsi/_metadataTest_01_/stack1/frame_t_0.ets"
 
 # ----- OIR sample: Olympus FluoView newer format (~25 MB) -----
 # Real Olympus OIR from the OME mirror. OIR uses an undocumented

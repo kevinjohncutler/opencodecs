@@ -104,3 +104,45 @@ def test_oir_decode_raises_clearly():
     via the top-level oc.read API."""
     with pytest.raises(NotImplementedError, match="OIR"):
         oc.read(str(OIR_SAMPLE), format="oir")
+
+
+@pytest.mark.skipif(not OIR_SAMPLE.exists(), reason=_HINT)
+def test_oir_partial_parse_via_info():
+    """OirCodec.info() returns the clean-room partial parse:
+    file size, footer offset/count, per-frame XML metadata."""
+    info = oc.get_codec("oir").info(str(OIR_SAMPLE))
+    assert info["file_size"] == 25_957_525
+    assert info["n_records"] == 265
+    assert info["footer_offset"] == 25_955_401
+    # Per the embedded XML the corpus file is 512x512x10-bit gray
+    fm = info["frame_metadata"]
+    assert fm["width"] == "512"
+    assert fm["height"] == "512"
+    assert fm["depth"] == "2"
+    assert fm["bitCounts"] == "10"
+
+
+# ---------------------------------------------------------------------------
+# VSI .ets companion partial-parse
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(
+    not (CORPUS / "vsi" / "_metadataTest_01_" / "stack1"
+         / "frame_t_0.ets").exists(),
+    reason="run `bash tests/download_test_corpus.sh --light` then "
+           "fetch the .ets companion file manually",
+)
+def test_vsi_ets_partial_parse():
+    """VsiCodec.info() walks the sibling ``_NAME_/stackN/frame_t.ets``
+    tree and partially parses each. Returns geometry + level count
+    + SIS magic-ok flag without decoding any tile pixels."""
+    info = oc.get_codec("vsi").info(str(VSI_SAMPLE))
+    assert info["index_shape"] == (216, 260, 3)
+    assert len(info["ets_stacks"]) == 1
+    stack = info["ets_stacks"][0]
+    assert stack["magic_ok"] is True
+    assert stack["width"] == 216
+    assert stack["height"] == 260
+    assert stack["level_count"] == 6
+    assert stack["n_components"] == 4
