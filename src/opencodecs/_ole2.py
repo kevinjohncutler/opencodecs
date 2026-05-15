@@ -153,12 +153,21 @@ class OleReader:
     def _read_chain(self, start: int, length: int) -> bytes:
         """Walk the FAT from ``start`` collecting up to ``length``
         bytes. Returns ``length`` bytes (truncated chains are an
-        OLE2-corrupt error). Detects cycles in the FAT and caps the
-        iteration count at the number of FAT entries — guards
-        against malformed files that would otherwise loop forever."""
+        OLE2-corrupt error).
+
+        Coalesces contiguous runs of sectors into a single
+        ``read_at(offset, run_size)`` call — important for HTTP
+        DataSources where each call is an HTTP round trip.
+
+        Detects cycles in the FAT and caps the iteration count at
+        the number of FAT entries — guards against malformed files
+        that would otherwise loop forever.
+        """
         if length == 0 or start == _ENDOFCHAIN:
             return b""
-        chunks: list[bytes] = []
+        # First pass: walk the chain to get the ordered list of
+        # sector numbers covering `length` bytes. No I/O yet.
+        sectors: list[int] = []
         remaining = length
         sect = start
         seen: set[int] = set()
@@ -174,20 +183,33 @@ class OleReader:
                 raise ValueError(
                     f"OLE2: FAT chain reaches sector {sect} but FAT "
                     f"has only {len(self._fat)} entries")
-            chunk = self._read_sector(sect)
-            take = min(self._sector_size, remaining)
-            chunks.append(chunk[:take])
-            remaining -= take
+            sectors.append(sect)
+            remaining -= self._sector_size
             sect = self._fat[sect]
         else:
             raise ValueError(
                 f"OLE2: FAT chain exceeded iteration limit "
                 f"({max_iter}); likely corrupt")
-        if remaining > 0:
-            raise ValueError(
-                f"OLE2: FAT chain ended {remaining} bytes short "
-                f"(expected {length}, got {length - remaining})")
-        return b"".join(chunks)
+        if not sectors:
+            return b""
+        # Coalesce runs of consecutive sector numbers, one I/O each.
+        chunks: list[bytes] = []
+        run_start = sectors[0]
+        run_count = 1
+        for s in sectors[1:]:
+            if s == run_start + run_count:
+                run_count += 1
+            else:
+                chunks.append(self._src.read_at(
+                    self._sector_offset(run_start),
+                    run_count * self._sector_size))
+                run_start = s
+                run_count = 1
+        chunks.append(self._src.read_at(
+            self._sector_offset(run_start),
+            run_count * self._sector_size))
+        data = b"".join(chunks)
+        return data[:length]
 
     def _read_fat(self) -> None:
         """Read the regular-stream FAT by following DIFAT.
@@ -316,13 +338,20 @@ class OleReader:
                 return e.size
         raise KeyError(f"OLE2: no stream named {name!r}")
 
-    def read_stream(self, name: str) -> bytes:
-        """Read the named stream's full contents as bytes."""
+    def read_stream(self, name: str, length: int | None = None) -> bytes:
+        """Read the named stream's contents as bytes.
+
+        ``length=None`` (default) reads the entire stream.
+        ``length=N`` reads only the first N bytes — useful for
+        peeking at headers (TIFF magic + first IFD) without
+        fetching the whole stream over HTTP.
+        """
         for e in self._directory:
             if e.obj_type == _OBJ_STREAM and e.name == name:
+                n = e.size if length is None else min(length, e.size)
                 if e.size < self._mini_cutoff:
-                    return self._read_mini_chain(e.start_sect, e.size)
-                return self._read_chain(e.start_sect, e.size)
+                    return self._read_mini_chain(e.start_sect, n)
+                return self._read_chain(e.start_sect, n)
         raise KeyError(f"OLE2: no stream named {name!r}")
 
     def _read_mini_chain(self, start: int, length: int) -> bytes:

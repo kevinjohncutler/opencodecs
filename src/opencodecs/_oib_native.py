@@ -165,13 +165,16 @@ class OibFileParser:
                     if stream is not None:
                         frames[(c - 1, z - 1, t - 1)] = stream
 
-        # Dtype: derive from the first TIFF frame's IFD.
-        # If we already collected stream IDs, peek at the first.
+        # Dtype: derive from the first TIFF frame's IFD. Only peek at
+        # the first 2 KB of the TIFF stream — that's enough for the
+        # header + first IFD's BitsPerSample / SampleFormat tags, and
+        # avoids fetching the full 2 MB stream over HTTP just to learn
+        # one byte of metadata.
         dtype = np.dtype("u2")  # OIB is typically uint16
         if frames:
             stream = next(iter(frames.values()))
-            tiff_bytes = self._ole.read_stream(stream)
-            dtype = _peek_tiff_dtype(tiff_bytes) or dtype
+            tiff_head = self._ole.read_stream(stream, length=2048)
+            dtype = _peek_tiff_dtype(tiff_head) or dtype
 
         return OibLayout(
             width=width,
