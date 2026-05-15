@@ -320,10 +320,10 @@ class OirCodec(Codec):
         return _decode_oir_planes(src)
 
     def open(self, src: Any, **opts) -> Reader:
-        return _OirReader(src)
+        return OirNativeReader(src)
 
 
-class _OirReader(Reader):
+class OirNativeReader(Reader):
     """Lazy OIR reader. Each :meth:`__getitem__` fetches only that
     plane's 3 record payloads via the underlying DataSource —
     HTTP-backed sources thus pay per-plane I/O cost (1/n_planes of
@@ -382,7 +382,7 @@ class _OirReader(Reader):
         if isinstance(idx, (int, np.integer)):
             return self._decode_plane(int(idx))
         raise TypeError(
-            "_OirReader: only int frame indexing supported")
+            "OirNativeReader: only int frame indexing supported")
 
     def read(self) -> np.ndarray:
         return _decode_oir_planes(self._ds)
@@ -399,4 +399,4 @@ class _OirReader(Reader):
         return False
 
 
-__all__ = ["OirCodec"]
+__all__ = ["OirCodec", "OirNativeReader"]
