@@ -283,11 +283,6 @@ class CziReader(Reader):
     # ----- Lifecycle -----
 
     def close(self) -> None:
-        # Drop any temporary memoryviews held in locals — np.frombuffer().copy()
-        # in _decode_one shouldn't leave refs, but Python's GC may need a
-        # nudge if user code retained intermediate views.
-        import gc
-        gc.collect()
         # Buffer-only path: nothing to close on the buffer (it's just
         # bytes), but release our reference so GC can collect it.
         if not self._owns_fd:
@@ -296,6 +291,13 @@ class CziReader(Reader):
         try:
             self._mmap.close()
         except BufferError:  # pragma: no cover - leaked memoryview rescue path
+            # Only when a consumer kept a live memoryview into the mmap
+            # does mmap.close() refuse. Run gc here (not unconditionally
+            # up top) to release just-out-of-scope views, then retry.
+            # An unconditional gc.collect() in close() was observed to
+            # SEGV during full-suite runs when traversing heap objects
+            # left over from earlier tests.
+            import gc
             gc.collect()
             try:
                 self._mmap.close()
