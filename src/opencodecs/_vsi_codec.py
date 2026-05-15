@@ -102,7 +102,7 @@ class VsiCodec(Codec):
                     f"VSI: no .ets companion found at {companion}")
             return TiffStream(src, **opts)
         # ETS mode (default when companion present)
-        return _VsiEtsReader(p, ets_files)
+        return VsiNativeReader(p, ets_files)
 
     def info(self, src: Any) -> dict:
         """Partial-parse the VSI index + every .ets companion in the
@@ -145,7 +145,7 @@ class VsiCodec(Codec):
         return out
 
 
-class _VsiEtsReader(Reader):
+class VsiNativeReader(Reader):
     """Native VSI reader: lazily decodes planes from each
     ``frame_t_N.ets`` companion. Per-plane reads pass through the
     DataSource abstraction, so HTTP-backed VSI sources only fetch
@@ -192,7 +192,7 @@ class _VsiEtsReader(Reader):
     def __getitem__(self, idx) -> np.ndarray:
         if not isinstance(idx, (int, np.integer)):
             raise TypeError(
-                "_VsiEtsReader: only int frame indexing supported")
+                "VsiNativeReader: only int frame indexing supported")
         f, p = self._locate(int(idx))
         return self._decode_plane(str(self._ets_files[f]), p)
 
@@ -211,7 +211,7 @@ class _VsiEtsReader(Reader):
     def close(self) -> None:
         self._info_per_file = []
 
-    def __enter__(self) -> "_VsiEtsReader":
+    def __enter__(self) -> "VsiNativeReader":
         return self
 
     def __exit__(self, *_) -> bool:
@@ -219,4 +219,4 @@ class _VsiEtsReader(Reader):
         return False
 
 
-__all__ = ["VsiCodec"]
+__all__ = ["VsiCodec", "VsiNativeReader"]

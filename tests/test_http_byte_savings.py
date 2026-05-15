@@ -213,11 +213,11 @@ def test_native_oir_open_is_small_fraction(oir_http_setup):
     """Opening an OIR reads header + footer + per-frame record
     headers — under 1% of a 25 MB OIR."""
     from opencodecs._tiff_http import HTTPDataSource
-    from opencodecs._oir_codec import _OirReader
+    from opencodecs._oir_codec import OirNativeReader
 
     with range_http_server(oir_http_setup) as (url_base, tracker):
         src = HTTPDataSource(f"{url_base}/sample.oir")
-        with _OirReader(src) as r:
+        with OirNativeReader(src) as r:
             assert r.n_frames == 32
         assert tracker.full_requests == 0
         assert tracker.bytes_served < tracker.file_size // 100, (
@@ -229,11 +229,11 @@ def test_native_oir_read_one_plane_is_under_5pct(oir_http_setup):
     """Reading ONE plane from a 32-plane OIR fetches roughly 1/32
     of the file = ~3.1%, plus the open overhead. Floor: 5%."""
     from opencodecs._tiff_http import HTTPDataSource
-    from opencodecs._oir_codec import _OirReader
+    from opencodecs._oir_codec import OirNativeReader
 
     with range_http_server(oir_http_setup) as (url_base, tracker):
         src = HTTPDataSource(f"{url_base}/sample.oir")
-        with _OirReader(src) as r:
+        with OirNativeReader(src) as r:
             _ = r[10]
         assert tracker.full_requests == 0
         assert tracker.bytes_served < tracker.file_size * 0.05, (
@@ -276,7 +276,7 @@ def test_print_byte_savings_table(
     from opencodecs._nd2_native import Nd2NativeReader
     from opencodecs._oib_native import OibNativeReader
 
-    from opencodecs._oir_codec import _OirReader
+    from opencodecs._oir_codec import OirNativeReader
     from opencodecs._ets import decode_ets_plane
     rows: list[tuple[str, int, int, int]] = []
 
@@ -303,14 +303,14 @@ def test_print_byte_savings_table(
 
     with range_http_server(oir_http_setup) as (url_base, tr):
         src = HTTPDataSource(f"{url_base}/sample.oir")
-        with _OirReader(src):
+        with OirNativeReader(src):
             pass
         rows.append(("OIR open",
                      tr.file_size, tr.bytes_served, tr.range_requests))
 
     with range_http_server(oir_http_setup) as (url_base, tr):
         src = HTTPDataSource(f"{url_base}/sample.oir")
-        with _OirReader(src) as r:
+        with OirNativeReader(src) as r:
             _ = r[10]
         rows.append(("OIR open + 1 plane",
                      tr.file_size, tr.bytes_served, tr.range_requests))
