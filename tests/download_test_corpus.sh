@@ -31,7 +31,8 @@ mkdir -p \
     .test_data/dicom .test_data/fits .test_data/heif .test_data/lerc \
     .test_data/tiff/libtiff_pics .test_data/tiff/cog \
     .test_data/tiff/geotiff .test_data/tiff/wsi \
-    .test_data/ndtiff .test_data/nd2 .test_data/lif .test_data/oib
+    .test_data/ndtiff .test_data/nd2 .test_data/lif .test_data/oib \
+    .test_data/oir .test_data/vsi
 
 # Download helper that skips if the file already exists with non-zero size.
 fetch() {
@@ -204,6 +205,23 @@ fetch \
 fetch \
     "https://downloads.openmicroscopy.org/images/Olympus-FluoView/imagesc-71616/20220824_4492_cord_dapi__iba568_60x.oib" \
     ".test_data/oib/imagesc_71616_60x.oib"
+
+# ----- VSI: Olympus CellSens virtual-slide index (~110 KB) -----
+# Real Olympus VSI from the OME mirror. The top-level .vsi file is
+# a TIFF (II*\0 magic) containing the thumbnail + metadata; full-res
+# pixel data lives in a sibling ".../_NAME_/stackN/frame_t.ets" tree.
+fetch \
+    "https://downloads.openmicroscopy.org/images/CellSens/zenodo-17590655/metadataTest_01.vsi" \
+    ".test_data/vsi/metadataTest_01.vsi"
+
+# ----- OIR sample: Olympus FluoView newer format (~25 MB) -----
+# Real Olympus OIR from the OME mirror. OIR uses an undocumented
+# OLYMPUSRAWFORMAT binary container; we don't have a native parser
+# yet, but the corpus file lets us add format-detection tests and
+# eventually build one.
+fetch \
+    "https://downloads.openmicroscopy.org/images/Olympus-OIR/etienne/amy%20slice%20z%20stack_0001.oir" \
+    ".test_data/oir/amy_slice_z_stack.oir"
 
 # ----- LERC: ESRI's reference test data (~230 KB total) -----
 # Two files from the LERC repo: a float32 raster (DEM elevation) and a
