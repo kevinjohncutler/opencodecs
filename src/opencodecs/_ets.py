@@ -47,12 +47,34 @@ import os
 import struct
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import numpy as np
+
+from .core.io import DataSource
 
 
 _SIS_MAGIC = b"SIS\x00"
 _ETS_MAGIC = b"ETS\x00"
+
+
+def _src_from(src: Any) -> tuple[DataSource, bool, int]:
+    """Coerce a path or DataSource to (DataSource, owns, size)."""
+    if isinstance(src, DataSource):
+        size = getattr(src, "size", None)
+        if size is None:
+            size = getattr(src, "total_size", None)
+        if size is None:
+            src.read_at(0, 4)
+            size = getattr(src, "total_size", None)
+        if size is None:
+            raise RuntimeError("ETS: DataSource didn't expose size")
+        return src, False, int(size)
+    if isinstance(src, (str, os.PathLike)):
+        from ._tiff_http import FileDataSource
+        ds = FileDataSource(str(src))
+        return ds, True, int(ds.size)
+    raise TypeError(f"ETS: unsupported source {type(src).__name__}")
 
 
 @dataclass
@@ -68,109 +90,115 @@ class EtsInfo:
     magic_ok: bool
 
 
-def parse_ets(path: str | Path) -> EtsInfo:
-    """Read just enough of an .ets file to enumerate its structure.
+def parse_ets(src: Any) -> EtsInfo:
+    """Read just enough of an .ets to enumerate its structure.
 
-    Does NOT decode any tile pixel data — full-decode work is
-    deferred until we have a known-content sample to verify
-    against (clean-room development requires ground truth).
+    Accepts a path or a DataSource. HTTP-backed sources fetch
+    only the 64-byte SIS header, ~256 bytes of the ETS sub-header,
+    and 4 bytes of the trailing index — typically under 1 KB
+    regardless of file size.
     """
-    p = Path(path)
-    if not p.is_file():
-        raise FileNotFoundError(p)
-    with open(p, "rb") as f:
-        hdr = f.read(64)
-    file_size = p.stat().st_size
+    ds, owns, file_size = _src_from(src)
+    try:
+        hdr = ds.read_at(0, 64)
+        if hdr[:4] != _SIS_MAGIC:
+            return EtsInfo(
+                file_size=file_size, width=0, height=0,
+                n_components=0, sub_chunk_offsets=[],
+                sub_chunk_sizes=[], level_count=0, magic_ok=False,
+            )
+        ptr1 = struct.unpack_from("<Q", hdr, 16)[0]
+        sz1  = struct.unpack_from("<Q", hdr, 24)[0]
+        ptr2 = struct.unpack_from("<Q", hdr, 32)[0]
+        sz2  = struct.unpack_from("<Q", hdr, 40)[0]
+        ptr3 = struct.unpack_from("<Q", hdr, 48)[0]
+        sz3  = struct.unpack_from("<Q", hdr, 56)[0]
 
-    if hdr[:4] != _SIS_MAGIC:
+        width = height = n_components = 0
+        if sz1 >= 64:
+            sub = ds.read_at(ptr1, min(sz1, 256))
+            if sub[:4] == _ETS_MAGIC:
+                # Offset 28 = width, offset 32 = height (verified
+                # against bftools on the OME zenodo-17590655 corpus).
+                n_components = struct.unpack_from("<I", sub, 8)[0]
+                width  = struct.unpack_from("<I", sub, 28)[0]
+                height = struct.unpack_from("<I", sub, 32)[0]
+
+        level_count = 0
+        if sz2 >= 4:
+            idx_head = ds.read_at(ptr2, min(sz2, 64))
+            level_count = struct.unpack_from("<I", idx_head, 0)[0]
+
         return EtsInfo(
-            file_size=file_size, width=0, height=0, n_components=0,
-            sub_chunk_offsets=[], sub_chunk_sizes=[], level_count=0,
-            magic_ok=False,
+            file_size=file_size,
+            width=width,
+            height=height,
+            n_components=n_components,
+            sub_chunk_offsets=[ptr1, ptr2, ptr3],
+            sub_chunk_sizes=[sz1, sz2, sz3],
+            level_count=level_count,
+            magic_ok=True,
         )
-
-    ptr1 = struct.unpack_from("<Q", hdr, 16)[0]
-    sz1  = struct.unpack_from("<Q", hdr, 24)[0]
-    ptr2 = struct.unpack_from("<Q", hdr, 32)[0]
-    sz2  = struct.unpack_from("<Q", hdr, 40)[0]
-    ptr3 = struct.unpack_from("<Q", hdr, 48)[0]
-    sz3  = struct.unpack_from("<Q", hdr, 56)[0]
-
-    width = height = n_components = 0
-    if sz1 >= 64:
-        with open(p, "rb") as f:
-            f.seek(ptr1)
-            sub = f.read(min(sz1, 256))
-        if sub[:4] == _ETS_MAGIC:
-            # The geometry-bearing u32s are at fixed offsets in
-            # observed files. We've only confirmed two real samples,
-            # so this may need adjustment for variants.
-            # Offset 28 = width, offset 32 = height (verified via
-            # byte-for-byte diff against bftools output on the
-            # OME zenodo-17590655 corpus).
-            n_components = struct.unpack_from("<I", sub, 8)[0]
-            width  = struct.unpack_from("<I", sub, 28)[0]
-            height = struct.unpack_from("<I", sub, 32)[0]
-
-    level_count = 0
-    if sz2 >= 4:
-        with open(p, "rb") as f:
-            f.seek(ptr2)
-            idx_head = f.read(min(sz2, 64))
-        level_count = struct.unpack_from("<I", idx_head, 0)[0]
-
-    return EtsInfo(
-        file_size=file_size,
-        width=width,
-        height=height,
-        n_components=n_components,
-        sub_chunk_offsets=[ptr1, ptr2, ptr3],
-        sub_chunk_sizes=[sz1, sz2, sz3],
-        level_count=level_count,
-        magic_ok=True,
-    )
+    finally:
+        if owns:
+            ds.close()
 
 
-def decode_ets(path: str | Path) -> np.ndarray:
-    """Decode an .ets file into a (planes, height, width) uint16 stack.
+def decode_ets(src: Any) -> np.ndarray:
+    """Decode an .ets source into a (planes, height, width) uint16 stack.
 
-    For the observed file format, planes are sequentially packed
-    starting at file offset 292 (= 64 header + 228 sub-header), each
-    plane is ``height × width × 2`` bytes (uint16 LE), reshape as
-    ``(height, width)``. The trailing 8 KB at EOF holds the index
-    sub-chunks; we don't need them for pixel decode.
-
-    Plane count = (file_size - 292 - trailing_index_size) /
-    (height × width × 2). For the corpus sample this is 180 planes
-    (5T × 18Z × 2C × 216×260×u16).
+    Accepts a path or DataSource. The plane data is one contiguous
+    sequential read from offset 292 through ``data_end`` (the
+    trailing-index pointer in the SIS header). For an HTTP source
+    this is one large range request rather than many small ones —
+    efficient even at multi-GB file sizes.
 
     Verified byte-identical to bftools output on the OME
     zenodo-17590655 corpus sample.
     """
-    info = parse_ets(path)
-    if not info.magic_ok:
-        raise ValueError(f"{path}: not a SIS / ETS file")
-    if info.width == 0 or info.height == 0:
-        raise ValueError(
-            f"{path}: ETS sub-header missing geometry")
-    plane_bytes = info.height * info.width * 2
-    # The first sub-chunk (sub_chunk_offsets[1]) marks where the
-    # post-data index starts. Everything between the header end and
-    # there is plane data.
-    data_end = info.sub_chunk_offsets[1]
-    data_start = 292   # header (64) + ETS sub-header (228)
-    payload_bytes = data_end - data_start
-    if payload_bytes % plane_bytes != 0:
-        raise ValueError(
-            f"{path}: ETS payload {payload_bytes} bytes isn't a "
-            f"multiple of plane_bytes ({plane_bytes}); cannot "
-            f"determine plane count")
-    n_planes = payload_bytes // plane_bytes
-    with open(path, "rb") as f:
-        f.seek(data_start)
-        raw = f.read(payload_bytes)
-    return np.frombuffer(raw, dtype="<u2").reshape(
-        n_planes, info.height, info.width)
+    ds, owns, file_size = _src_from(src)
+    try:
+        info = parse_ets(ds)
+        if not info.magic_ok:
+            raise ValueError("not a SIS / ETS source")
+        if info.width == 0 or info.height == 0:
+            raise ValueError("ETS sub-header missing geometry")
+        plane_bytes = info.height * info.width * 2
+        data_end = info.sub_chunk_offsets[1]
+        data_start = 292   # header (64) + ETS sub-header (228)
+        payload_bytes = data_end - data_start
+        if payload_bytes % plane_bytes != 0:
+            raise ValueError(
+                f"ETS payload {payload_bytes} bytes isn't a "
+                f"multiple of plane_bytes ({plane_bytes}); "
+                f"cannot determine plane count")
+        n_planes = payload_bytes // plane_bytes
+        raw = ds.read_at(data_start, payload_bytes)
+        return np.frombuffer(raw, dtype="<u2").reshape(
+            n_planes, info.height, info.width)
+    finally:
+        if owns:
+            ds.close()
 
 
-__all__ = ["EtsInfo", "parse_ets", "decode_ets"]
+def decode_ets_plane(src: Any, index: int) -> np.ndarray:
+    """Decode just one plane from an .ets source. For HTTP sources
+    this fetches only (height × width × 2) bytes rather than the
+    whole stack."""
+    ds, owns, _ = _src_from(src)
+    try:
+        info = parse_ets(ds)
+        if not info.magic_ok:
+            raise ValueError("not a SIS / ETS source")
+        plane_bytes = info.height * info.width * 2
+        data_start = 292
+        offset = data_start + index * plane_bytes
+        raw = ds.read_at(offset, plane_bytes)
+        return np.frombuffer(raw, dtype="<u2").reshape(
+            info.height, info.width)
+    finally:
+        if owns:
+            ds.close()
+
+
+__all__ = ["EtsInfo", "parse_ets", "decode_ets", "decode_ets_plane"]

@@ -28,6 +28,8 @@ from _range_http_server import range_http_server  # noqa: E402
 CORPUS = Path(__file__).resolve().parent.parent / ".test_data"
 ND2_SAMPLE = CORPUS / "nd2" / "MeOh_high_fluo_007.nd2"
 OIB_SAMPLE = CORPUS / "oib" / "imagesc_71616_60x.oib"
+OIR_SAMPLE = CORPUS / "oir" / "amy_slice_z_stack.oir"
+ETS_SAMPLE = CORPUS / "vsi" / "_metadataTest_01_" / "stack1" / "frame_t_0.ets"
 
 _HINT = (
     "Run `bash tests/download_test_corpus.sh --light` from the repo "
@@ -199,12 +201,83 @@ def test_native_oib_decode_correct_via_http(oib_http_setup):
 # ---------------------------------------------------------------------------
 
 
-def test_print_byte_savings_table(nd2_http_setup, oib_http_setup, capsys):
+@pytest.fixture
+def oir_http_setup(tmp_path):
+    if not OIR_SAMPLE.exists():
+        pytest.skip(_HINT)
+    shutil.copy(OIR_SAMPLE, tmp_path / "sample.oir")
+    return tmp_path
+
+
+def test_native_oir_open_is_small_fraction(oir_http_setup):
+    """Opening an OIR reads header + footer + per-frame record
+    headers — under 1% of a 25 MB OIR."""
+    from opencodecs._tiff_http import HTTPDataSource
+    from opencodecs._oir_codec import _OirReader
+
+    with range_http_server(oir_http_setup) as (url_base, tracker):
+        src = HTTPDataSource(f"{url_base}/sample.oir")
+        with _OirReader(src) as r:
+            assert r.n_frames == 32
+        assert tracker.full_requests == 0
+        assert tracker.bytes_served < tracker.file_size // 100, (
+            f"OIR open() fetched {tracker.bytes_served:,} bytes "
+            f"({tracker.bytes_served/tracker.file_size*100:.2f}%)")
+
+
+def test_native_oir_read_one_plane_is_under_5pct(oir_http_setup):
+    """Reading ONE plane from a 32-plane OIR fetches roughly 1/32
+    of the file = ~3.1%, plus the open overhead. Floor: 5%."""
+    from opencodecs._tiff_http import HTTPDataSource
+    from opencodecs._oir_codec import _OirReader
+
+    with range_http_server(oir_http_setup) as (url_base, tracker):
+        src = HTTPDataSource(f"{url_base}/sample.oir")
+        with _OirReader(src) as r:
+            _ = r[10]
+        assert tracker.full_requests == 0
+        assert tracker.bytes_served < tracker.file_size * 0.05, (
+            f"one-plane OIR fetched {tracker.bytes_served:,} bytes "
+            f"({tracker.bytes_served/tracker.file_size*100:.1f}%)")
+
+
+@pytest.fixture
+def ets_http_setup(tmp_path):
+    if not ETS_SAMPLE.exists():
+        pytest.skip(_HINT)
+    shutil.copy(ETS_SAMPLE, tmp_path / "sample.ets")
+    return tmp_path
+
+
+def test_ets_read_one_plane_is_under_2pct(ets_http_setup):
+    """``decode_ets_plane`` should fetch only one plane's worth of
+    bytes (~110 KB out of a 20 MB .ets = 0.55%) plus header
+    overhead."""
+    from opencodecs._tiff_http import HTTPDataSource
+    from opencodecs._ets import decode_ets_plane
+
+    with range_http_server(ets_http_setup) as (url_base, tracker):
+        src = HTTPDataSource(f"{url_base}/sample.ets")
+        plane = decode_ets_plane(src, 5)
+        src.close()
+        assert plane.shape == (216, 260)
+        assert tracker.full_requests == 0
+        assert tracker.bytes_served < tracker.file_size * 0.02, (
+            f"one-plane ETS fetched {tracker.bytes_served:,} bytes "
+            f"({tracker.bytes_served/tracker.file_size*100:.2f}%)")
+
+
+def test_print_byte_savings_table(
+    nd2_http_setup, oib_http_setup, oir_http_setup,
+    ets_http_setup, capsys,
+):
     """Print a table of byte-savings ratios — visible with pytest -s."""
     from opencodecs._tiff_http import HTTPDataSource
     from opencodecs._nd2_native import Nd2NativeReader
     from opencodecs._oib_native import OibNativeReader
 
+    from opencodecs._oir_codec import _OirReader
+    from opencodecs._ets import decode_ets_plane
     rows: list[tuple[str, int, int, int]] = []
 
     with range_http_server(nd2_http_setup) as (url_base, tr):
@@ -226,6 +299,28 @@ def test_print_byte_savings_table(nd2_http_setup, oib_http_setup, capsys):
         with OibNativeReader(src):
             pass
         rows.append(("OIB open",
+                     tr.file_size, tr.bytes_served, tr.range_requests))
+
+    with range_http_server(oir_http_setup) as (url_base, tr):
+        src = HTTPDataSource(f"{url_base}/sample.oir")
+        with _OirReader(src):
+            pass
+        rows.append(("OIR open",
+                     tr.file_size, tr.bytes_served, tr.range_requests))
+
+    with range_http_server(oir_http_setup) as (url_base, tr):
+        src = HTTPDataSource(f"{url_base}/sample.oir")
+        with _OirReader(src) as r:
+            _ = r[10]
+        rows.append(("OIR open + 1 plane",
+                     tr.file_size, tr.bytes_served, tr.range_requests))
+
+    with range_http_server(ets_http_setup) as (url_base, tr):
+        src = HTTPDataSource(f"{url_base}/sample.ets")
+        plane = decode_ets_plane(src, 5)
+        src.close()
+        assert plane.shape == (216, 260)
+        rows.append(("ETS 1 plane",
                      tr.file_size, tr.bytes_served, tr.range_requests))
 
     print("\n\nHTTP byte savings (server-side measurement):")
