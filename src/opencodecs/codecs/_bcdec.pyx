@@ -266,28 +266,34 @@ def decode_bc6h(data, *, width: int, height: int,
     cdef int by, bx
     cdef const uint8_t* block_p
     cdef int pitch
+    # ``destinationPitch`` for bcdec_bc6h_half / bcdec_bc6h_float is the
+    # row stride in *destination elements* (half or float), not bytes:
+    # the C function does ``decompressed += destinationPitch`` against a
+    # typed pointer, so the compiler scales by sizeof(element). Passing
+    # bytes-per-row overshoots the destination by 2x (half) / 4x (float)
+    # and writes past the numpy buffer on the final block row.
     if format == "half":
         out = cnp.PyArray_EMPTY(3, shape3, cnp.NPY_FLOAT16, 0)
-        pitch = width * 3 * 2   # 2 bytes per half-float channel
+        pitch = width * 3
         with nogil:
             for by in range(n_blocks_y):
                 for bx in range(n_blocks_x):
                     block_p = &buf[(by * n_blocks_x + bx) * BCDEC_BC6H_BLOCK_SIZE]
                     bcdec_bc6h_half(
                         block_p,
-                        (<uint16_t*> cnp.PyArray_DATA(out)) + (by * 4) * (pitch // 2) + (bx * 4 * 3),
+                        (<uint16_t*> cnp.PyArray_DATA(out)) + (by * 4) * pitch + (bx * 4 * 3),
                         pitch, is_signed_c,
                     )
     elif format == "float":
         out = cnp.PyArray_EMPTY(3, shape3, cnp.NPY_FLOAT32, 0)
-        pitch = width * 3 * 4
+        pitch = width * 3
         with nogil:
             for by in range(n_blocks_y):
                 for bx in range(n_blocks_x):
                     block_p = &buf[(by * n_blocks_x + bx) * BCDEC_BC6H_BLOCK_SIZE]
                     bcdec_bc6h_float(
                         block_p,
-                        (<float*> cnp.PyArray_DATA(out)) + (by * 4) * (pitch // 4) + (bx * 4 * 3),
+                        (<float*> cnp.PyArray_DATA(out)) + (by * 4) * pitch + (bx * 4 * 3),
                         pitch, is_signed_c,
                     )
     else:
