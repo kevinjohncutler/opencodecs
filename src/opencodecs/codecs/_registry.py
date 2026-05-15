@@ -332,6 +332,30 @@ except ImportError:  # pragma: no cover - import-time error branch
 
 
 # ---------------------------------------------------------------------------
+# VSI — Olympus CellSens virtual slide. Top-level container is TIFF,
+# full-res tiles live in a sibling .ets file we don't decode yet.
+# ---------------------------------------------------------------------------
+
+try:
+    from .._vsi_codec import VsiCodec as _VsiCodec
+    register_codec(_VsiCodec())
+except ImportError:  # pragma: no cover
+    pass
+
+
+# ---------------------------------------------------------------------------
+# OIR — Olympus FluoView newer format. Format-detection stub only;
+# decode raises NotImplementedError pointing at bioformats.
+# ---------------------------------------------------------------------------
+
+try:
+    from .._oir_codec import OirCodec as _OirCodec
+    register_codec(_OirCodec())
+except ImportError:  # pragma: no cover
+    pass
+
+
+# ---------------------------------------------------------------------------
 # BMP — native (pure Python + numpy, no external library)
 # ---------------------------------------------------------------------------
 

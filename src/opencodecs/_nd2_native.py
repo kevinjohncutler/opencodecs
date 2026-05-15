@@ -276,18 +276,29 @@ class Nd2FileParser:
         # The 8-byte prefix is a uint32 + uint32 (timestamps; not
         # required for pixel decode).
         attrs = self.attributes
-        if attrs.compression in (0, 2):
-            # Raw / "compression=2 but actually raw" — both observed
-            # in real files. Read frame_size_bytes after the 8-byte
-            # metadata prefix.
+        # eCompression mapping (from nd2 source):
+        #   0 = lossless (zlib-compressed payload)
+        #   1 = lossy    (proprietary; not supported here)
+        #   2 = raw / none / "compression=2 but actually raw"
+        if attrs.compression == 0:
+            # Lossless: read the whole chunk minus the 8-byte header,
+            # inflate via libdeflate (zlib stream).
+            payload = self._src.read_at(
+                chunk.data_offset + 8, chunk.data_length - 8)
+            from .codecs._deflate import decode as _deflate_decode
+            raw = _deflate_decode(payload)
+            arr = np.frombuffer(raw, dtype=attrs.dtype).copy()
+        elif attrs.compression in (2,) or attrs.compression == 0xFFFFFFFF:
+            # Raw uncompressed: read exactly frame_size_bytes after
+            # the 8-byte metadata prefix.
             payload = self._src.read_at(
                 chunk.data_offset + 8, attrs.frame_size_bytes)
             arr = np.frombuffer(payload, dtype=attrs.dtype).copy()
         else:
             raise NotImplementedError(
-                f"ND2: compression {attrs.compression} not implemented "
-                f"in the native parser yet; use Nd2Codec (delegate) "
-                f"for this file")
+                f"ND2: compression {attrs.compression} ({attrs.dtype}) "
+                f"not implemented in the native parser yet; use "
+                f"Nd2Codec(backend='nd2') (delegate) for this file")
         if attrs.n_channels > 1:
             arr = arr.reshape(attrs.height, attrs.width, attrs.n_channels)
         else:
