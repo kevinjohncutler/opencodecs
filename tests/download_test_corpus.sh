@@ -30,7 +30,8 @@ mkdir -p \
     .test_data/png/pngsuite .test_data/png/kodak24 \
     .test_data/dicom .test_data/fits .test_data/heif .test_data/lerc \
     .test_data/tiff/libtiff_pics .test_data/tiff/cog \
-    .test_data/tiff/geotiff .test_data/tiff/wsi
+    .test_data/tiff/geotiff .test_data/tiff/wsi \
+    .test_data/ndtiff .test_data/nd2 .test_data/lif .test_data/oib
 
 # Download helper that skips if the file already exists with non-zero size.
 fetch() {
@@ -164,6 +165,45 @@ fetch \
 fetch \
     "https://openslide.cs.cmu.edu/download/openslide-testdata/Aperio/CMU-1-Small-Region.svs" \
     ".test_data/tiff/wsi/CMU-1-Small-Region.svs"
+
+# ----- Small CZI: idr0011 plate well (~43 MB) -----
+# Different ZEN version + much smaller content than the 505 MB
+# Axioscan pyramid. Useful for fast CI runs that just need to
+# exercise the CZI parser on real bytes.
+fetch \
+    "https://downloads.openmicroscopy.org/images/Zeiss-CZI/idr0011/Plate1-Blue-A_TS-Stinger/Plate1-Blue-A-02-Scene-1-P2-E1-01.czi" \
+    ".test_data/czi/idr0011_plate1_scene1.czi"
+
+# ----- NDTiff v3: Micro-Manager test sample (~1.5 MB) -----
+# Populates the previously-empty .test_data/ndtiff/ subdir. Real
+# Micro-Manager 2 NDTiff layout: index file + multi-position TIFF
+# stack. Exercises our _ndtiff reader.
+fetch \
+    "https://raw.githubusercontent.com/micro-manager/NDStorage/main/test_data/v3/ndtiff3.2_monochrome/NDTiff.index" \
+    ".test_data/ndtiff/NDTiff.index"
+fetch \
+    "https://raw.githubusercontent.com/micro-manager/NDStorage/main/test_data/v3/ndtiff3.2_monochrome/NDTiff3.2_monochrome_NDTiffStack.tif" \
+    ".test_data/ndtiff/NDTiff3.2_monochrome_NDTiffStack.tif"
+
+# ----- ND2 sample: Nikon NIS-Elements (~13 MB) -----
+# Smallest ND2 in the OME mirror. Exercises our (future) ND2 reader
+# via the nd2 Python package. For now: format-detection sentinel.
+fetch \
+    "https://downloads.openmicroscopy.org/images/ND2/aryeh/MeOh_high_fluo_007.nd2" \
+    ".test_data/nd2/MeOh_high_fluo_007.nd2"
+
+# ----- LIF sample: Leica LAS-X (~230 KB) -----
+# Tiny, multi-image Leica LIF from the OME mirror. The smallest
+# real LIF I could find. Exercises our (future) LIF reader.
+fetch \
+    "https://downloads.openmicroscopy.org/images/Leica-LIF/michael/PR2729_frameOrderCombinedScanTypes.lif" \
+    ".test_data/lif/PR2729_frameOrderCombinedScanTypes.lif"
+
+# ----- OIB sample: Olympus FluoView (~25 MB) -----
+# Real Olympus FluoView OIB. Exercises our (future) OIB reader.
+fetch \
+    "https://downloads.openmicroscopy.org/images/Olympus-FluoView/imagesc-71616/20220824_4492_cord_dapi__iba568_60x.oib" \
+    ".test_data/oib/imagesc_71616_60x.oib"
 
 # ----- LERC: ESRI's reference test data (~230 KB total) -----
 # Two files from the LERC repo: a float32 raster (DEM elevation) and a
