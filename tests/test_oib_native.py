@@ -152,3 +152,18 @@ def test_oib_codec_oc_read_decodes_natively():
 def test_oib_codec_lists_native():
     entry = next(c for c in oc.list_codecs() if c["name"] == "oib")
     assert entry["native"] is True
+
+
+@pytest.mark.skipif(not OIB_SAMPLE.exists(), reason=_HINT)
+def test_oib_codec_info_returns_layout_without_decode():
+    """``codec.info(path)`` reads OibInfo.txt + the main .oif INI
+    via the OLE2 container and returns layout — no per-frame TIFF
+    is decoded."""
+    info = oc.get_codec("oib").info(str(OIB_SAMPLE))
+    layout = info["layout"]
+    assert info["n_frames"] > 0
+    assert info["n_streams"] >= info["n_frames"]
+    assert layout["width"] > 0 and layout["height"] > 0
+    assert layout["axis_order"]
+    assert layout["dtype"] in ("uint8", "uint16", "uint32")
+    assert layout["shape"][-2:] == (layout["height"], layout["width"])

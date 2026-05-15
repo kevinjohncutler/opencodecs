@@ -178,5 +178,43 @@ class OibCodec(Codec):
             return OibReader(tmp)
         raise TypeError(f"unsupported OIB source: {type(src).__name__}")
 
+    def info(self, src: Any) -> dict:
+        """Partial-parse: returns ``{file_size, n_streams, n_frames,
+        layout: {width, height, n_channels, n_z, n_t, axis_order,
+        dtype}}``.
+
+        Reads only OibInfo.txt + the main .oif INI from the OLE2
+        container — no per-frame TIFF data is decoded. Accepts a
+        path or a DataSource; HTTP-backed sources only fetch the
+        OLE2 directory + the two metadata streams.
+        """
+        from ._oib_native import OibFileParser
+        if isinstance(src, (str, Path, DataSource)):
+            parser = OibFileParser(src)
+        elif isinstance(src, (bytes, bytearray, memoryview)):
+            import os, tempfile
+            fd, tmp = tempfile.mkstemp(suffix=".oib")
+            os.write(fd, bytes(src))
+            os.close(fd)
+            parser = OibFileParser(tmp)
+        else:
+            raise TypeError(
+                f"unsupported OIB source: {type(src).__name__}")
+        L = parser.layout
+        return {
+            "n_streams": len(parser._streams_by_name),
+            "n_frames": len(L.frames),
+            "layout": {
+                "width": L.width,
+                "height": L.height,
+                "n_channels": L.n_channels,
+                "n_z": L.n_z,
+                "n_t": L.n_t,
+                "axis_order": L.axis_order,
+                "dtype": str(L.dtype),
+                "shape": L.shape,
+            },
+        }
+
 
 __all__ = ["OibCodec", "OibReader", "OibError"]

@@ -134,3 +134,20 @@ def test_native_lif_full_match_xfail():
                     assert np.array_equal(ours, ref), (
                         f"diverged at (t={t},m={m},z={z},c={c})"
                     )
+
+
+@pytest.mark.skipif(not LIF_SAMPLE.exists(), reason=_HINT)
+def test_lif_codec_info_returns_image_index_without_decode():
+    """``codec.info(path)`` walks the XML + memory-block index and
+    returns one entry per image — no pixel data is read. HTTP-backed
+    LIFs cost a handful of small range requests."""
+    import opencodecs as oc
+    info = oc.get_codec("lif").info(str(LIF_SAMPLE))
+    assert info["n_images"] >= 1
+    assert info["n_memblocks"] >= 1
+    assert info["xml_chars"] > 0
+    img0 = info["images"][0]
+    assert img0["dtype"] in ("uint8", "uint16")
+    assert img0["n_channels"] >= 1
+    labels = [a[0] for a in img0["axis_order"]]
+    assert "X" in labels and "Y" in labels
