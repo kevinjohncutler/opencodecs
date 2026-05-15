@@ -22,11 +22,6 @@ compression.
 from cpython.bytes cimport PyBytes_FromStringAndSize, PyBytes_AsString
 from libc.stdint cimport uint8_t
 
-from cpython.ref cimport PyObject
-
-cdef extern from "Python.h":
-    int _PyBytes_Resize(PyObject** pv, Py_ssize_t newsize) except -1
-
 import numpy as np
 cimport numpy as cnp
 
@@ -125,11 +120,10 @@ def encode(arr, *, max_z_error=0.0) -> bytes:
     cdef const void* data_ptr = <const void*> contig.data
     cdef double zerr = float(max_z_error)
     cdef Py_ssize_t raw_bytes = <Py_ssize_t> contig.nbytes
-    cdef PyObject* out_p
     # Skip ``lerc_computeCompressedSize`` — it runs a full encode-pass
     # internally to compute the exact size (measured at 12 ms on a
     # 4 MP u16 image, ~28% of total encode time). Instead, allocate a
-    # generous upper bound and resize after. LERC's lossless blob never
+    # generous upper bound and slice after. LERC's lossless blob never
     # exceeds raw + ~256 bytes of header (per-tile metadata is sub-1%
     # even on incompressible noise); 5% + 4 KiB is a hard upper bound.
     cdef unsigned int cap = <unsigned int>(
@@ -162,14 +156,13 @@ def encode(arr, *, max_z_error=0.0) -> bytes:
         if rc != 0:
             raise _err('lerc_encode', rc)
 
-    # Shrink the over-allocated bytes to the actual written size IN
-    # PLACE — slicing would allocate a fresh bytes object and memcpy
-    # ``written`` bytes (~1-2 ms on a 6 MB blob). ``_PyBytes_Resize``
-    # only rewrites the bytes header.
-    out_p = <PyObject*> out
-    _PyBytes_Resize(&out_p, <Py_ssize_t> written)
-    out = <object> out_p
-    return out
+    # Slice to the actual written size. An earlier version used
+    # ``_PyBytes_Resize`` in place to avoid a copy, but that pattern was
+    # use-after-free: on shrink, realloc can move the bytes object, and
+    # the Cython-managed Python ref to the pre-resize pointer would
+    # decref freed memory. GuardMalloc surfaced this as an abort during
+    # encode under heap-tight conditions.
+    return out[:written]
 
 
 def decode(data) -> 'np.ndarray':
