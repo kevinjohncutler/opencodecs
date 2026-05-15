@@ -292,6 +292,42 @@ if "opencodecs.codecs._zstd" in sys.modules:
 
 
 # ---------------------------------------------------------------------------
+# ND2 — delegate (Nikon NIS-Elements; wraps the `nd2` Python package)
+# ---------------------------------------------------------------------------
+
+try:
+    from .._nd2_codec import Nd2Codec as _Nd2Codec
+    if _Nd2Codec.has_delegate:
+        register_codec(_Nd2Codec())
+except ImportError:  # pragma: no cover - nd2-missing branch
+    pass
+
+
+# ---------------------------------------------------------------------------
+# LIF — delegate (Leica LAS-X; wraps the `readlif` package)
+# ---------------------------------------------------------------------------
+
+try:
+    from .._lif_codec import LifCodec as _LifCodec
+    if _LifCodec.has_delegate:
+        register_codec(_LifCodec())
+except ImportError:  # pragma: no cover - readlif-missing branch
+    pass
+
+
+# ---------------------------------------------------------------------------
+# OIB / OIF — delegate (Olympus FluoView; wraps the `oiffile` package)
+# ---------------------------------------------------------------------------
+
+try:
+    from .._oib_codec import OibCodec as _OibCodec
+    if _OibCodec.has_delegate:
+        register_codec(_OibCodec())
+except ImportError:  # pragma: no cover - oiffile-missing branch
+    pass
+
+
+# ---------------------------------------------------------------------------
 # BMP — native (pure Python + numpy, no external library)
 # ---------------------------------------------------------------------------
 
