@@ -146,45 +146,70 @@ class VsiCodec(Codec):
 
 
 class _VsiEtsReader(Reader):
-    """Native VSI reader: concatenates planes from each
-    ``frame_t_N.ets`` companion file."""
+    """Native VSI reader: lazily decodes planes from each
+    ``frame_t_N.ets`` companion. Per-plane reads pass through the
+    DataSource abstraction, so HTTP-backed VSI sources only fetch
+    the planes the caller actually iterates."""
 
     def __init__(self, vsi_path: Path, ets_files: list[Path]):
-        from ._ets import decode_ets
+        from ._ets import parse_ets, decode_ets_plane, decode_ets
         self._vsi_path = vsi_path
         self._ets_files = list(ets_files)
         self._decode_ets = decode_ets
+        self._decode_plane = decode_ets_plane
         # Probe the first .ets to learn geometry; assume all match.
-        first = decode_ets(str(ets_files[0]))
-        self._plane_height = int(first.shape[1])
-        self._plane_width = int(first.shape[2])
-        self._first = first
-        per_stack = first.shape[0]
-        self.n_frames = per_stack * len(ets_files)
+        first_info = parse_ets(str(ets_files[0]))
+        self._plane_height = int(first_info.height)
+        self._plane_width = int(first_info.width)
+        self._info_per_file = [first_info]
+        # Per-file plane count is derived from the payload region.
+        plane_bytes = first_info.height * first_info.width * 2
+        first_planes = (first_info.sub_chunk_offsets[1] - 292) // plane_bytes
+        self._planes_per_file = [first_planes]
+        for ets_path in ets_files[1:]:
+            inf = parse_ets(str(ets_path))
+            self._info_per_file.append(inf)
+            self._planes_per_file.append(
+                (inf.sub_chunk_offsets[1] - 292) // plane_bytes)
+        self.n_frames = sum(self._planes_per_file)
         self.shape = (
             self.n_frames, self._plane_height, self._plane_width)
-        self.dtype = first.dtype
+        self.dtype = np.dtype("<u2")
         self.is_chunked = False
 
+    def _locate(self, frame_index: int) -> tuple[int, int]:
+        """Map a global frame index → (file_index, plane_in_file)."""
+        f = 0
+        i = frame_index
+        for cnt in self._planes_per_file:
+            if i < cnt:
+                return f, i
+            i -= cnt
+            f += 1
+        raise IndexError(
+            f"VSI: frame {frame_index} out of range [0, {self.n_frames})")
+
+    def __getitem__(self, idx) -> np.ndarray:
+        if not isinstance(idx, (int, np.integer)):
+            raise TypeError(
+                "_VsiEtsReader: only int frame indexing supported")
+        f, p = self._locate(int(idx))
+        return self._decode_plane(str(self._ets_files[f]), p)
+
     def iter_frames(self) -> Iterator[np.ndarray]:
-        yielded = 0
-        for i, ets_path in enumerate(self._ets_files):
-            stack = self._first if i == 0 else self._decode_ets(
-                str(ets_path))
+        for ets_path in self._ets_files:
+            stack = self._decode_ets(str(ets_path))
             for j in range(stack.shape[0]):
                 yield stack[j]
-                yielded += 1
 
     def read(self) -> np.ndarray:
-        chunks = [self._first]
-        for ets_path in self._ets_files[1:]:
-            chunks.append(self._decode_ets(str(ets_path)))
+        chunks = [self._decode_ets(str(p)) for p in self._ets_files]
         if len(chunks) == 1:
             return chunks[0]
         return np.concatenate(chunks, axis=0)
 
     def close(self) -> None:
-        self._first = None
+        self._info_per_file = []
 
     def __enter__(self) -> "_VsiEtsReader":
         return self
