@@ -46,7 +46,6 @@ for the native-vendor-reader pattern (LIF was first).
 
 from __future__ import annotations
 
-import os
 import re
 import struct
 import xml.etree.ElementTree as ET
@@ -57,7 +56,7 @@ from typing import Any, Iterator
 import numpy as np
 
 from .core.codec import Reader
-from .core.io import DataSource
+from .core.io import DataSource, coerce_data_source
 
 
 _MAGIC = b"\xDA\xCE\xBE\x0A"
@@ -116,35 +115,9 @@ class Nd2FileParser:
     """
 
     def __init__(self, src: Any):
-        if isinstance(src, DataSource):
-            self._src = src
-            self._owns_src = False
-        elif isinstance(src, (str, os.PathLike)):
-            # Lazy import — avoids pulling _tiff_http into modules that
-            # don't need HTTP at all.
-            from ._tiff_http import FileDataSource
-            self._src = FileDataSource(str(src))
-            self._owns_src = True
-        else:
-            raise TypeError(
-                f"ND2: unsupported source {type(src).__name__}; pass "
-                f"a path or a DataSource")
-        # File size (we need it to locate the FILEMAP near EOF).
-        # FileDataSource has a .size attribute; HTTPDataSource has a
-        # .total_size property (lazily populated on first range read).
-        size = getattr(self._src, "size", None)
-        if size is None:
-            size = getattr(self._src, "total_size", None)
-        if size is None:
-            # Force a tiny read; HTTPDataSource's first range request
-            # populates total_size via the Content-Range response.
-            self._src.read_at(0, 4)
-            size = getattr(self._src, "total_size", None)
-        if size is None:
-            raise RuntimeError(
-                "ND2: DataSource didn't expose its total size; can't "
-                "locate the FILEMAP at EOF")
-        self._size = int(size)
+        # File size is needed to locate the FILEMAP near EOF, so this
+        # is the right entry point to coerce + size-probe in one shot.
+        self._src, self._owns_src, self._size = coerce_data_source(src)
 
         # Verify the file starts with ND2 magic.
         head = self._src.read_at(0, 4)

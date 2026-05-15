@@ -21,13 +21,12 @@ OIB on cloud storage gets range-read partial decode for free.
 
 from __future__ import annotations
 
-import os
 import struct
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from .core.io import DataSource
+from .core.io import DataSource, coerce_data_source
 
 
 _OLE_MAGIC = b"\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1"
@@ -69,16 +68,10 @@ class OleReader:
     """
 
     def __init__(self, src: Any):
-        if isinstance(src, DataSource):
-            self._src = src
-            self._owns_src = False
-        elif isinstance(src, (str, os.PathLike)):
-            from ._tiff_http import FileDataSource
-            self._src = FileDataSource(str(src))
-            self._owns_src = True
-        else:
-            raise TypeError(
-                f"OLE2: unsupported source {type(src).__name__}")
+        # OLE2 doesn't need the size up front (header is at offset 0),
+        # but the shared helper does the path-vs-DataSource coercion
+        # and the lifecycle bookkeeping in one place.
+        self._src, self._owns_src, _ = coerce_data_source(src)
         self._parse_header()
         self._read_fat()
         self._read_minifat()

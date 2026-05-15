@@ -43,7 +43,6 @@ work given a frame-of-known-content sample).
 
 from __future__ import annotations
 
-import os
 import struct
 from dataclasses import dataclass
 from pathlib import Path
@@ -51,30 +50,11 @@ from typing import Any
 
 import numpy as np
 
-from .core.io import DataSource
+from .core.io import DataSource, coerce_data_source
 
 
 _SIS_MAGIC = b"SIS\x00"
 _ETS_MAGIC = b"ETS\x00"
-
-
-def _src_from(src: Any) -> tuple[DataSource, bool, int]:
-    """Coerce a path or DataSource to (DataSource, owns, size)."""
-    if isinstance(src, DataSource):
-        size = getattr(src, "size", None)
-        if size is None:
-            size = getattr(src, "total_size", None)
-        if size is None:
-            src.read_at(0, 4)
-            size = getattr(src, "total_size", None)
-        if size is None:
-            raise RuntimeError("ETS: DataSource didn't expose size")
-        return src, False, int(size)
-    if isinstance(src, (str, os.PathLike)):
-        from ._tiff_http import FileDataSource
-        ds = FileDataSource(str(src))
-        return ds, True, int(ds.size)
-    raise TypeError(f"ETS: unsupported source {type(src).__name__}")
 
 
 @dataclass
@@ -98,7 +78,7 @@ def parse_ets(src: Any) -> EtsInfo:
     and 4 bytes of the trailing index — typically under 1 KB
     regardless of file size.
     """
-    ds, owns, file_size = _src_from(src)
+    ds, owns, file_size = coerce_data_source(src)
     try:
         hdr = ds.read_at(0, 64)
         if hdr[:4] != _SIS_MAGIC:
@@ -156,7 +136,7 @@ def decode_ets(src: Any) -> np.ndarray:
     Verified byte-identical to bftools output on the OME
     zenodo-17590655 corpus sample.
     """
-    ds, owns, file_size = _src_from(src)
+    ds, owns, file_size = coerce_data_source(src)
     try:
         info = parse_ets(ds)
         if not info.magic_ok:
@@ -185,7 +165,7 @@ def decode_ets_plane(src: Any, index: int) -> np.ndarray:
     """Decode just one plane from an .ets source. For HTTP sources
     this fetches only (height × width × 2) bytes rather than the
     whole stack."""
-    ds, owns, _ = _src_from(src)
+    ds, owns, _ = coerce_data_source(src)
     try:
         info = parse_ets(ds)
         if not info.magic_ok:
