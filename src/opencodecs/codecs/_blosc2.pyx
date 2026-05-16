@@ -79,14 +79,22 @@ def encode(data, *, level: int | None = None,
     return out[:ret]
 
 
-def decode(data) -> bytes:
-    """Decode a blosc2 chunk to bytes."""
+def decode(data, *, out=None):
+    """Decode a blosc2 chunk.
+
+    Parameters
+    ----------
+    out : int | bytearray | memoryview | None, optional
+        See ``_zstd.decode`` for the full ``out=`` contract.
+    """
     cdef:
         const uint8_t[::1] src
+        uint8_t[::1] out_view             # writable view of caller buffer
         int32_t srcsize
         int32_t nbytes = 0, cbytes = 0, blocksize = 0
         int ret
-        bytes out
+        bytes out_bytes
+        void* dst_ptr
 
     try:
         src = data
@@ -94,7 +102,9 @@ def decode(data) -> bytes:
         src = bytes(data)
     srcsize = <int32_t> src.shape[0]
     if srcsize == 0:
-        return b''
+        if out is None or isinstance(out, int):
+            return b''
+        return out[:0]
     if srcsize < BLOSC2_MAX_OVERHEAD:
         # Not strictly required to be >= overhead; tiny chunks are still
         # legal — but we still need the header to learn nbytes.
@@ -105,14 +115,42 @@ def decode(data) -> bytes:
     if ret < 0:
         raise Blosc2Error(f'blosc2_cbuffer_sizes failed: {ret}')
 
-    out = PyBytes_FromStringAndSize(NULL, <Py_ssize_t> nbytes)
-    cdef void* dst_ptr = <void*> PyBytes_AsString(out)
     cdef const void* src_ptr = <const void*> &src[0]
+
+    # ----- caller-supplied writable buffer (zero-alloc path) -----
+    if out is not None and not isinstance(out, int):
+        try:
+            out_view = out
+        except (TypeError, ValueError, BufferError) as e:
+            raise TypeError(
+                f"blosc2 decode: out= must be int or writable buffer, "
+                f"got {type(out).__name__}"
+            ) from e
+        if out_view.shape[0] < nbytes:
+            raise Blosc2Error(
+                f"blosc2 decode: out= buffer is {out_view.shape[0]} bytes "
+                f"but the blosc2 header declares {nbytes} bytes")
+        dst_ptr = <void*> &out_view[0]
+        with nogil:
+            ret = blosc2_decompress(src_ptr, srcsize, dst_ptr, nbytes)
+        if ret < 0:
+            raise Blosc2Error(f'blosc2_decompress failed: {ret}')
+        del out_view
+        return out[:ret]
+
+    # ----- fresh bytes allocation -----
+    if isinstance(out, int):
+        if out < nbytes:
+            raise Blosc2Error(
+                f"blosc2 decode: out=int({out}) is less than the "
+                f"blosc2 header's declared {nbytes} bytes")
+    out_bytes = PyBytes_FromStringAndSize(NULL, <Py_ssize_t> nbytes)
+    dst_ptr = <void*> PyBytes_AsString(out_bytes)
     with nogil:
         ret = blosc2_decompress(src_ptr, srcsize, dst_ptr, nbytes)
     if ret < 0:
         raise Blosc2Error(f'blosc2_decompress failed: {ret}')
-    return out[:ret]
+    return out_bytes[:ret]
 
 
 def check_signature(data) -> bool:
