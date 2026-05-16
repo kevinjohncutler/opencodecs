@@ -158,8 +158,14 @@ def encode(data, *, level: int | None = None,
         WebPFree(out_ptr)
 
 
-def decode(data) -> np.ndarray:
-    """Decode WebP bytes into a uint8 array."""
+def decode(data, *, out=None) -> np.ndarray:
+    """Decode WebP bytes into a uint8 array.
+
+    ``out=`` is a preallocated ``(H, W, 3) | (H, W, 4) uint8`` ndarray
+    matching the WebP file's geometry. See ``_png.decode`` for the full
+    contract. WebPDecode{RGB,RGBA}Into write directly into the buffer
+    so this is a true zero-alloc fast path.
+    """
     cdef:
         const uint8_t[::1] src
         size_t srcsize
@@ -167,11 +173,12 @@ def decode(data) -> np.ndarray:
         int rc
         int width = 0, height = 0
         uint8_t* dec_ptr
-        cnp.ndarray out
+        cnp.ndarray out_arr
         cnp.npy_intp shape[3]
         int channels
         size_t out_size
         int out_stride
+        tuple expected_shape
 
     if isinstance(data, (bytes, bytearray)):
         src = data
@@ -192,7 +199,25 @@ def decode(data) -> np.ndarray:
     shape[0] = height
     shape[1] = width
     shape[2] = channels
-    out = cnp.PyArray_EMPTY(3, shape, cnp.NPY_UINT8, 0)
+    expected_shape = (height, width, channels)
+
+    if out is not None:
+        if not isinstance(out, np.ndarray):
+            raise TypeError(
+                f"webp decode: out= must be an ndarray, "
+                f"got {type(out).__name__}")
+        if out.shape != expected_shape:
+            raise ValueError(
+                f"webp decode: out= shape {out.shape} does not match "
+                f"expected {expected_shape}")
+        if out.dtype != np.uint8:
+            raise ValueError(
+                f"webp decode: out= dtype must be uint8, got {out.dtype}")
+        if not out.flags['C_CONTIGUOUS']:
+            raise ValueError("webp decode: out= must be C-contiguous")
+        out_arr = out
+    else:
+        out_arr = cnp.PyArray_EMPTY(3, shape, cnp.NPY_UINT8, 0)
     out_stride = width * channels
     out_size = <size_t> (out_stride * height)
 
@@ -202,17 +227,17 @@ def decode(data) -> np.ndarray:
         with nogil:
             dec_ptr = WebPDecodeRGBAInto(
                 &src[0], srcsize,
-                <uint8_t*> cnp.PyArray_DATA(out), out_size, out_stride,
+                <uint8_t*> cnp.PyArray_DATA(out_arr), out_size, out_stride,
             )
     else:
         with nogil:
             dec_ptr = WebPDecodeRGBInto(
                 &src[0], srcsize,
-                <uint8_t*> cnp.PyArray_DATA(out), out_size, out_stride,
+                <uint8_t*> cnp.PyArray_DATA(out_arr), out_size, out_stride,
             )
     if dec_ptr == NULL:
         raise WebpError('WebP decode failed')
-    return out
+    return out_arr
 
 
 def check_signature(data) -> bool:

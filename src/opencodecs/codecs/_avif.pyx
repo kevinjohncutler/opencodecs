@@ -237,12 +237,18 @@ def encode(data, *, level: int | None = None,
         avifImageDestroy(image)
 
 
-def decode(data, *, numthreads: int | None = None) -> np.ndarray:
+def decode(data, *, numthreads: int | None = None, out=None) -> np.ndarray:
     """Decode AVIF bytes to a numpy array.
 
     Returns uint8 for 8-bit AVIFs, uint16 for 10/12-bit AVIFs (values
     left-aligned to bit_depth — i.e. for 10-bit the array contains values
     0..1023, not shifted into the upper bits).
+
+    ``out=`` is a preallocated ``(H, W, 3) | (H, W, 4)`` ndarray of the
+    right dtype (uint8 / uint16). libavif allocates its own RGB buffer
+    internally; out= skips the second allocation that the default path
+    does (we still pay the libavif internal one). See ``_png.decode``
+    for the full contract.
     """
     cdef:
         const uint8_t[::1] src
@@ -251,7 +257,7 @@ def decode(data, *, numthreads: int | None = None) -> np.ndarray:
         avifImage* image = NULL
         avifRGBImage rgb
         int rc
-        cnp.ndarray out
+        cnp.ndarray out_arr
         cnp.npy_intp shape[3]
         int has_alpha
         int channels
@@ -259,6 +265,8 @@ def decode(data, *, numthreads: int | None = None) -> np.ndarray:
         int img_depth
         unsigned int y
         size_t row_bytes_out
+        tuple expected_shape
+        object expected_dtype
 
     if isinstance(data, (bytes, bytearray)):
         src = data
@@ -311,16 +319,35 @@ def decode(data, *, numthreads: int | None = None) -> np.ndarray:
             shape[0] = image.height
             shape[1] = image.width
             shape[2] = channels
-            if dtype_bytes == 1:
-                out = cnp.PyArray_EMPTY(3, shape, cnp.NPY_UINT8, 0)
+            expected_shape = (int(image.height), int(image.width), channels)
+            expected_dtype = np.uint8 if dtype_bytes == 1 else np.uint16
+
+            if out is not None:
+                if not isinstance(out, np.ndarray):
+                    raise TypeError(
+                        f"avif decode: out= must be an ndarray, "
+                        f"got {type(out).__name__}")
+                if out.shape != expected_shape:
+                    raise ValueError(
+                        f"avif decode: out= shape {out.shape} does not "
+                        f"match expected {expected_shape}")
+                if out.dtype != expected_dtype:
+                    raise ValueError(
+                        f"avif decode: out= dtype {out.dtype} does not "
+                        f"match expected {np.dtype(expected_dtype)}")
+                if not out.flags['C_CONTIGUOUS']:
+                    raise ValueError("avif decode: out= must be C-contiguous")
+                out_arr = out
+            elif dtype_bytes == 1:
+                out_arr = cnp.PyArray_EMPTY(3, shape, cnp.NPY_UINT8, 0)
             else:
-                out = cnp.PyArray_EMPTY(3, shape, cnp.NPY_UINT16, 0)
+                out_arr = cnp.PyArray_EMPTY(3, shape, cnp.NPY_UINT16, 0)
             row_bytes_out = <size_t>(image.width * channels * dtype_bytes)
             for y in range(image.height):
-                memcpy(<uint8_t*> cnp.PyArray_DATA(out) + y * row_bytes_out,
+                memcpy(<uint8_t*> cnp.PyArray_DATA(out_arr) + y * row_bytes_out,
                        rgb.pixels + y * rgb.rowBytes,
                        row_bytes_out)
-            return out
+            return out_arr
         finally:
             avifRGBImageFreePixels(&rgb)
     finally:
