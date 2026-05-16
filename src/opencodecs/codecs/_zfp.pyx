@@ -186,8 +186,13 @@ def encode(arr, *,
     return out[:out_size]
 
 
-def decode(data) -> 'np.ndarray':
-    """Decode a self-describing ZFP stream."""
+def decode(data, *, out=None) -> 'np.ndarray':
+    """Decode a self-describing ZFP stream.
+
+    ``out=`` is a preallocated ndarray; zfp writes into the caller's
+    buffer directly via zfp_field_set_pointer. See ``_png.decode`` for
+    the full contract.
+    """
     cdef:
         const uint8_t[::1] src
         Py_ssize_t srcsize
@@ -240,8 +245,24 @@ def decode(data) -> 'np.ndarray':
             raise ZfpError(f"zfp stream has unsupported type {int(field.type)}")
         dtype = _ZFP_TO_DTYPE[field.type]
 
-        out = np.empty(shape, dtype=dtype)
-        out_arr = out
+        if out is not None:
+            if not isinstance(out, np.ndarray):
+                raise TypeError(
+                    f"zfp decode: out= must be an ndarray, "
+                    f"got {type(out).__name__}")
+            if out.shape != shape:
+                raise ValueError(
+                    f"zfp decode: out= shape {out.shape} does not match "
+                    f"expected {shape}")
+            if out.dtype != dtype:
+                raise ValueError(
+                    f"zfp decode: out= dtype {out.dtype} does not match "
+                    f"expected {dtype}")
+            if not out.flags['C_CONTIGUOUS']:
+                raise ValueError("zfp decode: out= must be C-contiguous")
+            out_arr = out
+        else:
+            out_arr = np.empty(shape, dtype=dtype)
         zfp_field_set_pointer(field, <void*> out_arr.data)
 
         rc = zfp_decompress(zstream, field)
@@ -254,7 +275,7 @@ def decode(data) -> 'np.ndarray':
             zfp_stream_close(zstream)
         if bs != NULL:
             stream_close(bs)
-    return out
+    return out_arr
 
 
 def check_signature(data) -> bool:

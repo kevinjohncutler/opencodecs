@@ -164,8 +164,13 @@ def encode(arr, *, level: int = 8, max_page_n: int = 0) -> bytes:
     return header + payload[:written]
 
 
-def decode(data) -> 'np.ndarray':
-    """Decode a pcodec blob (header + standalone bytes) to an ndarray."""
+def decode(data, *, out=None) -> 'np.ndarray':
+    """Decode a pcodec blob (header + standalone bytes) to an ndarray.
+
+    ``out=`` is a preallocated ndarray; pcodec writes directly into the
+    caller's buffer via pco_standalone_simple_decompress_into. See
+    ``_png.decode`` for the full contract.
+    """
     cdef:
         const uint8_t[::1] src
         Py_ssize_t srcsize
@@ -192,10 +197,26 @@ def decode(data) -> 'np.ndarray':
     dtype = _PCO_TO_DTYPE[dtype_enum_py]
 
     shape = tuple(int(shape8[i]) for i in range(ndim))
-    out = np.empty(shape, dtype=dtype)
-    out_arr = out
+    if out is not None:
+        if not isinstance(out, np.ndarray):
+            raise TypeError(
+                f"pcodec decode: out= must be an ndarray, "
+                f"got {type(out).__name__}")
+        if out.shape != shape:
+            raise ValueError(
+                f"pcodec decode: out= shape {out.shape} does not match "
+                f"expected {shape}")
+        if out.dtype != dtype:
+            raise ValueError(
+                f"pcodec decode: out= dtype {out.dtype} does not match "
+                f"expected {dtype}")
+        if not out.flags['C_CONTIGUOUS']:
+            raise ValueError("pcodec decode: out= must be C-contiguous")
+        out_arr = out
+    else:
+        out_arr = np.empty(shape, dtype=dtype)
 
-    cdef size_t out_n = <size_t> out.size
+    cdef size_t out_n = <size_t> out_arr.size
     header_off = <Py_ssize_t> _HEADER_LEN
     payload_len = srcsize - header_off
 
@@ -208,11 +229,11 @@ def decode(data) -> 'np.ndarray':
         raise PcodecError(
             f"pcodec decompress failed: {_PCO_ERROR_MSG.get(int(rc), int(rc))}"
         )
-    if <Py_ssize_t> written != <Py_ssize_t> out.size:
+    if <Py_ssize_t> written != <Py_ssize_t> out_arr.size:
         raise PcodecError(
-            f"pcodec decompress wrote {written} elements, expected {out.size}"
+            f"pcodec decompress wrote {written} elements, expected {out_arr.size}"
         )
-    return out
+    return out_arr
 
 
 def check_signature(data) -> bool:

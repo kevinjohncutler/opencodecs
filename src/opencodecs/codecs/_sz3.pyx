@@ -172,8 +172,14 @@ def encode(arr, *,
     return header + payload
 
 
-def decode(data) -> 'np.ndarray':
-    """Decode an SZ3 blob (header + SZ3 stream) to an ndarray."""
+def decode(data, *, out=None) -> 'np.ndarray':
+    """Decode an SZ3 blob (header + SZ3 stream) to an ndarray.
+
+    ``out=`` is a preallocated ndarray; see ``_png.decode`` for the full
+    contract. SZ3's library decompresses into its own malloc'd buffer
+    which we memcpy into the destination, so out= saves the second
+    alloc (not the SZ3-internal one).
+    """
     cdef:
         const uint8_t[::1] src
         Py_ssize_t srcsize
@@ -218,9 +224,25 @@ def decode(data) -> 'np.ndarray':
     if payload_len <= 0:
         raise Sz3Error("sz3 blob payload missing")
 
-    out = np.empty(shape, dtype=dtype)
-    out_arr = out
-    total_elems = <size_t> out.size
+    if out is not None:
+        if not isinstance(out, np.ndarray):
+            raise TypeError(
+                f"sz3 decode: out= must be an ndarray, "
+                f"got {type(out).__name__}")
+        if out.shape != shape:
+            raise ValueError(
+                f"sz3 decode: out= shape {out.shape} does not match "
+                f"expected {shape}")
+        if out.dtype != dtype:
+            raise ValueError(
+                f"sz3 decode: out= dtype {out.dtype} does not match "
+                f"expected {dtype}")
+        if not out.flags['C_CONTIGUOUS']:
+            raise ValueError("sz3 decode: out= must be C-contiguous")
+        out_arr = out
+    else:
+        out_arr = np.empty(shape, dtype=dtype)
+    total_elems = <size_t> out_arr.size
 
     cdef Py_ssize_t header_off = <Py_ssize_t> _HEADER_LEN
     with nogil:
@@ -232,10 +254,10 @@ def decode(data) -> 'np.ndarray':
     if sz_out == NULL:
         raise Sz3Error("SZ_decompress returned NULL")
     try:
-        memcpy(<void*> out_arr.data, sz_out, total_elems * out.dtype.itemsize)
+        memcpy(<void*> out_arr.data, sz_out, total_elems * out_arr.dtype.itemsize)
     finally:
         free_buf(sz_out)
-    return out
+    return out_arr
 
 
 def check_signature(data) -> bool:
