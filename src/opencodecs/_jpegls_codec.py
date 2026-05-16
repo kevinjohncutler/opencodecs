@@ -66,8 +66,8 @@ class JpegLsCodec(Codec):
         out = _jpegls_encode(data, near_lossless=int(near_lossless))
         return _write_dest(out, dest)
 
-    def decode(self, src: Any, **opts) -> np.ndarray:
-        return _jpegls_decode(_read_src(src))
+    def decode(self, src: Any, *, out=None, **opts) -> np.ndarray:
+        return _jpegls_decode(_read_src(src), out=out)
 
 
 __all__ = ["JpegLsCodec"]

@@ -163,8 +163,14 @@ def encode(data, *, near_lossless: int = 0) -> bytes:
         charls_jpegls_encoder_destroy(enc)
 
 
-def decode(data) -> np.ndarray:
-    """Decode JPEG-LS bytes to an ndarray."""
+def decode(data, *, out=None) -> np.ndarray:
+    """Decode JPEG-LS bytes to an ndarray.
+
+    ``out=`` is a preallocated ndarray. charls's
+    charls_jpegls_decoder_decode_to_buffer writes directly into the
+    caller's buffer — true zero-alloc. See ``_png.decode`` for the
+    full contract.
+    """
     cdef:
         const uint8_t[::1] src
         size_t srcsize
@@ -173,10 +179,12 @@ def decode(data) -> np.ndarray:
         size_t dst_size = 0
         uint32_t stride
         int rc
-        cnp.ndarray out
+        cnp.ndarray out_arr
         cnp.npy_intp shape[3]
         int ndim
         int bps
+        tuple expected_shape
+        object expected_dtype
 
     if isinstance(data, (bytes, bytearray)):
         src = data
@@ -200,6 +208,7 @@ def decode(data) -> np.ndarray:
             shape[0] = info.height
             shape[1] = info.width
             stride = info.width * (1 if bps <= 8 else 2)
+            expected_shape = (int(info.height), int(info.width))
         else:
             ndim = 3
             shape[0] = info.height
@@ -207,21 +216,42 @@ def decode(data) -> np.ndarray:
             shape[2] = info.component_count
             stride = (info.width * info.component_count *
                       (1 if bps <= 8 else 2))
-        out = cnp.PyArray_EMPTY(
-            ndim, shape,
-            cnp.NPY_UINT8 if bps <= 8 else cnp.NPY_UINT16,
-            0,
-        )
+            expected_shape = (int(info.height), int(info.width),
+                              int(info.component_count))
+        expected_dtype = np.uint8 if bps <= 8 else np.uint16
+
+        if out is not None:
+            if not isinstance(out, np.ndarray):
+                raise CharlsError(
+                    f"jpegls decode: out= must be an ndarray, "
+                    f"got {type(out).__name__}")
+            if out.shape != expected_shape:
+                raise CharlsError(
+                    f"jpegls decode: out= shape {out.shape} does not match "
+                    f"expected {expected_shape}")
+            if out.dtype != expected_dtype:
+                raise CharlsError(
+                    f"jpegls decode: out= dtype {out.dtype} does not match "
+                    f"expected {np.dtype(expected_dtype)}")
+            if not out.flags['C_CONTIGUOUS']:
+                raise CharlsError("jpegls decode: out= must be C-contiguous")
+            out_arr = out
+        else:
+            out_arr = cnp.PyArray_EMPTY(
+                ndim, shape,
+                cnp.NPY_UINT8 if bps <= 8 else cnp.NPY_UINT16,
+                0,
+            )
         rc = charls_jpegls_decoder_get_destination_size(dec, stride, &dst_size)
         _check(rc, "get_destination_size")
-        if <size_t> out.nbytes < dst_size:
+        if <size_t> out_arr.nbytes < dst_size:
             raise CharlsError(
-                f"output buffer too small ({out.nbytes} < {dst_size})"
+                f"output buffer too small ({out_arr.nbytes} < {dst_size})"
             )
         rc = charls_jpegls_decoder_decode_to_buffer(
-            dec, <void*> cnp.PyArray_DATA(out), out.nbytes, stride,
+            dec, <void*> cnp.PyArray_DATA(out_arr), out_arr.nbytes, stride,
         )
         _check(rc, "decode_to_buffer")
-        return out
+        return out_arr
     finally:
         charls_jpegls_decoder_destroy(dec)
