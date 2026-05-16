@@ -27,7 +27,7 @@ Backends 2 and 3 share the .pyx path because they share the zlib
 API; libdeflate has a different API and lives behind the macro.
 """
 
-from cpython.bytes cimport PyBytes_FromStringAndSize, PyBytes_AsString
+from cpython.bytes cimport PyBytes_FromStringAndSize
 from libc.stdint cimport uint8_t
 from libc.stdlib cimport realloc, free
 from libc.stddef cimport size_t
@@ -220,10 +220,17 @@ def encode(data, *, level: int | None = None) -> bytes:
     return out[:dstsize_z]
 
 
-def decode(data) -> bytes:
-    """Decode a zlib stream to bytes."""
+def decode(data, *, out=None):
+    """Decode a zlib stream.
+
+    Parameters
+    ----------
+    out : int | bytearray | memoryview | None, optional
+        See ``_zstd.decode`` for the full ``out=`` contract.
+    """
     cdef:
         const uint8_t[::1] src
+        uint8_t[::1] out_view             # writable view of caller buffer
         size_t srcsize_s, dstcap_s, written
         uLong srcsize_z
         uLongf dstcap_z, dstsize_z
@@ -231,7 +238,8 @@ def decode(data) -> bytes:
         libdeflate_decompressor* decompressor = NULL
         libdeflate_result ld_rc
         uint8_t* buf = NULL
-        bytes out
+        bint can_grow
+        bytes out_bytes
 
     try:
         src = data
@@ -239,7 +247,64 @@ def decode(data) -> bytes:
         src = bytes(data)
     srcsize_s = <size_t> src.shape[0]
     if srcsize_s == 0:
-        return b""
+        if out is None or isinstance(out, int):
+            return b""
+        return out[:0]
+
+    # ----- caller-supplied writable buffer (zero-alloc path) -----
+    if out is not None and not isinstance(out, int):
+        try:
+            out_view = out
+        except (TypeError, ValueError, BufferError) as e:
+            raise TypeError(
+                f"deflate decode: out= must be int or writable buffer, "
+                f"got {type(out).__name__}"
+            ) from e
+        dstcap_s = <size_t> out_view.shape[0]
+        if OPENCODECS_HAVE_LIBDEFLATE:
+            with nogil:
+                decompressor = libdeflate_alloc_decompressor()
+            if decompressor == NULL:
+                raise MemoryError("libdeflate_alloc_decompressor returned NULL")
+            try:
+                with nogil:
+                    ld_rc = libdeflate_zlib_decompress(
+                        decompressor,
+                        <const void*> &src[0], srcsize_s,
+                        <void*> &out_view[0], dstcap_s, &written,
+                    )
+                if ld_rc == LIBDEFLATE_INSUFFICIENT_SPACE:
+                    raise ZlibError(
+                        "deflate decode: out= buffer too small")
+                if ld_rc != LIBDEFLATE_SUCCESS:
+                    raise ZlibError(
+                        f"libdeflate_zlib_decompress failed: rc={ld_rc}")
+                del out_view
+                return out[:written]
+            finally:
+                with nogil:
+                    libdeflate_free_decompressor(decompressor)
+        # zlib fallback path with out= buffer
+        srcsize_z = <uLong> srcsize_s
+        dstsize_z = <uLongf> dstcap_s
+        with nogil:
+            rc = uncompress(&out_view[0], &dstsize_z, &src[0], srcsize_z)
+        if rc == -5:
+            raise ZlibError("deflate decode: out= buffer too small")
+        if rc != Z_OK:
+            raise ZlibError(f"uncompress failed: {rc}")
+        del out_view
+        return out[:dstsize_z]
+
+    # ----- pre-sized bytes (out=int) or grow-loop (out=None) -----
+    if isinstance(out, int):
+        if out < 0:
+            raise ValueError("deflate decode: out=int(N) requires N >= 0")
+        dstcap_s = <size_t> out
+        can_grow = False
+    else:
+        dstcap_s = max(<size_t> 4 * srcsize_s, <size_t> 65536)
+        can_grow = True
 
     if OPENCODECS_HAVE_LIBDEFLATE:
         with nogil:
@@ -247,10 +312,6 @@ def decode(data) -> bytes:
         if decompressor == NULL:
             raise MemoryError("libdeflate_alloc_decompressor returned NULL")
         try:
-            # Start at 4x source like the zlib path; grow on
-            # INSUFFICIENT_SPACE. Cap at 1 GiB so a malformed stream
-            # can't loop forever.
-            dstcap_s = max(<size_t> 4 * srcsize_s, <size_t> 65536)
             while True:
                 buf = <uint8_t*> realloc(buf, dstcap_s)
                 if buf == NULL:
@@ -268,11 +329,14 @@ def decode(data) -> bytes:
                         )
                     finally:
                         free(buf)
-                if ld_rc == LIBDEFLATE_INSUFFICIENT_SPACE and \
-                        dstcap_s < <size_t>(1 << 30):
+                if ld_rc == LIBDEFLATE_INSUFFICIENT_SPACE and can_grow \
+                        and dstcap_s < <size_t>(1 << 30):
                     dstcap_s *= 2
                     continue
                 free(buf)
+                if not can_grow and ld_rc == LIBDEFLATE_INSUFFICIENT_SPACE:
+                    raise ZlibError(
+                        "deflate decode: out= int hint too small")
                 raise ZlibError(
                     f"libdeflate_zlib_decompress failed: rc={ld_rc}"
                 )
@@ -282,7 +346,7 @@ def decode(data) -> bytes:
 
     # zlib fallback.
     srcsize_z = <uLong> srcsize_s
-    dstcap_z = max(<uLong> 4 * srcsize_z, <uLong> 65536)
+    dstcap_z = <uLong> dstcap_s
     while True:
         buf = <uint8_t*> realloc(buf, dstcap_z)
         if buf == NULL:
@@ -292,17 +356,19 @@ def decode(data) -> bytes:
             rc = uncompress(buf, &dstsize_z, &src[0], srcsize_z)
         if rc == Z_OK:
             try:
-                out = PyBytes_FromStringAndSize(
+                out_bytes = PyBytes_FromStringAndSize(
                     <char*> buf, <Py_ssize_t> dstsize_z,
                 )
-                return out
+                return out_bytes
             finally:
                 free(buf)
         # Z_BUF_ERROR (-5) → grow + retry. Cap at 1 GiB.
-        if rc == -5 and dstcap_z < <uLong>(1 << 30):
+        if rc == -5 and can_grow and dstcap_z < <uLong>(1 << 30):
             dstcap_z *= 2
             continue
         free(buf)
+        if not can_grow and rc == -5:
+            raise ZlibError("deflate decode: out= int hint too small")
         raise ZlibError(f"uncompress failed: {rc}")
 
 

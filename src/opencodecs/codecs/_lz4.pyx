@@ -74,11 +74,20 @@ def encode(data, *, level: int | None = None) -> bytes:
     return out[:ret]
 
 
-def decode(data) -> bytes:
-    """Decode an LZ4 frame to bytes."""
+def decode(data, *, out=None):
+    """Decode an LZ4 frame.
+
+    Parameters
+    ----------
+    out : int | bytearray | memoryview | None, optional
+        See ``_zstd.decode`` for the full ``out=`` contract. ``int``
+        pre-sizes the output bytes; a writable buffer enables the
+        zero-alloc fast path (returns the same object sliced).
+    """
     cdef:
         const uint8_t[::1] src
         const uint8_t[::1] dst_mv     # memoryview cast for the output bytes
+        uint8_t[::1] out_view         # writable view of caller buffer
         size_t srcsize, src_consumed, src_remaining
         size_t dst_size, dst_used
         size_t ret
@@ -86,9 +95,7 @@ def decode(data) -> bytes:
         LZ4F_frameInfo_t info
         const void* src_ptr
         void* dst_ptr
-        unsigned long long content_size
-        bytes out
-        size_t total_consumed
+        bytes out_bytes
         Py_ssize_t chunk_cap
         size_t src_pos, this_dst, this_src
         bytes chunk
@@ -100,7 +107,9 @@ def decode(data) -> bytes:
         src = bytes(data)
     srcsize = <size_t> src.shape[0]
     if srcsize == 0:
-        return b''
+        if out is None or isinstance(out, int):
+            return b''
+        return out[:0]
 
     ret = LZ4F_createDecompressionContext(&dctx, LZ4F_VERSION)
     if LZ4F_isError(ret):
@@ -117,21 +126,51 @@ def decode(data) -> bytes:
             raise Lz4Error(
                 f'LZ4F_getFrameInfo: {LZ4F_getErrorName(ret).decode()}')
 
-        # If contentSize is in the frame header, allocate exactly that
-        # size and decode in one shot (the common case for files
-        # encoded with content-size enabled).
-        # Otherwise, decompress in chunks of `chunk_cap` bytes into a
-        # growing bytearray. The previous "4× source" heuristic broke
-        # for highly-compressible inputs (16 MB of zeros → 69 KB
-        # encoded → 4× = 276 KB, but actual output is 16 MB).
         src_pos = src_consumed
 
-        if info.contentSize > 0:
+        # ----- caller-supplied writable buffer (zero-alloc path) -----
+        if out is not None and not isinstance(out, int):
+            try:
+                out_view = out
+            except (TypeError, ValueError, BufferError) as e:
+                raise TypeError(
+                    f"lz4 decode: out= must be int or writable buffer "
+                    f"(bytearray / memoryview / numpy uint8), "
+                    f"got {type(out).__name__}"
+                ) from e
+            dst_used = <size_t> out_view.shape[0]
+            src_remaining = srcsize - src_consumed
+            with nogil:
+                ret = LZ4F_decompress(
+                    dctx, <void*> &out_view[0], &dst_used,
+                    <const void*> (&src[0] + src_consumed), &src_remaining,
+                    NULL)
+            if LZ4F_isError(ret):
+                raise Lz4Error(
+                    f'LZ4F_decompress (out= buffer): '
+                    f'{LZ4F_getErrorName(ret).decode()}')
+            if ret != 0:
+                raise Lz4Error(
+                    'LZ4F_decompress: output buffer too small '
+                    '(decoder wants more space)')
+            del out_view
+            return out[:dst_used]
+
+        # ----- pre-sized bytes (out=int or content-size in header) -----
+        if isinstance(out, int):
+            if out < 0:
+                raise ValueError("lz4 decode: out=int(N) requires N >= 0")
+            dst_size = <size_t> out
+        elif info.contentSize > 0:
             dst_size = <size_t> info.contentSize
-            out = PyBytes_FromStringAndSize(NULL, <Py_ssize_t> dst_size)
+        else:
+            dst_size = 0  # unknown; fall through to chunked path
+
+        if dst_size > 0:
+            out_bytes = PyBytes_FromStringAndSize(NULL, <Py_ssize_t> dst_size)
             # Memoryview cast for the output pointer — same pattern as
             # encode (see _zstd.pyx for the empirical rationale).
-            dst_mv = out
+            dst_mv = out_bytes
             dst_used = dst_size
             src_remaining = srcsize - src_consumed
             with nogil:
@@ -144,13 +183,10 @@ def decode(data) -> bytes:
                     f'LZ4F_decompress: {LZ4F_getErrorName(ret).decode()}')
             if ret != 0:
                 raise Lz4Error(
-                    'LZ4F_decompress: contentSize header was wrong '
-                    '(decoder requests more input)')
+                    'LZ4F_decompress: pre-sized buffer was too small '
+                    '(decoder requests more output space)')
             del dst_mv
-            # When dst_used == dst_size (the common case for valid
-            # frames), this slice is a CPython no-op — returns ``out``
-            # itself, no alloc / no memcpy.
-            return out[:dst_used]
+            return out_bytes[:dst_used]
 
         # No content-size hint — chunked decode into a bytearray. Use a
         # 1 MB working chunk; the loop handles inputs of any expansion
