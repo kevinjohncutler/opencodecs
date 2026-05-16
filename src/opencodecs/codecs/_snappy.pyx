@@ -74,20 +74,28 @@ def encode(data) -> bytes:
     return out[:dstlen]
 
 
-def decode(data) -> bytes:
-    """Decompress a Snappy block to bytes.
+def decode(data, *, out=None):
+    """Decompress a Snappy block.
 
     The uncompressed size is stored in the block header (Snappy's
     first varint), so we can pre-allocate the exact output buffer
     in one shot — no growing-buffer retry loop.
+
+    Parameters
+    ----------
+    out : int | bytearray | memoryview | None, optional
+        See ``_zstd.decode`` for the full ``out=`` contract.
     """
     cdef:
         const uint8_t[::1] src
-        const uint8_t[::1] dst
+        const uint8_t[::1] dst                # output bytes view
+        uint8_t[::1] out_view                 # writable view of caller buffer
         size_t srcsize
         size_t dstlen = 0
-        bytes out
+        size_t out_len
+        bytes out_bytes
         snappy_status rc
+        char* dst_ptr
 
     try:
         src = data
@@ -95,7 +103,9 @@ def decode(data) -> bytes:
         src = bytes(data)
     srcsize = <size_t> src.shape[0]
     if srcsize == 0:
-        return b''
+        if out is None or isinstance(out, int):
+            return b''
+        return out[:0]
 
     cdef const char* src_p = <const char*> &src[0]
     rc = snappy_uncompressed_length(src_p, srcsize, &dstlen)
@@ -105,9 +115,37 @@ def decode(data) -> bytes:
             f"(not a valid Snappy block?)"
         )
 
-    out = PyBytes_FromStringAndSize(NULL, <Py_ssize_t> dstlen)
-    dst = out
-    cdef size_t out_len = dstlen   # snappy_uncompress overwrites
+    # ----- caller-supplied writable buffer (zero-alloc path) -----
+    if out is not None and not isinstance(out, int):
+        try:
+            out_view = out
+        except (TypeError, ValueError, BufferError) as e:
+            raise TypeError(
+                f"snappy decode: out= must be int or writable buffer, "
+                f"got {type(out).__name__}"
+            ) from e
+        if out_view.shape[0] < dstlen:
+            raise SnappyError(
+                f"snappy decode: out= buffer is {out_view.shape[0]} bytes "
+                f"but the Snappy header declares {dstlen} bytes")
+        out_len = <size_t> out_view.shape[0]
+        dst_ptr = <char*> &out_view[0]
+        with nogil:
+            rc = snappy_uncompress(src_p, srcsize, dst_ptr, &out_len)
+        if rc != SNAPPY_OK:
+            raise SnappyError(f"snappy_uncompress failed: status={rc}")
+        del out_view
+        return out[:out_len]
+
+    # ----- fresh bytes allocation -----
+    if isinstance(out, int):
+        if out < dstlen:
+            raise SnappyError(
+                f"snappy decode: out=int({out}) is less than the "
+                f"Snappy header's declared {dstlen} bytes")
+    out_bytes = PyBytes_FromStringAndSize(NULL, <Py_ssize_t> dstlen)
+    dst = out_bytes
+    out_len = dstlen   # snappy_uncompress overwrites
     with nogil:
         rc = snappy_uncompress(src_p, srcsize, <char*> &dst[0], &out_len)
     if rc != SNAPPY_OK:
@@ -116,8 +154,8 @@ def decode(data) -> bytes:
     if out_len != dstlen:
         # Shouldn't happen for valid input — header says X bytes, we
         # got Y. Slice down to be safe.
-        return out[:out_len]
-    return out
+        return out_bytes[:out_len]
+    return out_bytes
 
 
 def check_signature(data) -> bool:

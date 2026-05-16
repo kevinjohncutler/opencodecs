@@ -18,7 +18,7 @@ from cpython.bytes cimport PyBytes_FromStringAndSize, PyBytes_AsString
 from libc.stdint cimport uint8_t
 
 
-def byteshuffle_decode(data, int itemsize, Py_ssize_t n_elements) -> bytes:
+def byteshuffle_decode(data, int itemsize, Py_ssize_t n_elements, *, out=None):
     """Inverse byte-plane shuffle.
 
     Input bytes layout (the format zstd-with-byteshuffle leaves behind):
@@ -40,16 +40,20 @@ def byteshuffle_decode(data, int itemsize, Py_ssize_t n_elements) -> bytes:
         Bytes per element (1 = no-op, 2 = uint16/int16, 4 = uint32/float32, ...).
     n_elements : int
         Number of elements.
+    out : int | bytearray | memoryview | None, optional
+        See ``_zstd.decode`` for the full ``out=`` contract. Output
+        size is always ``itemsize * n_elements`` bytes.
     """
     cdef:
         const uint8_t[::1] src
+        uint8_t[::1] out_view             # writable view of caller buffer
         const uint8_t* sp
         uint8_t* dp
         Py_ssize_t i, b
         Py_ssize_t n = n_elements
         Py_ssize_t k = itemsize
         Py_ssize_t total = k * n
-        bytes out
+        bytes out_bytes
 
     if itemsize < 1:
         raise ValueError(f"itemsize must be >= 1, got {itemsize}")
@@ -65,8 +69,32 @@ def byteshuffle_decode(data, int itemsize, Py_ssize_t n_elements) -> bytes:
             f"* n_elements ({n_elements}) = {total}"
         )
 
-    out = PyBytes_FromStringAndSize(NULL, total)
-    dp = <uint8_t*> PyBytes_AsString(out)
+    if total == 0:
+        if out is None or isinstance(out, int):
+            return b''
+        return out[:0]
+
+    # Resolve output destination.
+    if out is not None and not isinstance(out, int):
+        try:
+            out_view = out
+        except (TypeError, ValueError, BufferError) as e:
+            raise TypeError(
+                f"byteshuffle_decode: out= must be int or writable buffer, "
+                f"got {type(out).__name__}"
+            ) from e
+        if out_view.shape[0] < total:
+            raise ValueError(
+                f"byteshuffle_decode: out= buffer is {out_view.shape[0]} "
+                f"bytes but output is {total} bytes")
+        dp = &out_view[0]
+    else:
+        if isinstance(out, int) and out < total:
+            raise ValueError(
+                f"byteshuffle_decode: out=int({out}) is less than the "
+                f"required {total} bytes")
+        out_bytes = PyBytes_FromStringAndSize(NULL, total)
+        dp = <uint8_t*> PyBytes_AsString(out_bytes)
     sp = &src[0]
 
     if k == 1:
@@ -74,20 +102,21 @@ def byteshuffle_decode(data, int itemsize, Py_ssize_t n_elements) -> bytes:
         with nogil:
             for i in range(n):
                 dp[i] = sp[i]
-        return out
-
-    if k == 2:
+    elif k == 2:
         # Hot path for uint16 / int16. Two tight passes over memory in
         # the natural read order; the writes touch alternating positions.
         with nogil:
             for i in range(n):
                 dp[2 * i] = sp[i]
                 dp[2 * i + 1] = sp[n + i]
-        return out
+    else:
+        # General case: k byte-planes.
+        with nogil:
+            for b in range(k):
+                for i in range(n):
+                    dp[i * k + b] = sp[b * n + i]
 
-    # General case: k byte-planes.
-    with nogil:
-        for b in range(k):
-            for i in range(n):
-                dp[i * k + b] = sp[b * n + i]
-    return out
+    if out is not None and not isinstance(out, int):
+        del out_view
+        return out[:total]
+    return out_bytes

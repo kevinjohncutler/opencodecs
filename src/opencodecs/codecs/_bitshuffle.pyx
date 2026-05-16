@@ -113,15 +113,24 @@ def encode(data, *, itemsize: int = 1, blocksize: int = 0) -> bytes:
     return out
 
 
-def decode(data, *, itemsize: int = 1, blocksize: int = 0) -> bytes:
-    """Reverse a bitshuffle. Output has same length as input."""
+def decode(data, *, itemsize: int = 1, blocksize: int = 0, out=None):
+    """Reverse a bitshuffle. Output has same length as input.
+
+    Parameters
+    ----------
+    out : int | bytearray | memoryview | None, optional
+        See ``_zstd.decode`` for the full ``out=`` contract. Bitshuffle
+        output size equals input size, so any buffer must be at least
+        that big.
+    """
     cdef:
         const uint8_t[::1] src
+        uint8_t[::1] out_view             # writable view of caller buffer
         Py_ssize_t srcsize
         size_t elem_size
         size_t block_size
         size_t nelem
-        bytes out
+        bytes out_bytes
         void* dst_ptr
         int64_t ret
 
@@ -133,7 +142,9 @@ def decode(data, *, itemsize: int = 1, blocksize: int = 0) -> bytes:
         src = bytes(data)
     srcsize = src.shape[0]
     if srcsize == 0:
-        return b''
+        if out is None or isinstance(out, int):
+            return b''
+        return out[:0]
     if srcsize % itemsize != 0:
         raise ValueError(
             f'input size {srcsize} is not a multiple of itemsize {itemsize}'
@@ -143,9 +154,38 @@ def decode(data, *, itemsize: int = 1, blocksize: int = 0) -> bytes:
     block_size = <size_t> max(int(blocksize), 0)
     nelem = <size_t> (srcsize // itemsize)
 
-    out = PyBytes_FromStringAndSize(NULL, srcsize)
-    dst_ptr = <void*> PyBytes_AsString(out)
+    # ----- caller-supplied writable buffer (zero-alloc path) -----
+    if out is not None and not isinstance(out, int):
+        try:
+            out_view = out
+        except (TypeError, ValueError, BufferError) as e:
+            raise TypeError(
+                f"bitshuffle decode: out= must be int or writable buffer, "
+                f"got {type(out).__name__}"
+            ) from e
+        if out_view.shape[0] < srcsize:
+            raise ValueError(
+                f"bitshuffle decode: out= buffer is {out_view.shape[0]} "
+                f"bytes but output is {srcsize} bytes")
+        dst_ptr = <void*> &out_view[0]
+        with nogil:
+            ret = bshuf_bitunshuffle(
+                <const void*> &src[0], dst_ptr,
+                nelem, elem_size, block_size,
+            )
+        if ret < 0:
+            raise _err('bshuf_bitunshuffle', ret)
+        del out_view
+        return out[:srcsize]
 
+    # ----- fresh bytes allocation -----
+    if isinstance(out, int):
+        if out < srcsize:
+            raise ValueError(
+                f"bitshuffle decode: out=int({out}) is less than the "
+                f"required {srcsize} bytes")
+    out_bytes = PyBytes_FromStringAndSize(NULL, srcsize)
+    dst_ptr = <void*> PyBytes_AsString(out_bytes)
     with nogil:
         ret = bshuf_bitunshuffle(
             <const void*> &src[0], dst_ptr,
@@ -153,7 +193,7 @@ def decode(data, *, itemsize: int = 1, blocksize: int = 0) -> bytes:
         )
     if ret < 0:
         raise _err('bshuf_bitunshuffle', ret)
-    return out
+    return out_bytes
 
 
 def default_blocksize(itemsize: int) -> int:
