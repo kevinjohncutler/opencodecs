@@ -156,7 +156,7 @@ def encode(data, *, level: int | None = None,
         tjDestroy(handle)
 
 
-def decode(data) -> np.ndarray:
+def decode(data, *, out=None) -> np.ndarray:
     """Decode JPEG bytes into a uint8 array.
 
     Decode is standard JPEG — the output is identical regardless of
@@ -171,9 +171,10 @@ def decode(data) -> np.ndarray:
         int width, height, subsamp, colorspace
         int pf
         int channels
-        cnp.ndarray out
+        cnp.ndarray out_arr
         cnp.npy_intp shape[3]
         int ndim
+        tuple expected_shape
 
     if isinstance(data, (bytes, bytearray)):
         src = data
@@ -198,24 +199,43 @@ def decode(data) -> np.ndarray:
             pf = TJPF_GRAY
             channels = 1
             ndim = 2
+            expected_shape = (height, width)
         else:
             pf = TJPF_RGB
             channels = 3
             ndim = 3
             shape[2] = 3
+            expected_shape = (height, width, 3)
 
         shape[0] = height
         shape[1] = width
-        out = cnp.PyArray_EMPTY(ndim, shape, cnp.NPY_UINT8, 0)
+        if out is not None:
+            if not isinstance(out, np.ndarray):
+                raise TypeError(
+                    f"mozjpeg decode: out= must be an ndarray, "
+                    f"got {type(out).__name__}")
+            if out.shape != expected_shape:
+                raise ValueError(
+                    f"mozjpeg decode: out= shape {out.shape} does not match "
+                    f"expected {expected_shape}")
+            if out.dtype != np.uint8:
+                raise ValueError(
+                    f"mozjpeg decode: out= dtype must be uint8, "
+                    f"got {out.dtype}")
+            if not out.flags['C_CONTIGUOUS']:
+                raise ValueError("mozjpeg decode: out= must be C-contiguous")
+            out_arr = out
+        else:
+            out_arr = cnp.PyArray_EMPTY(ndim, shape, cnp.NPY_UINT8, 0)
         rc = tjDecompress2(
             handle, &src[0], srcsize,
-            <unsigned char*> cnp.PyArray_DATA(out),
+            <unsigned char*> cnp.PyArray_DATA(out_arr),
             width, width * channels, height, pf, 0,
         )
         if rc < 0:
             err = tjGetErrorStr2(handle).decode('ascii', errors='replace')
             raise MozJpegError(f'tjDecompress2: {err}')
-        return out
+        return out_arr
     finally:
         tjDestroy(handle)
 
