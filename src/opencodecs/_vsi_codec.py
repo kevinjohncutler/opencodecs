@@ -69,11 +69,12 @@ class VsiCodec(Codec):
         with self.open(src, **opts) as reader:
             return reader.read()
 
-    def open(self, src: Any, *, mode: str = "auto",
-             **opts) -> Reader:
+    def open(self, src: Any, *, backend: str = "auto",
+             mode: str | None = None, **opts) -> Reader:
         """Open a VSI for reading.
 
-        ``mode``:
+        ``backend`` (named ``mode`` in older callers — see compat note
+        below):
           * ``"auto"`` (default): if a sibling ``_NAME_/stackN/frame_t.ets``
             tree exists, decode the full-resolution stack natively.
             Otherwise (or for the second IFD of the index), return
@@ -81,9 +82,17 @@ class VsiCodec(Codec):
           * ``"thumbnail"``: always return the TIFF thumbnail.
           * ``"ets"``: always decode the .ets stack(s); fails when
             no companion is present.
+
+        Both ``backend`` and ``mode`` accept the same three values;
+        ``backend`` is the cross-codec kwarg name (matches
+        ``Nd2Codec.open`` / ``LifCodec.open`` / ``OibCodec.open``) and
+        is the documented form. ``mode`` is kept as a deprecated alias
+        for back-compat with the earlier VSI-only API.
         """
+        if mode is not None:
+            backend = mode
         from ._tiff_codec import TiffStream
-        if mode == "thumbnail":
+        if backend == "thumbnail":
             return TiffStream(src, **opts)
         if not isinstance(src, (str, Path)):
             # Bytes / file-like don't have a sibling .ets path
@@ -97,7 +106,7 @@ class VsiCodec(Codec):
                 if sd.is_dir():
                     ets_files.extend(sorted(sd.glob("frame_t_*.ets")))
         if not ets_files:
-            if mode == "ets":
+            if backend == "ets":
                 raise FileNotFoundError(
                     f"VSI: no .ets companion found at {companion}")
             return TiffStream(src, **opts)
