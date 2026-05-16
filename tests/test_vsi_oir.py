@@ -68,12 +68,21 @@ def test_vsi_full_native_decode():
 
 @pytest.mark.skipif(not VSI_SAMPLE.exists(), reason=_HINT)
 def test_vsi_thumbnail_mode():
-    """mode='thumbnail' returns the TIFF index thumbnail rather
-    than the .ets stack."""
+    """backend='thumbnail' returns the TIFF index thumbnail rather
+    than the .ets stack.
+
+    Covers both the documented ``backend=`` kwarg and the legacy
+    ``mode=`` alias kept for back-compat — both must reach the same
+    thumbnail path."""
+    expected_shape = (216, 260, 3)
+    with oc.get_codec("vsi").open(str(VSI_SAMPLE), backend="thumbnail") as r:
+        arr_backend = r.read()
     with oc.get_codec("vsi").open(str(VSI_SAMPLE), mode="thumbnail") as r:
-        arr = r.read()
-    assert arr.shape == (216, 260, 3)
-    assert arr.dtype == np.uint8
+        arr_mode = r.read()
+    assert arr_backend.shape == expected_shape
+    assert arr_mode.shape == expected_shape
+    assert arr_backend.dtype == np.uint8
+    np.testing.assert_array_equal(arr_backend, arr_mode)
 
 
 @pytest.mark.skipif(
