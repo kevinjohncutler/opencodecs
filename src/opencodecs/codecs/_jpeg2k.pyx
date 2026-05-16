@@ -128,7 +128,7 @@ cdef OPJ_BOOL _seek_write_cb(OPJ_OFF_T p_nb_bytes, void* p_user_data) noexcept n
 # ----- Public API -----
 
 
-def decode(data, *, numthreads: int | None = None) -> np.ndarray:
+def decode(data, *, numthreads: int | None = None, out=None) -> np.ndarray:
     """Decode JPEG-2000 (JP2 or J2K codestream) bytes to a numpy array.
 
     Parameters
@@ -138,6 +138,11 @@ def decode(data, *, numthreads: int | None = None) -> np.ndarray:
         defaults to ``opj_get_num_cpus() / 2`` (matches imagecodecs).
         ``0`` or ``1`` forces single-threaded. Typical 2-4× speedup on
         tiled / large-precinct JP2s.
+    out : np.ndarray | None, optional
+        Preallocated output ndarray. OpenJPEG decodes into its own
+        opj_image_t component planes; out= just provides the
+        destination of the final interleave/copy step. See
+        ``_png.decode`` for the full contract.
     """
     cdef:
         const uint8_t[::1] src
@@ -150,7 +155,7 @@ def decode(data, *, numthreads: int | None = None) -> np.ndarray:
         OPJ_BOOL ok
         int codec_format
         int _opj_n
-        cnp.ndarray out
+        cnp.ndarray result
 
     if isinstance(data, (bytes, bytearray)):
         src = data
@@ -210,8 +215,8 @@ def decode(data, *, numthreads: int | None = None) -> np.ndarray:
             raise Jpeg2kError('opj_decode failed')
         opj_end_decompress(codec, stream)
 
-        out = _image_to_ndarray(image)
-        return out
+        result = _image_to_ndarray(image, out)
+        return result
     finally:
         if image != NULL:
             opj_image_destroy(image)
@@ -220,8 +225,12 @@ def decode(data, *, numthreads: int | None = None) -> np.ndarray:
         opj_stream_destroy(stream)
 
 
-cdef cnp.ndarray _image_to_ndarray(opj_image_t* image):
-    """Copy openjpeg image planes into an interleaved numpy array."""
+cdef cnp.ndarray _image_to_ndarray(opj_image_t* image, object out):
+    """Copy openjpeg image planes into an interleaved numpy array.
+
+    ``out`` is the caller's preallocated ndarray (or None); see the
+    public ``decode`` for the full out= contract.
+    """
     cdef:
         OPJ_UINT32 numcomps = image.numcomps
         OPJ_UINT32 width
@@ -229,10 +238,12 @@ cdef cnp.ndarray _image_to_ndarray(opj_image_t* image):
         OPJ_UINT32 prec
         OPJ_UINT32 c, i, n_pixels
         OPJ_INT32* comp_data
-        cnp.ndarray out
+        cnp.ndarray out_arr
         cnp.npy_intp shape[3]
         int ndim
         int dtype_num
+        tuple expected_shape
+        object expected_dtype
 
     if numcomps == 0:
         raise Jpeg2kError('image has 0 components')
@@ -260,16 +271,37 @@ cdef cnp.ndarray _image_to_ndarray(opj_image_t* image):
 
     if numcomps == 1:
         ndim = 2
+        expected_shape = (int(height), int(width))
     else:
         ndim = 3
         shape[2] = numcomps
+        expected_shape = (int(height), int(width), int(numcomps))
     shape[0] = height
     shape[1] = width
-    out = cnp.PyArray_EMPTY(ndim, shape, dtype_num, 0)
+
+    expected_dtype = np.uint8 if dtype_num == cnp.NPY_UINT8 else np.uint16
+    if out is not None:
+        if not isinstance(out, np.ndarray):
+            raise Jpeg2kError(
+                f"jpeg2k decode: out= must be an ndarray, "
+                f"got {type(out).__name__}")
+        if out.shape != expected_shape:
+            raise Jpeg2kError(
+                f"jpeg2k decode: out= shape {out.shape} does not match "
+                f"expected {expected_shape}")
+        if out.dtype != expected_dtype:
+            raise Jpeg2kError(
+                f"jpeg2k decode: out= dtype {out.dtype} does not match "
+                f"expected {np.dtype(expected_dtype)}")
+        if not out.flags['C_CONTIGUOUS']:
+            raise Jpeg2kError("jpeg2k decode: out= must be C-contiguous")
+        out_arr = out
+    else:
+        out_arr = cnp.PyArray_EMPTY(ndim, shape, dtype_num, 0)
 
     n_pixels = width * height
-    cdef uint8_t* out8 = <uint8_t*> cnp.PyArray_DATA(out)
-    cdef unsigned short* out16 = <unsigned short*> cnp.PyArray_DATA(out)
+    cdef uint8_t* out8 = <uint8_t*> cnp.PyArray_DATA(out_arr)
+    cdef unsigned short* out16 = <unsigned short*> cnp.PyArray_DATA(out_arr)
     cdef OPJ_INT32 v
     cdef int sgnd
     cdef OPJ_UINT32 max_val = (<OPJ_UINT32> 1 << prec) - 1 if prec < 32 else 0xFFFFFFFF
@@ -295,7 +327,7 @@ cdef cnp.ndarray _image_to_ndarray(opj_image_t* image):
                 if v < 0: v = 0
                 if v > <OPJ_INT32> max_val: v = <OPJ_INT32> max_val
                 out16[i * numcomps + c] = <unsigned short> v
-    return out
+    return out_arr
 
 
 def encode(data, *, level: int | None = None,

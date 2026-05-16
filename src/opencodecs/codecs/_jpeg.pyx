@@ -138,8 +138,13 @@ def encode(data, *, level: int | None = None,
         tj3Destroy(handle)
 
 
-def decode(data) -> np.ndarray:
-    """Decode JPEG bytes into a uint8 array."""
+def decode(data, *, out=None) -> np.ndarray:
+    """Decode JPEG bytes into a uint8 array.
+
+    ``out=`` is a preallocated ndarray. libjpeg-turbo's tj3Decompress8
+    writes directly into the caller's buffer — true zero-alloc.
+    See ``_png.decode`` for the full contract.
+    """
     cdef:
         const uint8_t[::1] src
         size_t srcsize
@@ -148,9 +153,10 @@ def decode(data) -> np.ndarray:
         int width, height
         int pf
         int channels
-        cnp.ndarray out
+        cnp.ndarray out_arr
         cnp.npy_intp shape[3]
         int ndim
+        tuple expected_shape
 
     if isinstance(data, (bytes, bytearray)):
         src = data
@@ -176,25 +182,43 @@ def decode(data) -> np.ndarray:
             pf = TJPF_GRAY
             channels = 1
             ndim = 2
+            expected_shape = (height, width)
         else:
             pf = TJPF_RGB
             channels = 3
             ndim = 3
             shape[2] = 3
+            expected_shape = (height, width, 3)
 
         shape[0] = height
         shape[1] = width
-        out = cnp.PyArray_EMPTY(ndim, shape, cnp.NPY_UINT8, 0)
+        if out is not None:
+            if not isinstance(out, np.ndarray):
+                raise TypeError(
+                    f"jpeg decode: out= must be an ndarray, "
+                    f"got {type(out).__name__}")
+            if out.shape != expected_shape:
+                raise ValueError(
+                    f"jpeg decode: out= shape {out.shape} does not match "
+                    f"expected {expected_shape}")
+            if out.dtype != np.uint8:
+                raise ValueError(
+                    f"jpeg decode: out= dtype must be uint8, got {out.dtype}")
+            if not out.flags['C_CONTIGUOUS']:
+                raise ValueError("jpeg decode: out= must be C-contiguous")
+            out_arr = out
+        else:
+            out_arr = cnp.PyArray_EMPTY(ndim, shape, cnp.NPY_UINT8, 0)
         with nogil:
             rc = tj3Decompress8(
                 handle, &src[0], srcsize,
-                <unsigned char*> cnp.PyArray_DATA(out),
+                <unsigned char*> cnp.PyArray_DATA(out_arr),
                 width * channels, pf,
             )
         if rc < 0:
             raise JpegError(
                 f'tj3Decompress8: {tj3GetErrorStr(handle).decode()}')
-        return out
+        return out_arr
     finally:
         tj3Destroy(handle)
 
