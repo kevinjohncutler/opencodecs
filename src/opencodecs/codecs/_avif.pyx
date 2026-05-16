@@ -28,7 +28,9 @@ from avif cimport (
     avifDecoder, avifDecoderCreate, avifDecoderDestroy, avifDecoderReadMemory,
     avifRWData, avifRWDataFree,
     avifResultToString,
+    avifImageSetProfileICC,
 )
+from cpython.bytes cimport PyBytes_FromStringAndSize
 
 
 # CICP (Coding-Independent Code Points) values used by libavif. These match
@@ -63,7 +65,8 @@ class AvifError(RuntimeError):
 def encode(data, *, level: int | None = None,
            lossless: bool = False, speed: int = 6,
            color=None, bit_depth: int | None = None,
-           numthreads: int | None = None) -> bytes:
+           numthreads: int | None = None,
+           iccprofile: bytes | None = None) -> bytes:
     """Encode an array as AVIF.
 
     Parameters
@@ -222,6 +225,14 @@ def encode(data, *, level: int | None = None,
         else:
             encoder.maxThreads = int(numthreads)
 
+        if iccprofile is not None and len(iccprofile) > 0:
+            _icc_bytes = bytes(iccprofile)
+            avifImageSetProfileICC(
+                image,
+                <const uint8_t*> <const char*> _icc_bytes,
+                <size_t> len(_icc_bytes),
+            )
+
         with nogil:
             rc = avifEncoderWrite(encoder, image, &out_data)
         if rc != AVIF_RESULT_OK:
@@ -350,6 +361,44 @@ def decode(data, *, numthreads: int | None = None, out=None) -> np.ndarray:
             return out_arr
         finally:
             avifRGBImageFreePixels(&rgb)
+    finally:
+        avifImageDestroy(image)
+        avifDecoderDestroy(decoder)
+
+
+def read_icc_profile(data) -> bytes | None:
+    """Return the embedded ICC profile bytes from an AVIF, or ``None``."""
+    cdef:
+        const uint8_t[::1] src
+        size_t srcsize
+        avifDecoder* decoder = NULL
+        avifImage* image = NULL
+        int rc
+        bytes out
+
+    if isinstance(data, (bytes, bytearray)):
+        src = data
+    else:
+        src = bytes(data)
+    srcsize = <size_t> src.shape[0]
+    if srcsize < 12:
+        return None
+    decoder = avifDecoderCreate()
+    if decoder == NULL:
+        raise AvifError('avifDecoderCreate failed')
+    image = avifImageCreateEmpty()
+    if image == NULL:
+        avifDecoderDestroy(decoder)
+        raise AvifError('avifImageCreateEmpty failed')
+    try:
+        rc = avifDecoderReadMemory(decoder, image, &src[0], srcsize)
+        if rc != AVIF_RESULT_OK:
+            return None
+        if image.icc.data == NULL or image.icc.size == 0:
+            return None
+        out = PyBytes_FromStringAndSize(
+            <char*> image.icc.data, <Py_ssize_t> image.icc.size)
+        return out
     finally:
         avifImageDestroy(image)
         avifDecoderDestroy(decoder)

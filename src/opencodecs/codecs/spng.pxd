@@ -82,4 +82,16 @@ cdef extern from 'spng.h' nogil:
         spng_ctx* ctx, const void* img, size_t length, int fmt, int flags)
     int spng_get_ihdr(spng_ctx* ctx, spng_ihdr* ihdr)
     int spng_set_ihdr(spng_ctx* ctx, spng_ihdr* ihdr)
+
+    # ICC profile chunk (iCCP). The profile_name slot is a 79-char
+    # null-terminated identifier; libspng copies what the caller
+    # provides on set_iccp and returns the in-stream name on get_iccp.
+    ctypedef struct spng_iccp "struct spng_iccp":
+        char profile_name[80]
+        size_t profile_len
+        char* profile
+
+    int spng_get_iccp(spng_ctx* ctx, spng_iccp* iccp)
+    int spng_set_iccp(spng_ctx* ctx, spng_iccp* iccp)
+
     const char* spng_strerror(int err)

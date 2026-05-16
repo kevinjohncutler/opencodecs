@@ -11,9 +11,12 @@ from .core.codec import Codec
 from .core._io_helpers import read_src as _read_src, write_dest as _write_dest
 from .core._optional_backend import import_or_stubs
 
-_avif_encode, _avif_decode, _avif_check_signature, _HAVE_BACKEND = import_or_stubs(
+(
+    _avif_encode, _avif_decode, _avif_check_signature,
+    _avif_read_icc, _HAVE_BACKEND,
+) = import_or_stubs(
     "opencodecs.codecs._avif",
-    "encode", "decode", "check_signature",
+    "encode", "decode", "check_signature", "read_icc_profile",
 )
 
 
@@ -41,18 +44,28 @@ class AvifCodec(Codec):
                lossless: bool = False, speed: int = 6,
                color=None, bit_depth: int | None = None,
                numthreads: int | None = None,
+               iccprofile: bytes | None = None,
                **opts) -> bytes | None:
+        """Encode an array as AVIF.
+
+        ``iccprofile`` embeds an ICC color profile.
+        """
         if not isinstance(data, np.ndarray):
             data = np.asarray(data)
         encoded = _avif_encode(
             data, level=level, lossless=lossless, speed=speed,
             color=color, bit_depth=bit_depth, numthreads=numthreads,
+            iccprofile=iccprofile,
         )
         return _write_dest(encoded, dest)
 
     def decode(self, src: Any, *, numthreads: int | None = None,
-               **opts) -> np.ndarray:
-        return _avif_decode(_read_src(src), numthreads=numthreads)
+               out=None, **opts) -> np.ndarray:
+        return _avif_decode(_read_src(src), numthreads=numthreads, out=out)
+
+    def read_icc_profile(self, src: Any) -> bytes | None:
+        """Return the embedded ICC profile bytes, or ``None`` if absent."""
+        return _avif_read_icc(_read_src(src))
 
 
 
