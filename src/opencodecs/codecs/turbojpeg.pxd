@@ -62,3 +62,14 @@ cdef extern from 'turbojpeg.h' nogil:
         tjhandle handle, const unsigned char* jpegBuf, size_t jpegSize,
         unsigned char* dstBuf, int pitch, int pixelFormat,
     )
+
+    # ICC profile attach/retrieve. tj3SetICCProfile takes the bytes
+    # the next tj3Compress8 should embed as an APP2 marker; libjpeg-
+    # turbo copies them so the caller can free immediately.
+    # tj3GetICCProfile allocates with tj3Alloc — caller must tj3Free.
+    int tj3SetICCProfile(
+        tjhandle handle, const unsigned char* iccBuf, size_t iccSize,
+    )
+    int tj3GetICCProfile(
+        tjhandle handle, unsigned char** iccBuf, size_t* iccSize,
+    )

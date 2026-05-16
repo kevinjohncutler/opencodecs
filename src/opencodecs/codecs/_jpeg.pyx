@@ -22,12 +22,15 @@ from turbojpeg cimport (
     tjhandle, tj3Init, tj3Destroy, tj3GetErrorStr,
     tj3Set, tj3Get, tj3Free,
     tj3Compress8, tj3DecompressHeader, tj3Decompress8,
+    tj3SetICCProfile, tj3GetICCProfile,
     TJINIT_COMPRESS, TJINIT_DECOMPRESS,
     TJPF_GRAY, TJPF_RGB,
     TJSAMP_GRAY, TJSAMP_444, TJSAMP_422, TJSAMP_420, TJSAMP_440, TJSAMP_411,
     TJPARAM_QUALITY, TJPARAM_SUBSAMP,
     TJPARAM_JPEGWIDTH, TJPARAM_JPEGHEIGHT,
 )
+
+from cpython.bytes cimport PyBytes_FromStringAndSize
 
 cnp.import_array()
 
@@ -48,7 +51,8 @@ _SUBSAMP_MAP = {
 
 
 def encode(data, *, level: int | None = None,
-           subsampling: object = None) -> bytes:
+           subsampling: object = None,
+           iccprofile: bytes | None = None) -> bytes:
     """Encode a 2D or 3D uint8 array as JPEG.
 
     ``level`` is the JPEG quality 0-100 (default 75).
@@ -58,6 +62,10 @@ def encode(data, *, level: int | None = None,
     and encode/decode faster at a small chroma-resolution cost; "444"
     keeps full chroma. Pass ``"444"`` to match opencodecs's previous
     behavior. Ignored for grayscale input.
+
+    ``iccprofile`` embeds an ICC color profile in an APP2 marker.
+    libjpeg-turbo copies the bytes, so the caller can release them
+    immediately after encode returns.
     """
     cdef:
         cnp.ndarray arr
@@ -71,6 +79,7 @@ def encode(data, *, level: int | None = None,
         int height, width
         int pitch
         bytes out
+        const unsigned char[::1] icc_view
 
     if not isinstance(data, np.ndarray):
         arr = np.ascontiguousarray(data, dtype=np.uint8)
@@ -121,6 +130,13 @@ def encode(data, *, level: int | None = None,
         if tj3Set(handle, TJPARAM_SUBSAMP, subsamp) < 0:
             raise JpegError(
                 f'tj3Set(SUBSAMP): {tj3GetErrorStr(handle).decode()}')
+        if iccprofile is not None and len(iccprofile) > 0:
+            icc_view = iccprofile
+            rc = tj3SetICCProfile(
+                handle, &icc_view[0], <size_t> icc_view.shape[0])
+            if rc < 0:
+                raise JpegError(
+                    f'tj3SetICCProfile: {tj3GetErrorStr(handle).decode()}')
         with nogil:
             rc = tj3Compress8(
                 handle, <const unsigned char*> cnp.PyArray_DATA(arr),
@@ -219,6 +235,49 @@ def decode(data, *, out=None) -> np.ndarray:
             raise JpegError(
                 f'tj3Decompress8: {tj3GetErrorStr(handle).decode()}')
         return out_arr
+    finally:
+        tj3Destroy(handle)
+
+
+def read_icc_profile(data) -> bytes | None:
+    """Return the embedded ICC profile from a JPEG, or ``None``.
+
+    Parses just the header chain looking for an ICC APP2 marker;
+    doesn't touch pixel data.
+    """
+    cdef:
+        const uint8_t[::1] src
+        size_t srcsize
+        tjhandle handle = NULL
+        unsigned char* icc_ptr = NULL
+        size_t icc_size = 0
+        int rc
+        bytes out
+
+    if isinstance(data, (bytes, bytearray)):
+        src = data
+    else:
+        src = bytes(data)
+    srcsize = <size_t> src.shape[0]
+    if srcsize < 3:
+        return None
+    handle = tj3Init(TJINIT_DECOMPRESS)
+    if handle == NULL:
+        raise JpegError('tj3Init(DECOMPRESS) failed')
+    try:
+        rc = tj3DecompressHeader(handle, &src[0], srcsize)
+        if rc < 0:
+            # Not a parseable JPEG — no ICC by definition.
+            return None
+        rc = tj3GetICCProfile(handle, &icc_ptr, &icc_size)
+        if rc < 0 or icc_ptr == NULL or icc_size == 0:
+            return None
+        try:
+            out = PyBytes_FromStringAndSize(
+                <char*> icc_ptr, <Py_ssize_t> icc_size)
+            return out
+        finally:
+            tj3Free(icc_ptr)
     finally:
         tj3Destroy(handle)
 

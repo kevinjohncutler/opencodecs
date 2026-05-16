@@ -145,3 +145,16 @@ cdef extern from 'heif_shim.h' nogil:
     heif_error heif_context_write(
         heif_context*, heif_writer*, void* userdata,
     )
+
+    # Raw ICC profile attach / retrieve. The handle exposes the
+    # on-stream profile bytes via the size-then-data pair below.
+    # heif_image_set_raw_color_profile attaches a profile that will
+    # be emitted on the next heif_context_encode_image; the type
+    # 4CC is "prof" for ICC color profiles.
+    size_t heif_image_handle_get_raw_color_profile_size(
+        const heif_image_handle*)
+    heif_error heif_image_handle_get_raw_color_profile(
+        const heif_image_handle*, void* out_data)
+    heif_error heif_image_set_raw_color_profile(
+        heif_image*, const char* profile_type_fourcc,
+        const void* profile_data, size_t profile_size)

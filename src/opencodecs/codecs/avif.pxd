@@ -46,6 +46,10 @@ cdef extern from 'avif/avif.h' nogil:
         avifColorPrimaries colorPrimaries
         avifTransferCharacteristics transferCharacteristics
         avifMatrixCoefficients matrixCoefficients
+        # ICC profile attached to the image. libavif populates this
+        # field on decode if the file carries an ICC profile; on
+        # encode it's the buffer avifImageSetProfileICC manages.
+        avifRWData icc
 
     ctypedef struct avifRGBImage:
         uint32_t width
@@ -60,6 +64,12 @@ cdef extern from 'avif/avif.h' nogil:
                                uint32_t depth, avifPixelFormat yuvFormat)
     avifImage* avifImageCreateEmpty()
     void avifImageDestroy(avifImage* image)
+
+    # ICC profile attach. avifImageSetProfileICC copies the bytes
+    # into image->icc — caller can free immediately after the call.
+    # The retrieve side reads image->icc directly via the struct field.
+    void avifImageSetProfileICC(
+        avifImage* image, const uint8_t* icc, size_t iccSize)
 
     void avifRGBImageSetDefaults(avifRGBImage* rgb, const avifImage* image)
     avifResult avifRGBImageAllocatePixels(avifRGBImage* rgb)

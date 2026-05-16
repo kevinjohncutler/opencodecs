@@ -8,7 +8,7 @@
 
 """Native HEIF / HEIC codec via libheif (system; depends on libde265 / x265)."""
 
-from cpython.bytes cimport PyBytes_FromStringAndSize
+from cpython.bytes cimport PyBytes_FromStringAndSize, PyBytes_AsString
 from libc.stdlib cimport realloc, free
 from libc.string cimport memcpy
 from libc.stdint cimport uint8_t, uint16_t
@@ -48,6 +48,9 @@ from heif cimport (
     heif_nclx_color_profile_set_transfer_characteristics,
     heif_nclx_color_profile_set_matrix_coefficients,
     heif_image_set_nclx_color_profile,
+    heif_image_handle_get_raw_color_profile_size,
+    heif_image_handle_get_raw_color_profile,
+    heif_image_set_raw_color_profile,
 )
 
 cnp.import_array()
@@ -246,7 +249,8 @@ cdef heif_error _writer_cb(
 def encode(data, *, level: int | None = None,
            lossless: bool = False, color=None,
            bit_depth: int | None = None,
-           numthreads: int | None = None) -> bytes:
+           numthreads: int | None = None,
+           iccprofile: bytes | None = None) -> bytes:
     """Encode an array as HEIC.
 
     Parameters
@@ -428,6 +432,23 @@ def encode(data, *, level: int | None = None,
                 raise HeifError(
                     f'heif_image_set_nclx_color_profile: {err.message.decode()}')
 
+        # Attach raw ICC profile if the caller supplied one. ICC and
+        # NCLX can coexist on a HEIF (NCLX describes the working color
+        # space; ICC overrides for downstream renderers) but in
+        # practice most consumers honour whichever was set last, so
+        # ICC after NCLX is the right order.
+        if iccprofile is not None and len(iccprofile) > 0:
+            _icc_bytes = bytes(iccprofile)
+            err = heif_image_set_raw_color_profile(
+                img, b'prof',
+                <const void*> <const char*> _icc_bytes,
+                <size_t> len(_icc_bytes),
+            )
+            if err.code != 0:
+                raise HeifError(
+                    f'heif_image_set_raw_color_profile: '
+                    f'{err.message.decode()}')
+
         plane = heif_image_get_plane(img, heif_channel_interleaved, &stride)
         if plane == NULL:
             raise HeifError('heif_image_get_plane returned NULL')
@@ -469,6 +490,56 @@ def encode(data, *, level: int | None = None,
             heif_image_release(img)
         if enc != NULL:
             heif_encoder_release(enc)
+        heif_context_free(ctx)
+
+
+def read_icc_profile(data) -> bytes | None:
+    """Return the embedded ICC profile bytes from a HEIF/HEIC, or ``None``.
+
+    Reads only the container + handle metadata; doesn't decode any
+    HEVC frames.
+    """
+    cdef:
+        const uint8_t[::1] src
+        size_t srcsize
+        heif_context* ctx = NULL
+        heif_image_handle* handle = NULL
+        heif_error err
+        size_t icc_size
+        bytes out_bytes
+
+    _ensure_init()
+    if isinstance(data, (bytes, bytearray)):
+        src = data
+    else:
+        src = bytes(data)
+    srcsize = <size_t> src.shape[0]
+    if srcsize < 12:
+        return None
+
+    ctx = heif_context_alloc()
+    if ctx == NULL:
+        raise HeifError('heif_context_alloc failed')
+    try:
+        err = heif_context_read_from_memory_without_copy(
+            ctx, &src[0], srcsize, NULL)
+        if err.code != 0:
+            return None
+        err = heif_context_get_primary_image_handle(ctx, &handle)
+        if err.code != 0:
+            return None
+        icc_size = heif_image_handle_get_raw_color_profile_size(handle)
+        if icc_size == 0:
+            return None
+        out_bytes = PyBytes_FromStringAndSize(NULL, <Py_ssize_t> icc_size)
+        err = heif_image_handle_get_raw_color_profile(
+            handle, <void*> PyBytes_AsString(out_bytes))
+        if err.code != 0:
+            return None
+        return out_bytes
+    finally:
+        if handle != NULL:
+            heif_image_handle_release(handle)
         heif_context_free(ctx)
 
 

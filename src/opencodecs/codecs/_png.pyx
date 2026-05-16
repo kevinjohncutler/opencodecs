@@ -42,6 +42,7 @@ from spng cimport (
     spng_set_image_limits, spng_set_chunk_limits, spng_set_option,
     spng_decoded_image_size, spng_decode_image, spng_encode_image,
     spng_ihdr, spng_get_ihdr, spng_set_ihdr,
+    spng_iccp, spng_get_iccp, spng_set_iccp,
     spng_strerror,
     SPNG_COLOR_TYPE_GRAYSCALE, SPNG_COLOR_TYPE_TRUECOLOR,
     SPNG_COLOR_TYPE_INDEXED, SPNG_COLOR_TYPE_GRAYSCALE_ALPHA,
@@ -201,6 +202,48 @@ def decode(data, *, out=None):
         spng_ctx_free(ctx)
 
 
+def read_icc_profile(data) -> bytes | None:
+    """Return the embedded ICC profile bytes from a PNG, or None.
+
+    Reads only the IHDR + iCCP chunks from the header — fast even for
+    large PNGs (libspng's chunk walker stops once iCCP has been seen
+    or a non-ancillary chunk forces decoding to start).
+    """
+    cdef:
+        const uint8_t[::1] src
+        size_t srcsize
+        spng_ctx* ctx = NULL
+        spng_iccp iccp
+        int rc
+
+    if isinstance(data, (bytes, bytearray)):
+        src = data
+    else:
+        src = bytes(data)
+    srcsize = <size_t> src.shape[0]
+    if srcsize < 8:
+        return None
+    ctx = spng_ctx_new(0)
+    if ctx == NULL:
+        raise PngError('spng_ctx_new failed')
+    try:
+        rc = spng_set_png_buffer(ctx, <const void*> &src[0], srcsize)
+        _check(rc, 'spng_set_png_buffer')
+        rc = spng_get_iccp(ctx, &iccp)
+        if rc != 0:
+            # No iCCP chunk (rc=SPNG_ECHUNKAVAIL) or other error;
+            # either way, no profile to return.
+            return None
+        if iccp.profile == NULL or iccp.profile_len == 0:
+            return None
+        # libspng owns the bytes; copy them out into a Python bytes
+        # before the ctx is destroyed.
+        return PyBytes_FromStringAndSize(
+            iccp.profile, <Py_ssize_t> iccp.profile_len)
+    finally:
+        spng_ctx_free(ctx)
+
+
 _FILTER_CHOICE_MAP = {
     # Friendly aliases for the SPNG_FILTER_CHOICE bitmask.
     "none":   SPNG_FILTER_CHOICE_NONE,
@@ -218,7 +261,9 @@ _FILTER_CHOICE_MAP = {
 
 def encode(data, *, level: int | None = None,
            filter_choice: object = "fast",
-           strategy: int | None = None) -> bytes:
+           strategy: int | None = None,
+           iccprofile: bytes | None = None,
+           iccprofile_name: str = "ICC profile") -> bytes:
     """Encode a numpy array as a PNG byte string.
 
     ``filter_choice`` controls which of the 5 PNG row filters libspng
@@ -252,6 +297,9 @@ def encode(data, *, level: int | None = None,
     cdef:
         spng_ctx* ctx = NULL
         spng_ihdr ihdr
+        spng_iccp iccp
+        bytes _icc_bytes_keep
+        bytes _icc_name_keep
         int rc
         int fmt
         size_t img_len
@@ -359,6 +407,28 @@ def encode(data, *, level: int | None = None,
             rc = spng_set_option(
                 ctx, SPNG_IMG_COMPRESSION_STRATEGY, int(strategy))
             _check(rc, 'spng_set_option(compression_strategy)')
+
+        # Embed iCCP chunk if the caller provided an ICC profile.
+        # libspng copies the bytes out of iccp.profile + the
+        # null-terminated name out of iccp.profile_name on
+        # spng_set_iccp, but we still hold _icc_bytes_keep alive for
+        # the duration of the call so the borrowed pointers stay
+        # valid even if Cython would otherwise GC them.
+        if iccprofile is not None:
+            _icc_bytes_keep = bytes(iccprofile)
+            # PNG iCCP profile-name field is up to 79 bytes ASCII.
+            _name = (iccprofile_name or "ICC profile")
+            _icc_name_keep = _name.encode("ascii", errors="replace")[:79]
+            # Zero the struct (Cython initialises but be explicit) and
+            # populate the fields libspng expects.
+            for i in range(80):
+                iccp.profile_name[i] = 0
+            for i in range(len(_icc_name_keep)):
+                iccp.profile_name[i] = _icc_name_keep[i]
+            iccp.profile_len = <size_t> len(_icc_bytes_keep)
+            iccp.profile = <char*> _icc_bytes_keep
+            rc = spng_set_iccp(ctx, &iccp)
+            _check(rc, 'spng_set_iccp')
 
         img_len = <size_t> arr.nbytes
         with nogil:
