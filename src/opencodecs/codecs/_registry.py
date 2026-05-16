@@ -314,6 +314,18 @@ register_codec(DicomRleCodec())
 
 
 # ---------------------------------------------------------------------------
+# cms — ICC color management transform (Little-CMS / liblcms2)
+# ---------------------------------------------------------------------------
+#
+# Registered unconditionally; the actual lcms2 library is loaded
+# lazily on first transform call, so import doesn't fail when the
+# library is absent.
+
+from .._cms_codec import CmsCodec
+register_codec(CmsCodec())
+
+
+# ---------------------------------------------------------------------------
 # GIF — giflib (libgif)
 # ---------------------------------------------------------------------------
 
