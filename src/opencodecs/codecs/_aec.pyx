@@ -190,13 +190,23 @@ def encode(data, *,
     return header + payload[:out_len]
 
 
-def decode(data) -> bytes:
-    """Decode a self-describing AEC blob (header + libaec stream)."""
+def decode(data, *, out=None):
+    """Decode a self-describing AEC blob (header + libaec stream).
+
+    Parameters
+    ----------
+    out : int | bytearray | memoryview | None, optional
+        See ``_zstd.decode`` for the full ``out=`` contract. The AEC
+        header is self-describing so ``out=None`` already allocates the
+        exact uncompressed size; ``out=`` is mainly useful for reusing
+        a buffer across many tile decodes.
+    """
     cdef:
         const uint8_t[::1] src
+        uint8_t[::1] out_view             # writable view of caller buffer
         Py_ssize_t srcsize
         Py_ssize_t out_size
-        bytes out
+        bytes out_bytes
         unsigned char* out_ptr
         aec_stream strm
         int rc
@@ -211,7 +221,9 @@ def decode(data) -> bytes:
 
     orig_size, bps, block, rsi, flags = _unpack_header(bytes(src[:_HEADER_LEN]))
     if orig_size == 0:
-        return b''
+        if out is None or isinstance(out, int):
+            return b''
+        return out[:0]
     # The header is the first 16 bytes of the input; for a corrupt or
     # adversarial blob those bytes can encode an absurd ``orig_size``
     # (uint64 read of random bytes -> ~10**18). Forwarding that to
@@ -226,8 +238,29 @@ def decode(data) -> bytes:
         )
 
     out_size = <Py_ssize_t> orig_size
-    out = PyBytes_FromStringAndSize(NULL, out_size)
-    out_ptr = <unsigned char*> PyBytes_AsString(out)
+
+    # ----- caller-supplied writable buffer (zero-alloc path) -----
+    if out is not None and not isinstance(out, int):
+        try:
+            out_view = out
+        except (TypeError, ValueError, BufferError) as e:
+            raise TypeError(
+                f"aec decode: out= must be int or writable buffer, "
+                f"got {type(out).__name__}"
+            ) from e
+        if out_view.shape[0] < out_size:
+            raise AecError(
+                f"aec decode: out= buffer is {out_view.shape[0]} bytes "
+                f"but the AEC header declares {out_size} bytes")
+        out_ptr = <unsigned char*> &out_view[0]
+    else:
+        if isinstance(out, int):
+            if out < out_size:
+                raise AecError(
+                    f"aec decode: out=int({out}) is less than the AEC "
+                    f"header's declared {out_size} bytes")
+        out_bytes = PyBytes_FromStringAndSize(NULL, out_size)
+        out_ptr = <unsigned char*> PyBytes_AsString(out_bytes)
 
     strm.next_in = <const unsigned char*> &src[_HEADER_LEN]
     strm.avail_in = <size_t> (srcsize - _HEADER_LEN)
@@ -251,7 +284,10 @@ def decode(data) -> bytes:
             f"aec_buffer_decode produced {strm.total_out} bytes, "
             f"expected {out_size}"
         )
-    return out
+    if out is not None and not isinstance(out, int):
+        del out_view
+        return out[:out_size]
+    return out_bytes
 
 
 def check_signature(data) -> bool:
