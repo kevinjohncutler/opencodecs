@@ -289,6 +289,31 @@ register_codec(PackintsCodec())
 
 
 # ---------------------------------------------------------------------------
+# bcn — BC1-7 GPU texture decoder (dispatcher around _bcdec)
+# ---------------------------------------------------------------------------
+
+if "opencodecs.codecs._bcdec" in sys.modules:
+    from .._bcn_codec import BcnCodec
+    register_codec(BcnCodec())
+
+
+# ---------------------------------------------------------------------------
+# rcomp — Rice compression (FITS RICE_1)
+# ---------------------------------------------------------------------------
+
+from .._rcomp_codec import RcompCodec
+register_codec(RcompCodec())
+
+
+# ---------------------------------------------------------------------------
+# dicomrle — DICOM RLE Image Compression (PS 3.5 §G)
+# ---------------------------------------------------------------------------
+
+from .._dicomrle_codec import DicomRleCodec
+register_codec(DicomRleCodec())
+
+
+# ---------------------------------------------------------------------------
 # GIF — giflib (libgif)
 # ---------------------------------------------------------------------------
 
