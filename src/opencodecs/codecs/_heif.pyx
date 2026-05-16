@@ -67,7 +67,7 @@ cdef _ensure_init():
         _heif_initialized = True
 
 
-def decode(data, *, numthreads: int | None = None) -> np.ndarray:
+def decode(data, *, numthreads: int | None = None, out=None) -> np.ndarray:
     """Decode HEIF/HEIC bytes to a numpy array.
 
     Returns uint8 for 8-bit HEIFs, uint16 for 10/12-bit HEIFs (values
@@ -81,6 +81,11 @@ def decode(data, *, numthreads: int | None = None) -> np.ndarray:
         leaves libheif's compile-time default (typically 4). ``0`` or
         ``1`` forces single-threaded. Larger values give near-linear
         speedup on 4K+ images.
+    out : np.ndarray | None, optional
+        Preallocated output ndarray. See ``_png.decode`` for the full
+        contract. libheif allocates its own RGB plane internally and
+        we copy out of it row-by-row; out= just lets the caller
+        provide the destination of that copy.
     """
     cdef:
         const uint8_t[::1] src
@@ -94,11 +99,13 @@ def decode(data, *, numthreads: int | None = None) -> np.ndarray:
         int dtype_bytes
         heif_chroma chroma
         const uint8_t* plane
-        cnp.ndarray out
+        cnp.ndarray out_arr
         cnp.npy_intp shape[3]
         int y
         int _heif_n
         size_t row_bytes_out
+        tuple expected_shape
+        object expected_dtype
 
     _ensure_init()
 
@@ -160,16 +167,35 @@ def decode(data, *, numthreads: int | None = None) -> np.ndarray:
         shape[0] = height
         shape[1] = width
         shape[2] = channels
-        if dtype_bytes == 1:
-            out = cnp.PyArray_EMPTY(3, shape, cnp.NPY_UINT8, 0)
+        expected_shape = (height, width, channels)
+        expected_dtype = np.uint8 if dtype_bytes == 1 else np.uint16
+
+        if out is not None:
+            if not isinstance(out, np.ndarray):
+                raise TypeError(
+                    f"heif decode: out= must be an ndarray, "
+                    f"got {type(out).__name__}")
+            if out.shape != expected_shape:
+                raise ValueError(
+                    f"heif decode: out= shape {out.shape} does not match "
+                    f"expected {expected_shape}")
+            if out.dtype != expected_dtype:
+                raise ValueError(
+                    f"heif decode: out= dtype {out.dtype} does not match "
+                    f"expected {np.dtype(expected_dtype)}")
+            if not out.flags['C_CONTIGUOUS']:
+                raise ValueError("heif decode: out= must be C-contiguous")
+            out_arr = out
+        elif dtype_bytes == 1:
+            out_arr = cnp.PyArray_EMPTY(3, shape, cnp.NPY_UINT8, 0)
         else:
-            out = cnp.PyArray_EMPTY(3, shape, cnp.NPY_UINT16, 0)
+            out_arr = cnp.PyArray_EMPTY(3, shape, cnp.NPY_UINT16, 0)
         row_bytes_out = <size_t>(width * channels * dtype_bytes)
         for y in range(height):
-            memcpy(<uint8_t*> cnp.PyArray_DATA(out) + y * row_bytes_out,
+            memcpy(<uint8_t*> cnp.PyArray_DATA(out_arr) + y * row_bytes_out,
                    plane + y * stride,
                    row_bytes_out)
-        return out
+        return out_arr
     finally:
         if img != NULL:
             heif_image_release(img)
