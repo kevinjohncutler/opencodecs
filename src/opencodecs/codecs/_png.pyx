@@ -68,8 +68,22 @@ cdef inline _check(int rc, str where):
         raise PngError(f'{where}: {spng_strerror(rc).decode()}')
 
 
-def decode(data) -> np.ndarray:
-    """Decode a PNG byte string to a numpy array."""
+def decode(data, *, out=None):
+    """Decode a PNG byte string to a numpy array.
+
+    Parameters
+    ----------
+    out : np.ndarray | None, optional
+        Preallocated output array. Matches imagecodecs's ``out=`` API.
+
+        * ``None`` (default): allocate a fresh array sized + typed
+          from the PNG header.
+        * ``np.ndarray``: decode in-place into the provided array.
+          Must be C-contiguous, the correct dtype (uint8 / uint16)
+          for the PNG bit depth, and the correct shape — matching
+          what the default path would have produced. Returns the
+          same array. Zero-alloc fast path for tile / page reuse.
+    """
     cdef:
         const uint8_t[::1] src
         size_t srcsize
@@ -78,7 +92,7 @@ def decode(data) -> np.ndarray:
         int rc
         int fmt
         size_t out_size
-        cnp.ndarray out
+        cnp.ndarray out_arr
         cnp.npy_intp shape[3]
         int ndim
         object dtype
@@ -139,20 +153,50 @@ def decode(data) -> np.ndarray:
 
         shape[0] = ihdr.height
         shape[1] = ihdr.width
-        out = cnp.PyArray_EMPTY(ndim, shape, cnp.NPY_UINT16 if dtype is np.uint16
-                                else cnp.NPY_UINT8, 0)
-        if out.nbytes != <Py_ssize_t> out_size:
+
+        if out is not None:
+            # Caller supplied a destination — validate it matches what
+            # the default path would have produced and decode in-place.
+            if not isinstance(out, np.ndarray):
+                raise TypeError(
+                    f"png decode: out= must be an ndarray, "
+                    f"got {type(out).__name__}")
+            expected_shape = (
+                (int(shape[0]), int(shape[1]))
+                if ndim == 2
+                else (int(shape[0]), int(shape[1]), int(shape[2]))
+            )
+            if out.shape != expected_shape:
+                raise ValueError(
+                    f"png decode: out= shape {out.shape} does not match "
+                    f"expected {expected_shape}")
+            if out.dtype != dtype:
+                raise ValueError(
+                    f"png decode: out= dtype {out.dtype} does not match "
+                    f"expected {np.dtype(dtype)}")
+            if not out.flags['C_CONTIGUOUS']:
+                raise ValueError(
+                    "png decode: out= must be C-contiguous")
+            out_arr = out
+        else:
+            out_arr = cnp.PyArray_EMPTY(
+                ndim, shape,
+                cnp.NPY_UINT16 if dtype is np.uint16 else cnp.NPY_UINT8,
+                0,
+            )
+
+        if out_arr.nbytes != <Py_ssize_t> out_size:
             raise PngError(
                 f'decoded image size mismatch: spng={out_size} '
-                f'numpy={out.nbytes}')
+                f'numpy={out_arr.nbytes}')
 
         with nogil:
             rc = spng_decode_image(
-                ctx, cnp.PyArray_DATA(out), out_size, fmt, 0,
+                ctx, cnp.PyArray_DATA(out_arr), out_size, fmt, 0,
             )
         _check(rc, 'spng_decode_image')
 
-        return out
+        return out_arr
     finally:
         spng_ctx_free(ctx)
 

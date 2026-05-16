@@ -89,8 +89,22 @@ def encode(data, *, srgb: bool = True) -> bytes:
     return out
 
 
-def decode(data) -> cnp.ndarray:
-    """Decode QOI bytes to a (H, W, C) uint8 ndarray (C is 3 or 4)."""
+def decode(data, *, out=None):
+    """Decode QOI bytes to a (H, W, C) uint8 ndarray (C is 3 or 4).
+
+    Parameters
+    ----------
+    out : np.ndarray | None, optional
+        Preallocated output array of shape (H, W, C) uint8 — must match
+        the dimensions in the QOI header. Returns the same array.
+        See ``_png.decode`` for the full ``out=`` contract.
+
+        QOI's reference decoder always allocates its own output buffer
+        (no API for caller-provided destinations), so when out= is
+        supplied we still pay the qoi-internal alloc and then memcpy
+        into the caller's buffer. The benefit is API parity + skipping
+        the *second* allocation that a plain decode() does.
+    """
     cdef:
         const uint8_t[::1] src
         qoi_desc desc
@@ -99,6 +113,7 @@ def decode(data) -> cnp.ndarray:
         cnp.ndarray dst
         void* dst_data
         size_t nbytes
+        tuple expected_shape
 
     if isinstance(data, (bytes, bytearray)):
         src = data
@@ -115,8 +130,24 @@ def decode(data) -> cnp.ndarray:
         raise QoiError('qoi_decode returned NULL (bad header / corrupt?)')
 
     try:
-        shape = (int(desc.height), int(desc.width), int(desc.channels))
-        dst = np.empty(shape, dtype=np.uint8)
+        expected_shape = (int(desc.height), int(desc.width), int(desc.channels))
+        if out is not None:
+            if not isinstance(out, np.ndarray):
+                raise TypeError(
+                    f"qoi decode: out= must be an ndarray, "
+                    f"got {type(out).__name__}")
+            if out.shape != expected_shape:
+                raise ValueError(
+                    f"qoi decode: out= shape {out.shape} does not match "
+                    f"expected {expected_shape}")
+            if out.dtype != np.uint8:
+                raise ValueError(
+                    f"qoi decode: out= dtype must be uint8, got {out.dtype}")
+            if not out.flags['C_CONTIGUOUS']:
+                raise ValueError("qoi decode: out= must be C-contiguous")
+            dst = out
+        else:
+            dst = np.empty(expected_shape, dtype=np.uint8)
         dst_data = <void*> dst.data
         nbytes = <size_t> dst.nbytes
         # Release GIL during the bulk copy — for a 12 MB RGB blob this

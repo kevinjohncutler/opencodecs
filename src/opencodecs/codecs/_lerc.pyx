@@ -165,8 +165,17 @@ def encode(arr, *, max_z_error=0.0) -> bytes:
     return out[:written]
 
 
-def decode(data) -> 'np.ndarray':
-    """Decode a LERC blob to an ndarray (shape and dtype reconstructed)."""
+def decode(data, *, out=None) -> 'np.ndarray':
+    """Decode a LERC blob to an ndarray (shape and dtype reconstructed).
+
+    Parameters
+    ----------
+    out : np.ndarray | None, optional
+        Preallocated output array. Must match the shape and dtype
+        encoded in the LERC blob — same contract as ``_png.decode``.
+        ``lerc_decode`` writes directly into the provided buffer
+        when out= is supplied (true zero-alloc fast path).
+    """
     cdef:
         const uint8_t[::1] src
         unsigned int blobsize
@@ -213,8 +222,25 @@ def decode(data) -> 'np.ndarray':
     else:
         shape = (n_rows, n_cols)
 
-    out = np.empty(shape, dtype=dtype)
-    cdef cnp.ndarray out_arr = out
+    cdef cnp.ndarray out_arr
+    if out is not None:
+        if not isinstance(out, np.ndarray):
+            raise TypeError(
+                f"lerc decode: out= must be an ndarray, "
+                f"got {type(out).__name__}")
+        if out.shape != shape:
+            raise ValueError(
+                f"lerc decode: out= shape {out.shape} does not match "
+                f"expected {shape}")
+        if out.dtype != dtype:
+            raise ValueError(
+                f"lerc decode: out= dtype {out.dtype} does not match "
+                f"expected {dtype}")
+        if not out.flags['C_CONTIGUOUS']:
+            raise ValueError("lerc decode: out= must be C-contiguous")
+        out_arr = out
+    else:
+        out_arr = np.empty(shape, dtype=dtype)
 
     # LERC blobs can carry validity masks (n_masks > 0). When present,
     # the decoder needs a destination buffer of n_cols*n_rows*n_masks
@@ -238,7 +264,7 @@ def decode(data) -> 'np.ndarray':
         )
     if rc != 0:
         raise _err('lerc_decode', rc)
-    return out
+    return out_arr
 
 
 def info(data) -> dict:
