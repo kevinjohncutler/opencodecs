@@ -147,8 +147,12 @@ def encode(arr,
     return out
 
 
-def decode(data) -> np.ndarray:
-    """Decode a b2nd cframe back to a fully-typed ndarray."""
+def decode(data, *, out=None) -> np.ndarray:
+    """Decode a b2nd cframe back to a fully-typed ndarray.
+
+    ``out=`` is a preallocated ndarray; oc_b2nd_decode writes directly
+    into the caller's buffer. See ``_png.decode`` for the full contract.
+    """
     cdef:
         const uint8_t[::1] src
         int8_t ndim = 0
@@ -188,9 +192,26 @@ def decode(data) -> np.ndarray:
     finally:
         oc_b2nd_release(handle)
 
-    out = np.empty(py_shape, dtype=dtype)
-    cdef cnp.ndarray out_arr = out
-    cdef int64_t out_size = <int64_t> out.nbytes
+    cdef cnp.ndarray out_arr
+    if out is not None:
+        if not isinstance(out, np.ndarray):
+            raise TypeError(
+                f"b2nd decode: out= must be an ndarray, "
+                f"got {type(out).__name__}")
+        if out.shape != py_shape:
+            raise ValueError(
+                f"b2nd decode: out= shape {out.shape} does not match "
+                f"expected {py_shape}")
+        if out.dtype != dtype:
+            raise ValueError(
+                f"b2nd decode: out= dtype {out.dtype} does not match "
+                f"expected {dtype}")
+        if not out.flags['C_CONTIGUOUS']:
+            raise ValueError("b2nd decode: out= must be C-contiguous")
+        out_arr = out
+    else:
+        out_arr = np.empty(py_shape, dtype=dtype)
+    cdef int64_t out_size = <int64_t> out_arr.nbytes
 
     with nogil:
         rc = oc_b2nd_decode(
@@ -199,7 +220,7 @@ def decode(data) -> np.ndarray:
         )
     if rc != 0:
         raise B2ndError(f"oc_b2nd_decode failed: blosc2 error {rc}")
-    return out
+    return out_arr
 
 
 def inspect(data) -> dict:
