@@ -251,6 +251,44 @@ register_codec(Bz2Codec())
 
 
 # ---------------------------------------------------------------------------
+# numpy — .npy-format passthrough (stdlib + numpy.save/load)
+# ---------------------------------------------------------------------------
+
+from .._numpy_codec import NumpyCodec
+register_codec(NumpyCodec())
+
+
+# ---------------------------------------------------------------------------
+# byteshuffle — element-byte-plane shuffle preprocessor
+# ---------------------------------------------------------------------------
+
+if "opencodecs.codecs._bytetools" in sys.modules:
+    from .._byteshuffle_codec import ByteshuffleCodec
+    register_codec(ByteshuffleCodec())
+
+
+# ---------------------------------------------------------------------------
+# delta / xor / floatpred — composable byte-level predictors
+# ---------------------------------------------------------------------------
+
+from .._predictor_codec import DeltaCodec, XorCodec, FloatpredCodec
+register_codec(DeltaCodec())
+register_codec(XorCodec())
+register_codec(FloatpredCodec())
+
+
+# ---------------------------------------------------------------------------
+# quantize / packints — lossy / bit-width filters
+# ---------------------------------------------------------------------------
+
+from .._quantize_codec import QuantizeCodec
+register_codec(QuantizeCodec())
+
+from .._packints_codec import PackintsCodec
+register_codec(PackintsCodec())
+
+
+# ---------------------------------------------------------------------------
 # GIF — giflib (libgif)
 # ---------------------------------------------------------------------------
 
