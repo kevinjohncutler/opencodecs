@@ -77,9 +77,33 @@ def _check_block_geometry(width: int, height: int, fmt: str) -> None:
         )
 
 
+cdef _resolve_out(out, tuple expected_shape, object expected_dtype, str fmt_name):
+    """Validate a caller-supplied ndarray or allocate a new one.
+
+    Matches the ``out=`` contract documented on ``_png.decode``.
+    """
+    if out is None:
+        return np.empty(expected_shape, dtype=expected_dtype)
+    if not isinstance(out, np.ndarray):
+        raise TypeError(
+            f"{fmt_name} decode: out= must be an ndarray, "
+            f"got {type(out).__name__}")
+    if out.shape != expected_shape:
+        raise ValueError(
+            f"{fmt_name} decode: out= shape {out.shape} does not match "
+            f"expected {expected_shape}")
+    if out.dtype != expected_dtype:
+        raise ValueError(
+            f"{fmt_name} decode: out= dtype {out.dtype} does not match "
+            f"expected {np.dtype(expected_dtype)}")
+    if not out.flags['C_CONTIGUOUS']:
+        raise ValueError(f"{fmt_name} decode: out= must be C-contiguous")
+    return out
+
+
 cdef _decode_rgba_blocks(
     const uint8_t* src, Py_ssize_t src_len, int width, int height,
-    int block_bytes, int fmt_id,
+    int block_bytes, int fmt_id, object out,
 ):
     """Decompress an array of BCn blocks into (H, W, 4) uint8 RGBA.
     fmt_id picks the block-decode function: 1=BC1, 2=BC2, 3=BC3, 7=BC7."""
@@ -92,12 +116,10 @@ cdef _decode_rgba_blocks(
             f"need {expected} for {width}x{height} (fmt id {fmt_id})"
         )
 
-    cdef cnp.npy_intp shape[3]
-    shape[0] = height
-    shape[1] = width
-    shape[2] = 4
-    cdef cnp.ndarray out = cnp.PyArray_EMPTY(3, shape, cnp.NPY_UINT8, 0)
-    cdef uint8_t* dst = <uint8_t*> cnp.PyArray_DATA(out)
+    fmt_name = f"BC{fmt_id}"
+    cdef cnp.ndarray out_arr = _resolve_out(
+        out, (height, width, 4), np.uint8, fmt_name)
+    cdef uint8_t* dst = <uint8_t*> cnp.PyArray_DATA(out_arr)
     cdef int pitch = width * 4   # bytes per row in destination
     cdef int by, bx
     cdef const uint8_t* block_p
@@ -116,47 +138,51 @@ cdef _decode_rgba_blocks(
                     bcdec_bc3(block_p, tile_p, pitch)
                 else:  # fmt_id == 7
                     bcdec_bc7(block_p, tile_p, pitch)
-    return out
+    return out_arr
 
 
-def decode_bc1(data, *, width: int, height: int) -> np.ndarray:
-    """Decode BC1 (DXT1) blocks → (H, W, 4) uint8 RGBA."""
+def decode_bc1(data, *, width: int, height: int, out=None) -> np.ndarray:
+    """Decode BC1 (DXT1) blocks → (H, W, 4) uint8 RGBA.
+
+    ``out=`` is a preallocated ``(H, W, 4) uint8`` ndarray; see
+    ``_png.decode`` for the full contract.
+    """
     cdef const uint8_t[::1] buf
     _check_block_geometry(width, height, "BC1")
     buf = data if isinstance(data, (bytes, bytearray)) else bytes(data)
     return _decode_rgba_blocks(&buf[0], buf.shape[0], width, height,
-                                BCDEC_BC1_BLOCK_SIZE, 1)
+                                BCDEC_BC1_BLOCK_SIZE, 1, out)
 
 
-def decode_bc2(data, *, width: int, height: int) -> np.ndarray:
+def decode_bc2(data, *, width: int, height: int, out=None) -> np.ndarray:
     """Decode BC2 (DXT3) blocks → (H, W, 4) uint8 RGBA."""
     cdef const uint8_t[::1] buf
     _check_block_geometry(width, height, "BC2")
     buf = data if isinstance(data, (bytes, bytearray)) else bytes(data)
     return _decode_rgba_blocks(&buf[0], buf.shape[0], width, height,
-                                BCDEC_BC2_BLOCK_SIZE, 2)
+                                BCDEC_BC2_BLOCK_SIZE, 2, out)
 
 
-def decode_bc3(data, *, width: int, height: int) -> np.ndarray:
+def decode_bc3(data, *, width: int, height: int, out=None) -> np.ndarray:
     """Decode BC3 (DXT5) blocks → (H, W, 4) uint8 RGBA."""
     cdef const uint8_t[::1] buf
     _check_block_geometry(width, height, "BC3")
     buf = data if isinstance(data, (bytes, bytearray)) else bytes(data)
     return _decode_rgba_blocks(&buf[0], buf.shape[0], width, height,
-                                BCDEC_BC3_BLOCK_SIZE, 3)
+                                BCDEC_BC3_BLOCK_SIZE, 3, out)
 
 
-def decode_bc7(data, *, width: int, height: int) -> np.ndarray:
+def decode_bc7(data, *, width: int, height: int, out=None) -> np.ndarray:
     """Decode BC7 blocks → (H, W, 4) uint8 RGBA."""
     cdef const uint8_t[::1] buf
     _check_block_geometry(width, height, "BC7")
     buf = data if isinstance(data, (bytes, bytearray)) else bytes(data)
     return _decode_rgba_blocks(&buf[0], buf.shape[0], width, height,
-                                BCDEC_BC7_BLOCK_SIZE, 7)
+                                BCDEC_BC7_BLOCK_SIZE, 7, out)
 
 
 def decode_bc4(data, *, width: int, height: int,
-                is_signed: bool = False) -> np.ndarray:
+                is_signed: bool = False, out=None) -> np.ndarray:
     """Decode BC4 (ATI1N) blocks → (H, W) uint8 (or int8 if signed)."""
     cdef const uint8_t[::1] buf
     cdef int is_signed_c
@@ -173,14 +199,9 @@ def decode_bc4(data, *, width: int, height: int,
         raise BcdecError(
             f"BC4 decode: input too short ({buf.shape[0]} < {expected})"
         )
-    cdef cnp.npy_intp shape2[2]
-    shape2[0] = height
-    shape2[1] = width
-    cdef cnp.ndarray out = cnp.PyArray_EMPTY(
-        2, shape2,
-        cnp.NPY_INT8 if is_signed else cnp.NPY_UINT8, 0,
-    )
-    cdef uint8_t* dst = <uint8_t*> cnp.PyArray_DATA(out)
+    cdef cnp.ndarray out_arr = _resolve_out(
+        out, (height, width), np.int8 if is_signed else np.uint8, "BC4")
+    cdef uint8_t* dst = <uint8_t*> cnp.PyArray_DATA(out_arr)
     cdef int pitch = width
     cdef int by, bx
     cdef const uint8_t* block_p
@@ -191,11 +212,11 @@ def decode_bc4(data, *, width: int, height: int,
                 block_p = &buf[(by * n_blocks_x + bx) * BCDEC_BC4_BLOCK_SIZE]
                 tile_p = dst + (by * 4) * pitch + (bx * 4)
                 bcdec_bc4(block_p, tile_p, pitch, is_signed_c)
-    return out
+    return out_arr
 
 
 def decode_bc5(data, *, width: int, height: int,
-                is_signed: bool = False) -> np.ndarray:
+                is_signed: bool = False, out=None) -> np.ndarray:
     """Decode BC5 (ATI2N) blocks → (H, W, 2) uint8 (or int8 if signed)."""
     cdef const uint8_t[::1] buf
     cdef int is_signed_c
@@ -212,15 +233,10 @@ def decode_bc5(data, *, width: int, height: int,
         raise BcdecError(
             f"BC5 decode: input too short ({buf.shape[0]} < {expected})"
         )
-    cdef cnp.npy_intp shape3[3]
-    shape3[0] = height
-    shape3[1] = width
-    shape3[2] = 2
-    cdef cnp.ndarray out = cnp.PyArray_EMPTY(
-        3, shape3,
-        cnp.NPY_INT8 if is_signed else cnp.NPY_UINT8, 0,
-    )
-    cdef uint8_t* dst = <uint8_t*> cnp.PyArray_DATA(out)
+    cdef cnp.ndarray out_arr = _resolve_out(
+        out, (height, width, 2),
+        np.int8 if is_signed else np.uint8, "BC5")
+    cdef uint8_t* dst = <uint8_t*> cnp.PyArray_DATA(out_arr)
     cdef int pitch = width * 2
     cdef int by, bx
     cdef const uint8_t* block_p
@@ -231,15 +247,19 @@ def decode_bc5(data, *, width: int, height: int,
                 block_p = &buf[(by * n_blocks_x + bx) * BCDEC_BC5_BLOCK_SIZE]
                 tile_p = dst + (by * 4) * pitch + (bx * 4) * 2
                 bcdec_bc5(block_p, tile_p, pitch, is_signed_c)
-    return out
+    return out_arr
 
 
 def decode_bc6h(data, *, width: int, height: int,
-                 is_signed: bool = False, format: str = "float") -> np.ndarray:
+                 is_signed: bool = False, format: str = "float",
+                 out=None) -> np.ndarray:
     """Decode BC6H (HDR) blocks → (H, W, 3).
 
     ``format='float'`` (default) returns float32 RGB; ``'half'`` returns
     float16 RGB. ``signed=True`` enables the signed BC6H variant.
+
+    ``out=`` is a preallocated ``(H, W, 3) float32`` (or ``float16`` if
+    ``format='half'``) ndarray.
     """
     cdef const uint8_t[::1] buf
     cdef int is_signed_c
@@ -257,12 +277,7 @@ def decode_bc6h(data, *, width: int, height: int,
             f"BC6H decode: input too short ({buf.shape[0]} < {expected})"
         )
 
-    cdef cnp.npy_intp shape3[3]
-    shape3[0] = height
-    shape3[1] = width
-    shape3[2] = 3
-
-    cdef cnp.ndarray out
+    cdef cnp.ndarray out_arr
     cdef int by, bx
     cdef const uint8_t* block_p
     cdef int pitch
@@ -273,7 +288,8 @@ def decode_bc6h(data, *, width: int, height: int,
     # bytes-per-row overshoots the destination by 2x (half) / 4x (float)
     # and writes past the numpy buffer on the final block row.
     if format == "half":
-        out = cnp.PyArray_EMPTY(3, shape3, cnp.NPY_FLOAT16, 0)
+        out_arr = _resolve_out(
+            out, (height, width, 3), np.float16, "BC6H[half]")
         pitch = width * 3
         with nogil:
             for by in range(n_blocks_y):
@@ -281,11 +297,12 @@ def decode_bc6h(data, *, width: int, height: int,
                     block_p = &buf[(by * n_blocks_x + bx) * BCDEC_BC6H_BLOCK_SIZE]
                     bcdec_bc6h_half(
                         block_p,
-                        (<uint16_t*> cnp.PyArray_DATA(out)) + (by * 4) * pitch + (bx * 4 * 3),
+                        (<uint16_t*> cnp.PyArray_DATA(out_arr)) + (by * 4) * pitch + (bx * 4 * 3),
                         pitch, is_signed_c,
                     )
     elif format == "float":
-        out = cnp.PyArray_EMPTY(3, shape3, cnp.NPY_FLOAT32, 0)
+        out_arr = _resolve_out(
+            out, (height, width, 3), np.float32, "BC6H[float]")
         pitch = width * 3
         with nogil:
             for by in range(n_blocks_y):
@@ -293,11 +310,11 @@ def decode_bc6h(data, *, width: int, height: int,
                     block_p = &buf[(by * n_blocks_x + bx) * BCDEC_BC6H_BLOCK_SIZE]
                     bcdec_bc6h_float(
                         block_p,
-                        (<float*> cnp.PyArray_DATA(out)) + (by * 4) * pitch + (bx * 4 * 3),
+                        (<float*> cnp.PyArray_DATA(out_arr)) + (by * 4) * pitch + (bx * 4 * 3),
                         pitch, is_signed_c,
                     )
     else:
         raise BcdecError(
             f"BC6H decode: format must be 'float' or 'half', got {format!r}"
         )
-    return out
+    return out_arr
