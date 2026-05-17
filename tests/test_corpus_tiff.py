@@ -52,17 +52,23 @@ def _filter_macos_resource_forks(paths):
 # Cross-validated against tifffile. The rest of the corpus is tested
 # separately for graceful failure.
 PICS_MUST_DECODE = [
-    "cramps.tif",     # 1-bit B&W, NONE (no, wait — it's 8-bit grayscale)
-    "jello.tif",      # palette
+    "cramps.tif",       # 8-bit grayscale, PACKBITS
+    "jello.tif",        # palette
     "jim___cg.tif",
     "jim___dg.tif",
     "jim___gg.tif",
+    "jim___ah.tif",     # bilevel (1-bit), NONE
     "ladoga.tif",
     "pc260001.tif",
-    "quad-jpeg.tif",  # JPEG-in-TIFF
-    "quad-lzw.tif",   # LSB-first late-change LZW — was a SEGV before
-                      # the late-change/LSB-first fix
+    "quad-jpeg.tif",    # JPEG-in-TIFF
+    "quad-lzw.tif",     # LSB-first late-change LZW — was a SEGV before
+                        # the late-change/LSB-first fix
     "strike.tif",
+    # Tier 5 session 2 additions (parser/decoder gaps closed):
+    "caspian.tif",      # PlanarConfig=Separate, ADOBE_DEFLATE, float64
+    "oxford.tif",       # PlanarConfig=Separate, LZW, uint8
+    "cramps-tile.tif",  # TileWidth+TileLength but strip-tagged (legacy)
+    "quad-tile.tif",    # ditto, LZW
 ]
 
 
@@ -75,13 +81,15 @@ def test_libtiff_pics_must_decode(name):
     path = PICS / name
     if not path.exists():
         pytest.skip(f"{name} missing from corpus")
-    arr = oc.get_codec("tiff").decode(str(path))
-    ref = tifffile.imread(str(path))
-    # tifffile may squeeze singleton dims; our decode preserves the
-    # (pages, H, W, C) shape. Squeeze both to compare content.
-    assert np.array_equal(np.squeeze(arr), np.squeeze(ref)), (
-        f"{name}: decoded data mismatch"
-    )
+    arr = np.squeeze(oc.get_codec("tiff").decode(str(path)))
+    ref = np.squeeze(tifffile.imread(str(path)))
+    # tifffile exposes PlanarConfig=Separate files as (C, H, W); our
+    # API normalizes everything to standard (H, W, C). Transpose ref
+    # to match when shapes disagree by exactly that permutation.
+    if arr.ndim == 3 and ref.ndim == 3 and arr.shape != ref.shape:
+        if arr.shape == ref.shape[1:] + (ref.shape[0],):
+            ref = np.transpose(ref, (1, 2, 0))
+    assert np.array_equal(arr, ref), f"{name}: decoded data mismatch"
 
 
 # ---------------------------------------------------------------------------
@@ -91,15 +99,14 @@ def test_libtiff_pics_must_decode(name):
 # These exercise features explicitly deferred or out of scope. They
 # must raise an exception cleanly, never segfault.
 PICS_KNOWN_UNSUPPORTED = {
-    "fax2d.tif":    "1-bit packed images (deferred)",
-    "g3test.tif":   "1-bit packed images (deferred)",
-    "jim___ah.tif": "1-bit packed images (deferred)",
-    "text.tif":     "4-bit images (deferred)",
-    "off_l16.tif":  "LogLuv compression (out of scope)",
-    "off_luv24.tif": "LogLuv compression (out of scope)",
-    "off_luv32.tif": "LogLuv compression (out of scope)",
-    "smallliz.tif": "Old-JPEG (compression=6) (out of scope)",
-    "zackthecat.tif": "Old-JPEG (compression=6) (out of scope)",
+    "fax2d.tif":    "CCITT Fax 3 (compression=3) — legacy, deferred",
+    "g3test.tif":   "CCITT Fax 3 (compression=3) — legacy, deferred",
+    "text.tif":     "Thunderscan + 4-bit images — legacy, out of scope",
+    "off_l16.tif":  "LogLuv compression (34676) — legacy, out of scope",
+    "off_luv24.tif": "LogLuv compression (34677) — legacy, out of scope",
+    "off_luv32.tif": "LogLuv compression (34676) — legacy, out of scope",
+    "smallliz.tif": "Old-JPEG (compression=6) — even tifffile fails",
+    "zackthecat.tif": "Old-JPEG (compression=6) — even tifffile fails",
 }
 
 
@@ -129,38 +136,16 @@ def test_libtiff_pics_known_unsupported_raises(name):
 # underlying parser is extended.
 PICS_KNOWN_BUGS = [
     pytest.param(
-        "caspian.tif", marks=pytest.mark.xfail(
-            reason="PlanarConfig=Separate not yet supported",
-            strict=False,
-        ),
-    ),
-    pytest.param(
-        "oxford.tif", marks=pytest.mark.xfail(
-            reason="PlanarConfig=Separate not yet supported",
-            strict=False,
-        ),
-    ),
-    pytest.param(
         "dscf0013.tif", marks=pytest.mark.xfail(
-            reason="real-camera TIFF with odd row-padding",
+            reason="real-camera TIFF with odd row-padding — even tifffile "
+                   "raises NotImplementedError on this one",
             strict=False,
         ),
     ),
     pytest.param(
         "ycbcr-cat.tif", marks=pytest.mark.xfail(
-            reason="YCbCr subsampling not yet supported",
-            strict=False,
-        ),
-    ),
-    pytest.param(
-        "cramps-tile.tif", marks=pytest.mark.xfail(
-            reason="tile-decode dispatch bug — TileOffsets tag handling",
-            strict=False,
-        ),
-    ),
-    pytest.param(
-        "quad-tile.tif", marks=pytest.mark.xfail(
-            reason="tile-decode dispatch bug — TileOffsets tag handling",
+            reason="LZW + YCbCr chroma subsampling — even tifffile "
+                   "raises NotImplementedError on this combination",
             strict=False,
         ),
     ),

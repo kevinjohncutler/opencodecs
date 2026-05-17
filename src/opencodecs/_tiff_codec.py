@@ -161,10 +161,10 @@ def _dtype_for(bits_per_sample: int, sample_format: int) -> np.dtype:
         return np.dtype(np.uint32)
     if bits_per_sample == 64:
         return np.dtype(np.uint64)
-    if bits_per_sample == 1:  # bilevel TIFFs — packed bits, deferred
-        raise NotImplementedError(
-            "TIFF: 1-bit images need packed-bit unpacking (deferred)"
-        )
+    if bits_per_sample == 1:
+        # Bilevel TIFFs — exposed as bool ndarray after row-aligned
+        # packed-bit unpacking happens in TiffPage.asarray().
+        return np.dtype(np.bool_)
     raise NotImplementedError(f"TIFF: unsupported bps={bits_per_sample}")
 
 
@@ -222,22 +222,51 @@ class TiffPage:
         jt = _tag(self.tags, TAG_JPEG_TABLES)
         self.jpeg_tables = bytes(jt) if isinstance(jt, (bytes, bytearray, memoryview)) else None
 
-        # Tile vs strip layout. A page is tiled iff TAG_TILE_WIDTH is set;
-        # otherwise it's striped (rows-per-strip blocks).
+        # Tile vs strip layout. Standard cases are easy: TileOffsets
+        # present → tiled, StripOffsets present → striped. Some legacy
+        # libtiff samples (quad-tile.tif, cramps-tile.tif) declare
+        # TileWidth+TileLength but store the actual tile data under
+        # StripOffsets/StripByteCounts — that's nonstandard but
+        # libtiff/tifffile handle it by treating the strips as tiles
+        # when their count matches the tile grid. Mirror that.
         tw = _tag(self.tags, TAG_TILE_WIDTH)
         tl = _tag(self.tags, TAG_TILE_LENGTH)
-        if tw is not None and tl is not None:
+        tile_offsets = _tag_seq(self.tags, TAG_TILE_OFFSETS)
+        strip_offsets = _tag_seq(self.tags, TAG_STRIP_OFFSETS)
+        if tw is not None and tl is not None and tile_offsets:
             self.is_tiled = True
             self.tile_width = int(tw)
             self.tile_height = int(tl)
-            self.offsets = _tag_seq(self.tags, TAG_TILE_OFFSETS)
+            self.offsets = tile_offsets
             self.byte_counts = _tag_seq(self.tags, TAG_TILE_BYTE_COUNTS)
+        elif tw is not None and tl is not None and strip_offsets:
+            # Legacy tile-as-strip layout. Confirm the count matches the
+            # tile grid before trusting it; otherwise fall through to
+            # treating the file as striped.
+            tw_i = int(tw)
+            tl_i = int(tl)
+            tiles_per_row = (self.width + tw_i - 1) // tw_i
+            tiles_per_col = (self.height + tl_i - 1) // tl_i
+            grid = tiles_per_row * tiles_per_col
+            if len(strip_offsets) == grid:
+                self.is_tiled = True
+                self.tile_width = tw_i
+                self.tile_height = tl_i
+                self.offsets = strip_offsets
+                self.byte_counts = _tag_seq(self.tags, TAG_STRIP_BYTE_COUNTS)
+            else:
+                self.is_tiled = False
+                self.tile_width = self.width
+                rps = _tag(self.tags, TAG_ROWS_PER_STRIP, self.height)
+                self.tile_height = int(rps)
+                self.offsets = strip_offsets
+                self.byte_counts = _tag_seq(self.tags, TAG_STRIP_BYTE_COUNTS)
         else:
             self.is_tiled = False
             self.tile_width = self.width
             rps = _tag(self.tags, TAG_ROWS_PER_STRIP, self.height)
             self.tile_height = int(rps)
-            self.offsets = _tag_seq(self.tags, TAG_STRIP_OFFSETS)
+            self.offsets = strip_offsets
             self.byte_counts = _tag_seq(self.tags, TAG_STRIP_BYTE_COUNTS)
 
         # tiles per row, total tiles
@@ -302,20 +331,32 @@ class TiffPage:
     # ----- decode -----
 
     def _expected_uncompressed_bytes(self) -> int:
-        """Bytes one decompressed tile/strip should produce."""
-        # Tiles store the FULL padded tile; strips store actual rows.
-        # We compute against the padded tile for tiles, against the
-        # nominal strip dimensions for strips. Either way it's the
-        # value the byte-stream codecs (deflate, zstd, lzw, packbits)
-        # are expected to expand to.
+        """Bytes one decompressed tile/strip should produce.
+
+        Tiles store the FULL padded tile; strips store actual rows.
+        Under PlanarConfiguration=2 each segment contains only ONE
+        channel's worth of data, so the samples_per_pixel factor
+        drops out of the expected size. For 1-bit images each row
+        is padded to a byte boundary (TIFF 6 spec)."""
         h = self.tile_height
         w = self.tile_width
-        return h * w * self.samples_per_pixel * self.dtype.itemsize
+        spp_per_segment = 1 if self.planar_config == 2 else self.samples_per_pixel
+        if self.bits_per_sample == 1:
+            row_bytes = (w + 7) // 8
+            return h * row_bytes * spp_per_segment
+        return h * w * spp_per_segment * self.dtype.itemsize
 
     def _bytes_to_array(self, raw_bytes) -> np.ndarray:
         """Interpret a flat byte buffer as our dtype, honouring file byte
         order. Used by the byte-stream codec paths (none / deflate /
-        zstd / lzw / packbits)."""
+        zstd / lzw / packbits).
+
+        Bilevel (bps=1) files are returned as raw uint8 packed bytes;
+        the caller is responsible for ``np.unpackbits`` to bool —
+        casting one bool per byte at this stage would lose 7/8 of the
+        image."""
+        if self.bits_per_sample == 1:
+            return np.frombuffer(raw_bytes, dtype=np.uint8)
         file_dtype = self.dtype.newbyteorder(self._stream._byte_order)
         arr = np.frombuffer(raw_bytes, dtype=file_dtype)
         if file_dtype.byteorder not in ("=", "|") and \
@@ -469,16 +510,21 @@ class TiffPage:
         )
 
     def _segment_shape(self, tx: int, ty: int) -> tuple:
-        """Pixel dimensions of segment (tx, ty) — last row/col may be cropped."""
+        """Pixel dimensions of segment (tx, ty) — last row/col may be cropped.
+
+        Under PlanarConfiguration=2 each segment carries one channel, so
+        the result is (h, w) regardless of samples_per_pixel."""
         h = min(self.tile_height, self.height - ty * self.tile_height)
         w = min(self.tile_width,  self.width  - tx * self.tile_width)
-        if self.samples_per_pixel == 1:
+        if self.samples_per_pixel == 1 or self.planar_config == 2:
             return (h, w)
         return (h, w, self.samples_per_pixel)
 
     def _padded_shape(self) -> tuple:
-        """Stored (padded) shape of one tile — tile_h × tile_w × samples."""
-        if self.samples_per_pixel == 1:
+        """Stored (padded) shape of one tile — tile_h × tile_w × samples.
+
+        Under PlanarConfiguration=2 each tile carries one channel."""
+        if self.samples_per_pixel == 1 or self.planar_config == 2:
             return (self.tile_height, self.tile_width)
         return (self.tile_height, self.tile_width, self.samples_per_pixel)
 
@@ -549,11 +595,15 @@ class TiffPage:
 
         # Fast path: single segment covers the whole image AND no
         # post-decode steps are needed. Skips np.empty + assignment.
+        # Bilevel (1-bit) and planar=2 layouts always need the general
+        # path because they require unpacking / plane re-assembly.
         if (len(self.offsets) == 1
                 and self.tile_height >= self.height
                 and (not self.is_tiled or self.tile_width >= self.width)
                 and is_byte_stream
-                and no_predictor):
+                and no_predictor
+                and self.bits_per_sample != 1
+                and self.planar_config != 2):
             offset = int(self.offsets[0])
             nbytes = int(self.byte_counts[0])
             raw = self._stream._read(offset, nbytes)
@@ -569,10 +619,14 @@ class TiffPage:
 
         # Fast path: uncompressed multi-strip with native byte order
         # and identity predictor — strips are row-contiguous, so we
-        # can memcpy straight into out's byte buffer.
+        # can memcpy straight into out's byte buffer. Bilevel
+        # (bps=1) and planar=2 layouts can't use this path: strips
+        # are packed bits / single-plane, not byte-image-rows.
         if (not self.is_tiled
                 and self.compression == CMP_NONE
                 and no_predictor
+                and self.bits_per_sample != 1
+                and self.planar_config != 2
                 and (self.dtype.itemsize == 1 or
                      (self._stream._byte_order in ("<", "=")
                       and self.dtype.byteorder in ("<", "=", "|")))):
@@ -583,6 +637,13 @@ class TiffPage:
         # place in out. Handles all compressions and predictors.
         if self.is_tiled:
             full_shape = self._padded_shape()
+
+        # Under PlanarConfiguration=2 (separate planes), segments are
+        # laid out plane-major: all of plane 0's strips/tiles first,
+        # then plane 1, etc. n_planes is the outer-loop count; for
+        # planar=1 (chunky) it's just 1.
+        n_planes = self.samples_per_pixel if self.planar_config == 2 else 1
+        segments_per_plane = len(self.offsets) // max(n_planes, 1)
 
         # Batched fetch path: when the data source advertises read_many
         # (HTTPDataSource / FileDataSource), pull every segment's bytes
@@ -598,58 +659,79 @@ class TiffPage:
             ]
             prefetched = read_many(ranges)
 
-        for ty in range(self.tiles_y):
-            for tx in range(self.tiles_x):
-                idx = ty * self.tiles_x + tx
-                if idx >= len(self.offsets):
-                    raise ValueError(
-                        f"TIFF: tile index {idx} out of range "
-                        f"(have {len(self.offsets)} offsets)"
-                    )
-                if prefetched is not None:
-                    raw = prefetched[idx]
-                else:
-                    offset = int(self.offsets[idx])
-                    nbytes = int(self.byte_counts[idx])
-                    raw = self._stream._read(offset, nbytes)
-                decoded = self._decode_segment(raw)
-                exp_shape = self._segment_shape(tx, ty)
-
-                if is_byte_stream:
-                    # decoded is flat; reshape to padded-or-strip shape.
-                    if self.is_tiled:
-                        tile = decoded.reshape(full_shape)
-                        if not no_predictor:
-                            tile = self._undo_predictor(tile)
-                        tile = tile[:exp_shape[0], :exp_shape[1]]
+        for plane in range(n_planes):
+            # In planar=2 mode we write each plane into out[..., plane];
+            # in chunky mode the loop runs once and writes the full 3D view.
+            plane_view = out[..., plane] if n_planes > 1 else out
+            for ty in range(self.tiles_y):
+                for tx in range(self.tiles_x):
+                    seg_idx = ty * self.tiles_x + tx
+                    idx = plane * segments_per_plane + seg_idx
+                    if idx >= len(self.offsets):
+                        raise ValueError(
+                            f"TIFF: tile index {idx} out of range "
+                            f"(have {len(self.offsets)} offsets)"
+                        )
+                    if prefetched is not None:
+                        raw = prefetched[idx]
                     else:
-                        if decoded.size != int(np.prod(exp_shape)):
-                            raise ValueError(
-                                f"TIFF: decoded strip ({decoded.size} elements)"
-                                f" does not match expected "
-                                f"({int(np.prod(exp_shape))}) for shape {exp_shape}"
-                            )
-                        tile = decoded.reshape(exp_shape)
-                        if not no_predictor:
-                            tile = self._undo_predictor(tile)
-                else:
-                    # Image-format codec — already-shaped ndarray.
-                    # TIFF predictors don't apply (these codecs do their
-                    # own prediction internally).
-                    tile = decoded
-                    # Some codecs (LERC) return shape (h, w) for single
-                    # samples; align with TIFF's expected shape.
-                    if tile.ndim == 2 and self.samples_per_pixel > 1:
-                        # Reshape the rare 2D-with-multi-channel case;
-                        # most image codecs return (h, w, channels).
-                        pass
-                    if tile.shape[:2] != exp_shape[:2]:
-                        # Tiled images: codec returned padded tile; crop.
-                        tile = tile[:exp_shape[0], :exp_shape[1]]
+                        offset = int(self.offsets[idx])
+                        nbytes = int(self.byte_counts[idx])
+                        raw = self._stream._read(offset, nbytes)
+                    decoded = self._decode_segment(raw)
+                    exp_shape = self._segment_shape(tx, ty)
 
-                y0 = ty * self.tile_height
-                x0 = tx * self.tile_width
-                out[y0:y0 + exp_shape[0], x0:x0 + exp_shape[1]] = tile
+                    if is_byte_stream:
+                        # decoded is flat; reshape to padded-or-strip shape.
+                        if self.bits_per_sample == 1:
+                            # Bilevel: decoded bytes are row-packed at 8
+                            # px / byte with row-end byte alignment.
+                            # Unpack to bool, then crop to exp_shape.
+                            seg_h = (exp_shape[0] if not self.is_tiled
+                                     else self.tile_height)
+                            seg_w = (exp_shape[1] if not self.is_tiled
+                                     else self.tile_width)
+                            row_bytes = (seg_w + 7) // 8
+                            packed = (
+                                np.asarray(decoded).view(np.uint8)
+                                .reshape(seg_h, row_bytes)
+                            )
+                            bits = np.unpackbits(packed, axis=1,
+                                                  bitorder="big")
+                            tile = bits[:, :seg_w].astype(np.bool_)
+                            if self.is_tiled:
+                                tile = tile[:exp_shape[0], :exp_shape[1]]
+                            # tifffile leaves the bool array in raw bit
+                            # order (no WhiteIsZero inversion) and lets
+                            # the caller interpret photometric.
+                            # Match that for interop.
+                        elif self.is_tiled:
+                            tile = decoded.reshape(full_shape)
+                            if not no_predictor:
+                                tile = self._undo_predictor(tile)
+                            tile = tile[:exp_shape[0], :exp_shape[1]]
+                        else:
+                            if decoded.size != int(np.prod(exp_shape)):
+                                raise ValueError(
+                                    f"TIFF: decoded strip ({decoded.size} elements)"
+                                    f" does not match expected "
+                                    f"({int(np.prod(exp_shape))}) for shape {exp_shape}"
+                                )
+                            tile = decoded.reshape(exp_shape)
+                            if not no_predictor:
+                                tile = self._undo_predictor(tile)
+                    else:
+                        # Image-format codec — already-shaped ndarray.
+                        # TIFF predictors don't apply (these codecs do their
+                        # own prediction internally).
+                        tile = decoded
+                        if tile.shape[:2] != exp_shape[:2]:
+                            # Tiled images: codec returned padded tile; crop.
+                            tile = tile[:exp_shape[0], :exp_shape[1]]
+
+                    y0 = ty * self.tile_height
+                    x0 = tx * self.tile_width
+                    plane_view[y0:y0 + exp_shape[0], x0:x0 + exp_shape[1]] = tile
         return out
 
 
