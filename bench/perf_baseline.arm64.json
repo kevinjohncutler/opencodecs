@@ -1,0 +1,92 @@
+{
+  "machine": "arm64",
+  "machine_full": "macOS-26.4.1-arm64-arm-64bit",
+  "python": "3.12.9",
+  "ratios": [
+    {
+      "key": "png/kodak_photo",
+      "encode_ratio": 0.30877088772298006,
+      "decode_ratio": 0.8717752532393007
+    },
+    {
+      "key": "qoi/kodak_photo",
+      "encode_ratio": 1.040785977928335,
+      "decode_ratio": 1.0309919318994722
+    },
+    {
+      "key": "jpegls/kodak_photo",
+      "encode_ratio": 1.0938011375104437,
+      "decode_ratio": 1.0211684048245218
+    },
+    {
+      "key": "jpeg2k/kodak_photo",
+      "encode_ratio": 0.24875054133812455,
+      "decode_ratio": 0.18243388421510318
+    },
+    {
+      "key": "jpeg/kodak_photo",
+      "encode_ratio": 0.6996985403634197,
+      "decode_ratio": 0.9982520633504351
+    },
+    {
+      "key": "webp/kodak_photo",
+      "encode_ratio": 0.16110615808403883,
+      "decode_ratio": 1.021361650750795
+    },
+    {
+      "key": "avif/kodak_photo",
+      "encode_ratio": 0.010883678652462115,
+      "decode_ratio": 1.6320030055638541
+    },
+    {
+      "key": "jxl/kodak_photo",
+      "encode_ratio": 0.07167191342884822,
+      "decode_ratio": 0.37962539319416644
+    },
+    {
+      "key": "deflate/kodak_bytes",
+      "encode_ratio": 0.9862175967438064,
+      "decode_ratio": 0.49925709642168997
+    },
+    {
+      "key": "zstd/kodak_bytes",
+      "encode_ratio": 1.0066037575011844,
+      "decode_ratio": 0.9005253738236823
+    },
+    {
+      "key": "brotli/kodak_bytes",
+      "encode_ratio": 196.83824800182177,
+      "decode_ratio": 1.0028491355285534
+    },
+    {
+      "key": "lzma/kodak_bytes",
+      "encode_ratio": 0.9355799291140786,
+      "decode_ratio": 1.0247802051244501
+    },
+    {
+      "key": "bz2/kodak_bytes",
+      "encode_ratio": 0.9967861547269843,
+      "decode_ratio": 0.9913040296795103
+    },
+    {
+      "key": "snappy/kodak_bytes",
+      "encode_ratio": 1.029955140401665,
+      "decode_ratio": 0.9751695874321149
+    },
+    {
+      "key": "lz4/kodak_bytes",
+      "encode_ratio": 1.0114133563494117,
+      "decode_ratio": 0.9902300366300366
+    },
+    {
+      "key": "zfp/smooth_f32_3d",
+      "encode_ratio": 1.1741900626601922,
+      "decode_ratio": 1.0514167824067964
+    },
+    {
+      "key": "blosc2/kodak_bytes",
+      "encode_ratio": 0.33170637077543336,
+      "decode_ratio": 0.9979233349305222
+    }
+  ]
+}
