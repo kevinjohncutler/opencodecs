@@ -147,18 +147,23 @@ git log for `2026-05-11` for the night's shipped commits.
 
 ## libspng filter_sum SIMD vectorization
 
-* **Status**: deferred. Bench-tracked PNG workloads
-  (`h2h_png_4mp_rgb`) are winning at 1.14x vs imagecodecs; the
-  filter-bound gap shows up only on off-bench workloads.
-* **What's measured** (2026-05-13, 4MP uint16 gradient = filter-
-  dominated; 8 MB raw, ~13 KB encoded):
+* **Status**: deferred. Real-world PNG-encode workloads now beat
+  imagecodecs (see numbers below) thanks to the libdeflate IDAT
+  fast path. The filter-bound gap shows up only on synthetic
+  filter-dominated workloads.
+* **What's measured** (2026-05-16 with libdeflate path active):
 
-  | filter setting       | opencodecs | imagecodecs |
-  |----------------------|----------:|----------:|
-  | `none` (no score)    |  11.4 ms  |  17 ms    |
-  | `up` (single, no score) |  28 ms  |  16 ms    |
-  | `fast` (NONE+SUB+UP) | 106 ms    |  33 ms    |
-  | `all` (5 filters)    | 154 ms    |  47 ms    |
+  | benchmark                | encode oc/ic | decode oc/ic |
+  |--------------------------|-------------:|-------------:|
+  | 4MP RGB u8 random        |    0.893×    |    0.593×    |
+  | 4MP RGB u16 random       |    0.903×    |    0.882×    |
+  | 1080p RGB u8 random      |    0.874×    |    0.603×    |
+  | Kodak01 RGB u8 (photo)   |    0.496×    |    0.868×    |
+  | 512×512 u16 gradient     |    1.732× ⬇  |    0.421×    |
+
+  The 512×512 u16 gradient case is the only encode regression —
+  it's filter-bound (input compresses 99.95%, so all the
+  wall-clock is in filter scoring, not deflate).
 
 * **Root cause**: libspng's `filter_sum` is a per-byte switch
   statement on each candidate filter. imagecodecs uses libpng,
@@ -170,41 +175,32 @@ git log for `2026-05-11` for the night's shipped commits.
   2. `#ifdef SPNG_USE_SIMD_FILTER_SUM` block in
      `get_best_filter` (spng.c line ~1711) dispatches to the
      SIMD variants per architecture.
-  3. Bench until 4MP uint16 gradient hits parity.
+  3. Bench until the gradient case hits parity.
 * **Effort**: ~1-2 hr focused SIMD work. Off the bench-tracked
   workload, so prioritise only if a user surfaces filter-bound
   PNG-encode wall-clock.
 
-## libdeflate backend
+## libdeflate-in-libspng (PNG encode)
 
-* **Status**: `_deflate.pyx` libdeflate backend SHIPPED. PNG side
-  (libspng) is still on zlib/zlib-ng.
-* **What's done** (this commit + subsequent):
-  * `_deflate.pyx` has a compile-time backend selector
-    (`-DOPENCODECS_HAVE_LIBDEFLATE=1`) that switches to libdeflate's
-    `libdeflate_zlib_compress` / `libdeflate_zlib_decompress` when
-    setup.py finds the library. Falls through to zlib (system or
-    zlib-ng-compat) otherwise.
-  * `_deflate.backend()` returns `"libdeflate"` or `"zlib"` for
-    runtime introspection.
-  * 25 cross-validation tests confirm bit-exact interop with stdlib
-    zlib + imagecodecs (every encode decodes through every backend).
-  * Measured wins on macOS M1 Ultra:
-    * raw deflate encode 10MB random: 2.20× faster than imagecodecs
-      (which also uses libdeflate, so it's also build-/version-delta;
-      vs stdlib zlib it's 1.92×)
-    * raw deflate decode 10MB random: 7.11× faster
-    * `bench/h2h_deflate_10mb`: 2.67× (was 1.74× pre-libdeflate)
-* **What's left — libspng still uses zlib**:
-  * libspng has no `SPNG_USE_LIBDEFLATE` upstream flag (only
-    `SPNG_USE_MINIZ`). To get libdeflate into PNG-encode we'd need
-    to patch its internal `deflate()` / `inflate()` calls.
-  * That's ~6-8 hr of careful editing in the vendored
-    `3rdparty/libspng/spng.c` — defer unless there's an active PNG-
-    write-heavy workload to chase.
-  * Current PNG-encode benches ~0.91× vs imagecodecs (parity-ish);
-    that's because imagecodecs's PNG path uses its own libspng+
-    libdeflate combo. Acceptable for now.
+* **Status**: SHIPPED. The vendored `3rdparty/libspng/spng.c` is
+  patched with an `SPNG_USE_LIBDEFLATE` accumulator path that
+  collects the filtered scanline stream and calls
+  `libdeflate_zlib_compress` once at IDAT-finalize time, replacing
+  the per-scanline `deflate()` calls. setup.py probes for
+  libdeflate at build time and defines `SPNG_USE_LIBDEFLATE=1`
+  while linking `-ldeflate` when found.
+* **Result**: PNG encode is faster than imagecodecs on every
+  real-world workload (see filter_sum SIMD table above). decode
+  stays on zlib-ng-compat for tEXt/zTXt/iTXt + IDAT.
+
+## libdeflate raw-deflate backend (general compressor)
+
+* **Status**: SHIPPED. `_deflate.pyx` has a compile-time backend
+  selector (`-DOPENCODECS_HAVE_LIBDEFLATE=1`) and ships in builds
+  where setup.py finds the library. `_deflate.backend()` reports
+  `"libdeflate"` or `"zlib"` at runtime.
+* **Result**: raw deflate encode 1.92–2.20× faster than zlib/
+  imagecodecs; decode 7.11× faster.
 
 ## zlib-ng / ISA-L deflate swap
 
