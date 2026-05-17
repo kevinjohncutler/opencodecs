@@ -94,10 +94,19 @@ git commit -m "perf: record new setpoints after <change>"
   dramatic in either direction:
   * `avif/kodak_photo` is ~90× faster than `imagecodecs` because we
     default to a fast preset; ic defaults to high-quality.
-  * `brotli/kodak_bytes` is ~200× slower because we default to level
-    11 (max quality / slow); ic defaults to level 1.
+  * `brotli/kodak_bytes` arm64 ratio is 4.3×, not at parity. We
+    default to level 6 (CLI-default, good ratio/speed balance);
+    `imagecodecs` defaults to level 1 (fastest, larger output). At
+    matched levels they're at parity.
   * `jpeg2k/kodak_photo` on x86_64 is 1.8× slower for the same
     underlying reason — different default precincts / progression.
+
+* **The threadripper x86_64 baseline in this repo was captured against
+  an outdated pip-installed `opencodecs`** that masked the source-tree
+  rebuild via `site-packages` precedence. A fresh re-bench needs:
+  `python setup.py build_ext --inplace && pip install -e .
+  --no-deps --force-reinstall`. Numbers there should be regenerated
+  before treating x86_64 ratios as a regression source-of-truth.
 
   These are not bugs — they're documented-defaults differences.
   `--check` baselines them so any *further* drift is caught.
