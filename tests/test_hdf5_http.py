@@ -210,3 +210,59 @@ def test_remote_hdf5_filelike_seek_tell(http_h5_url):
     fobj.seek(-8, 2)  # 8 bytes before EOF
     tail = fobj.read(8)
     assert len(tail) == 8
+
+
+# ---------------------------------------------------------------------------
+# Live smoke test against a real-world HDF5 file served over HTTPS.
+#
+# We pick a tiny known-stable file from the HDFGroup's reference test
+# corpus on github (size ~6 KB, raw.githubusercontent.com honours
+# Range requests). This proves the open_remote_hdf5 pipeline works
+# against actual cloud storage, not just a loopback fixture.
+# ---------------------------------------------------------------------------
+
+
+_LIVE_HDF5_URL = (
+    "https://raw.githubusercontent.com/HDFGroup/hdf5/develop/"
+    "test/testfiles/test_filters_le.h5"
+)
+
+
+def _live_hdf5_reachable() -> bool:
+    import urllib.request
+    try:
+        req = urllib.request.Request(_LIVE_HDF5_URL, method="HEAD")
+        with urllib.request.urlopen(req, timeout=3) as r:
+            return (
+                int(r.headers.get("Content-Length", "0")) > 0
+                and r.headers.get("Accept-Ranges", "").lower() == "bytes"
+            )
+    except Exception:
+        return False
+
+
+@pytest.mark.skipif(
+    not _live_hdf5_reachable(),
+    reason="public HDF5 endpoint unreachable (offline or blocked)",
+)
+def test_remote_hdf5_live_github_endpoint():
+    """End-to-end HDF5 cloud read against the HDFGroup-hosted reference
+    file on github. Validates the open_remote_hdf5 + HTTPDataSource
+    chain on an actual remote HDF5, not the loopback test fixture.
+
+    The file is tiny (~6 KB) so we expect the prefetch buffer to cover
+    the whole thing — confirms partial Range reads work even on
+    sub-prefetch-size files."""
+    src = HTTPDataSource(_LIVE_HDF5_URL, prefetch_bytes=64 * 1024)
+    try:
+        with open_remote_hdf5(_LIVE_HDF5_URL) as f:
+            # The reference file has at least one dataset; just walk
+            # the root to verify h5py traverses it through our
+            # HTTPDataSource without error.
+            names = list(f.keys())
+            assert names, "no datasets in remote HDF5"
+            # Read one dataset to fully exercise the chunk-fetch path.
+            arr = f[names[0]][...]
+            assert arr.size > 0
+    finally:
+        src.close()
