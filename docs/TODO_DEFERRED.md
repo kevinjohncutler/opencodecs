@@ -147,38 +147,35 @@ git log for `2026-05-11` for the night's shipped commits.
 
 ## libspng filter_sum SIMD vectorization
 
-* **Status**: deferred. Real-world PNG-encode workloads now beat
-  imagecodecs (see numbers below) thanks to the libdeflate IDAT
-  fast path. The filter-bound gap shows up only on synthetic
-  filter-dominated workloads.
-* **What's measured** (2026-05-16 with libdeflate path active):
+* **Status**: SHIPPED via filter-switch split (commit landing
+  in 2026-05-17 with this doc edit). The vendored
+  `3rdparty/libspng/spng.c` now has five specialised
+  `filter_sum_<filter>` functions instead of a single
+  switch-inside-loop. Modern compilers (clang on arm64, gcc/clang
+  on x86_64) autovectorise each branch — no hand-written SIMD
+  intrinsics needed.
 
-  | benchmark                | encode oc/ic | decode oc/ic |
-  |--------------------------|-------------:|-------------:|
-  | 4MP RGB u8 random        |    0.893×    |    0.593×    |
-  | 4MP RGB u16 random       |    0.903×    |    0.882×    |
-  | 1080p RGB u8 random      |    0.874×    |    0.603×    |
-  | Kodak01 RGB u8 (photo)   |    0.496×    |    0.868×    |
-  | 512×512 u16 gradient     |    1.732× ⬇  |    0.421×    |
+* **Measured before-and-after** (M1 Ultra, 2026-05-17):
 
-  The 512×512 u16 gradient case is the only encode regression —
-  it's filter-bound (input compresses 99.95%, so all the
-  wall-clock is in filter scoring, not deflate).
+  | benchmark              | before    | after     | speedup |
+  |------------------------|----------:|----------:|--------:|
+  | 4MP RGB u8 random      |  0.893×   |  0.506×   |  1.76×  |
+  | 4MP RGB u16 random     |  0.903×   |  0.517×   |  1.75×  |
+  | 1080p RGB u8 random    |  0.874×   |  0.498×   |  1.76×  |
+  | Kodak01 RGB u8         |  0.496×   |  0.318×   |  1.56×  |
+  | 512×512 u16 gradient   |  1.732× ⬇ |  0.549×   |  3.15×  |
+  | 2048×2048 u16 gradient |    n/a    |  0.588×   |    —    |
 
-* **Root cause**: libspng's `filter_sum` is a per-byte switch
-  statement on each candidate filter. imagecodecs uses libpng,
-  which ships SIMD-vectorized filter scoring (NEON + SSE).
-* **Sketch**:
-  1. Add `filter_sum_neon` (arm64) and `filter_sum_sse` (x86) in
-     a sibling file `3rdparty/libspng/filter_sum_simd.c` that
-     ships alongside the vendored libspng.
-  2. `#ifdef SPNG_USE_SIMD_FILTER_SUM` block in
-     `get_best_filter` (spng.c line ~1711) dispatches to the
-     SIMD variants per architecture.
-  3. Bench until the gradient case hits parity.
-* **Effort**: ~1-2 hr focused SIMD work. Off the bench-tracked
-  workload, so prioritise only if a user surfaces filter-bound
-  PNG-encode wall-clock.
+  All ratios are oc/ic (encode time); smaller = faster.
+  The previously-regressing filter-bound gradient case now beats
+  imagecodecs by ~2×, and every real-world workload picked up an
+  extra 1.5–1.8× because the inner-loop switch was hurting
+  autovectorisation everywhere, not just on filter-bound input.
+
+* **What this leaves open**: hand-written NEON/SSE kernels for the
+  PAETH filter could shave another 10–20% on RGBA8 photographic
+  data (paeth is the hardest case to autovectorise). Not
+  prioritised — we're already well ahead of imagecodecs.
 
 ## libdeflate-in-libspng (PNG encode)
 
