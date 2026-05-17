@@ -240,6 +240,34 @@ fetch \
     "https://raw.githubusercontent.com/Esri/lerc/master/testData/bluemarble_256_256_3_byte.lerc2" \
     ".test_data/lerc/bluemarble_byte.lerc2"
 
+## ===========================================================================
+## Real-data coverage sweep — codec interop fixtures (small, durable URLs)
+## ---------------------------------------------------------------------------
+## Two-tier strategy:
+##
+## 1. Where we can find a small, stable upstream sample (WebP gallery,
+##    Wikipedia GIF, …) we pull it here.
+## 2. Where we can't, the tests in test_corpus_codec_decode.py use the
+##    Kodak24 PNGs we already have as the *source* image and run a
+##    cross-validation roundtrip: encode with ours, decode with ours +
+##    imagecodecs, assert bit-equal interop. That covers every lossless
+##    codec we ship, and PSNR-bounded for lossy ones.
+
+mkdir -p .test_data/webp .test_data/gif
+
+# ----- WebP: Google's libwebp gallery -----
+fetch \
+    "https://www.gstatic.com/webp/gallery/1.webp" \
+    ".test_data/webp/lossy_1.webp" || true
+fetch \
+    "https://www.gstatic.com/webp/gallery3/1.webp" \
+    ".test_data/webp/lossy_alpha_1.webp" || true
+
+# ----- GIF: public-domain animated GIF (Wikipedia rotating earth) -----
+fetch \
+    "https://upload.wikimedia.org/wikipedia/commons/2/2c/Rotating_earth_%28large%29.gif" \
+    ".test_data/gif/rotating_earth.gif" || true
+
 echo
 echo "Corpus ready:"
 du -sh .test_data/*/ 2>/dev/null | sort -k 2
