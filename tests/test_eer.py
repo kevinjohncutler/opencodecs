@@ -178,3 +178,169 @@ def test_eer_in_tiff_dispatch_via_tiffstream():
         assert page.compression == 65002
         arr = page.asarray()
     np.testing.assert_array_equal(arr, expected)
+
+
+# ---------------------------------------------------------------------------
+# EerReader (file-level wrapper) tests
+# ---------------------------------------------------------------------------
+
+
+def _build_multi_frame_eer_tiff(
+    frames: list[bytes], shape: tuple[int, int],
+    skipbits: int = 7, horzbits: int = 1, vertbits: int = 1,
+) -> bytes:
+    """Hand-roll a multi-page TIFF file where each page is one EER
+    frame. Used by the EerReader tests to avoid bringing in a real
+    EER acquisition just to exercise the wrapper."""
+    import struct
+    bo = "<"
+    out = bytearray()
+    out += b"II"
+    out += struct.pack(bo + "H", 42)
+    out += struct.pack(bo + "I", 0)   # patched below to point at IFD 0
+
+    # Write strip payloads first; record their offsets.
+    strip_offsets = []
+    for blob in frames:
+        if len(out) % 2:
+            out += b"\x00"
+        strip_offsets.append(len(out))
+        out += blob
+
+    # Write one IFD per frame, chained by NextIFDOffset.
+    first_ifd_offset = None
+    prev_next_ifd_field = 4   # patches the header's first-IFD pointer
+    for i, blob in enumerate(frames):
+        if len(out) % 2:
+            out += b"\x00"
+        ifd_start = len(out)
+        if first_ifd_offset is None:
+            first_ifd_offset = ifd_start
+        # Patch the previous "next IFD" field to point here.
+        out[prev_next_ifd_field:prev_next_ifd_field + 4] = struct.pack(
+            bo + "I", ifd_start
+        )
+
+        entries = [
+            (256, 4, 1, shape[1]),
+            (257, 4, 1, shape[0]),
+            (258, 3, 1, 8),
+            (259, 3, 1, 65002),         # Compression = EER v2
+            (262, 3, 1, 1),
+            (273, 4, 1, strip_offsets[i]),
+            (277, 3, 1, 1),
+            (278, 4, 1, shape[0]),
+            (279, 4, 1, len(blob)),
+            (65007, 3, 1, skipbits),
+            (65008, 3, 1, horzbits),
+            (65009, 3, 1, vertbits),
+        ]
+        entries.sort(key=lambda e: e[0])
+        out += struct.pack(bo + "H", len(entries))
+        for tag, tc, count, value in entries:
+            out += struct.pack(bo + "HHI", tag, tc, count)
+            out += (struct.pack(bo + "HH", value, 0) if tc == 3
+                    else struct.pack(bo + "I", value))
+        prev_next_ifd_field = len(out)
+        out += struct.pack(bo + "I", 0)   # NextIFD — patched on next iter
+
+    return bytes(out)
+
+
+def test_eer_reader_iter_frames(tmp_path):
+    """EerReader walks the IFD chain and decodes each frame to the
+    same array a direct ``decode()`` call would."""
+    from opencodecs._eer_reader import EerReader
+
+    # Two frames of synthetic EER bitstream (same payload twice — fine
+    # for testing the wrapper plumbing).
+    encoded = b"\x03\x1b\xfc\xb1\x35\xfb"
+    shape = (20, 16)
+    frames = [encoded, encoded]
+    blob = _build_multi_frame_eer_tiff(frames, shape)
+    path = tmp_path / "synth.eer"
+    path.write_bytes(blob)
+
+    expected = decode(encoded, shape, 7, 1, 1)
+    with EerReader(str(path)) as r:
+        assert r.n_frames == 2
+        assert r.shape == shape
+        assert r.dtype == np.uint8
+        seen = list(r.iter_frames())
+    assert len(seen) == 2
+    for f in seen:
+        np.testing.assert_array_equal(f, expected)
+
+
+def test_eer_reader_sum_accumulates_events(tmp_path):
+    """``sum()`` accumulates events across a frame range — the
+    dose-corrected-average primitive cryo-EM users want. Three
+    identical frames should sum to 3x one frame's counts."""
+    from opencodecs._eer_reader import EerReader
+
+    encoded = b"\x03\x1b\xfc\xb1\x35\xfb"
+    shape = (20, 16)
+    blob = _build_multi_frame_eer_tiff([encoded] * 3, shape)
+    path = tmp_path / "synth.eer"
+    path.write_bytes(blob)
+
+    one = decode(encoded, shape, 7, 1, 1).astype(np.uint16)
+    with EerReader(str(path)) as r:
+        total = r.sum(dtype=np.uint16)
+        partial = r.sum(start=0, stop=2, dtype=np.uint16)
+    np.testing.assert_array_equal(total, one * 3)
+    np.testing.assert_array_equal(partial, one * 2)
+
+
+def test_eer_reader_sum_validates_range(tmp_path):
+    from opencodecs._eer_reader import EerReader
+    encoded = b"\x03\x1b\xfc\xb1\x35\xfb"
+    blob = _build_multi_frame_eer_tiff([encoded], (20, 16))
+    path = tmp_path / "synth.eer"
+    path.write_bytes(blob)
+    with EerReader(str(path)) as r:
+        with pytest.raises(ValueError):
+            r.sum(start=2, stop=1)
+        with pytest.raises(ValueError):
+            r.sum(start=0, stop=99)
+
+
+def test_eer_codec_registered_and_dispatches(tmp_path):
+    """``oc.has_codec('eer')`` is True and ``oc.get_codec('eer').open()``
+    returns an EerReader. Confirms the registration wiring works."""
+    import opencodecs as oc
+    from opencodecs._eer_reader import EerReader
+
+    assert oc.has_codec("eer")
+    encoded = b"\x03\x1b\xfc\xb1\x35\xfb"
+    blob = _build_multi_frame_eer_tiff([encoded], (20, 16))
+    path = tmp_path / "synth.eer"
+    path.write_bytes(blob)
+    with oc.get_codec("eer").open(str(path)) as r:
+        assert isinstance(r, EerReader)
+        assert r.n_frames == 1
+
+
+def test_eer_codec_open_via_extension(tmp_path):
+    """``oc.open('foo.eer')`` should route through the registry to
+    EerReader by file-extension alone."""
+    import opencodecs as oc
+
+    encoded = b"\x03\x1b\xfc\xb1\x35\xfb"
+    blob = _build_multi_frame_eer_tiff([encoded, encoded], (20, 16))
+    path = tmp_path / "scan.eer"
+    path.write_bytes(blob)
+    with oc.open(str(path)) as r:
+        # Should be an EerReader (not TiffStream) — same file but
+        # the extension-based dispatcher picked the EER codec.
+        from opencodecs._eer_reader import EerReader
+        assert isinstance(r, EerReader)
+        assert r.n_frames == 2
+
+
+def test_eer_codec_encode_raises():
+    """EER is a detector-only format — encode should not be silently
+    a no-op or a TIFF passthrough."""
+    import opencodecs as oc
+    with pytest.raises(NotImplementedError):
+        oc.get_codec("eer").encode(np.zeros((4, 4), dtype=np.uint8))

@@ -466,6 +466,17 @@ if "opencodecs.codecs._tiff" in sys.modules:
 
 
 # ---------------------------------------------------------------------------
+# EER — Falcon 4 / Selectris X cryo-EM event-list TIFF container.
+# Reuses TiffStream for the container walk + per-strip _eer.decode for
+# the bitstream payload.
+# ---------------------------------------------------------------------------
+
+if "opencodecs.codecs._eer" in sys.modules and "opencodecs.codecs._tiff" in sys.modules:
+    from .._eer_reader import EerCodec
+    register_codec(EerCodec())
+
+
+# ---------------------------------------------------------------------------
 # Native codec roadmap
 # ---------------------------------------------------------------------------
 #
