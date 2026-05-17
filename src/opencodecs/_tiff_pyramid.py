@@ -24,9 +24,29 @@ from ._tiff_codec import TiffStream, TiffPage
 from .core.pyramid import PyramidLevel, PyramidReader
 
 
-# NewSubfileType (TIFF tag 254): bit 0 = reduced-resolution overview.
+# NewSubfileType (TIFF tag 254):
+#   bit 0 (0x1) = reduced-resolution overview of another image
+#   bit 1 (0x2) = single page of a multi-page image
+#   bit 2 (0x4) = transparency mask
+#   bit 3 (0x8) = Aperio's "non-pyramid auxiliary" marker (label / macro
+#                  / thumbnail). Not in the TIFF 6 spec but de-facto
+#                  standard from SVS files.
 _TAG_NEW_SUBFILE_TYPE = 254
 _NSFT_REDUCED = 0x1
+_NSFT_MASK = 0x4
+_NSFT_APERIO_AUX = 0x8
+
+
+def _nsft(page: TiffPage) -> int:
+    """Read TIFF NewSubfileType (tag 254) for a page, returning 0 when absent."""
+    raw = page.tags.get(_TAG_NEW_SUBFILE_TYPE)
+    if raw is None:
+        return 0
+    # tags dict stores (dtype, count, value)
+    v = raw[2]
+    if isinstance(v, (tuple, list)):
+        return int(v[0]) if v else 0
+    return int(v)
 
 
 class TiffPyramidReader(PyramidReader):
@@ -119,8 +139,27 @@ class TiffPyramidReader(PyramidReader):
                 # bioformats / OME-TIFF SubIFD-based pyramid layout
                 pages = [ifd0] + list(ifd0.subifds)
             else:
-                # COG: all top-level IFDs are pyramid levels
-                pages = [self._stream.page(i) for i in range(n)]
+                # COG / Aperio-style: walk top-level IFDs and pick the
+                # ones that are pyramid levels. Page 0 is always
+                # "level 0". Subsequent pages count only if they're
+                # tagged as reduced-resolution overviews — that filters
+                # out separate "main" images like SVS thumbnails (which
+                # carry NewSubfileType=0) and Aperio macro/label pages
+                # (NewSubfileType bit 3).
+                main = self._stream.page(0)
+                pages = [main]
+                for i in range(1, n):
+                    p = self._stream.page(i)
+                    nsft = _nsft(p)
+                    if nsft & _NSFT_APERIO_AUX:
+                        continue   # Aperio label / macro
+                    if nsft & _NSFT_MASK:
+                        continue   # transparency mask
+                    if not (nsft & _NSFT_REDUCED):
+                        # not flagged as reduced — could be a separate
+                        # image (SVS thumbnail). Skip.
+                        continue
+                    pages.append(p)
 
         # Largest-first. With the COG convention (full-res at IFD 0,
         # overviews after) this matches the natural order; with the
@@ -180,7 +219,14 @@ class TiffPyramidReader(PyramidReader):
         self, page: TiffPage, out: np.ndarray,
         y0: int, y1: int, x0: int, x1: int,
     ) -> None:
-        """Assemble out from the tiles of page that intersect (y0:y1, x0:x1)."""
+        """Assemble out from the tiles of page that intersect (y0:y1, x0:x1).
+
+        When the underlying data source advertises ``read_many`` (HTTP
+        range-requests or pread parallelism), all overlapping tiles are
+        fetched in one batched call before decode. Otherwise tiles are
+        pulled serially. This is the perf path that makes
+        ``read_region`` over an HTTP COG do O(1) round-trips per tile
+        cluster instead of O(N)."""
         tw, th = page.tile_width, page.tile_height
         ty_start = y0 // th
         ty_stop = (y1 + th - 1) // th
@@ -193,31 +239,49 @@ class TiffPyramidReader(PyramidReader):
         # then we crop into out.
         full_tile_shape = page._padded_shape()
 
+        # Build the (offset, nbytes) list for every tile we need.
+        ranges: list[tuple[int, int]] = []
+        coords: list[tuple[int, int]] = []
         for ty in range(ty_start, ty_stop):
             for tx in range(tx_start, tx_stop):
                 idx = ty * page.tiles_x + tx
-                offset = int(page.offsets[idx])
-                nbytes = int(page.byte_counts[idx])
-                raw = self._stream._read(offset, nbytes)
-                decoded = page._decode_segment(raw)
-                # Byte-stream codecs return flat; image codecs return shaped.
-                if decoded.ndim == 1:
-                    tile = decoded.reshape(full_tile_shape)
-                else:
-                    tile = decoded
+                ranges.append(
+                    (int(page.offsets[idx]), int(page.byte_counts[idx]))
+                )
+                coords.append((ty, tx))
+        if not ranges:
+            return
 
-                tile_y0 = ty * th
-                tile_x0 = tx * tw
-                # Intersect tile rect with the requested bbox.
-                in_y0 = max(y0 - tile_y0, 0)
-                in_y1 = min(y1 - tile_y0, th)
-                in_x0 = max(x0 - tile_x0, 0)
-                in_x1 = min(x1 - tile_x0, tw)
-                out_y0 = tile_y0 + in_y0 - y0
-                out_x0 = tile_x0 + in_x0 - x0
-                out[out_y0:out_y0 + (in_y1 - in_y0),
-                    out_x0:out_x0 + (in_x1 - in_x0)] = \
-                    tile[in_y0:in_y1, in_x0:in_x1]
+        # Coalesced fetch path: one round-trip / one parallel batch for
+        # the whole bbox, instead of N serial reads. Falls back to per-
+        # tile reads when the data source doesn't expose read_many
+        # (e.g. raw file handle, bytes, BytesIO).
+        read_many = getattr(self._stream._read, "read_many", None)
+        if read_many is not None and len(ranges) > 1:
+            blobs = read_many(ranges)
+        else:
+            blobs = [self._stream._read(o, n) for (o, n) in ranges]
+
+        for (ty, tx), raw in zip(coords, blobs):
+            decoded = page._decode_segment(raw)
+            # Byte-stream codecs return flat; image codecs return shaped.
+            if decoded.ndim == 1:
+                tile = decoded.reshape(full_tile_shape)
+            else:
+                tile = decoded
+
+            tile_y0 = ty * th
+            tile_x0 = tx * tw
+            # Intersect tile rect with the requested bbox.
+            in_y0 = max(y0 - tile_y0, 0)
+            in_y1 = min(y1 - tile_y0, th)
+            in_x0 = max(x0 - tile_x0, 0)
+            in_x1 = min(x1 - tile_x0, tw)
+            out_y0 = tile_y0 + in_y0 - y0
+            out_x0 = tile_x0 + in_x0 - x0
+            out[out_y0:out_y0 + (in_y1 - in_y0),
+                out_x0:out_x0 + (in_x1 - in_x0)] = \
+                tile[in_y0:in_y1, in_x0:in_x1]
 
     # ----- Striped path -----
 
@@ -228,7 +292,9 @@ class TiffPyramidReader(PyramidReader):
         """Assemble out from the strips of page that intersect (y0:y1, x0:x1).
 
         Strips span the full image width, so x clipping happens after
-        decode. Only the strips overlapping (y0:y1) get fetched.
+        decode. Only the strips overlapping (y0:y1) get fetched. Like
+        :meth:`_fill_tiles`, batches the network reads through
+        ``read_many`` when the data source advertises it.
         """
         rps = page.tile_height   # rows per strip (filed under tile_height for strips)
         h = page.height
@@ -236,10 +302,20 @@ class TiffPyramidReader(PyramidReader):
         s_stop = (y1 + rps - 1) // rps
         s_stop = min(s_stop, len(page.offsets))
 
-        for s in range(s_start, s_stop):
-            offset = int(page.offsets[s])
-            nbytes = int(page.byte_counts[s])
-            raw = self._stream._read(offset, nbytes)
+        ranges = [
+            (int(page.offsets[s]), int(page.byte_counts[s]))
+            for s in range(s_start, s_stop)
+        ]
+        if not ranges:
+            return
+
+        read_many = getattr(self._stream._read, "read_many", None)
+        if read_many is not None and len(ranges) > 1:
+            blobs = read_many(ranges)
+        else:
+            blobs = [self._stream._read(o, n) for (o, n) in ranges]
+
+        for s, raw in zip(range(s_start, s_stop), blobs):
             decoded = page._decode_segment(raw)
             strip_y0 = s * rps
             strip_h = min(rps, h - strip_y0)

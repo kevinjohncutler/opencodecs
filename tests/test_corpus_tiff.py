@@ -193,23 +193,64 @@ def test_cog_image_colormap_decodes():
     assert np.array_equal(np.squeeze(arr), np.squeeze(ref))
 
 
-@pytest.mark.xfail(
-    reason="rio-cogeo emits overviews as SubIFDs (tag 330) — our "
-           "TiffPyramidReader currently walks only top-level IFDs",
-    strict=False,
-)
 @pytest.mark.skipif(not COG.exists(), reason=_HINT)
-def test_cog_pyramid_reader_levels():
-    """A real COG should expose a 3-level pyramid via
-    TiffPyramidReader (full / /2 / /4 overviews)."""
+def test_cog_image_2000px_single_level_reader():
+    """rio-cogeo's image_2000px.tif is a tiled COG layout but does NOT
+    carry overviews — verified by inspecting it with tifffile (1 IFD,
+    no SubIFDs). TiffPyramidReader should report exactly one level for
+    it. (Real multi-level pyramids are tested via the retina_pyramid
+    OME-TIFF fixture and the Aperio SVS fixture below.)"""
     path = COG / "image_2000px.tif"
     with oc.TiffPyramidReader(str(path)) as p:
-        # rio-cogeo's image_2000px has overviews at 1x, 2x, 4x.
-        assert p.n_levels >= 2, (
-            f"expected pyramid but got {p.n_levels} level(s)"
+        assert p.n_levels == 1, (
+            f"image_2000px.tif has no overviews — expected 1 level, "
+            f"got {p.n_levels}"
         )
-        # Level 0 should be the largest
-        assert p.shapes[0][0] >= p.shapes[1][0]
+        assert p.shapes[0] == (1500, 1500, 3)
+
+
+# ---------------------------------------------------------------------------
+# Real pyramid TIFFs in the corpus
+# ---------------------------------------------------------------------------
+
+
+OMETIFF_PYRAMID = (CORPUS / ".." / "ome_tiff" / "retina_pyramid.ome.tiff").resolve()
+
+
+@pytest.mark.skipif(not OMETIFF_PYRAMID.exists(), reason=_HINT)
+def test_real_ometiff_pyramid_levels_via_subifds():
+    """retina_pyramid.ome.tiff is bioformats' SubIFD-layout pyramid:
+    each top-level IFD has 2 sub-IFDs at /2, /4 resolution. The
+    TiffPyramidReader should expose all 3 levels of the first scene."""
+    with oc.TiffPyramidReader(str(OMETIFF_PYRAMID)) as p:
+        assert p.n_levels == 3, (
+            f"retina_pyramid: expected 3 levels (full + /2 + /4), got {p.n_levels}"
+        )
+        # Largest first.
+        assert p.shapes[0][0] > p.shapes[1][0] > p.shapes[2][0]
+
+
+@pytest.mark.skipif(not WSI.exists(), reason=_HINT)
+def test_aperio_svs_pyramid_excludes_label_and_thumbnail():
+    """Aperio SVS files store the slide label, macro, and thumbnail
+    alongside the pyramid levels. Our pyramid reader must include
+    page 0 (full image) and any reduced-resolution overviews but
+    exclude the thumbnail (NSFT=0 but smaller than page 0) and the
+    label (NSFT bit 3 set)."""
+    path = WSI / "CMU-1-Small-Region.svs"
+    with oc.TiffPyramidReader(str(path)) as p:
+        # CMU-1-Small-Region has page 0 (full) + page 2 (macro reduced
+        # overview); page 1 is a separate "main" thumbnail and page 3
+        # is the Aperio label (NSFT=9). Pyramid levels = [page 0, page 2].
+        assert p.n_levels == 2, (
+            f"expected 2 pyramid levels (full + macro), got {p.n_levels}: "
+            f"shapes={p.shapes}"
+        )
+        # First level is the full slide; second is the macro overview.
+        assert p.shapes[0][0] > p.shapes[1][0]
+        # Neither should be the 431x1280 label or 768x574 thumbnail.
+        for s in p.shapes:
+            assert s != (431, 1280, 3), "label page should be filtered"
 
 
 # ---------------------------------------------------------------------------

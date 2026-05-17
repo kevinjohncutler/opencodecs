@@ -139,7 +139,11 @@ def open_pyramid(
         path_lower = str(src).lower()
     if not fmt:
         if is_url or any(path_lower.endswith(ext) for ext in
-                         (".tif", ".tiff", ".btf", ".ome.tif", ".ome.tiff")):
+                         (".tif", ".tiff", ".btf", ".ome.tif", ".ome.tiff",
+                          # TIFF-derived container formats from imaging
+                          # ecosystems we know about. Treating them as
+                          # TIFF works because they're TIFF + private tags.
+                          ".svs", ".ndpi", ".scn", ".qptiff")):
             fmt = "tiff"
         elif path_lower.endswith((".zarr", ".ome.zarr")):
             fmt = "omezarr"
