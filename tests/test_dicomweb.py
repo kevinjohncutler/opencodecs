@@ -241,3 +241,86 @@ def test_client_constructs_with_auth_header():
     assert c.base_url == "https://example/dicomweb"
     assert c.headers["Authorization"] == "Bearer abc"
     assert c.timeout == 5.0
+
+
+# ---------------------------------------------------------------------------
+# Live smoke test against Orthanc's public demo server.
+#
+# demo.orthanc-server.com is the canonical free public DICOMweb test
+# endpoint (BSD-licensed Orthanc team has hosted it for years for
+# tutorials + interop testing). We only hit it when reachable so CI
+# without network just skips.
+# ---------------------------------------------------------------------------
+
+
+_ORTHANC_URL = "https://demo.orthanc-server.com/dicom-web"
+
+
+def _orthanc_reachable() -> bool:
+    import urllib.request
+    try:
+        req = urllib.request.Request(
+            _ORTHANC_URL + "/studies",
+            headers={"Accept": "application/dicom+json"},
+        )
+        urllib.request.urlopen(req, timeout=3).close()
+        return True
+    except Exception:
+        return False
+
+
+@pytest.mark.skipif(
+    not _orthanc_reachable(),
+    reason="Orthanc demo endpoint unreachable (offline or blocked)",
+)
+def test_dicomweb_live_orthanc_demo_end_to_end():
+    """End-to-end DICOMweb fetch against demo.orthanc-server.com.
+
+    Picks the first study/series/instance via QIDO, then pulls frame 1
+    via WADO and decodes it. Validates the whole multipart/related →
+    transfer-syntax-dispatch → codec pipeline against a real PACS
+    server, not a synthesized response."""
+    import urllib.request, json as _json
+
+    client = dw.DicomwebClient(_ORTHANC_URL, timeout=10.0)
+
+    # QIDO: pick the first study and its first series + instance.
+    req = urllib.request.Request(
+        _ORTHANC_URL + "/studies",
+        headers={"Accept": "application/dicom+json"},
+    )
+    studies = _json.loads(urllib.request.urlopen(req, timeout=10).read())
+    assert studies, "no studies returned from orthanc demo"
+    study_uid = studies[0]["0020000D"]["Value"][0]
+
+    req = urllib.request.Request(
+        f"{_ORTHANC_URL}/studies/{study_uid}/series",
+        headers={"Accept": "application/dicom+json"},
+    )
+    series = _json.loads(urllib.request.urlopen(req, timeout=10).read())
+    assert series
+    series_uid = series[0]["0020000E"]["Value"][0]
+
+    instances = client.list_instances(study_uid, series_uid)
+    assert instances
+    instance_uid = instances[0]["00080018"]["Value"][0]
+
+    # Fetch + decode frame 1. The demo studies are mostly
+    # 8/16-bit grayscale Explicit VR LE — opencodecs decodes those.
+    # Pass shape hints so the raw / RLE branch knows what to do
+    # without a SOP-instance-tags fetch.
+    rows = int(instances[0].get("00280010", {}).get("Value", [512])[0])
+    cols = int(instances[0].get("00280011", {}).get("Value", [512])[0])
+    bits = int(instances[0].get("00280100", {}).get("Value", [16])[0])
+    samples = int(instances[0].get("00280002", {}).get("Value", [1])[0])
+    pixrep = int(instances[0].get("00280103", {}).get("Value", [0])[0])
+    frame = client.get_frame(
+        study_uid, series_uid, instance_uid, frame=1,
+        rows=rows, columns=cols, bits_allocated=bits,
+        samples_per_pixel=samples, pixel_representation=pixrep,
+    )
+    assert frame.size > 0
+    expected_shape = (rows, cols) if samples == 1 else (rows, cols, samples)
+    assert frame.shape == expected_shape, (
+        f"frame shape {frame.shape} != expected {expected_shape}"
+    )

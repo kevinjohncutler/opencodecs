@@ -216,9 +216,19 @@ Headline numbers from the latest bench run (`bench/run_benchmarks.py
 | `h2h_jxl_4mp_rgb` (encode) | 130 ms | 3153 ms (imagecodecs) | **24×** |
 | `h2h_blosc2_10mb` | 4.63 ms | 54.8 ms | **12×** |
 | `h2h_deflate_10mb` (encode) | 109 ms | 296 ms | **2.7×** |
-| `h2h_png_4mp_rgb` (encode) | 252 ms | 287 ms | **1.14×** |
+| `h2h_png_4mp_rgb` (encode) | 142 ms | 281 ms | **2.0×** |
+| `h2h_png_kodak_photo` (encode) | 19 ms | 58 ms | **3.1×** |
+| `h2h_png_filterbound_u16` (encode) | 2.0 ms | 3.7 ms | **1.8×** |
 | `tiff_write_1gb` | 89 ms | 91 ms | parity, +14% on Windows |
 | `ndtiff_write_1gb` (raw 800 MB) | 159 ms | 154 ms | parity (1.04× on macOS, 2.4× on Windows after NTFS-friendly pre-alloc) |
+
+The PNG encode wins above stack two independent improvements:
+the `libdeflate` IDAT accumulator (already shipped) collapses
+zlib's per-scanline `deflate()` loop into a single one-shot call,
+and a per-filter split of libspng's `filter_sum` hot path lets
+the compiler autovectorize each branch into NEON/SSE — together
+they make every PNG-encode workload 1.5–3.1× faster than
+imagecodecs.
 
 Remote-fetch workloads benefit from `read_many` (one batched HTTP
 fan-out + Range coalescing) — on a loopback Range-supporting server,
