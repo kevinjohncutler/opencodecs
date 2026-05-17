@@ -56,12 +56,35 @@ def import_or_stubs(modname: str, *attrs: str) -> tuple[Any, ...]:
     is ``True`` and each ``attr_value`` is the real symbol. On
     ``ImportError`` ``have_backend`` is ``False`` and each ``attr_value``
     is a stub callable that raises ``ImportError`` with a clear message.
+
+    A subtle case: the module imports cleanly but is missing one of the
+    requested attrs (e.g. user has an older .so on disk that predates
+    a function we added to the .pyx later). Treat that the same as a
+    failed import — emit a stub for the missing attr only, keep
+    real bindings for the present ones, and report ``have_backend``
+    based on whether everything was found.
     """
     try:
         mod = importlib.import_module(modname)
     except ImportError as exc:
         return (*[_stub_factory(modname, a, exc) for a in attrs], False)
-    return (*[getattr(mod, a) for a in attrs], True)
+    values = []
+    all_present = True
+    for a in attrs:
+        v = getattr(mod, a, None)
+        if v is None:
+            all_present = False
+            values.append(_stub_factory(
+                modname, a,
+                AttributeError(
+                    f"{modname!r} has no attribute {a!r}; the installed "
+                    f".so is older than this source — rebuild "
+                    f"extensions (``python setup.py build_ext --inplace``)"
+                ),
+            ))
+        else:
+            values.append(v)
+    return (*values, all_present)
 
 
 __all__ = ["import_or_stubs"]
