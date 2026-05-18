@@ -283,6 +283,11 @@ _OC_USER_CACHE = Path.home() / (
 )
 for _libdir in (
     "sz3", "pcodec", "sperr", "brunsli", "lerc", "zstd", "brotli", "giflib",
+    # zfp: brew's bottle is built without -march tuning and is ~17%
+    # slower than imagecodecs's bundled libzfp on float-field encode.
+    # Prefer a per-user cached build (see bench/build_codec_libs.sh
+    # ``zfp`` recipe, which compiles with -O3 + optional -march=native).
+    "zfp",
 ):
     _p = _OC_USER_CACHE / _libdir
     if (_p / "include").is_dir():
