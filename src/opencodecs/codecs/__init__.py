@@ -59,6 +59,7 @@ _EXTENSIONS = (
     "_png",
     "_bitshuffle",
     "_rcomp",        # cfitsio ricecomp (vendored) — replaces _rcomp_codec.py
+    "_bmp",          # Cython BMP encoder — replaces the pure-Python encode path
     "_tiff",
     "_ndtiff",
     "_bytetools",

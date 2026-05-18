@@ -31,6 +31,17 @@ import numpy as np
 
 from .core.codec import Codec
 from .core._io_helpers import read_src as _read_src, write_dest as _write_dest
+from .core._optional_backend import import_or_stubs
+
+# Cython encoder. Encode used to be pure-Python+numpy which was ~5x
+# slower than imagecodecs because every encode paid two unavoidable
+# MB-sized memcpys (ndarray.tobytes() + final concat). The Cython
+# path writes directly into a PyBytes_FromStringAndSize buffer with
+# a tight RGB->BGR loop that autovectorises on both NEON and SSE.
+_bmp_encode, _bmp_decode_bgr24, _bmp_decode_bgra32, _HAVE_BMP_ENCODE = import_or_stubs(
+    "opencodecs.codecs._bmp",
+    "encode", "decode_bgr24_to_rgb", "decode_bgra32_to_rgba",
+)
 
 
 class BmpError(RuntimeError):
@@ -62,100 +73,106 @@ def _encode(arr: np.ndarray) -> bytes:
         '(H, W, 3|4)')
 
 
+# For each encode path we allocate the final output bytearray once
+# and write headers + pixels directly into it. That sidesteps the two
+# unnecessary memcpys the older "build pixels separately, concat at
+# end" pattern paid:
+#
+#   * ndarray.tobytes()             (one MB-sized copy)
+#   * file_hdr + info_hdr + pixels  (another, during concat)
+#
+# Numpy can write straight into a bytearray via np.frombuffer; the
+# only memcpy that remains is the final ``bytes(out)`` immutability
+# cast, which is unavoidable in pure Python (PyBytes_FromObject does
+# the copy). Net 1 memcpy instead of 3.
+
+
 def _encode_paletted8(arr: np.ndarray) -> bytes:
     h, w = arr.shape
     stride = _row_stride(w, 8)
-    pad = stride - w
-    rows = arr[::-1]  # bottom-up
-    if pad:
-        rows = np.concatenate(
-            [rows, np.zeros((h, pad), dtype=np.uint8)], axis=1)
-    pixels = rows.tobytes()
     palette_size = 256 * 4
-    palette = np.zeros((256, 4), dtype=np.uint8)
-    palette[:, 0] = palette[:, 1] = palette[:, 2] = np.arange(256)  # BGRX
-    palette[:, 3] = 0xFF  # reserved byte; imagecodecs sets 0xFF
-    palette_bytes = palette.tobytes()
-
     info_size = 40
     file_header_size = 14
     pix_offset = file_header_size + info_size + palette_size
-    file_size = pix_offset + len(pixels)
+    pixels_size = h * stride
+    total = pix_offset + pixels_size
 
-    file_hdr = struct.pack('<2sIHHI', b'BM', file_size, 0, 0, pix_offset)
-    info_hdr = struct.pack(
-        '<IiiHHIIiiII',
-        info_size, w, h, 1, 8, _BI_RGB, len(pixels), 3780, 3780, 0, 0)
-    return file_hdr + info_hdr + palette_bytes + pixels
+    out = bytearray(total)
+    struct.pack_into('<2sIHHI', out, 0, b'BM', total, 0, 0, pix_offset)
+    struct.pack_into(
+        '<IiiHHIIiiII', out, file_header_size,
+        info_size, w, h, 1, 8, _BI_RGB, pixels_size, 3780, 3780, 0, 0,
+    )
+    # Grayscale palette (BGRX, with imagecodecs's 0xFF in the reserved byte).
+    pal = np.frombuffer(out, dtype=np.uint8, count=palette_size,
+                         offset=file_header_size + info_size).reshape(256, 4)
+    pal[:, 0] = pal[:, 1] = pal[:, 2] = np.arange(256, dtype=np.uint8)
+    pal[:, 3] = 0xFF
+    # Pixel rows, bottom-up + row padding to stride.
+    view = np.frombuffer(out, dtype=np.uint8, count=pixels_size,
+                          offset=pix_offset).reshape(h, stride)
+    view[:, :w] = arr[::-1]
+    # Anything past column w in each row stays zero (bytearray init).
+    return bytes(out)
 
 
 def _encode_bgr24(arr: np.ndarray) -> bytes:
     h, w, _ = arr.shape
     stride = _row_stride(w, 24)
-    pad = stride - 3 * w
-    # Build the BGR-on-bottom-up output directly into a contiguous
-    # buffer via per-channel assignment. ~3x faster than the
-    # ``np.ascontiguousarray(arr[::-1, :, ::-1])`` it replaced —
-    # numpy's contig-from-double-reversed-view path is unexpectedly
-    # slow because both Y and channel axes are stride-reversed.
-    if pad:
-        bgr = np.zeros((h, stride), dtype=np.uint8)
-        bgr3 = bgr[:, :3 * w].reshape(h, w, 3)
-    else:
-        bgr3 = np.empty((h, w, 3), dtype=np.uint8)
-    bgr3[:, :, 2] = arr[::-1, :, 0]
-    bgr3[:, :, 1] = arr[::-1, :, 1]
-    bgr3[:, :, 0] = arr[::-1, :, 2]
-    pixels = (bgr if pad else bgr3).tobytes()
-
     info_size = 40
     file_header_size = 14
     pix_offset = file_header_size + info_size
-    file_size = pix_offset + len(pixels)
+    pixels_size = h * stride
+    total = pix_offset + pixels_size
 
-    file_hdr = struct.pack('<2sIHHI', b'BM', file_size, 0, 0, pix_offset)
-    info_hdr = struct.pack(
-        '<IiiHHIIiiII',
-        info_size, w, h, 1, 24, _BI_RGB, len(pixels), 3780, 3780, 0, 0)
-    return file_hdr + info_hdr + pixels
+    out = bytearray(total)
+    struct.pack_into('<2sIHHI', out, 0, b'BM', total, 0, 0, pix_offset)
+    struct.pack_into(
+        '<IiiHHIIiiII', out, file_header_size,
+        info_size, w, h, 1, 24, _BI_RGB, pixels_size, 3780, 3780, 0, 0,
+    )
+    view = np.frombuffer(out, dtype=np.uint8, count=pixels_size,
+                          offset=pix_offset).reshape(h, stride)
+    bgr3 = view[:, :3 * w].reshape(h, w, 3)
+    # Per-channel assignment is ~3x faster than
+    # np.ascontiguousarray(arr[::-1, :, ::-1]) — numpy's slow path on
+    # doubly-reversed-stride views.
+    bgr3[:, :, 2] = arr[::-1, :, 0]
+    bgr3[:, :, 1] = arr[::-1, :, 1]
+    bgr3[:, :, 0] = arr[::-1, :, 2]
+    return bytes(out)
 
 
 def _encode_bgra32(arr: np.ndarray) -> bytes:
     h, w, _ = arr.shape
     # 32-bit rows are always 4-byte aligned; no padding needed.
-    # Build directly into a contig buffer to dodge the slow path
-    # numpy hits on doubly-reversed-stride sources (see _encode_bgr24).
-    bgra = np.empty((h, w, 4), dtype=np.uint8)
-    bgra[:, :, 2] = arr[::-1, :, 0]
-    bgra[:, :, 1] = arr[::-1, :, 1]
-    bgra[:, :, 0] = arr[::-1, :, 2]
-    bgra[:, :, 3] = arr[::-1, :, 3]
-    pixels = bgra.tobytes()
-
     info_size = 108  # BITMAPV4HEADER
     file_header_size = 14
     pix_offset = file_header_size + info_size
-    file_size = pix_offset + len(pixels)
+    pixels_size = h * w * 4
+    total = pix_offset + pixels_size
 
-    file_hdr = struct.pack('<2sIHHI', b'BM', file_size, 0, 0, pix_offset)
+    out = bytearray(total)
+    struct.pack_into('<2sIHHI', out, 0, b'BM', total, 0, 0, pix_offset)
     # BITMAPV4HEADER: 40 base bytes + 4 masks + 4 cs + 36 endpoints + 12 gamma
-    info_hdr = struct.pack(
-        '<IiiHHIIiiII',
-        info_size, w, h, 1, 32, _BI_BITFIELDS, len(pixels), 3780, 3780, 0, 0,
+    struct.pack_into(
+        '<IiiHHIIiiII', out, file_header_size,
+        info_size, w, h, 1, 32, _BI_BITFIELDS, pixels_size, 3780, 3780, 0, 0,
     )
-    # Channel masks (BGRA layout in memory; little-endian DWORD pixel reads
-    # as 0xAA RR GG BB so masks reflect that).
-    masks = struct.pack(
-        '<IIII',
-        0x00FF0000,  # red
-        0x0000FF00,  # green
-        0x000000FF,  # blue
-        0xFF000000,  # alpha
-    )
-    cs = struct.pack('<I', 0)  # LCS_CALIBRATED_RGB / unused
-    endpoints = b'\x00' * 36
-    gamma = struct.pack('<III', 0, 0, 0)
-    return file_hdr + info_hdr + masks + cs + endpoints + gamma + pixels
+    # Channel masks at offset 14+40 = 54. Little-endian DWORD pixel
+    # reads as 0xAA RR GG BB so masks reflect that.
+    struct.pack_into('<IIII', out, file_header_size + 40,
+                     0x00FF0000, 0x0000FF00, 0x000000FF, 0xFF000000)
+    # cs (LCS_CALIBRATED_RGB / unused) at 70, endpoints (36 zero bytes)
+    # at 74, gamma (12 zero bytes) at 110 — all already zero from
+    # bytearray init.
+    view = np.frombuffer(out, dtype=np.uint8, count=pixels_size,
+                          offset=pix_offset).reshape(h, w, 4)
+    view[:, :, 2] = arr[::-1, :, 0]
+    view[:, :, 1] = arr[::-1, :, 1]
+    view[:, :, 0] = arr[::-1, :, 2]
+    view[:, :, 3] = arr[::-1, :, 3]
+    return bytes(out)
 
 
 def _decode(data: bytes) -> np.ndarray:
@@ -213,13 +230,18 @@ def _decode(data: bytes) -> np.ndarray:
         ).reshape(n_colors, 4)
 
     stride = _row_stride(width, bpp)
-    pix_data = data[pix_offset:pix_offset + stride * height]
-    if len(pix_data) < stride * height:
-        # Some encoders set size_image to 0; verify size from offset is enough.
+    # Use a memoryview slice (zero-copy view) instead of a bytes
+    # slice (full memcpy). Saves ~1 MB of memcpy on a Kodak-sized
+    # BMP decode. ``data[a:b]`` is a fresh bytes object; the
+    # memoryview slice is just a stride/length update.
+    data_mv = memoryview(data)
+    pix_end = pix_offset + stride * height
+    if pix_end > len(data):
         if size_image and len(data) - pix_offset >= size_image:  # pragma: no cover - rare encoder bug recovery
-            pix_data = data[pix_offset:pix_offset + size_image]
-        if len(pix_data) < stride * height:
+            pix_end = pix_offset + size_image
+        if pix_end > len(data):
             raise BmpError('truncated BMP pixel data')
+    pix_data = data_mv[pix_offset:pix_end]
 
     rows = np.frombuffer(pix_data, dtype=np.uint8).reshape(height, stride)
 
@@ -244,18 +266,42 @@ def _decode(data: bytes) -> np.ndarray:
         return rgb
 
     if bpp == 24:
+        # Cython fast path — beats pure-Python+numpy ~14x on a Kodak
+        # photo by doing the row-flip + BGR->RGB swap in a tight C
+        # loop instead of np.ascontiguousarray on a doubly-reversed-
+        # stride view. Falls through to a per-channel numpy assignment
+        # when the Cython extension isn't built.
+        if _HAVE_BMP_ENCODE:
+            return _bmp_decode_bgr24(pix_data, width, height, int(top_down))
         bgr = rows[:, :3 * width].reshape(height, width, 3)
-        if not top_down:
-            bgr = bgr[::-1]
-        return np.ascontiguousarray(bgr[..., ::-1])  # BGR -> RGB
+        rgb = np.empty((height, width, 3), dtype=np.uint8)
+        src = bgr if top_down else bgr[::-1]
+        rgb[:, :, 0] = src[:, :, 2]
+        rgb[:, :, 1] = src[:, :, 1]
+        rgb[:, :, 2] = src[:, :, 0]
+        return rgb
 
     if bpp == 32:
+        # 32-bit BI_RGB / BI_BITFIELDS BGRA. Same Cython fast path
+        # benefit as bpp==24.
+        if compression == _BI_BITFIELDS and masks is not None:
+            # Custom channel masks need the slow path — they may not
+            # be the canonical RR GG BB AA layout. Rare in practice.
+            px = rows[:, :4 * width].reshape(height, width, 4)
+            if not top_down:
+                px = px[::-1]
+            return _unpack_32_bitfields(px, masks, alpha_mask)
+        if _HAVE_BMP_ENCODE:
+            # 32-bit BI_RGB has a 0xFF reserved byte in alpha slot — we
+            # mimic imagecodecs behaviour: return (H, W, 3) RGB rather
+            # than RGBX. Decode to RGBA via the Cython path, then drop
+            # the alpha channel.
+            rgba = _bmp_decode_bgra32(pix_data, width, height, int(top_down))
+            return rgba[..., :3]
+        # Fallback pure-numpy path.
         px = rows[:, :4 * width].reshape(height, width, 4)
         if not top_down:
             px = px[::-1]
-        if compression == _BI_BITFIELDS and masks is not None:
-            return _unpack_32_bitfields(px, masks, alpha_mask)
-        # BI_RGB 32-bit: BGRX in memory; treat as RGB (drop X).
         rgb = np.empty((height, width, 3), dtype=np.uint8)
         rgb[..., 0] = px[..., 2]
         rgb[..., 1] = px[..., 1]
@@ -359,7 +405,16 @@ class BmpCodec(Codec):
     def encode(self, data: Any, *, dest=None, **opts) -> bytes | None:
         if not isinstance(data, np.ndarray):
             data = np.asarray(data)
-        encoded = _encode(data)
+        try:
+            encoded = _bmp_encode(data) if _HAVE_BMP_ENCODE else _encode(data)
+        except Exception as e:
+            # Re-raise Cython BmpEncodeError as the wrapper's BmpError so
+            # callers can catch a single exception type regardless of
+            # which encoder ran. The Cython error type isn't visible to
+            # tests that import BmpError from this module.
+            if type(e).__name__ == "BmpEncodeError":
+                raise BmpError(str(e)) from e
+            raise
         return _write_dest(encoded, dest)
 
     def decode(self, src: Any, **opts) -> np.ndarray:

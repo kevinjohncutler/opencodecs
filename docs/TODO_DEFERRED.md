@@ -163,13 +163,14 @@ real perf gaps were fixed; two remain documented:
   an in-process compressor, not a long-term storage format, so
   the break is acceptable.
 
-* **bmp**: SHIPPED a numpy-fast encode path that avoids the
-  ``np.ascontiguousarray`` slow path on doubly-reversed-stride
-  inputs. Built output is byte-identical to imagecodecs. Was 5×
-  slower (1.32 ms vs 0.27 ms on a Kodak photo); now 1.9× slower
-  (0.52 ms vs 0.27 ms). The remaining gap is the ``.tobytes()``
-  copy + struct.pack + Python function-call overhead — would
-  need a full Cython port to close, low ROI given BMP's rare use.
+* **bmp**: SHIPPED Cython encode + decode fast paths
+  (``codecs/_bmp.pyx``). Encode beats imagecodecs ~8.7× on a Kodak
+  photo (0.03 ms vs 0.26 ms) by writing directly into a
+  ``PyBytes_FromStringAndSize`` buffer with a tight RGB→BGR loop;
+  decode is at parity (~0.031 ms each) after switching the inner
+  loop to linear pointer increments (clang autovectorises to NEON
+  ``vld3.u8``/``vst3.u8``). Pure-Python fallback retained for
+  builds that don't compile the Cython extension.
 
 * **aec**: still ~3.5× slower at MATCHED settings. The gap is
   inside ``_aec.pyx`` (libaec's ``aec_buffer_encode`` does init +
