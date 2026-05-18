@@ -145,6 +145,47 @@ git log for `2026-05-11` for the night's shipped commits.
   uses the entire upstream h5py decode path (filters, fill values,
   reference resolution) instead of reimplementing it.
 
+## Codecs with imagecodecs-parity perf gaps
+
+Pareto-default audit (see ``docs/codec_api_conventions.md`` and
+``bench/bench_codecs.py``) covered all 38 codecs where ``imagecodecs``
+ships an equivalent encoder. Of those, four still have real perf
+gaps that the Pareto rule classifies as "fail":
+
+* **rcomp**: ~1000× slower than imagecodecs (17 ms vs 0.02 ms on a
+  4096-element int16 array). Output size is at parity (~2% larger
+  due to a different default block size). Root cause:
+  ``src/opencodecs/_rcomp_codec.py`` is a *pure-Python* bit-stream
+  encoder — ``write_bits`` / ``write_unary`` get called ~80 k times
+  per call. ``imagecodecs.rcomp_encode`` wraps cfitsio's
+  ``fits_rcomp`` C function. Proper fix: vendor cfitsio's
+  ``ricecomp.c`` (already in ``../3rdparty/cfitsio/`` in the parent
+  imagecodecs checkout) and write a Cython binding. ~4 hours.
+
+* **bmp**: ~5× slower than imagecodecs (1.55 ms vs 0.32 ms on a
+  Kodak photo). Output is byte-identical. Root cause:
+  ``_bmp_codec.py`` builds the BMP byte stream in pure
+  Python+numpy; imagecodecs uses a C encoder. Proper fix: Cython
+  ``_bmp.pyx``. ~3 hours but low ROI — BMP is rarely used.
+
+* **aec**: ~90% slower than imagecodecs (0.76 ms vs 0.40 ms on a
+  100k-element uint16 array) but produces ~2% *smaller* output —
+  Pareto-fail on speed, Pareto-better on size. The size win is
+  likely a different default block size; not a code defect.
+
+* **blosc2**: 2.1× slower than imagecodecs at zstd-level-1 (the
+  matched setting) but produces ~9% smaller output. Root cause:
+  opencodecs links c-blosc2 3.x via Homebrew; imagecodecs bundles
+  c-blosc2 2.23.0. Different library, different perf/size profile.
+  No code change can close this — would need to swap our linked
+  c-blosc2 to 2.x.
+
+Marginal cases (within +10-15% of ic on small absolute times,
+all pass on size/quality) — adapter overhead dominates and is not
+worth a Cython rewrite:
+delta, xor, byteshuffle (already ★), numpy, snappy, qoi, jpegls,
+webp-lossless, zfp, sperr.
+
 ## libspng filter_sum SIMD vectorization
 
 * **Status**: SHIPPED via filter-switch split (commit landing
