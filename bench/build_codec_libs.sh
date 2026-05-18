@@ -76,6 +76,12 @@ VERSIONS=(
     "pcodec          1.0.2"
     "brunsli         master"
 
+    # JPEG-LS (CharLS): system package builds are typically -O2 with no
+    # vector tuning; imagecodecs bundles a custom build that runs ~2x
+    # faster. Same pattern as zfp — source build with -O3 -march=native
+    # closes the gap.
+    "CharLS          2.4.3"
+
     # Marquee codec — delegated to the dedicated script for parity with
     # the per-developer flow (some users only want to source-build libjxl
     # and rely on system libs for the rest).
@@ -586,6 +592,25 @@ build_SPERR() {
     mark_built SPERR "$v"
 }
 
+# ---- CharLS (JPEG-LS reference impl) ----------------------------------
+build_CharLS() {
+    local v="${VERSIONS_MAP[CharLS]}"
+    is_built CharLS "$v" && { echo "  CharLS $v already built"; return; }
+    echo "==> CharLS $v"
+    local src
+    src=$(fetch_tar CharLS "$v" \
+        "https://github.com/team-charls/charls/archive/refs/tags/$v.tar.gz")
+    # CharLS ships unit tests + a CLI binary by default; we just want
+    # the shared library. CHARLS_INSTALL=ON puts the .so + headers
+    # under PREFIX (the install layout downstream codecs probe for).
+    cmake_build "$src" \
+        -DCHARLS_BUILD_TESTS=OFF \
+        -DCHARLS_BUILD_FUZZ_TEST=OFF \
+        -DCHARLS_BUILD_SAMPLES=OFF \
+        -DCHARLS_INSTALL=ON
+    mark_built CharLS "$v"
+}
+
 # ---- Brunsli (lossless JPEG transcoder) -------------------------------
 # Brunsli's top-level CMake pulls in vintage googletest; modern CMake
 # refuses it without an explicit policy floor.
@@ -688,6 +713,7 @@ ORDERED=(
     SPERR
     pcodec
     brunsli
+    CharLS
     libjxl
 )
 
@@ -718,6 +744,7 @@ for name in "${ORDERED[@]}"; do
             SPERR)           build_SPERR ;;
             pcodec)          build_pcodec ;;
             brunsli)         build_brunsli ;;
+            CharLS)          build_CharLS ;;
             libjxl)          build_libjxl ;;
         esac
     fi

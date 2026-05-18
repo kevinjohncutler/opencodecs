@@ -479,6 +479,13 @@ def _maybe_build_ext_simple(
             [str(dlib)] if sys.platform == "darwin" else []
         )
         libs = [] if sys.platform == "darwin" else [libname]
+        # On Linux, bake a DT_RUNPATH so the dynamic loader finds the
+        # shared lib at import time without LD_LIBRARY_PATH. Critical
+        # when ``prefix`` is the per-user cache (the cached install
+        # isn't on the default search path) — without rpath, the .so
+        # links cleanly at build time but fails at first import.
+        if sys.platform == "linux":
+            extra_link_args.append(f"-Wl,-rpath,{dlib.parent}")
         return [Extension(
             name=name,
             sources=[source],
@@ -1121,11 +1128,19 @@ extensions = [
     # libjpeg-turbo libs.
     *_maybe_build_mozjpeg_ext(),
     # CharLS / JPEG-LS via libcharls. Optional — built only when CharLS
-    # is on the system.
+    # is on the system. The per-user cache prefix
+    # (``$XDG_CACHE_HOME/opencodecs/libs``) is checked first so a
+    # source build with ``-O3 -march=native`` from
+    # ``bench/build_codec_libs.sh --only=CharLS`` wins over distro
+    # packages (Debian's libcharls-dev ships an -O2 portable build
+    # that's ~2x slower than imagecodecs's bundled charls — same
+    # pattern as zfp).
     *_maybe_build_ext_simple(
         name="opencodecs.codecs._charls",
         source="src/opencodecs/codecs/_charls.pyx",
         prefixes=[
+            str(_OC_USER_CACHE / "libs"),
+            str(_OC_USER_CACHE / "CharLS"),
             "/opt/homebrew/opt/charls",
             "/usr/local/opt/charls",
             "/usr/local", "/usr",
