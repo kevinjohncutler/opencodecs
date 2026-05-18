@@ -189,6 +189,24 @@ def _build_workloads(rng: np.random.Generator,
         w = _try_prep("jxl/kodak_photo", prep_jxl, skipped)
         if w is not None: workloads.append(w)
 
+        # BMP — uncompressed image format, pure memory-bound. Used to
+        # be pure-Python; now a Cython encoder that beats imagecodecs
+        # ~8x on a typical photo by skipping the unavoidable bytes()
+        # copy with PyBytes_FromStringAndSize.
+        def prep_bmp():
+            if not oc.has_codec("bmp") or not hasattr(ic, "bmp_encode"):
+                raise RuntimeError("bmp not available on both sides")
+            blob_ic = ic.bmp_encode(kodak)
+            return Workload(
+                key="bmp/kodak_photo",
+                encode_oc=lambda im=kodak: oc.get_codec("bmp").encode(im),
+                encode_ic=lambda im=kodak: ic.bmp_encode(im),
+                decode_oc=lambda b=blob_ic: oc.get_codec("bmp").decode(b),
+                decode_ic=lambda b=blob_ic: ic.bmp_decode(b),
+            )
+        w = _try_prep("bmp/kodak_photo", prep_bmp, skipped)
+        if w is not None: workloads.append(w)
+
     # ---- General-purpose byte compressors on natural-image bytes ----
     nat = _kodak_bytes()
     for name in ("deflate", "zstd", "brotli", "lzma", "bz2", "snappy"):
