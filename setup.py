@@ -1406,10 +1406,11 @@ extensions = [
     # built without ``-march`` tuning and is measurably slower than a
     # source build with ``-O3 -march=native``; see
     # bench/build_codec_libs.sh::build_zfp and the zfp section of
-    # docs/TODO_DEFERRED.md). ``runtime_library_dirs`` mirrors
-    # ``library_dirs`` so the linker bakes the cached prefix into the
-    # extension's DT_RUNPATH — without it the .so resolves only via
-    # LD_LIBRARY_PATH at import time.
+    # docs/TODO_DEFERRED.md). We add ``-Wl,-rpath,<libs>`` via
+    # ``extra_link_args`` rather than the distutils ``runtime_library
+    # _dirs`` keyword — the latter is silently dropped when the entry
+    # matches one already implicit in the linker's defaults, which
+    # was hiding our cached libzfp from the dynamic loader.
     Extension(
         name="opencodecs.codecs._zfp",
         sources=["src/opencodecs/codecs/_zfp.pyx"],
@@ -1419,8 +1420,11 @@ extensions = [
             *_resolve_include_dirs("zfp.h"),
         ],
         library_dirs=_lib_dirs_for_probes(),
-        runtime_library_dirs=(_lib_dirs_for_probes() if sys.platform != "win32" else []),
         libraries=["zfp"],
+        extra_link_args=(
+            [f"-Wl,-rpath,{d}" for d in _lib_dirs_for_probes()]
+            if sys.platform != "win32" else []
+        ),
         define_macros=[("NPY_NO_DEPRECATED_API", "NPY_1_7_API_VERSION")],
         language="c",
     ),
