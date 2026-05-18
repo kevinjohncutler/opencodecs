@@ -5,93 +5,93 @@
   "ratios": [
     {
       "key": "png/kodak_photo",
-      "encode_ratio": 0.3128249003108539,
-      "decode_ratio": 0.8656321938843551
+      "encode_ratio": 0.31320007545072254,
+      "decode_ratio": 0.8664470968134235
     },
     {
       "key": "qoi/kodak_photo",
-      "encode_ratio": 1.0400537391957911,
-      "decode_ratio": 1.0313899791146333
+      "encode_ratio": 1.0868940038939006,
+      "decode_ratio": 1.0283085001177839
     },
     {
       "key": "jpegls/kodak_photo",
-      "encode_ratio": 1.1142561003367801,
-      "decode_ratio": 0.9927754262397611
+      "encode_ratio": 1.0902451069452475,
+      "decode_ratio": 0.9964023020728551
     },
     {
       "key": "jpeg2k/kodak_photo",
-      "encode_ratio": 0.16842058672912877,
-      "decode_ratio": 0.17864294182539237
+      "encode_ratio": 0.1627756167485346,
+      "decode_ratio": 0.1772300790463441
     },
     {
       "key": "jpeg/kodak_photo",
-      "encode_ratio": 0.9629975252172386,
-      "decode_ratio": 1.006895466352558
+      "encode_ratio": 0.9675589410182368,
+      "decode_ratio": 1.01718270302416
     },
     {
       "key": "webp/kodak_photo",
-      "encode_ratio": 1.1097106598872273,
-      "decode_ratio": 1.032295149399344
+      "encode_ratio": 1.134118530785795,
+      "decode_ratio": 1.0288361180526362
     },
     {
       "key": "avif/kodak_photo",
-      "encode_ratio": 0.5637773375195779,
-      "decode_ratio": 1.0133750282244933
+      "encode_ratio": 0.5668583128021903,
+      "decode_ratio": 1.004992274224723
     },
     {
       "key": "jxl/kodak_photo",
-      "encode_ratio": 0.6749975568525416,
-      "decode_ratio": 0.3516598097323179
+      "encode_ratio": 0.6576511497717578,
+      "decode_ratio": 0.20124851878259548
     },
     {
       "key": "bmp/kodak_photo",
-      "encode_ratio": 0.1150471533909301,
-      "decode_ratio": 1.004201680672269
+      "encode_ratio": 0.1139400264553475,
+      "decode_ratio": 1.0337165991902835
     },
     {
       "key": "deflate/kodak_bytes",
-      "encode_ratio": 0.9706035354938207,
-      "decode_ratio": 0.49742512256416593
+      "encode_ratio": 0.9674129510923887,
+      "decode_ratio": 0.5111583707971034
     },
     {
       "key": "zstd/kodak_bytes",
-      "encode_ratio": 1.0163538473589389,
-      "decode_ratio": 0.898511967545639
+      "encode_ratio": 1.0161690567614867,
+      "decode_ratio": 0.9008589291848333
     },
     {
       "key": "brotli/kodak_bytes",
-      "encode_ratio": 0.9428933230381599,
-      "decode_ratio": 1.0012955241989085
+      "encode_ratio": 0.9468197331274061,
+      "decode_ratio": 0.9985694227290843
     },
     {
       "key": "lzma/kodak_bytes",
-      "encode_ratio": 0.9225069838613166,
-      "decode_ratio": 0.9954310996872113
+      "encode_ratio": 1.1602350444037843,
+      "decode_ratio": 0.997117368376193
     },
     {
       "key": "bz2/kodak_bytes",
-      "encode_ratio": 1.0189697581661412,
-      "decode_ratio": 0.9993207608267913
+      "encode_ratio": 0.9870330371993145,
+      "decode_ratio": 0.9932378053364174
     },
     {
       "key": "snappy/kodak_bytes",
-      "encode_ratio": 1.058971189468293,
-      "decode_ratio": 1.0364043321299639
+      "encode_ratio": 1.0682499423564678,
+      "decode_ratio": 1.0
     },
     {
       "key": "lz4/kodak_bytes",
-      "encode_ratio": 1.008892143529658,
-      "decode_ratio": 0.9719496611368459
+      "encode_ratio": 1.0194894234586076,
+      "decode_ratio": 1.0117359183649517
     },
     {
       "key": "zfp/smooth_f32_3d",
-      "encode_ratio": 1.1939213527790988,
-      "decode_ratio": 1.0807015683675725
+      "encode_ratio": 1.1937049580923547,
+      "decode_ratio": 1.0600372401098725
     },
     {
       "key": "blosc2/kodak_bytes",
-      "encode_ratio": 2.1095530484330483,
-      "decode_ratio": 1.0018111372376195
+      "encode_ratio": 2.135418001779744,
+      "decode_ratio": 0.9753075020610058
     }
   ]
 }

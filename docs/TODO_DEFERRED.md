@@ -190,6 +190,33 @@ real perf gaps were fixed; two remain documented:
   c-blosc2 — out of scope for one codec since the brew package
   is shared.
 
+* **zfp**: 17% slower (0.39 ms vs 0.32 ms on a 32³ float field).
+  Output is byte-identical at matched settings. **Root cause
+  isolated to the underlying libzfp build, not our wrapper** — a
+  pure ctypes call to brew's libzfp.1.dylib takes the same 0.39 ms
+  that our Cython wrapper does, while imagecodecs's bundled libzfp
+  (same 1.0.1 source) clocks 0.32 ms. Brew's bottle is built
+  without ``-march`` tuning; imagecodecs ships a libzfp compiled
+  with ``-O3 -march=native``-style flags.
+
+  Wrapper-side micro-opts shipped (1.23× → 1.17×):
+
+  * memoryview-cast write path (matches ``_zstd.pyx``)
+  * setup.py probes ``~/Library/Caches/opencodecs/zfp/include``
+    first so a user-cached build wins over the brew bottle
+
+  **Closing the rest** needs a per-user libzfp build (network
+  required to fetch the source — couldn't do it in the
+  network-restricted dev session that found this). Run::
+
+      MARCH=native USE_LTO=1 bash bench/build_codec_libs.sh --only=zfp
+
+  on a recent bash (4.x+ for assoc arrays — macOS ships 3.2; use
+  ``brew install bash`` and run via ``/opt/homebrew/bin/bash``).
+  Re-run ``setup.py build_ext --inplace`` afterwards so the linker
+  picks up the cached prefix. Expected result: ~0.32 ms, matching
+  imagecodecs.
+
 Marginal cases (within +10-15% of ic on small absolute times,
 all pass on size/quality) — adapter overhead dominates and is not
 worth a Cython rewrite:
