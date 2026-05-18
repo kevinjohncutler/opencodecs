@@ -1454,6 +1454,25 @@ extensions = [
         libraries=["aec"],
         language="c",
     ),
+    # Rice compression (cfitsio's ricecomp.c, vendored as a tiny
+    # standalone C file). Replaces a pure-Python bit-stream encoder
+    # that ran ~1000x slower than imagecodecs. License: see
+    # 3rdparty/cfitsio/License.txt (cfitsio is a public-domain U.S.
+    # Government work).
+    Extension(
+        name="opencodecs.codecs._rcomp",
+        sources=[
+            "src/opencodecs/codecs/_rcomp.pyx",
+            "3rdparty/cfitsio/ricecomp.c",
+        ],
+        include_dirs=[
+            str(PKG_CODECS),
+            numpy.get_include(),
+            str(HERE / "3rdparty" / "cfitsio"),
+        ],
+        define_macros=[("NPY_NO_DEPRECATED_API", "NPY_1_7_API_VERSION")],
+        language="c",
+    ),
     # Bitshuffle: vendored single-purpose filter (~3 small C files). No
     # external dep — bitshuffle.h is the LZ4-coupled API which we don't
     # use, but bshuf_compress_lz4 references LZ4_compress_HC, so we

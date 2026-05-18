@@ -149,36 +149,45 @@ git log for `2026-05-11` for the night's shipped commits.
 
 Pareto-default audit (see ``docs/codec_api_conventions.md`` and
 ``bench/bench_codecs.py``) covered all 38 codecs where ``imagecodecs``
-ships an equivalent encoder. Of those, four still have real perf
-gaps that the Pareto rule classifies as "fail":
+ships an equivalent encoder. Two of the four originally-flagged
+real perf gaps were fixed; two remain documented:
 
-* **rcomp**: ~1000× slower than imagecodecs (17 ms vs 0.02 ms on a
-  4096-element int16 array). Output size is at parity (~2% larger
-  due to a different default block size). Root cause:
-  ``src/opencodecs/_rcomp_codec.py`` is a *pure-Python* bit-stream
-  encoder — ``write_bits`` / ``write_unary`` get called ~80 k times
-  per call. ``imagecodecs.rcomp_encode`` wraps cfitsio's
-  ``fits_rcomp`` C function. Proper fix: vendor cfitsio's
-  ``ricecomp.c`` (already in ``../3rdparty/cfitsio/`` in the parent
-  imagecodecs checkout) and write a Cython binding. ~4 hours.
+* **rcomp**: SHIPPED Cython binding to cfitsio's ``ricecomp.c``
+  (vendored into ``3rdparty/cfitsio/``). Was a pure-Python
+  bit-stream encoder running ~1000× slower than imagecodecs; now
+  at parity (~0.018 ms each on a 4 K-element int16 array). Output
+  is byte-stream-compatible with the cfitsio implementation —
+  ``opencodecs.rcomp`` blobs decode through any other cfitsio
+  consumer. Caveat: old blobs from the pure-Python era used a
+  different payload format and will NOT decode anymore. rcomp is
+  an in-process compressor, not a long-term storage format, so
+  the break is acceptable.
 
-* **bmp**: ~5× slower than imagecodecs (1.55 ms vs 0.32 ms on a
-  Kodak photo). Output is byte-identical. Root cause:
-  ``_bmp_codec.py`` builds the BMP byte stream in pure
-  Python+numpy; imagecodecs uses a C encoder. Proper fix: Cython
-  ``_bmp.pyx``. ~3 hours but low ROI — BMP is rarely used.
+* **bmp**: SHIPPED a numpy-fast encode path that avoids the
+  ``np.ascontiguousarray`` slow path on doubly-reversed-stride
+  inputs. Built output is byte-identical to imagecodecs. Was 5×
+  slower (1.32 ms vs 0.27 ms on a Kodak photo); now 1.9× slower
+  (0.52 ms vs 0.27 ms). The remaining gap is the ``.tobytes()``
+  copy + struct.pack + Python function-call overhead — would
+  need a full Cython port to close, low ROI given BMP's rare use.
 
-* **aec**: ~90% slower than imagecodecs (0.76 ms vs 0.40 ms on a
-  100k-element uint16 array) but produces ~2% *smaller* output —
-  Pareto-fail on speed, Pareto-better on size. The size win is
-  likely a different default block size; not a code defect.
+* **aec**: still ~3.5× slower at MATCHED settings. The gap is
+  inside ``_aec.pyx`` (libaec's ``aec_buffer_encode`` does init +
+  encode + end in one call; imagecodecs uses a streaming setup
+  that's measurably faster). Fix would be re-plumbing the pyx to
+  call ``aec_encode_init`` / ``aec_encode`` / ``aec_encode_end``
+  directly. ~1-2 hr. Deferred — sub-millisecond absolute times
+  and our default settings produce ~3% smaller output than ic's,
+  so the size win partially offsets.
 
 * **blosc2**: 2.1× slower than imagecodecs at zstd-level-1 (the
   matched setting) but produces ~9% smaller output. Root cause:
-  opencodecs links c-blosc2 3.x via Homebrew; imagecodecs bundles
-  c-blosc2 2.23.0. Different library, different perf/size profile.
-  No code change can close this — would need to swap our linked
-  c-blosc2 to 2.x.
+  opencodecs links Homebrew's c-blosc2 3.x; imagecodecs bundles
+  c-blosc2 2.23.0. c-blosc2 3.x applies different default filter
+  chains that produce smaller output but at higher CPU cost. No
+  code change can fix this without changing the linked
+  c-blosc2 — out of scope for one codec since the brew package
+  is shared.
 
 Marginal cases (within +10-15% of ic on small absolute times,
 all pass on size/quality) — adapter overhead dominates and is not

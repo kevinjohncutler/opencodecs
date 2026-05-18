@@ -58,6 +58,7 @@ _EXTENSIONS = (
     "_heif",
     "_png",
     "_bitshuffle",
+    "_rcomp",        # cfitsio ricecomp (vendored) — replaces _rcomp_codec.py
     "_tiff",
     "_ndtiff",
     "_bytetools",
