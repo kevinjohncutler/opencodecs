@@ -134,6 +134,68 @@ Bytes / file-like inputs go through `Codec.open()`'s pre-amble (spill
 to temp file, then hand to the native reader). Don't push that branch
 into the native reader.
 
+## Default settings: Pareto-better than the reference, no cheating
+
+For every codec we ship that has an equivalent in ``imagecodecs``
+(or any other established reference like Pillow / tifffile / zarr),
+our default kwargs MUST produce output that is **at least as good
+and at least as fast** as the reference's default. No tradeoffs —
+no "fewer bytes but worse quality", no "faster but lossier", no
+"better quality but slower." The Pareto frontier in both
+dimensions, or matching it. If you cannot find a setting that
+dominates the reference on both axes, the reference's default is
+the right answer and we adopt it.
+
+Concretely, for each codec, before merging a default change run
+``bench/bench_codecs.py`` against ``imagecodecs`` and verify:
+
+* **Lossless codecs** (png, qoi, jpegls, htj2k lossless, deflate,
+  zstd, lz4, brotli, lzma, bz2, snappy, blosc2, b2nd, lerc-lossless,
+  pcodec, bitshuffle, ...): our default output size ≤ reference's
+  default output size, AND our default encode time ≤ reference's
+  default encode time. Lossless output is deterministic per spec,
+  so output size IS the quality axis.
+
+* **Lossy codecs** (jpeg, mozjpeg, webp, avif, heif, jxl-lossy,
+  jpeg2k-lossy, sz3, sperr, zfp-fixed-rate, quantize): our default
+  result must satisfy *both*:
+  * output size ≤ reference's default output size, AND
+  * decoded-vs-source PSNR (or codec-native quality metric) ≥
+    reference's default decoded-vs-source PSNR, AND
+  * encode time ≤ reference's default encode time.
+
+  If the reference picks a "max-quality, slow" default and we
+  picked "fast", we're cheating. Drop our default's speed bias
+  until the size and PSNR are at least at parity.
+
+**Why the strict rule.** Users who switch from ``imagecodecs`` to
+``opencodecs`` expect the same code with the same arguments to
+produce *at least* as good a result. A trick like "default to a
+lower quality so we beat them on time" makes the migration
+silently lossy and erodes trust. The Pareto bar is the only way
+to claim "drop-in faster replacement" honestly.
+
+**Why the reference is imagecodecs.** imagecodecs is the
+de-facto-standard Python wrapper for these codecs in the
+scientific imaging ecosystem; matching or beating its defaults
+gives users a concrete behavioral guarantee they can hold us to.
+(For codecs imagecodecs doesn't expose, the reference is whoever
+established the de-facto Python default — Pillow for some
+formats, the upstream library's CLI for byte compressors.)
+
+**Documenting deliberate non-defaults.** A codec's docstring
+should record any case where its default *would* be slower than
+the reference and explain the win that buys (e.g. "level 6 instead
+of level 1 because it's the brotli CLI's own default and produces
+output that is unambiguously smaller-AND-faster than ic's default
+once measured end-to-end against natural-image data"). If you
+can't make that case, change the default.
+
+**Bench setpoints lock this in.** ``bench/perf_baseline.<arch>.json``
+records the current oc/ic ratio for every codec. ``bench --check``
+fails the build when a ratio drifts beyond +30%, which catches
+both perf regressions and silently-lossier-default regressions.
+
 ## Lifecycle
 
 * `Reader.__enter__` returns self; `__exit__` calls `close()`.

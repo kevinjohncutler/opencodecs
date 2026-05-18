@@ -123,7 +123,10 @@ def encode(data, *, level: int | None = None,
             f'MozJPEG encode: unsupported ndim={arr.ndim}; '
             'expected 2D grayscale or (H, W, 3) RGB')
 
-    quality = 75 if level is None else int(level)
+    # Default quality 95 — matches imagecodecs.mozjpeg_encode and our
+    # own _jpeg.pyx default, per the Pareto-better-or-equal policy in
+    # docs/codec_api_conventions.md "Default settings".
+    quality = 95 if level is None else int(level)
     if quality < 1: quality = 1
     if quality > 100: quality = 100
 

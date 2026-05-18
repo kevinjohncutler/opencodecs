@@ -101,6 +101,12 @@ cdef extern from 'openjpeg.h' nogil:
         float tcp_rates[100]
         float tcp_distoratio[100]
         OPJ_UINT32 max_comp_size
+        # Multi-component transform. 0 = none, 1 = enable RCT (reversible,
+        # for lossless) / ICT (irreversible, for lossy). Cython generates
+        # C code that resolves the field offset from the real openjpeg.h
+        # struct, so the partial mirror above is fine — order doesn't
+        # matter, presence does.
+        char tcp_mct
 
     OPJ_BOOL opj_has_thread_support()
     int opj_get_num_cpus()

@@ -439,6 +439,13 @@ def encode(data, *, level: int | None = None,
         opj_image_destroy(image)
         raise Jpeg2kError('opj_create_compress failed')
     opj_set_default_encoder_parameters(&cparams)
+    # Enable inter-channel decorrelation for RGB. The default leaves
+    # tcp_mct=0 which encodes each channel independently — a ~40% size
+    # regression on natural-image lossless vs imagecodecs (which sets
+    # tcp_mct=1 on its color path). RCT for lossless, ICT for lossy;
+    # libopenjpeg picks the right one based on `irreversible`.
+    if numcomps == 3:
+        cparams.tcp_mct = 1
     if lossless:
         cparams.tcp_numlayers = 1
         cparams.tcp_rates[0] = 0  # 0 = lossless

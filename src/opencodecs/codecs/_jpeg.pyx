@@ -55,7 +55,10 @@ def encode(data, *, level: int | None = None,
            iccprofile: bytes | None = None) -> bytes:
     """Encode a 2D or 3D uint8 array as JPEG.
 
-    ``level`` is the JPEG quality 0-100 (default 75).
+    ``level`` is the JPEG quality 0-100 (default 95, matching
+    ``imagecodecs.jpeg_encode`` so the file we emit is at least as
+    high quality as ic's default — see docs/codec_api_conventions.md
+    "Default settings: Pareto-better than the reference, no cheating").
     ``subsampling`` chooses the chroma subsampling for color JPEGs:
     "420" (default — same as imagecodecs / cjpeg / every JPEG tool),
     "422", "444", "440", "411". Higher ratios produce smaller files
@@ -116,7 +119,7 @@ def encode(data, *, level: int | None = None,
             f'JPEG encode: unsupported ndim={arr.ndim}; '
             'expected 2D grayscale or (H, W, 3) RGB')
 
-    quality = 75 if level is None else int(level)
+    quality = 95 if level is None else int(level)
     if quality < 1: quality = 1
     if quality > 100: quality = 100
 
