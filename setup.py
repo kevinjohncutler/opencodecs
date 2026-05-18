@@ -288,6 +288,12 @@ for _libdir in (
     # Prefer a per-user cached build (see bench/build_codec_libs.sh
     # ``zfp`` recipe, which compiles with -O3 + optional -march=native).
     "zfp",
+    # ``libs`` — the shared install root used by build_codec_libs.sh
+    # (everything goes under ``$CACHE/libs/{include,lib}``). Probing
+    # this prefix lets a single ``MARCH=native USE_LTO=1 bash
+    # build_codec_libs.sh`` recovery serve every codec at once
+    # without per-codec symlinks.
+    "libs",
 ):
     _p = _OC_USER_CACHE / _libdir
     if (_p / "include").is_dir():
@@ -1395,7 +1401,15 @@ extensions = [
         ),
         language="c",
     ),
-    # ZFP (lossy floating-point compression): system libzfp.
+    # ZFP (lossy floating-point compression): system libzfp, with the
+    # per-user cache prefix preferred when present (brew's bottle is
+    # built without ``-march`` tuning and is measurably slower than a
+    # source build with ``-O3 -march=native``; see
+    # bench/build_codec_libs.sh::build_zfp and the zfp section of
+    # docs/TODO_DEFERRED.md). ``runtime_library_dirs`` mirrors
+    # ``library_dirs`` so the linker bakes the cached prefix into the
+    # extension's DT_RUNPATH — without it the .so resolves only via
+    # LD_LIBRARY_PATH at import time.
     Extension(
         name="opencodecs.codecs._zfp",
         sources=["src/opencodecs/codecs/_zfp.pyx"],
@@ -1405,6 +1419,7 @@ extensions = [
             *_resolve_include_dirs("zfp.h"),
         ],
         library_dirs=_lib_dirs_for_probes(),
+        runtime_library_dirs=(_lib_dirs_for_probes() if sys.platform != "win32" else []),
         libraries=["zfp"],
         define_macros=[("NPY_NO_DEPRECATED_API", "NPY_1_7_API_VERSION")],
         language="c",
