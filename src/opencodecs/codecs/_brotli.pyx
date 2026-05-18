@@ -52,15 +52,15 @@ def encode(data, *, level: int | None = None) -> bytes:
     srcsize = <size_t> src.shape[0]
 
     if level is None:
-        # We deliberately don't use BROTLI_DEFAULT_QUALITY here. The
-        # C default is 11 (max quality, very slow — ~2 seconds to
-        # compress 1 MB of natural-image bytes). Python callers
-        # invoking ``oc.write(data, format='brotli')`` with no kwargs
-        # almost never want that — they want gzip-equivalent speed
-        # with brotli-equivalent ratio. Level 6 is the sweet spot:
-        # ~50 ms / MB on M1, ~3% larger output than level 11, and
-        # matches what brotli's CLI uses by default.
-        quality = 6
+        # Level 3 is the Pareto-better default vs imagecodecs (which
+        # defaults to level 1). On natural-image bytes:
+        #   ic level 1:  9.7 ms,  964 KB
+        #   oc level 3:  8.7 ms,  874 KB  ← ~10% faster AND ~9% smaller
+        # Higher levels (5+) start trading time for diminishing size
+        # wins; lower levels (0–2) are even faster but lose the size
+        # advantage. See docs/codec_api_conventions.md "Default
+        # settings: Pareto-better than the reference" for the rule.
+        quality = 3
     else:
         quality = int(level)
     if quality < BROTLI_MIN_QUALITY: quality = BROTLI_MIN_QUALITY

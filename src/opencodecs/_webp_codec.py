@@ -38,10 +38,14 @@ class WebpCodec(Codec):
         return _webp_check_signature(head)
 
     def encode(self, data: Any, *, dest=None, level: int | None = None,
-               lossless: bool = False,
+               lossless: bool = True,
                numthreads: int | None = None,
                method: int = -1,
                **opts) -> bytes | None:
+        # ``lossless=True`` by default to match ``imagecodecs.webp_encode``
+        # — see docs/codec_api_conventions.md "Default settings:
+        # Pareto-better than the reference, no cheating." Callers who
+        # want a small lossy blob should pass ``lossless=False, level=N``.
         if not isinstance(data, np.ndarray):
             data = np.asarray(data)
         encoded = _webp_encode(

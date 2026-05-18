@@ -41,7 +41,7 @@ class AvifCodec(Codec):
         return _avif_check_signature(head)
 
     def encode(self, data: Any, *, dest=None, level: int | None = None,
-               lossless: bool = False, speed: int = 6,
+               lossless: bool = True, speed: int = 0,
                color=None, bit_depth: int | None = None,
                numthreads: int | None = None,
                iccprofile: bytes | None = None,
@@ -49,6 +49,13 @@ class AvifCodec(Codec):
         """Encode an array as AVIF.
 
         ``iccprofile`` embeds an ICC color profile.
+
+        ``lossless=True`` by default to match
+        ``imagecodecs.avif_encode``'s lossless-at-default behavior —
+        see docs/codec_api_conventions.md "Default settings:
+        Pareto-better than the reference, no cheating." For typical
+        photo-storage workloads pass ``lossless=False, level=63`` (or
+        similar) to get the smaller lossy blob.
         """
         if not isinstance(data, np.ndarray):
             data = np.asarray(data)

@@ -39,9 +39,13 @@ class Jpeg2kCodec(Codec):
         return _jp2_check_signature(head)
 
     def encode(self, data: Any, *, dest=None, level: int | None = None,
-               lossless: bool = False, codec: str = "jp2",
+               lossless: bool = True, codec: str = "jp2",
                numthreads: int | None = None,
                **opts) -> bytes | None:
+        # ``lossless=True`` by default to match
+        # ``imagecodecs.jpeg2k_encode`` — see
+        # docs/codec_api_conventions.md "Default settings: Pareto-better
+        # than the reference, no cheating."
         if not isinstance(data, np.ndarray):
             data = np.asarray(data)
         encoded = _jp2_encode(
