@@ -428,6 +428,39 @@ def _lib_dirs_for_probes() -> list[str]:
     return out
 
 
+def _user_cache_rpath_args() -> list[str]:
+    """Return ``-Wl,-rpath,...`` linker flags for every per-user cache
+    lib dir that currently exists. Add these to an Extension's
+    ``extra_link_args`` so the dynamic loader finds a tuned source
+    build (e.g. one made by ``bench/build_codec_libs.sh``) at import
+    time *without* requiring ``LD_LIBRARY_PATH``.
+
+    Why this isn't ``runtime_library_dirs=`` — distutils silently
+    deduplicates that list against the linker's implicit defaults
+    and drops some entries (verified empirically with ``readelf -d``
+    on a freshly-built _zfp.so where the cache prefix was missing
+    from the DT_RUNPATH despite being in ``runtime_library_dirs``).
+    Adding the flag explicitly via ``extra_link_args`` bypasses the
+    dedup and reliably bakes the rpath into the .so.
+
+    Windows has no rpath equivalent; returns an empty list there.
+    macOS already handles this via absolute-path linking in most
+    codec entries — but appending these flags is harmless when no
+    cache dirs exist, so we always emit them on POSIX.
+    """
+    if sys.platform == "win32":
+        return []
+    # Only emit rpaths for dirs UNDER the per-user cache. Adding a
+    # rpath to ``/usr/lib`` etc. is redundant (already on the
+    # loader's default search path) and would clutter the .so.
+    cache_root = str(_OC_USER_CACHE)
+    return [
+        f"-Wl,-rpath,{d}"
+        for d in _lib_dirs_for_probes()
+        if d.startswith(cache_root)
+    ]
+
+
 def _libname(posix: str, windows: str | None = None) -> str:
     """Pick the right library base name for the current platform.
 
@@ -479,13 +512,11 @@ def _maybe_build_ext_simple(
             [str(dlib)] if sys.platform == "darwin" else []
         )
         libs = [] if sys.platform == "darwin" else [libname]
-        # On Linux, bake a DT_RUNPATH so the dynamic loader finds the
-        # shared lib at import time without LD_LIBRARY_PATH. Critical
-        # when ``prefix`` is the per-user cache (the cached install
-        # isn't on the default search path) — without rpath, the .so
-        # links cleanly at build time but fails at first import.
-        if sys.platform == "linux":
-            extra_link_args.append(f"-Wl,-rpath,{dlib.parent}")
+        # rpath for the per-user cache dir is baked by the post-build
+        # loop at the end of the file (``_user_cache_rpath_args``).
+        # When ``prefix`` is a non-cache location (homebrew /opt,
+        # /usr/local, /usr), rpath isn't needed because the dynamic
+        # loader already searches those by default.
         return [Extension(
             name=name,
             sources=[source],
@@ -1416,16 +1447,13 @@ extensions = [
         ),
         language="c",
     ),
-    # ZFP (lossy floating-point compression): system libzfp, with the
-    # per-user cache prefix preferred when present (brew's bottle is
-    # built without ``-march`` tuning and is measurably slower than a
+    # ZFP (lossy floating-point compression): system libzfp. The
+    # per-user cache prefix (brew's bottle is ~17% slower than a
     # source build with ``-O3 -march=native``; see
     # bench/build_codec_libs.sh::build_zfp and the zfp section of
-    # docs/TODO_DEFERRED.md). We add ``-Wl,-rpath,<libs>`` via
-    # ``extra_link_args`` rather than the distutils ``runtime_library
-    # _dirs`` keyword — the latter is silently dropped when the entry
-    # matches one already implicit in the linker's defaults, which
-    # was hiding our cached libzfp from the dynamic loader.
+    # docs/TODO_DEFERRED.md) is preferred via ``_PROBE_PREFIXES``.
+    # The rpath for the cache lib is baked in by the post-build
+    # loop near the end of this file — see ``_user_cache_rpath_args``.
     Extension(
         name="opencodecs.codecs._zfp",
         sources=["src/opencodecs/codecs/_zfp.pyx"],
@@ -1436,10 +1464,6 @@ extensions = [
         ],
         library_dirs=_lib_dirs_for_probes(),
         libraries=["zfp"],
-        extra_link_args=(
-            [f"-Wl,-rpath,{d}" for d in _lib_dirs_for_probes()]
-            if sys.platform != "win32" else []
-        ),
         define_macros=[("NPY_NO_DEPRECATED_API", "NPY_1_7_API_VERSION")],
         language="c",
     ),
@@ -1604,6 +1628,27 @@ extensions = _kept_extensions
 if _skipped_extensions:
     print(f"opencodecs: skipping extensions (missing system headers): "
           f"{', '.join(_skipped_extensions)}")
+
+# Bake the per-user cache lib dirs into every extension's DT_RUNPATH
+# (Linux) / LC_RPATH (macOS). Without this, an Extension that links
+# against a cached source build (e.g. ``~/.cache/opencodecs/libs/lib``
+# from bench/build_codec_libs.sh) compiles fine but fails to import
+# because the cached lib isn't on the dynamic loader's default search
+# path. Closing this gap on a per-extension basis was error-prone —
+# we'd already fixed it for ``_zfp`` and ``_charls`` and forgotten
+# the rest until the next bench run surfaced the regression. Doing
+# it once over the kept-extensions list catches every consumer of
+# ``_lib_dirs_for_probes()`` automatically.
+_cache_rpath_args = _user_cache_rpath_args()
+if _cache_rpath_args:
+    for ext in extensions:
+        # Skip if the rpath is already present (avoid duplicate flags
+        # in the link line — harmless but noisy).
+        existing = list(getattr(ext, "extra_link_args", None) or [])
+        for flag in _cache_rpath_args:
+            if flag not in existing:
+                existing.append(flag)
+        ext.extra_link_args = existing
 
 class build_ext(_build_ext):
     """Custom build_ext that strips conflicting RPATHs on macOS so the
