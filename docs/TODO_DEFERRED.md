@@ -190,32 +190,43 @@ real perf gaps were fixed; two remain documented:
   c-blosc2 — out of scope for one codec since the brew package
   is shared.
 
-* **zfp**: 17% slower (0.39 ms vs 0.32 ms on a 32³ float field).
-  Output is byte-identical at matched settings. **Root cause
-  isolated to the underlying libzfp build, not our wrapper** — a
-  pure ctypes call to brew's libzfp.1.dylib takes the same 0.39 ms
-  that our Cython wrapper does, while imagecodecs's bundled libzfp
-  (same 1.0.1 source) clocks 0.32 ms. Brew's bottle is built
-  without ``-march`` tuning; imagecodecs ships a libzfp compiled
-  with ``-O3 -march=native``-style flags.
+* **zfp**: CLOSED. Was 17% slower with brew's stock libzfp bottle.
+  After building libzfp from source with ``-O3 -march=native +LTO``
+  via the existing ``bench/build_codec_libs.sh --only=zfp`` recipe,
+  oc beats imagecodecs by ~10% on x86_64 threadripper
+  (encode 0.65 ms vs 0.72 ms, ratio 0.909).
 
-  Wrapper-side micro-opts shipped (1.23× → 1.17×):
+  Shipped in commits ``517d346``, ``95c238a``, ``18294ea``:
 
-  * memoryview-cast write path (matches ``_zstd.pyx``)
-  * setup.py probes ``~/Library/Caches/opencodecs/zfp/include``
-    first so a user-cached build wins over the brew bottle
+  * memoryview-cast write path in ``_zfp.pyx`` (matches
+    ``_zstd.pyx``) — saved ~5–10 µs / encode.
+  * ``setup.py`` probes ``~/.cache/opencodecs/{zfp,libs}`` ahead
+    of system / brew, so a per-user tuned build is preferred
+    automatically.
+  * ``-Wl,-rpath`` for every cache lib dir baked into the
+    extension's DT_RUNPATH via ``extra_link_args`` (the distutils
+    ``runtime_library_dirs`` keyword was silently dropping
+    duplicates). Verified with ``readelf -d`` — runpath now lists
+    the cache prefix; import works without ``LD_LIBRARY_PATH``.
 
-  **Closing the rest** needs a per-user libzfp build (network
-  required to fetch the source — couldn't do it in the
-  network-restricted dev session that found this). Run::
+  **Recovery recipe** (for any new user who installs from
+  Homebrew's libzfp bottle and notices the gap)::
 
       MARCH=native USE_LTO=1 bash bench/build_codec_libs.sh --only=zfp
+      <python> setup.py build_ext --inplace
 
-  on a recent bash (4.x+ for assoc arrays — macOS ships 3.2; use
-  ``brew install bash`` and run via ``/opt/homebrew/bin/bash``).
-  Re-run ``setup.py build_ext --inplace`` afterwards so the linker
-  picks up the cached prefix. Expected result: ~0.32 ms, matching
-  imagecodecs.
+  Needs bash ≥ 4.x for the build script's associative arrays;
+  macOS ships 3.2, so on Mac run via ``/opt/homebrew/bin/bash``
+  after ``brew install bash``.
+
+  **Open follow-up**: the rpath-via-extra_link_args fix applies
+  to ``_zfp`` only. Other codecs that link to ``~/.cache/opencodecs``
+  cached builds (lerc / sperr / sz3 / pcodec / brunsli / brotli /
+  zstd / giflib) should get the same treatment — currently they
+  link OK at build time but rely on the per-codec-cache symlinks
+  the build script creates rather than DT_RUNPATH. Low priority
+  since those builds usually live under prefixes the dynamic
+  loader already searches.
 
 Marginal cases (within +10-15% of ic on small absolute times,
 all pass on size/quality) — adapter overhead dominates and is not
