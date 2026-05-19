@@ -183,21 +183,26 @@ class FitsHDU:
     # ---------- data ----------
 
     @property
+    def is_compressed_image(self) -> bool:
+        """True if this HDU is a BINTABLE wrapping a compressed image
+        (ZIMAGE=T). Delegates to ``_fits_compressed.is_compressed_image``
+        for the precise check (XTENSION=='BINTABLE' AND ZIMAGE truthy)."""
+        from ._fits_compressed import is_compressed_image
+        return is_compressed_image(self.header)
+
+    @property
     def shape(self) -> tuple[int, ...]:
         h = self.header
+        # Compressed-image HDU: report the *uncompressed* shape from
+        # ZNAXISn rather than the BINTABLE's outer (NAXIS1, NAXIS2).
+        if self.is_compressed_image:
+            znaxis = int(h["ZNAXIS"])
+            return tuple(int(h[f"ZNAXIS{i}"]) for i in range(znaxis, 0, -1))
         naxis = int(h.get("NAXIS", 0))
         if naxis == 0:
             return ()
         # FITS NAXIS1 is fastest-varying — reverse for numpy (C order).
         return tuple(int(h[f"NAXIS{i}"]) for i in range(naxis, 0, -1))
-
-    @property
-    def dtype(self) -> np.dtype:
-        h = self.header
-        bitpix = int(h.get("BITPIX", 0))
-        if bitpix not in _BITPIX_TO_DTYPE:
-            raise ValueError(f"FITS: unsupported BITPIX={bitpix}")
-        return _BITPIX_TO_DTYPE[bitpix]
 
     @property
     def dtype(self) -> np.dtype:
@@ -222,7 +227,12 @@ class FitsHDU:
         return np.dtype("f8")
 
     def _raw_dtype(self) -> np.dtype:
-        bitpix = int(self.header.get("BITPIX", 0))
+        # Compressed-image HDU: ZBITPIX describes the original tile
+        # data, while BITPIX is always 8 (BINTABLE rows are bytes).
+        if self.is_compressed_image:
+            bitpix = int(self.header["ZBITPIX"])
+        else:
+            bitpix = int(self.header.get("BITPIX", 0))
         if bitpix not in _BITPIX_TO_DTYPE:
             raise ValueError(f"FITS: unsupported BITPIX={bitpix}")
         return _BITPIX_TO_DTYPE[bitpix]
@@ -238,6 +248,21 @@ class FitsHDU:
         _ = self.header  # ensure parsed
         if self._data_size == 0:
             return np.empty((0,), dtype=np.uint8)
+        # Compressed-image dispatch: BINTABLE rows are individual
+        # tiles. Decompress + stitch into a single ndarray with the
+        # original ZBITPIX dtype, then continue through the BSCALE
+        # / BZERO path below as if it had been uncompressed.
+        if self.is_compressed_image:
+            from ._fits_compressed import decompress_image
+            raw = decompress_image(
+                self._parent, self._data_offset, self._data_size, self.header,
+            )
+            h = self.header
+            bscale = float(h.get("BSCALE", 1.0))
+            bzero = float(h.get("BZERO", 0.0))
+            if bscale == 1.0 and bzero == 0.0:
+                return raw.astype(raw.dtype.newbyteorder("="), copy=False)
+            return raw.astype(np.float64) * bscale + bzero
         raw_bytes = self._parent._read(self._data_offset, self._data_size)
         if len(raw_bytes) < self._data_size:
             raise ValueError(

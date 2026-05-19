@@ -196,6 +196,75 @@ def decode(data, *, out=None):
     return dst
 
 
+def decode_raw(data, *, int nelements, int blocksize, int bytes_per_pixel):
+    """Decode raw cfitsio Rice-coded bytes (no opencodecs header).
+
+    Used by the FITS compressed-image reader, which stores rice-coded
+    tiles inline in a BINTABLE column without our 12-byte preamble.
+    Returns a uint8 / uint16 / uint32 ndarray of length ``nelements``;
+    the caller views it as int8 / int16 / int32 via ``arr.view(...)``
+    when the original FITS BITPIX was signed.
+    """
+    cdef:
+        const unsigned char[::1] payload_mv
+        unsigned char* payload_ptr
+        Py_ssize_t payload_size
+        cnp.ndarray dst
+        int rc
+
+    if not isinstance(data, (bytes, bytearray, memoryview)):
+        data = bytes(data)
+    payload_mv = data
+    payload_size = payload_mv.shape[0]
+    if payload_size > 0x7fffffff:
+        raise RcompError(f"rcomp_raw: payload too large ({payload_size} > 2^31)")
+    if payload_size > 0:
+        payload_ptr = <unsigned char*> &payload_mv[0]
+    else:
+        payload_ptr = NULL
+
+    if bytes_per_pixel == 1:
+        dst = np.empty(nelements, dtype=np.uint8)
+        if nelements > 0:
+            with nogil:
+                rc = rdecomp_byte(
+                    payload_ptr, <int> payload_size,
+                    <unsigned char*> cnp.PyArray_DATA(dst),
+                    nelements, blocksize,
+                )
+        else:
+            rc = 0
+    elif bytes_per_pixel == 2:
+        dst = np.empty(nelements, dtype=np.uint16)
+        if nelements > 0:
+            with nogil:
+                rc = rdecomp_short(
+                    payload_ptr, <int> payload_size,
+                    <unsigned short*> cnp.PyArray_DATA(dst),
+                    nelements, blocksize,
+                )
+        else:
+            rc = 0
+    elif bytes_per_pixel == 4:
+        dst = np.empty(nelements, dtype=np.uint32)
+        if nelements > 0:
+            with nogil:
+                rc = rdecomp_int(
+                    payload_ptr, <int> payload_size,
+                    <unsigned int*> cnp.PyArray_DATA(dst),
+                    nelements, blocksize,
+                )
+        else:
+            rc = 0
+    else:
+        raise RcompError(
+            f"rcomp_raw: bytes_per_pixel must be 1/2/4, got {bytes_per_pixel}"
+        )
+    if rc < 0:
+        raise RcompError(f"rdecomp_*: returned error {rc}")
+    return dst
+
+
 def check_signature(head: bytes) -> bool:
     """Rcomp blobs have no magic — return False so the registry
     doesn't auto-route on signature alone."""

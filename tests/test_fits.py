@@ -128,3 +128,79 @@ def test_invalid_file_raises(tmp_path):
     with FitsStream(p) as f:
         # No HDUs should parse.
         assert f.n_hdus == 0
+
+
+# ---------------------------------------------------------------------------
+# Compressed-image HDUs (BINTABLE + ZIMAGE=T)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("ctype", ["RICE_1", "GZIP_1", "GZIP_2", "NOCOMPRESS"])
+def test_compressed_fits_int16(tmp_path, ctype):
+    """All four supported compression types round-trip int16 tiles."""
+    img = np.arange(64 * 128, dtype=np.int16).reshape(64, 128) * 7 - 5000
+    p = tmp_path / f"int16_{ctype}.fits"
+    hdul = astropy_fits.HDUList([
+        astropy_fits.PrimaryHDU(),
+        astropy_fits.CompImageHDU(img, compression_type=ctype),
+    ])
+    hdul.writeto(p)
+    arr = FitsStream(p).hdu(1).asarray()
+    np.testing.assert_array_equal(arr, img.astype(arr.dtype, copy=False))
+
+
+@pytest.mark.parametrize("ctype", ["RICE_1", "GZIP_1", "GZIP_2"])
+def test_compressed_fits_int32(tmp_path, ctype):
+    img = np.arange(32 * 64, dtype=np.int32).reshape(32, 64) * 1000
+    p = tmp_path / f"int32_{ctype}.fits"
+    astropy_fits.HDUList([
+        astropy_fits.PrimaryHDU(),
+        astropy_fits.CompImageHDU(img, compression_type=ctype),
+    ]).writeto(p)
+    arr = FitsStream(p).hdu(1).asarray()
+    np.testing.assert_array_equal(arr, img.astype(arr.dtype, copy=False))
+
+
+@pytest.mark.parametrize("ctype", ["RICE_1", "GZIP_1", "GZIP_2"])
+def test_compressed_fits_float32_matches_astropy(tmp_path, ctype):
+    """Float compression in FITS is lossy (per-tile ZSCALE/ZZERO
+    quantization). Our decode should produce the same bytes astropy's
+    own decoder produces — pixel-equal not original-equal."""
+    img = (np.arange(32 * 64, dtype=np.float32).reshape(32, 64) / 100.0)
+    p = tmp_path / f"float32_{ctype}.fits"
+    astropy_fits.HDUList([
+        astropy_fits.PrimaryHDU(),
+        astropy_fits.CompImageHDU(img, compression_type=ctype),
+    ]).writeto(p)
+    ours = FitsStream(p).hdu(1).asarray()
+    theirs = astropy_fits.open(p)[1].data
+    np.testing.assert_array_equal(ours, theirs)
+
+
+def test_compressed_fits_gzip_fallback_for_incompressible_tile(tmp_path):
+    """Real-world compressed FITS uses GZIP_COMPRESSED_DATA as a fallback
+    when a tile would compress poorly. Our parser must follow that
+    fallback path (count=0 in primary descriptor) and treat the fallback
+    tile as raw-bytes (no ZSCALE/ZZERO rescale)."""
+    rng = np.random.default_rng(0)
+    img = rng.normal(scale=1000.0, size=(48, 96)).astype(np.float32)
+    p = tmp_path / "noisy_float.fits"
+    astropy_fits.HDUList([
+        astropy_fits.PrimaryHDU(),
+        astropy_fits.CompImageHDU(img, compression_type="RICE_1"),
+    ]).writeto(p)
+    ours = FitsStream(p).hdu(1).asarray()
+    theirs = astropy_fits.open(p)[1].data
+    np.testing.assert_array_equal(ours, theirs)
+
+
+def test_compressed_fits_unsupported_type_raises(tmp_path):
+    """HCOMPRESS_1 and PLIO_1 are deferred — should fail loudly."""
+    img = np.arange(32 * 32, dtype=np.int16).reshape(32, 32)
+    p = tmp_path / "hcompress.fits"
+    astropy_fits.HDUList([
+        astropy_fits.PrimaryHDU(),
+        astropy_fits.CompImageHDU(img, compression_type="HCOMPRESS_1"),
+    ]).writeto(p)
+    with pytest.raises(NotImplementedError, match="HCOMPRESS"):
+        FitsStream(p).hdu(1).asarray()
