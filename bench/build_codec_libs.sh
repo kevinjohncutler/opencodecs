@@ -66,6 +66,7 @@ VERSIONS=(
     "libde265        1.0.16"
     "x265            4.1"
     "libheif         1.21.0"
+    "libultrahdr     1.4.0"
 
     # Tier 1 scientific compressors (small / medium)
     "libaec          1.1.6"
@@ -497,6 +498,22 @@ build_x265() {
     mark_built x265 "$v"
 }
 
+# ---- libultrahdr (Google's gainmap JPEG; depends on libjpeg-turbo) ------
+build_libultrahdr() {
+    local v="${VERSIONS_MAP[libultrahdr]}"
+    is_built libultrahdr "$v" && { echo "  libultrahdr $v already built"; return; }
+    echo "==> libultrahdr $v"
+    local src
+    src=$(fetch_tar libultrahdr "$v" "https://github.com/google/libultrahdr/archive/refs/tags/v$v.tar.gz")
+    cmake_build "$src" \
+        -DUHDR_BUILD_DEPS=OFF \
+        -DUHDR_BUILD_EXAMPLES=OFF \
+        -DUHDR_BUILD_TESTS=OFF \
+        -DUHDR_BUILD_FUZZERS=OFF \
+        -DUHDR_BUILD_BENCHMARK=OFF
+    mark_built libultrahdr "$v"
+}
+
 # ---- libheif (HEIC/HEIF; depends on x265 for encode, libde265 for decode) -
 build_libheif() {
     local v="${VERSIONS_MAP[libheif]}"
@@ -710,6 +727,7 @@ ORDERED=(
     libde265
     x265
     libheif
+    libultrahdr
     libaec
     lerc
     zfp
@@ -741,6 +759,7 @@ for name in "${ORDERED[@]}"; do
             libde265)        build_libde265 ;;
             x265)            build_x265 ;;
             libheif)         build_libheif ;;
+            libultrahdr)     build_libultrahdr ;;
             libaec)          build_libaec ;;
             lerc)            build_lerc ;;
             zfp)             build_zfp ;;

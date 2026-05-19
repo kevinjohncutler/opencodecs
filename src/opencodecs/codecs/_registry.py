@@ -331,6 +331,15 @@ if "opencodecs.codecs._rgbe" in sys.modules:
 
 
 # ---------------------------------------------------------------------------
+# ultrahdr — Ultra HDR (gainmap JPEG, ISO 21496)
+# ---------------------------------------------------------------------------
+
+if "opencodecs.codecs._ultrahdr" in sys.modules:
+    from .._ultrahdr_codec import UltraHdrCodec
+    register_codec(UltraHdrCodec())
+
+
+# ---------------------------------------------------------------------------
 # dicomrle — DICOM RLE Image Compression (PS 3.5 §G)
 # ---------------------------------------------------------------------------
 

@@ -1182,6 +1182,23 @@ extensions = [
     # HTJ2K (high-throughput JPEG-2000) via OpenJPH. Optional — built
     # only when libopenjph is on the system.
     *_maybe_build_openjph_ext(),
+    # Ultra HDR (gainmap JPEG, ISO 21496) via Google's libultrahdr.
+    # Optional; the prebuilt brew bottle is fine because the codec is
+    # bottlenecked by libjpeg-turbo's SIMD encoders (which we tune
+    # separately). depends on libjpeg-turbo, no C++ runtime visible at
+    # our ABI.
+    *_maybe_build_ext_simple(
+        name="opencodecs.codecs._ultrahdr",
+        source="src/opencodecs/codecs/_ultrahdr.pyx",
+        prefixes=[
+            str(_OC_USER_CACHE / "libs"),
+            "/opt/homebrew/opt/libultrahdr",
+            "/usr/local/opt/libultrahdr",
+            "/usr/local", "/usr",
+        ],
+        probe_header="ultrahdr_api.h",
+        libname="uhdr",
+    ),
     # EER (Thermo Fisher Electron Event Representation) — cryo-EM
     # event-list decoder, vendored from imagecodecs imcd.c (BSD-3).
     # No external deps; always built.
@@ -1641,6 +1658,7 @@ _REQUIRED_HEADERS = {
     "opencodecs.codecs._snappy": ("snappy-c.h",),
     "opencodecs.codecs._pcodec": ("cpcodec.h",),
     "opencodecs.codecs._jpeg":   ("turbojpeg.h",),
+    "opencodecs.codecs._ultrahdr": ("ultrahdr_api.h",),
     "opencodecs.codecs._webp":   ("webp/encode.h",),
     "opencodecs.codecs._jpeg2k": ("openjpeg-2.5/openjpeg.h", "openjpeg-2.4/openjpeg.h"),
     "opencodecs.codecs._avif":   ("avif/avif.h",),
