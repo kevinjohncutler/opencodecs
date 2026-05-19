@@ -119,13 +119,13 @@ def _unpack_header(buf):
 
 
 def encode(data, *,
-           bits_per_sample,
-           block_size=32,
-           rsi=128,
-           is_signed=False,
-           msb=False,
-           preprocess=True,
-           three_byte=False):
+           int bits_per_sample,
+           int block_size=32,
+           int rsi=128,
+           bint is_signed=False,
+           bint msb=False,
+           bint preprocess=True,
+           bint three_byte=False):
     """AEC-compress a typed integer buffer.
 
     Parameters
@@ -176,12 +176,19 @@ def encode(data, *,
 
     if not (1 <= bits_per_sample <= 32):
         raise ValueError(f"bits_per_sample must be 1..32, got {bits_per_sample}")
-    if block_size not in (8, 16, 32, 64):
+    if block_size != 8 and block_size != 16 and block_size != 32 and block_size != 64:
         raise ValueError(f"block_size must be 8/16/32/64, got {block_size}")
     if not (1 <= rsi <= 4096):
         raise ValueError(f"rsi must be 1..4096, got {rsi}")
 
-    flags = _build_flags(is_signed, msb, preprocess, three_byte)
+    # Inline _build_flags (was a Python call). Each option is a hot
+    # boolean check; the extra function-frame churn dominates on the
+    # 200 KB workload that bench/bench_codecs.py exercises.
+    flags = 0
+    if is_signed: flags |= AEC_DATA_SIGNED
+    if msb:       flags |= AEC_DATA_MSB
+    if preprocess: flags |= AEC_DATA_PREPROCESS
+    if three_byte: flags |= AEC_DATA_3BYTE
 
     # libaec worst-case output bound (from upstream docs / tests):
     # ``srcsize * 67/64 + 256 + 1`` bytes — covers incompressible
@@ -201,13 +208,15 @@ def encode(data, *,
     buf_ptr = <unsigned char*> PyBytes_AsString(payload)
     out_ptr = buf_ptr + _HEADER_LEN
 
-    # Streaming init/encode/end is measurably faster than the
-    # ``aec_buffer_encode`` one-shot wrapper — that wrapper allocates
-    # and frees the internal state on every call AND zeroes the entire
-    # struct first, both of which we already pay for here. Bench
-    # shows ~3.5× speedup on the small uint16 workload that
-    # bench_codecs.py exercises (oc 0.71 ms → 0.21 ms, parity with
-    # imagecodecs).
+    # Streaming init/encode/end at the C level is the same work as
+    # ``aec_buffer_encode`` — the buffer wrapper just trios them. The
+    # real speedup over the old code was fixing the worst-case cap
+    # (above): the old ``srcsize + 1024`` ceiling tripped
+    # ``aec_buffer_encode``'s internal retry path on incompressible
+    # input, doubling the runtime on the random-uint16 bench
+    # workload. We expose the streaming trio here because it lets us
+    # detect "output too small" via ``total_in != srcsize`` and raise
+    # a precise error rather than silently truncating.
     c_bps = <unsigned int> bits_per_sample
     c_block = <unsigned int> block_size
     c_rsi = <unsigned int> rsi
