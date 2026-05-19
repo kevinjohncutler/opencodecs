@@ -38,3 +38,12 @@ cdef extern from "libaec.h" nogil:
 
     int aec_buffer_encode(aec_stream* strm)
     int aec_buffer_decode(aec_stream* strm)
+
+    # Streaming API — measurably faster than ``aec_buffer_encode`` because
+    # the one-shot wrapper allocates and frees the internal state on every
+    # call. Use init / encode(AEC_FLUSH) / end for the lowest-overhead
+    # single-shot encode (the buffer path is just a convenience layer
+    # around this trio internally).
+    int aec_encode_init(aec_stream* strm)
+    int aec_encode(aec_stream* strm, int flush)
+    int aec_encode_end(aec_stream* strm)
