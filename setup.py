@@ -1106,7 +1106,12 @@ extensions = [
         ),
         language="c",
     ),
-    # blosc2: links against system c-blosc2.
+    # blosc2: prefer the per-user cache build (c-blosc2 2.x — see
+    # bench/build_codec_libs.sh recipe). Brew ships c-blosc2 3.x, whose
+    # default filter chain trades ~2x encode CPU for ~9% smaller output;
+    # imagecodecs bundles 2.23.0 and the user's expectation is that
+    # default settings match ic's perf. Absolute-dylib link forces the
+    # cached lib to win over brew when both are visible.
     Extension(
         name="opencodecs.codecs._blosc2",
         sources=["src/opencodecs/codecs/_blosc2.pyx"],
@@ -1115,7 +1120,25 @@ extensions = [
             *_resolve_include_dirs("blosc2.h"),
         ],
         library_dirs=_lib_dirs_for_probes(),
-        libraries=["blosc2"],
+        libraries=(
+            []
+            if any(
+                (_OC_USER_CACHE / "libs" / "lib" / fname).exists()
+                for fname in ("libblosc2.7.dylib", "libblosc2.so.7",
+                              "libblosc2.dylib", "libblosc2.so")
+            )
+            else ["blosc2"]
+        ),
+        extra_link_args=(
+            (lambda candidates: next(
+                ([str(p)] for p in candidates if p.exists()),
+                [],
+            ))([
+                _OC_USER_CACHE / "libs" / "lib" / fname
+                for fname in ("libblosc2.7.dylib", "libblosc2.so.7",
+                              "libblosc2.dylib", "libblosc2.so")
+            ])
+        ),
         language="c",
     ),
     # blosc2 NDim (b2nd): exposes c-blosc2's multidimensional layer via a
@@ -1134,8 +1157,26 @@ extensions = [
             *_resolve_include_dirs("b2nd.h"),
         ],
         library_dirs=_lib_dirs_for_probes(),
-        libraries=["blosc2"],
+        libraries=(
+            []
+            if any(
+                (_OC_USER_CACHE / "libs" / "lib" / fname).exists()
+                for fname in ("libblosc2.7.dylib", "libblosc2.so.7",
+                              "libblosc2.dylib", "libblosc2.so")
+            )
+            else ["blosc2"]
+        ),
         define_macros=[("NPY_NO_DEPRECATED_API", "NPY_1_7_API_VERSION")],
+        extra_link_args=(
+            (lambda candidates: next(
+                ([str(p)] for p in candidates if p.exists()),
+                [],
+            ))([
+                _OC_USER_CACHE / "libs" / "lib" / fname
+                for fname in ("libblosc2.7.dylib", "libblosc2.so.7",
+                              "libblosc2.dylib", "libblosc2.so")
+            ])
+        ),
         language="c",
     ),
     # JPEG via libjpeg-turbo (TurboJPEG v3 API).

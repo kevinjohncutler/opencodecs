@@ -57,7 +57,13 @@ VERSIONS=(
     "openjpeg        2.5.5"
 
     # Container / multi-codec (medium)
-    "c-blosc2        2.16.0"
+    # c-blosc2 pinned at 2.x because 3.x changed the default filter chain
+    # — same data round-trips but the 3.x defaults are tuned for size at
+    # the cost of CPU (2x slower encode at zstd-level-1, ~9% smaller
+    # output). imagecodecs bundles 2.23.0 and beats us by 2x with the
+    # 3.x brew bottle. Pinning the cache build to the latest 2.x branch
+    # matches their wire format and closes the perf gap.
+    "c-blosc2        2.23.0"
 
     # AV1 / HEVC (largest builds)
     "libaom          3.13.0"

@@ -60,21 +60,25 @@ def encode(data, *, level: int | None = None,
     if blosc1_set_compressor(cname) < 0:
         raise Blosc2Error(f'unknown blosc2 compressor: {compressor!r}')
 
-    # Default clevel=1: same as imagecodecs.blosc2_encode. Produces
-    # ~9% smaller output than ic's default on natural-image bytes
-    # because our linked c-blosc2 3.x ships a marginally tighter
-    # zstd-lvl-1 filter chain than imagecodecs's bundled 2.23.0. We
-    # take the size win and pay a small absolute-time cost
-    # (~1-2 ms / MB) — the data is unambiguously the same on
-    # decode, only the encoded representation is smaller. Bench
-    # baseline tracks the ratio so a regression on either axis is
-    # caught. See docs/codec_api_conventions.md "Default settings".
+    # Default clevel=1: matches imagecodecs.blosc2_encode.
     clevel = 1 if level is None else int(level)
     if clevel < 0: clevel = 0
     if clevel > 9: clevel = 9
 
     do_shuffle = BLOSC_SHUFFLE if (shuffle is None or shuffle) else BLOSC_NOSHUFFLE
-    tsize = 1 if typesize is None else int(typesize)
+
+    # Default typesize=8 — matches ic.blosc2_encode for bytes input.
+    # The shuffle filter rearranges bytes within typesize-byte groups
+    # before handing off to zstd; typesize=8 (treat data as int64
+    # lanes) gives zstd a tight cache-line-aligned stride to find
+    # repeats. typesize=1 reduces shuffle to a no-op and is
+    # surprisingly ~2x slower on natural-image bytes (the literal
+    # byte stream is harder for zstd than the lane-shuffled version,
+    # even though it produces ~9% smaller output for some workloads).
+    # See docs/codec_api_conventions.md "Default settings" — Pareto
+    # default trades size parity for speed parity since most callers
+    # use blosc2 for throughput, not for the size-tightest path.
+    tsize = 8 if typesize is None else int(typesize)
     if tsize < 1: tsize = 1
 
     dstcap = srcsize + BLOSC2_MAX_OVERHEAD
