@@ -1,406 +1,442 @@
-"""FITS (Flexible Image Transport System) reader — astronomy's
-century-old format, still used universally for telescope data.
+"""FITS (Flexible Image Transport System) reader.
 
-FITS is fundamentally a sequence of HDUs (Header Data Units), each
-consisting of an 80-char-line ASCII header + binary data, both padded
-to 2880-byte boundaries. This module implements a minimal but correct
-streaming reader for the most common case: primary + N image
-extensions, BITPIX values 8 / 16 / 32 / 64 / -32 / -64.
+FITS is the canonical archive format for astronomy data (HST, JWST,
+Vera Rubin, every major sky survey). A FITS file is a sequence of
+Header Data Units (HDUs); each HDU has a 2880-byte-block ASCII
+header followed by an optional binary data payload. Headers terminate
+with the literal card ``END`` padded to the next 2880-byte boundary;
+data payloads are likewise padded to the next 2880-byte boundary
+before the next HDU starts.
 
-Why a native reader
--------------------
-astropy.io.fits is the canonical Python FITS reader, but it pulls in
-astropy's entire stack (~80 MB). For pipelines that only need image
-HDU pixel data, a 250-line native reader covers everything they need
-and works over any ``read_at(offset, n) -> bytes`` callable — so
-HTTP-range access to remote FITS files is free (telescope archives
-serve them this way).
+The reader is HTTP-range friendly by design — at open time we only
+read enough to walk the HDU chain (one Range request per HDU header).
+Image data is fetched on demand when the caller accesses
+``hdu.asarray()``. The same ``read_at`` callable contract that
+``TiffStream`` uses works here, so plugging an ``HTTPDataSource`` in
+gets you slice-on-demand reads against IRSA / MAST / IDC archives.
 
-Scope of v1
------------
-* Primary HDU + N image extensions (HDU class IMAGE_HDU).
-* BITPIX 8, 16, 32, 64, -32, -64 — the standard image types.
-* BZERO / BSCALE rescaling applied on decode (FITS convention for
-  unsigned integers stored in signed BITPIX slots).
-* Auto-byteswap from big-endian (FITS is always big-endian) on host
-  systems where we're little-endian.
+Scope of this iteration:
 
-Deferred
---------
-* BinTable / ASCII table HDUs (use astropy for tables).
-* Tile-compressed (RICE_1 / GZIP / PLIO_1) HDUs — would dispatch
-  through the existing opencodecs codec helpers; opt-in follow-up.
-* Variable-length array columns.
+* Primary + extension image HDUs (``BITPIX`` 8 / 16 / 32 / 64 /
+  -32 / -64; ``NAXIS`` 1-N).
+* ``BSCALE`` / ``BZERO`` linear rescaling on read (the spec
+  default of ``output = value * BSCALE + BZERO``).
+* Big-endian source bytes (FITS spec mandates big-endian); converted
+  to native byte order in the returned ndarray.
+
+Out of scope here (deferred to a follow-up): compressed FITS images
+(``XTENSION='BINTABLE'`` with ``ZIMAGE=T`` + ``ZCMPTYPE='RICE_1'`` /
+``'GZIP_1'`` / ``'PLIO_1'``) and BINTABLE catalog rows. The Rice
+and gzip codecs we already ship would let those work once we add
+the tile-stitching loop on top.
 """
 
 from __future__ import annotations
 
 import os
-from pathlib import Path
 from typing import Any, Callable, Iterator
 
 import numpy as np
 
+from .core.codec import Reader
 
-_BLOCK = 2880   # FITS spec: header + data each padded to 2880 bytes
+
+_BLOCK = 2880          # FITS header / data block size
+_CARD = 80             # one header card width
+_CARDS_PER_BLOCK = _BLOCK // _CARD
 
 
-# BITPIX → (numpy dtype, signed?, bytes-per-sample).
 _BITPIX_TO_DTYPE = {
-    8:   (np.dtype("u1"), False, 1),
-    16:  (np.dtype(">i2"), True, 2),
-    32:  (np.dtype(">i4"), True, 4),
-    64:  (np.dtype(">i8"), True, 8),
-    -32: (np.dtype(">f4"), False, 4),
-    -64: (np.dtype(">f8"), False, 8),
+    8:   np.dtype(">u1"),
+    16:  np.dtype(">i2"),
+    32:  np.dtype(">i4"),
+    64:  np.dtype(">i8"),
+    -32: np.dtype(">f4"),
+    -64: np.dtype(">f8"),
 }
 
 
-class FitsError(RuntimeError):
-    """Raised on malformed FITS input."""
+def _parse_value(raw: str) -> Any:
+    """Convert a FITS card value field to a Python scalar.
 
-
-# ---------------------------------------------------------------------------
-# Header parsing
-# ---------------------------------------------------------------------------
-
-
-def _parse_card(card: bytes) -> tuple[str, str | int | float | bool | None]:
-    """Parse one 80-byte FITS card. Returns (keyword, value)."""
-    if len(card) < 80:
-        card = card + b" " * (80 - len(card))
-    keyword = card[:8].decode("ascii", errors="replace").strip()
-    # Cards with a value have '= ' at positions 8-9.
-    if card[8:10] != b"= " and keyword not in ("END", "COMMENT", "HISTORY", ""):
-        return keyword, None
-    if keyword in ("END", "COMMENT", "HISTORY", ""):
-        return keyword, None
-
-    body = card[10:].decode("ascii", errors="replace")
-    # Strip trailing comment (slash outside a string literal).
-    in_str = False
-    end = len(body)
-    i = 0
-    while i < len(body):
-        ch = body[i]
-        if ch == "'":
-            in_str = not in_str
-            if not in_str and i + 1 < len(body) and body[i + 1] == "'":
-                # Escaped quote inside string literal.
-                i += 1
-        elif ch == "/" and not in_str:
-            end = i
-            break
-        i += 1
-    value_str = body[:end].strip()
-    return keyword, _coerce_value(value_str)
-
-
-def _coerce_value(s: str):
-    s = s.strip()
-    if not s:
+    FITS encodes ints as plain decimals, floats with optional ``D``
+    exponent marker, strings in single quotes (doubled to escape),
+    and booleans as ``T`` / ``F``.
+    """
+    v = raw.strip()
+    if not v:
         return None
-    if s.startswith("'") and s.endswith("'"):
-        # FITS string literals can have embedded '' (double single
-        # quote = escaped single quote).
-        return s[1:-1].replace("''", "'").rstrip()
-    if s in ("T", "F"):
-        return s == "T"
-    # Numeric — int or float
+    if v[0] == "'":
+        # String value. Trailing single-quote marks the end; FITS
+        # escapes embedded quotes by doubling, so 'O''Brien' becomes
+        # "O'Brien".
+        if v[-1] != "'":
+            raise ValueError(f"unterminated FITS string: {raw!r}")
+        return v[1:-1].replace("''", "'").rstrip()
+    if v == "T":
+        return True
+    if v == "F":
+        return False
+    # Numeric. FITS sometimes uses 'D' for exponent ("1.234D5"); numpy
+    # / Python only know 'E', so swap.
+    v_canon = v.replace("D", "E").replace("d", "e")
     try:
-        if "." in s or "e" in s.lower() or "d" in s.lower():
-            return float(s.replace("D", "E").replace("d", "e"))
-        return int(s)
+        return int(v_canon)
     except ValueError:
-        return s   # leave as raw string
+        pass
+    try:
+        return float(v_canon)
+    except ValueError:
+        pass
+    return v   # unknown — return raw string
 
 
-def _parse_header(read_at: Callable[[int, int], bytes], offset: int) -> tuple[dict, int]:
-    """Parse a FITS header starting at ``offset``. Returns
-    (header_dict, end_offset_after_header) where end_offset is
-    aligned to a 2880-byte boundary."""
-    header: dict[str, Any] = {}
-    cur = offset
-    while True:
-        block = read_at(cur, _BLOCK)
-        if len(block) < _BLOCK:
-            raise FitsError(
-                f"FITS: short read on header block at offset {cur} "
-                f"(got {len(block)}, expected {_BLOCK})"
-            )
-        cur += _BLOCK
-        for i in range(0, _BLOCK, 80):
-            kw, val = _parse_card(block[i:i + 80])
-            if kw == "END":
-                return header, cur
-            if kw and kw not in ("COMMENT", "HISTORY", ""):
-                # Multi-value keys (NAXIS1, NAXIS2, …) are unique;
-                # plain duplicates would be a malformed FITS file.
-                header[kw] = val
-        # No END in this block → continue.
+def _parse_header(block_bytes: bytes) -> tuple[dict[str, Any], bool]:
+    """Decode one 2880-byte block of header cards.
 
-
-# ---------------------------------------------------------------------------
-# HDU
-# ---------------------------------------------------------------------------
+    Returns ``(header_updates, end_seen)``. ``end_seen`` is True when
+    the ``END`` card appears in this block.
+    """
+    updates: dict[str, Any] = {}
+    end_seen = False
+    for i in range(_CARDS_PER_BLOCK):
+        card = block_bytes[i * _CARD : (i + 1) * _CARD].decode("ascii", "replace")
+        if card.startswith("END") and card[3:].strip() == "":
+            end_seen = True
+            break
+        # Keyword is bytes 0..7 (left-justified, trailing spaces).
+        # Bytes 8..9 are "= " for value cards (HISTORY / COMMENT /
+        # blank don't have "="). We only care about value cards.
+        key = card[:8].rstrip()
+        if not key or card[8:10] != "= ":
+            continue
+        # Strip inline comment (anything after ``/`` not inside a string).
+        body = card[10:]
+        in_string = False
+        comment_at = len(body)
+        for j, ch in enumerate(body):
+            if ch == "'":
+                in_string = not in_string
+            elif ch == "/" and not in_string:
+                comment_at = j
+                break
+        updates[key] = _parse_value(body[:comment_at])
+    return updates, end_seen
 
 
 class FitsHDU:
-    """One Header-Data Unit in a FITS file.
+    """A single Header Data Unit. Header is parsed lazily on first access."""
 
-    Attributes
-    ----------
-    header : dict
-        Parsed header keywords. Common ones: NAXIS, NAXIS1, NAXIS2,
-        BITPIX, BZERO, BSCALE, EXTNAME.
-    shape : tuple
-        Pixel shape. FITS stores NAXIS1 as the fastest-varying axis;
-        we report shapes with the SLOWEST axis first (numpy/C-order).
-    dtype : np.dtype
-        Output dtype. uint16 for BITPIX=16 with BZERO=32768 (the
-        signed→unsigned offset convention); otherwise the literal
-        BITPIX type.
-    data_offset : int
-        File position of the start of this HDU's pixel data.
-    data_size_bytes : int
-        Size of the data segment (excluding the trailing 2880-byte
-        padding).
-    """
+    def __init__(self, parent: "FitsStream", offset: int, index: int):
+        self._parent = parent
+        self._offset = offset      # byte offset of this HDU's start
+        self.index = index
+        self._header: dict[str, Any] | None = None
+        self._data_offset: int | None = None
+        self._data_size: int | None = None
 
-    def __init__(
-        self,
-        stream: "FitsStream",
-        header: dict,
-        data_offset: int,
-    ):
-        self._stream = stream
-        self.header = header
-        self.data_offset = data_offset
-
-        naxis = int(header.get("NAXIS", 0))
-        if naxis < 0 or naxis > 999:
-            raise FitsError(f"FITS: invalid NAXIS={naxis}")
-        bitpix = int(header.get("BITPIX", 8))
-        if bitpix not in _BITPIX_TO_DTYPE:
-            raise FitsError(
-                f"FITS: unsupported BITPIX={bitpix} (expected one of "
-                f"{sorted(_BITPIX_TO_DTYPE.keys())})"
-            )
-        raw_dtype, signed, bps = _BITPIX_TO_DTYPE[bitpix]
-        self._raw_dtype = raw_dtype
-        self._bps = bps
-        self._bitpix = bitpix
-        self._bzero = float(header.get("BZERO", 0.0))
-        self._bscale = float(header.get("BSCALE", 1.0))
-
-        # NAXIS1 is fastest-varying (x) in FITS. Numpy needs slowest-
-        # first, so reverse: shape = (NAXISn, ..., NAXIS2, NAXIS1).
-        if naxis == 0:
-            self.shape: tuple[int, ...] = ()
-        else:
-            dims = []
-            for i in range(naxis, 0, -1):
-                dims.append(int(header.get(f"NAXIS{i}", 0)))
-            self.shape = tuple(dims)
-
-        self.data_size_bytes = bps
-        for d in self.shape:
-            self.data_size_bytes *= d
-
-        # FITS unsigned-integer convention:
-        #   BITPIX=16 BZERO=32768 BSCALE=1 → uint16
-        #   BITPIX=32 BZERO=2147483648 BSCALE=1 → uint32
-        #   BITPIX=64 BZERO=9223372036854775808 BSCALE=1 → uint64
-        self._unsigned_int = False
-        if bitpix == 16 and self._bzero == 32768.0 and self._bscale == 1.0:
-            self.dtype = np.dtype("u2")
-            self._unsigned_int = True
-        elif bitpix == 32 and self._bzero == 2147483648.0 and self._bscale == 1.0:
-            self.dtype = np.dtype("u4")
-            self._unsigned_int = True
-        elif bitpix == 64 and self._bzero == 9223372036854775808.0 and self._bscale == 1.0:
-            self.dtype = np.dtype("u8")
-            self._unsigned_int = True
-        else:
-            # No rescale — output is the raw BITPIX type (native byte
-            # order for caller convenience).
-            self.dtype = np.dtype(raw_dtype.str.replace(">", "<")
-                                  if os.sys.byteorder == "little"
-                                  else raw_dtype.str)
-
-    def asarray(self) -> np.ndarray:
-        """Decode the full HDU's pixel data."""
-        if self.data_size_bytes == 0:
-            return np.empty((0,), dtype=self.dtype)
-        raw = self._stream._read_at(self.data_offset, self.data_size_bytes)
-        # FITS data is always big-endian per the spec.
-        arr = np.frombuffer(raw, dtype=self._raw_dtype).reshape(self.shape)
-        if self._unsigned_int:
-            # signed → unsigned: flip the sign bit. View the bytes as
-            # the target unsigned dtype, then add 2^(N-1) modulo 2^N.
-            # For uint64, naive int64 arithmetic would overflow on the
-            # +2^63 shift; do it in the target unsigned dtype's
-            # native modular arithmetic instead.
-            target = np.dtype(self.dtype.str)
-            shift = target.type(1 << (self._bps * 8 - 1))
-            # arr is signed in big-endian; view as unsigned big-endian
-            # of the same width, then convert to host order.
-            arr_u = arr.view(self.dtype.newbyteorder(">"))
-            out = (arr_u + shift).astype(self.dtype)
-        elif self._bscale != 1.0 or self._bzero != 0.0:
-            out = arr.astype(np.float64) * self._bscale + self._bzero
-            # If output should be float32 to save memory, caller can
-            # .astype it. Default keeps full precision.
-        else:
-            out = np.ascontiguousarray(arr).astype(self.dtype, copy=False)
-        return out
-
-    def __repr__(self) -> str:
-        return (
-            f"<FitsHDU shape={self.shape} dtype={self.dtype} "
-            f"BITPIX={self._bitpix} BZERO={self._bzero} "
-            f"BSCALE={self._bscale}>"
-        )
-
-
-# ---------------------------------------------------------------------------
-# FitsStream — top-level reader
-# ---------------------------------------------------------------------------
-
-
-class FitsStream:
-    """Streaming FITS reader. Walks the HDU sequence lazily.
-
-    Accepts a path, bytes, file-like, or any ``read_at(offset, n) ->
-    bytes`` callable. The callable form pairs with
-    :class:`opencodecs._tiff_http.HTTPDataSource` for HTTP-range
-    reads of remote FITS files (NASA / ESA / NOAO archives serve them
-    this way).
-
-    Examples
-    --------
-    Open a local file and read the primary HDU::
-
-        with FitsStream("m31.fits") as f:
-            arr = f.hdu(0).asarray()
-
-    Stream over HTTPS::
-
-        from opencodecs._tiff_http import HTTPDataSource
-        src = HTTPDataSource("https://.../m31.fits")
-        with FitsStream(src) as f:
-            arr = f.hdu(0).asarray()
-    """
-
-    def __init__(self, src: Any, *,
-                 read_at: Callable[[int, int], bytes] | None = None):
-        self._src = src
-        self._owns_fd = False
-        # Auto-detect a callable src and promote to read_at.
-        if read_at is None and callable(src) and not isinstance(
-            src, (str, os.PathLike, bytes, bytearray, memoryview),
-        ):
-            read_at = src
-            self._src = None
-        if read_at is not None:
-            self._read_at = read_at
-        else:
-            self._read_at = self._open_read_at(src)
-        self._hdu_cache: list[FitsHDU | None] = []
-        self._end_of_file = False
-
-    def _open_read_at(self, src) -> Callable[[int, int], bytes]:
-        if isinstance(src, (str, os.PathLike)):
-            f = open(src, "rb")
-            self._owns_fd = True
-            self._fd = f
-            def _r(o, n):
-                f.seek(int(o)); return f.read(int(n))
-            return _r
-        if isinstance(src, (bytes, bytearray, memoryview)):
-            mv = memoryview(src) if not isinstance(src, memoryview) else src
-            if mv.format != "B":
-                mv = mv.cast("B")
-            def _r(o, n):
-                return bytes(mv[int(o):int(o) + int(n)])
-            return _r
-        if hasattr(src, "read") and hasattr(src, "seek"):
-            def _r(o, n):
-                src.seek(int(o)); return src.read(int(n))
-            return _r
-        raise TypeError(
-            f"FitsStream: don't know how to read from {type(src).__name__}"
-        )
-
-    def hdu(self, index: int) -> FitsHDU:
-        """Return the ``index``-th HDU (0 = primary)."""
-        while len(self._hdu_cache) <= index and not self._end_of_file:
-            self._parse_next_hdu()
-        if index >= len(self._hdu_cache):
-            raise IndexError(f"FITS: no HDU at index {index}")
-        return self._hdu_cache[index]
+    # ---------- header ----------
 
     @property
-    def n_hdus(self) -> int:
-        """Force a full HDU walk, then return the count."""
-        while not self._end_of_file:
-            self._parse_next_hdu()
-        return len(self._hdu_cache)
+    def header(self) -> dict[str, Any]:
+        if self._header is None:
+            self._parse_header()
+        return self._header
 
-    def iter_hdus(self) -> Iterator[FitsHDU]:
-        i = 0
-        while True:
-            try:
-                yield self.hdu(i)
-            except IndexError:
-                return
-            i += 1
+    def _parse_header(self) -> None:
+        header: dict[str, Any] = {}
+        end_seen = False
+        block_idx = 0
+        while not end_seen:
+            block = self._parent._read(
+                self._offset + block_idx * _BLOCK, _BLOCK
+            )
+            if len(block) < _BLOCK:
+                raise ValueError(
+                    f"FITS: short header read at HDU {self.index} "
+                    f"(got {len(block)} bytes, expected {_BLOCK})"
+                )
+            updates, end_seen = _parse_header(block)
+            header.update(updates)
+            block_idx += 1
+        self._header = header
+        self._data_offset = self._offset + block_idx * _BLOCK
+        self._data_size = self._payload_size_bytes()
 
-    def _parse_next_hdu(self) -> None:
-        """Parse the next HDU's header + record its data offset."""
-        if self._hdu_cache:
-            prev = self._hdu_cache[-1]
-            assert prev is not None
-            cur = prev.data_offset + prev.data_size_bytes
-            # Round up to next 2880 boundary.
-            pad = (-cur) % _BLOCK
-            cur += pad
+    def _payload_size_bytes(self) -> int:
+        h = self._header
+        naxis = int(h.get("NAXIS", 0))
+        if naxis == 0:
+            return 0
+        bitpix = int(h["BITPIX"])
+        size = abs(bitpix) // 8
+        for i in range(1, naxis + 1):
+            size *= int(h[f"NAXIS{i}"])
+        # GROUPS / PCOUNT for random-groups, GCOUNT for tables — most
+        # image HDUs have GCOUNT=1, PCOUNT=0 and this collapses to a
+        # no-op. Including these makes us safe against extension HDUs.
+        gcount = int(h.get("GCOUNT", 1))
+        pcount = int(h.get("PCOUNT", 0))
+        size = (size + pcount * (abs(bitpix) // 8)) * gcount
+        return size
+
+    # ---------- data ----------
+
+    @property
+    def shape(self) -> tuple[int, ...]:
+        h = self.header
+        naxis = int(h.get("NAXIS", 0))
+        if naxis == 0:
+            return ()
+        # FITS NAXIS1 is fastest-varying — reverse for numpy (C order).
+        return tuple(int(h[f"NAXIS{i}"]) for i in range(naxis, 0, -1))
+
+    @property
+    def dtype(self) -> np.dtype:
+        h = self.header
+        bitpix = int(h.get("BITPIX", 0))
+        if bitpix not in _BITPIX_TO_DTYPE:
+            raise ValueError(f"FITS: unsupported BITPIX={bitpix}")
+        return _BITPIX_TO_DTYPE[bitpix]
+
+    @property
+    def dtype(self) -> np.dtype:
+        """Effective output dtype after BZERO/BSCALE interpretation.
+
+        The FITS unsigned-int convention: BITPIX=16 with BSCALE=1 and
+        BZERO=2**15 means "this is uint16 stored offset-encoded in a
+        signed int16 field". Same for 32 / 64. Floats with BZERO/BSCALE
+        applied always come back as float64.
+        """
+        h = self.header
+        raw = self._raw_dtype()
+        bscale = float(h.get("BSCALE", 1.0))
+        bzero = float(h.get("BZERO", 0.0))
+        if bscale == 1.0 and bzero == 0.0:
+            return np.dtype(raw.kind + str(raw.itemsize)).newbyteorder("=")
+        # Unsigned-int trick: signed ints + integer BZERO at the bias.
+        if raw.kind == "i" and bscale == 1.0:
+            bias = {1: 1 << 7, 2: 1 << 15, 4: 1 << 31, 8: 1 << 63}[raw.itemsize]
+            if int(bzero) == bias and bzero == int(bzero):
+                return np.dtype(f"u{raw.itemsize}")
+        return np.dtype("f8")
+
+    def _raw_dtype(self) -> np.dtype:
+        bitpix = int(self.header.get("BITPIX", 0))
+        if bitpix not in _BITPIX_TO_DTYPE:
+            raise ValueError(f"FITS: unsupported BITPIX={bitpix}")
+        return _BITPIX_TO_DTYPE[bitpix]
+
+    def asarray(self) -> np.ndarray:
+        """Read the HDU's data payload into a numpy ndarray.
+
+        Applies the FITS unsigned-int convention when BSCALE=1 and
+        BZERO is an integer power-of-two bias (returns uintN). Other
+        non-default BSCALE/BZERO combinations return float64 after
+        ``output = raw * BSCALE + BZERO``.
+        """
+        _ = self.header  # ensure parsed
+        if self._data_size == 0:
+            return np.empty((0,), dtype=np.uint8)
+        raw_bytes = self._parent._read(self._data_offset, self._data_size)
+        if len(raw_bytes) < self._data_size:
+            raise ValueError(
+                f"FITS: short data read for HDU {self.index} "
+                f"({len(raw_bytes)} < {self._data_size})"
+            )
+        raw = np.frombuffer(raw_bytes, dtype=self._raw_dtype()).reshape(self.shape)
+        h = self.header
+        bscale = float(h.get("BSCALE", 1.0))
+        bzero = float(h.get("BZERO", 0.0))
+        out_dtype = self.dtype
+        if bscale == 1.0 and bzero == 0.0:
+            # Native byte order, signed-int / float passthrough.
+            return raw.astype(out_dtype, copy=True)
+        # FITS unsigned-int convention: signed int + integer power-of-
+        # two bias = uintN. Modular addition in a wider signed type
+        # (one step up from raw.itemsize) gets the bit pattern right
+        # without wraparound.
+        if out_dtype.kind == "u":
+            # FITS unsigned trick is equivalent to flipping the sign
+            # bit: signed N-bit value `x` + bias 2**(N-1) = unsigned
+            # value (mod 2**N). XORing the high bit on a uintN
+            # reinterpretation gives that exactly and works for
+            # uint64 where ``int(bzero)`` would overflow C long.
+            native = raw.byteswap().view(out_dtype) if raw.dtype.byteorder == ">" else raw.view(out_dtype)
+            return (native ^ np.array(1 << (out_dtype.itemsize * 8 - 1),
+                                       dtype=out_dtype)).copy()
+        return raw.astype(np.float64) * bscale + bzero
+
+    @property
+    def total_bytes(self) -> int:
+        """Header bytes + data-payload bytes, rounded up to a 2880-byte
+        boundary (so the next HDU starts at this HDU's offset +
+        total_bytes)."""
+        _ = self.header
+        data_start = self._data_offset - self._offset
+        pad = (-self._data_size) % _BLOCK if self._data_size else 0
+        return data_start + self._data_size + pad
+
+
+class FitsStream(Reader):
+    """Reader for one FITS file. One frame per image HDU.
+
+    Construct via ``FitsCodec().open(src)`` or directly with a
+    ``read_at(offset, n_bytes) -> bytes`` callable (HTTPDataSource,
+    file-like, etc.).
+    """
+
+    is_chunked = True
+
+    def __init__(self, src: Any, *, read_at: Callable[[int, int], bytes] | None = None):
+        self._src = src
+
+        if read_at is None and callable(src) and not isinstance(
+                src, (str, os.PathLike, bytes, bytearray, memoryview)):
+            read_at = src
+            self._src = None
+
+        if read_at is not None:
+            self._read = read_at
+            self._owns_fd = False
         else:
-            cur = 0
+            self._read, self._owns_fd = self._open_read_at(src)
 
-        # Probe: if we can't read 80 bytes, we're at EOF.
-        head = self._read_at(cur, 80)
-        if len(head) < 80:
-            self._end_of_file = True
+        # Probe for FITS magic. If the file doesn't look like FITS we
+        # quietly accept it with zero HDUs — matches the contract the
+        # existing test suite asserts (``FitsStream(garbage)`` opens
+        # cleanly but ``f.n_hdus == 0``).
+        try:
+            head = self._read(0, _CARD)
+        except (OSError, ValueError):
+            head = b""
+        is_fits = (
+            head.startswith(b"SIMPLE  = ") or head.startswith(b"XTENSION= ")
+        )
+
+        # Walk HDU chain by reading each header to discover its payload
+        # size, then jumping to the next HDU offset. For HTTP-backed
+        # reads this is one (small) Range request per HDU header.
+        self._hdus: list[FitsHDU] = []
+        if is_fits:
+            offset = 0
+            while True:
+                hdu = FitsHDU(self, offset, index=len(self._hdus))
+                try:
+                    _ = hdu.header
+                except (ValueError, KeyError):
+                    break
+                self._hdus.append(hdu)
+                offset += hdu.total_bytes
+                try:
+                    probe = self._read(offset, 1)
+                except (OSError, ValueError):
+                    break
+                if not probe:
+                    break
+
+        self.n_hdus = len(self._hdus)
+        self.n_frames = self.n_hdus
+        # Optional: a zero-HDU stream (garbage input) is still a valid
+        # FitsStream — callers see n_hdus=0 and skip iteration. Skip
+        # the primary-HDU shape population in that case.
+        if not self._hdus:
+            self.shape = ()
+            self.dtype = np.dtype("u1")
             return
-        # Primary HDU starts with SIMPLE; extensions with XTENSION.
-        kw, _ = _parse_card(head)
-        if kw not in ("SIMPLE", "XTENSION"):
-            self._end_of_file = True
-            return
-        header, data_off = _parse_header(self._read_at, cur)
-        hdu = FitsHDU(self, header, data_off)
-        self._hdu_cache.append(hdu)
+        primary = self._hdus[0]
+        self.shape = primary.shape
+        # primary may have NAXIS=0 (header-only); use first data-bearing
+        # HDU for the Reader's dtype contract instead.
+        first_data = next((h for h in self._hdus if h.header.get("NAXIS", 0)),
+                          primary)
+        self.dtype = first_data.dtype if first_data.shape else np.dtype("u1")
+
+    # ---------- I/O ----------
+
+    def _open_read_at(self, src: Any) -> tuple[Callable[[int, int], bytes], bool]:
+        if isinstance(src, (str, os.PathLike)):
+            f = open(src, "rb")
+
+            def read_at(off: int, n: int, _f=f) -> bytes:
+                _f.seek(off)
+                return _f.read(n)
+            return read_at, True
+        if isinstance(src, (bytes, bytearray, memoryview)):
+            buf = bytes(src)
+
+            def read_at(off: int, n: int, _b=buf) -> bytes:
+                return _b[off : off + n]
+            return read_at, False
+        if hasattr(src, "read") and hasattr(src, "seek"):
+            f = src
+
+            def read_at(off: int, n: int, _f=f) -> bytes:
+                _f.seek(off)
+                return _f.read(n)
+            return read_at, False
+        raise TypeError(
+            f"FITS: unsupported src type {type(src).__name__}; "
+            f"pass a path, bytes, file-like, or read_at callable"
+        )
 
     def close(self) -> None:
-        if self._owns_fd:
-            try:
-                self._fd.close()
-            finally:
-                self._owns_fd = False
+        if self._owns_fd and self._src is not None:
+            # ``self._src`` is a path; the file-handle is captured inside
+            # the read_at closure. Close it via the closure's __closure__.
+            for cell in (getattr(self._read, "__closure__", None) or ()):
+                contents = cell.cell_contents
+                if hasattr(contents, "close"):
+                    try:
+                        contents.close()
+                    except OSError:
+                        pass
+                    break
+            self._owns_fd = False
 
     def __enter__(self) -> "FitsStream":
         return self
 
-    def __exit__(self, *_) -> bool:
+    def __exit__(self, exc_type, exc, tb) -> None:
         self.close()
-        return False
+
+    # ---------- Reader contract ----------
+
+    def hdu(self, i: int) -> FitsHDU:
+        return self._hdus[i]
+
+    def iter_frames(self) -> Iterator[np.ndarray]:
+        for h in self._hdus:
+            if h.header.get("NAXIS", 0):
+                yield h.asarray()
+
+    def __getitem__(self, idx) -> np.ndarray:
+        return self._hdus[idx].asarray()
+
+    def read(self) -> np.ndarray:
+        """Read the primary HDU's image data (or the first data-bearing
+        HDU when the primary is header-only)."""
+        for h in self._hdus:
+            if h.header.get("NAXIS", 0):
+                return h.asarray()
+        raise ValueError("FITS: no image data in this file")
 
 
-def imread(path: str | Path) -> np.ndarray:
-    """Convenience: read the primary HDU's pixel data as an ndarray."""
-    with FitsStream(path) as f:
-        return f.hdu(0).asarray()
+def imread(src: Any) -> np.ndarray:
+    """One-shot decode: open ``src``, return the primary HDU's image data
+    (or the first data-bearing HDU when the primary is header-only)."""
+    with FitsStream(src) as fs:
+        return fs.read()
 
 
-__all__ = ["FitsStream", "FitsHDU", "FitsError", "imread"]
+def imwrite(*args, **kwargs):
+    """FITS encode is not implemented in opencodecs. Use ``astropy.io.fits``
+    or another writer for FITS output; we ship reader-only since the
+    Tier 3 streaming-read thesis is what makes FITS interesting for
+    opencodecs (HTTP-range archive access)."""
+    raise NotImplementedError(
+        "FITS encode is not implemented in opencodecs; use astropy.io.fits"
+    )
+
+
+__all__ = ["FitsStream", "FitsHDU", "imread", "imwrite"]

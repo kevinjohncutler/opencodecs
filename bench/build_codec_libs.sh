@@ -427,8 +427,15 @@ build_c_blosc2() {
     echo "==> c-blosc2 $v"
     local src
     src=$(fetch_tar c-blosc2 "$v" "https://github.com/Blosc/c-blosc2/archive/refs/tags/v$v.tar.gz")
+    # Use the bundled zstd / lz4 sources instead of system libs. On Linux
+    # the system libzstd.a ships as non-PIC, which breaks c-blosc2's
+    # shared-library link with "relocation R_X86_64_PC32 against symbol
+    # ... can not be used when making a shared object; recompile with
+    # -fPIC". Even when system zstd is PIC, the bundled zstd is what
+    # imagecodecs's wheel ships against and what we match for wire-format
+    # parity, so there's no upside to preferring external here.
     cmake_build "$src" -DBUILD_TESTS=OFF -DBUILD_BENCHMARKS=OFF -DBUILD_FUZZERS=OFF \
-        -DBUILD_EXAMPLES=OFF -DPREFER_EXTERNAL_ZSTD=ON -DPREFER_EXTERNAL_LZ4=ON
+        -DBUILD_EXAMPLES=OFF -DPREFER_EXTERNAL_ZSTD=OFF -DPREFER_EXTERNAL_LZ4=OFF
     mark_built c-blosc2 "$v"
 }
 

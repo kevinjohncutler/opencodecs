@@ -331,6 +331,14 @@ if "opencodecs.codecs._rgbe" in sys.modules:
 
 
 # ---------------------------------------------------------------------------
+# fits — Flexible Image Transport System (astronomy)
+# ---------------------------------------------------------------------------
+
+from .._fits_codec import FitsCodec
+register_codec(FitsCodec())
+
+
+# ---------------------------------------------------------------------------
 # ultrahdr — Ultra HDR (gainmap JPEG, ISO 21496)
 # ---------------------------------------------------------------------------
 
