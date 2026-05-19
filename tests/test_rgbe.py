@@ -13,7 +13,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from opencodecs._rgbe import encode, decode, RgbeError
+from opencodecs.codecs._rgbe import encode, decode, RgbeError
 
 
 def _make_hdr(shape=(48, 96, 3), seed=0):

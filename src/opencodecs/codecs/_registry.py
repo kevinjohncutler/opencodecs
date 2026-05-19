@@ -251,6 +251,22 @@ register_codec(Bz2Codec())
 
 
 # ---------------------------------------------------------------------------
+# gzip — stdlib (always available); same engine as deflate, gzip-framed
+# ---------------------------------------------------------------------------
+
+from .._gzip_codec import GzipCodec
+register_codec(GzipCodec())
+
+
+# ---------------------------------------------------------------------------
+# none — identity passthrough; filter-chain placeholder
+# ---------------------------------------------------------------------------
+
+from .._none_codec import NoneCodec
+register_codec(NoneCodec())
+
+
+# ---------------------------------------------------------------------------
 # numpy — .npy-format passthrough (stdlib + numpy.save/load)
 # ---------------------------------------------------------------------------
 
@@ -303,6 +319,15 @@ if "opencodecs.codecs._bcdec" in sys.modules:
 
 from .._rcomp_codec import RcompCodec
 register_codec(RcompCodec())
+
+
+# ---------------------------------------------------------------------------
+# rgbe — Radiance HDR (.hdr) image format
+# ---------------------------------------------------------------------------
+
+if "opencodecs.codecs._rgbe" in sys.modules:
+    from .._rgbe_codec import RgbeCodec
+    register_codec(RgbeCodec())
 
 
 # ---------------------------------------------------------------------------

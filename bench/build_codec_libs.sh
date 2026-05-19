@@ -163,6 +163,10 @@ CMAKE_COMMON=(
     -DCMAKE_INSTALL_PREFIX="$PREFIX"
     -DCMAKE_POSITION_INDEPENDENT_CODE=ON
     -DBUILD_SHARED_LIBS=ON
+    # cmake 4.x dropped support for old policies (CMP0025 etc.) used by
+    # x265's pre-3.5 CMakeLists. This baseline is a no-op for projects
+    # already declaring cmake_minimum_required >= 3.5.
+    -DCMAKE_POLICY_VERSION_MINIMUM=3.5
 )
 [ "$USE_LTO" = "1" ] && CMAKE_COMMON+=(-DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON)
 if command -v ninja >/dev/null 2>&1; then

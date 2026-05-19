@@ -265,6 +265,56 @@ def _build_workloads(rng: np.random.Generator,
     # inputs in a way that's not the bench's bug to chase. Run LERC
     # benches via a separate process if needed.
 
+    # ---- FITS-style integer compressors -----------------------------
+    # rcomp: cfitsio's Rice coder. Vendored by opencodecs (after the
+    # 1000x pure-Python -> Cython port shipped in 123d56e); both
+    # sides should now be at parity on a small int16 buffer.
+    def prep_rcomp():
+        if not oc.has_codec("rcomp") or not hasattr(ic, "rcomp_encode"):
+            raise RuntimeError("rcomp not available on both sides")
+        arr_i16 = rng.integers(-1000, 1000, 4096, dtype=np.int16)
+        blob_oc = oc.get_codec("rcomp").encode(arr_i16)
+        blob_ic = ic.rcomp_encode(arr_i16)
+        return Workload(
+            key="rcomp/int16_4k",
+            encode_oc=lambda x=arr_i16: oc.get_codec("rcomp").encode(x),
+            encode_ic=lambda x=arr_i16: ic.rcomp_encode(x),
+            decode_oc=lambda b=blob_oc: oc.get_codec("rcomp").decode(
+                b, dtype=arr_i16.dtype, shape=arr_i16.shape),
+            decode_ic=lambda b=blob_ic: ic.rcomp_decode(
+                b, shape=arr_i16.shape, dtype=arr_i16.dtype),
+        )
+    w = _try_prep("rcomp/int16_4k", prep_rcomp, skipped)
+    if w is not None: workloads.append(w)
+
+    # aec: CCSDS 121.0 Rice-like coder. opencodecs wraps the raw libaec
+    # output in a self-describing header; imagecodecs takes block-size
+    # parameters at decode time. The wire formats aren't compatible
+    # so each side encodes-then-decodes its own blob. Both pinned to
+    # the same effective settings (bps=16, block_size=32, rsi=128).
+    def prep_aec():
+        if not oc.has_codec("aec") or not hasattr(ic, "aec_encode"):
+            raise RuntimeError("aec not available on both sides")
+        arr_u16 = rng.integers(0, 65535, 100000, dtype=np.uint16)
+        blob_oc = oc.get_codec("aec").encode(
+            arr_u16, bits_per_sample=16, block_size=32, rsi=128)
+        blob_ic = ic.aec_encode(
+            arr_u16, bitspersample=16, blocksize=32, rsi=128)
+        # ic.aec_decode rejects out= unless dtype matches bitspersample.
+        ic_out = np.empty(arr_u16.size, dtype=np.uint16)
+        return Workload(
+            key="aec/uint16_100k",
+            encode_oc=lambda x=arr_u16: oc.get_codec("aec").encode(
+                x, bits_per_sample=16, block_size=32, rsi=128),
+            encode_ic=lambda x=arr_u16: ic.aec_encode(
+                x, bitspersample=16, blocksize=32, rsi=128),
+            decode_oc=lambda b=blob_oc: oc.get_codec("aec").decode(b),
+            decode_ic=lambda b=blob_ic, o=ic_out: ic.aec_decode(
+                b, bitspersample=16, blocksize=32, rsi=128, out=o),
+        )
+    w = _try_prep("aec/uint16_100k", prep_aec, skipped)
+    if w is not None: workloads.append(w)
+
     def prep_blosc2():
         if not oc.has_codec("blosc2") or not hasattr(ic, "blosc2_encode"):
             raise RuntimeError("blosc2 not available on both sides")

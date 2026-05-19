@@ -22,7 +22,11 @@ class DeflateCodec(Codec):
 
     name = "deflate"
     file_extensions = (".zlib",)
-    aliases = ("zlib",)
+    # ``zlibng`` is exposed for ic-compatible callers (tifffile / zarr
+    # filter-chains that name backends explicitly). The codec is the
+    # same wire format regardless — we already link zlib-ng-compat
+    # when it's available (see _deflate.pyx's backend probe).
+    aliases = ("zlib", "zlibng")
 
     has_native = True
     has_delegate = False

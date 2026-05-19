@@ -1463,8 +1463,32 @@ extensions = [
             *_resolve_include_dirs("zfp.h"),
         ],
         library_dirs=_lib_dirs_for_probes(),
-        libraries=["zfp"],
+        # macOS link-order trap: sysconfig prepends ``/opt/homebrew/lib``
+        # ahead of our library_dirs, so ``-lzfp`` resolves to Homebrew's
+        # bottle even when a per-user cached build exists. Pass the
+        # absolute dylib path via extra_link_args when the cached lib
+        # is present (same trick _lerc / _libjxl use).
+        libraries=(
+            []
+            if any(
+                (_OC_USER_CACHE / sub / "lib" / fname).exists()
+                for sub in ("libs", "zfp")
+                for fname in ("libzfp.1.dylib", "libzfp.so.1", "libzfp.so")
+            )
+            else ["zfp"]
+        ),
         define_macros=[("NPY_NO_DEPRECATED_API", "NPY_1_7_API_VERSION")],
+        extra_link_args=(
+            (lambda candidates: next(
+                ([str(p), f"-Wl,-rpath,{p.parent}"]
+                 for p in candidates if p.exists()),
+                [],
+            ))([
+                _OC_USER_CACHE / sub / "lib" / fname
+                for sub in ("libs", "zfp")
+                for fname in ("libzfp.1.dylib", "libzfp.so.1", "libzfp.so")
+            ])
+        ),
         language="c",
     ),
     # LERC (Esri Limited Error Raster Compression): per-user cache
@@ -1547,6 +1571,24 @@ extensions = [
             str(PKG_CODECS),
             numpy.get_include(),
             str(HERE / "3rdparty" / "cfitsio"),
+        ],
+        define_macros=[("NPY_NO_DEPRECATED_API", "NPY_1_7_API_VERSION")],
+        language="c",
+    ),
+    # Radiance HDR (RGBE) — Bruce Walter / Greg Ward C library, vendored
+    # as a single .c/.h pair. Public-domain origin (Greg Ward, LBL); the
+    # vendored port carries the "USE AT YOUR OWN RISK" disclaimer in
+    # rgbe.c and a description in rgbe.txt. No external deps.
+    Extension(
+        name="opencodecs.codecs._rgbe",
+        sources=[
+            "src/opencodecs/codecs/_rgbe.pyx",
+            "3rdparty/rgbe/rgbe.c",
+        ],
+        include_dirs=[
+            str(PKG_CODECS),
+            numpy.get_include(),
+            str(HERE / "3rdparty" / "rgbe"),
         ],
         define_macros=[("NPY_NO_DEPRECATED_API", "NPY_1_7_API_VERSION")],
         language="c",
