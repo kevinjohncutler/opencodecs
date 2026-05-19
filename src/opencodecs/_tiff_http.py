@@ -75,6 +75,21 @@ class HTTPDataSource(DataSource):
         max_workers: int = 8,
         coalesce_gap: int = 16 * 1024,
         coalesce_max: int = 4 * 1024 * 1024,
+        # Speculative read-ahead. When a ``read_at(off, n)`` call
+        # misses cache and ``n`` is small (a FITS header block, a TIFF
+        # IFD, an HDF5 B-tree node), fetch ``readahead_window`` bytes
+        # instead so subsequent small reads in the same region hit
+        # the covering cache without a fresh HTTP round-trip.
+        #
+        # OFF by default because read-ahead trades bytes for RTTs: a
+        # workload that opens a file then makes one small read pays
+        # ``readahead_window`` bytes of wasted bandwidth even though
+        # it never needed the extra data. Opt in when you know the
+        # access pattern is sequential-ish (FITS HDU walk, h5py
+        # B-tree traversal) by passing ``readahead_window=65536`` (or
+        # whatever size matches your locality).
+        readahead_threshold: int = 16 * 1024,
+        readahead_window: int = 0,
     ):
         self.url = url
         self.timeout = float(timeout)
@@ -95,6 +110,8 @@ class HTTPDataSource(DataSource):
         self._max_workers = int(max_workers)
         self._coalesce_gap = int(coalesce_gap)
         self._coalesce_max = int(coalesce_max)
+        self._readahead_threshold = int(readahead_threshold)
+        self._readahead_window = int(readahead_window)
         # Lazily-created thread pool for read_many. We don't pay the
         # 8-thread startup cost on single-read workflows.
         self._pool: concurrent.futures.ThreadPoolExecutor | None = None
@@ -157,11 +174,62 @@ class HTTPDataSource(DataSource):
             if cached is not None:
                 self._cache.move_to_end((offset, n))
                 return cached
+            # Covering-range lookup: an earlier read-ahead may have
+            # fetched a bigger blob that includes this range. Scan the
+            # LRU back-to-front (most recent first, hottest cache).
+            covering = self._covering_lookup(offset, n)
+            if covering is not None:
+                return covering
 
-        chunk = self._range_request(offset, n)
+        # Speculative read-ahead. Small misses get extended to
+        # ``readahead_window`` bytes so the next adjacent small read
+        # hits the covering cache without a round-trip. We don't
+        # extend already-large requests (they're typically tile / chunk
+        # reads where over-fetching wastes bandwidth) or when
+        # readahead is disabled.
+        fetch_n = n
+        if (self._readahead_window > 0
+                and n <= self._readahead_threshold
+                and self._readahead_window > n):
+            fetch_n = self._readahead_window
+            # Don't fetch past EOF when the file size is known.
+            if self._total_size is not None:
+                fetch_n = min(fetch_n, max(0, self._total_size - offset))
+            if fetch_n < n:
+                fetch_n = n
+
+        chunk = self._range_request(offset, fetch_n)
         with self._lock:
-            self._cache_put((offset, n), chunk)
+            self._cache_put((offset, len(chunk)), chunk)
+            if len(chunk) > n:
+                # Slice + cache the exact requested view so future
+                # ``read_at(offset, n)`` calls hit the exact-key path.
+                exact = chunk[:n]
+                self._cache_put((offset, n), exact)
+                return exact
         return chunk
+
+    def _covering_lookup(self, offset: int, n: int) -> bytes | None:
+        """Return bytes for ``[offset, offset+n)`` from any cached blob
+        that fully covers the range, else None. Caller holds ``self._lock``.
+
+        Iterates the LRU back-to-front (most recent first). With
+        typical caches under ~100 entries this is fine; if it ever
+        becomes a hotspot promote to an interval tree.
+        """
+        end = offset + n
+        for (c_off, c_len), blob in reversed(self._cache.items()):
+            if c_off <= offset and c_off + c_len >= end:
+                lo = offset - c_off
+                hi = lo + n
+                view = blob[lo:hi]
+                # Touch the covering blob's LRU position + add an
+                # exact-key entry so subsequent reads of the same
+                # range skip the scan.
+                self._cache.move_to_end((c_off, c_len))
+                self._cache_put((offset, n), view)
+                return view
+        return None
 
     def read_many(self, ranges: Sequence[Range]) -> list[bytes]:
         """Fetch many ranges in parallel; results returned in input order.
@@ -198,6 +266,12 @@ class HTTPDataSource(DataSource):
                 if hit is not None:
                     self._cache.move_to_end((off, length))
                     out[i] = hit
+                    continue
+                # Same covering-cache hit path read_at uses — a prior
+                # read-ahead may have already pulled this range in.
+                covering = self._covering_lookup(off, length)
+                if covering is not None:
+                    out[i] = covering
                     continue
                 miss_idx.append(i)
                 miss_ranges.append((off, length))

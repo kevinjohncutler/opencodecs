@@ -73,14 +73,21 @@ take them as upper bounds.
 
 ## HTTPDataSource prefetch tuning (cross-cutting)
 
-* **Status**: HTTPDataSource ships with HTTP/1.1 keep-alive and an
-  LRU range cache. `TiffPyramidReader` uses coalesced `read_many` for
-  tile bursts.
-* **What's left**: extend the coalescing dispatcher beyond TIFF —
-  FITS HDU walking + h5py chunk fetching would both benefit. Could
-  promote `read_many` into the `DataSource` ABC and have each reader
-  call it for adjacent reads.
-* **Effort**: ~4-6 hr. Compounds with every Tier 3 reader.
+* **Status**: covering-cache lookup + opt-in speculative read-ahead
+  shipped (commit landing with this doc edit). Any read that lands
+  inside a previously-cached blob is now free; passing
+  ``readahead_window=65536`` to ``HTTPDataSource`` turns on the
+  speculative-fetch path that batches sequential small reads (FITS
+  HDU walks, h5py B-tree traversal, TIFF IFD chains). 6 regression
+  tests in ``tests/test_http_prefetch.py`` verify both behaviors
+  hit / skip the network as expected. Off by default because the
+  bytes-tight assertions in ``tests/test_http_byte_savings.py``
+  showed that sparse-access workloads pay for the wasted bytes.
+* **What's left**: adaptive trigger. Today the read-ahead is a
+  binary kwarg — on or off. A smarter trigger that watches for
+  N adjacent small reads and only then escalates to the larger
+  window would get the wins for both sequential and sparse
+  workloads without the user having to know up-front. ~2-3 hr.
 
 ## libspng PAETH filter NEON / SSE intrinsics
 
@@ -92,20 +99,6 @@ take them as upper bounds.
   emit SIMD intrinsics; would need a small `.c` shim.
 * **Why deferred**: we're well ahead of imagecodecs already; this is
   in "diminishing returns" territory.
-
-## OME-Zarr v3 sharded reader
-
-* **Status**: OME-Zarr v2 reader ships (`OmeZarrArray`,
-  `OmeZarrPyramidDataset`). v3 sharded chunks (multiple sub-chunks
-  per S3 object) require parsing the shard index.
-* **What's left**:
-  1. Detect v3 (`zarr_format: 3` in `zarr.json`) at open time.
-  2. Parse shard index: the shard footer holds a fixed-size table of
-     `(offset, length)` for each sub-chunk.
-  3. Adapt the chunk-fetch path: one HTTP range = one sub-chunk
-     within a shard.
-* **Effort**: ~6-8 hr. Strategically valuable — direct fit for the
-  "network-aware scientific imaging" thesis.
 
 ## blosc2 perf — Mac is at parity; Linux build verified, src/.so SMB-wedged
 
