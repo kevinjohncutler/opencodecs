@@ -1223,6 +1223,30 @@ extensions = [
     # HTJ2K (high-throughput JPEG-2000) via OpenJPH. Optional — built
     # only when libopenjph is on the system.
     *_maybe_build_openjph_ext(),
+    # Intel ISA-L deflate (x86_64-only; igzip is the fastest deflate
+    # engine — ~1.5-3x faster than libdeflate at compatible quality).
+    # Auto-skipped on hosts without libisal-dev. Built directly (rather
+    # than via _maybe_build_ext_simple) because we vendor a small C
+    # shim alongside the pyx that hides ISA-L's complex isal_zstream /
+    # inflate_state structs behind a flat one-shot API.
+    *(
+        [Extension(
+            name="opencodecs.codecs._isal",
+            sources=[
+                "src/opencodecs/codecs/_isal.pyx",
+                "src/opencodecs/codecs/isal_shim.c",
+            ],
+            include_dirs=[
+                str(PKG_CODECS),
+                *_resolve_include_dirs("isa-l/igzip_lib.h"),
+            ],
+            library_dirs=_lib_dirs_for_probes(),
+            libraries=["isal"],
+            define_macros=[("NPY_NO_DEPRECATED_API", "NPY_1_7_API_VERSION")],
+            language="c",
+        )]
+        if _has_header("isa-l/igzip_lib.h") else []
+    ),
     # Ultra HDR (gainmap JPEG, ISO 21496) via Google's libultrahdr.
     # Optional; the prebuilt brew bottle is fine because the codec is
     # bottlenecked by libjpeg-turbo's SIMD encoders (which we tune
@@ -1700,6 +1724,7 @@ _REQUIRED_HEADERS = {
     "opencodecs.codecs._pcodec": ("cpcodec.h",),
     "opencodecs.codecs._jpeg":   ("turbojpeg.h",),
     "opencodecs.codecs._ultrahdr": ("ultrahdr_api.h",),
+    "opencodecs.codecs._isal":   ("isa-l/igzip_lib.h",),
     "opencodecs.codecs._webp":   ("webp/encode.h",),
     "opencodecs.codecs._jpeg2k": ("openjpeg-2.5/openjpeg.h", "openjpeg-2.4/openjpeg.h"),
     "opencodecs.codecs._avif":   ("avif/avif.h",),

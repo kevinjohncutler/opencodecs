@@ -61,6 +61,7 @@ _EXTENSIONS = (
     "_rcomp",        # cfitsio ricecomp (vendored) — replaces _rcomp_codec.py
     "_rgbe",         # Radiance HDR (.hdr) image format (vendored, no deps)
     "_ultrahdr",     # Ultra HDR (ISO 21496 gainmap JPEG) via libultrahdr
+    "_isal",         # Intel ISA-L deflate (x86_64-only; fastest deflate)
     "_bmp",          # Cython BMP encoder — replaces the pure-Python encode path
     "_tiff",
     "_ndtiff",
