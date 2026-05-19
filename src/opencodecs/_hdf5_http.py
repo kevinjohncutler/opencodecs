@@ -234,3 +234,31 @@ def prefetch_hdf5_chunks(
     if ranges:
         source.read_many(ranges)
     return len(ranges)
+
+
+def read_hdf5_slice(dataset: Any, sel: Any) -> "np.ndarray":  # noqa: F821
+    """Read ``dataset[sel]`` with all covered chunks pre-fetched in
+    parallel.
+
+    Equivalent to::
+
+        prefetch_hdf5_chunks(dataset, sel)
+        return dataset[sel]
+
+    but exposed as one call so callers don't have to remember the
+    prefetch step. This is the right entry point for any read whose
+    selection covers more than one or two chunks — the parallel
+    Range-request batch hides network latency that a serial
+    chunk-by-chunk h5py read would expose.
+
+    Returns the ndarray that h5py's normal ``dataset[sel]`` would
+    return; no copy / dtype massaging on top.
+    """
+    try:
+        prefetch_hdf5_chunks(dataset, sel)
+    except (ValueError, AttributeError):
+        # No registered DataSource (file opened from a local path,
+        # not via open_remote_hdf5) — just fall through. The naked
+        # ``dataset[sel]`` is the correct answer in that case anyway.
+        pass
+    return dataset[sel]

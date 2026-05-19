@@ -51,6 +51,12 @@ include = ["opencodecs*"]
 # import ...`` without packaging tests/ as an installable subpackage.
 testpaths = ["tests"]
 pythonpath = ["tests"]
+markers = [
+    # Live tests against real public archives (NASA GSFC FITS, EMBL-EBI
+    # IDR OME-Zarr). Skip cleanly when the network is unreachable. Run
+    # with ``pytest -m slow`` or skip with ``-m "not slow"``.
+    "slow: live-archive smoke tests (hit real public endpoints)",
+]
 
 
 [tool.coverage.run]

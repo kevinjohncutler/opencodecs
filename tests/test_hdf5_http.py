@@ -168,10 +168,21 @@ def test_prefetch_collapses_chunk_fetches(http_h5_url):
         par_reqs = src_par.stats["requests"]
 
     assert n == 256, f"expected 256 chunks for a 512x512/32x32 layout, got {n}"
-    # Coalescing typically takes 256 chunks down to ~5-20 fetches.
-    assert par_reqs * 5 <= serial_reqs, (
-        f"expected substantial request reduction: "
+    # Parallel prefetch must still beat the serial baseline (typically
+    # by 2-4x — the gap is tighter now that ``HTTPDataSource`` also
+    # has adaptive read-ahead, so the serial path also coalesces).
+    assert par_reqs < serial_reqs, (
+        f"expected fewer requests via prefetch: "
         f"serial={serial_reqs}, parallel={par_reqs}"
+    )
+    # And both paths should be well below the chunk count (no
+    # one-request-per-chunk regression).
+    assert serial_reqs < n // 4, (
+        f"serial path is doing one-request-per-chunk: "
+        f"serial={serial_reqs}, chunks={n}"
+    )
+    assert par_reqs < n // 4, (
+        f"parallel prefetch failed to coalesce: par={par_reqs}, chunks={n}"
     )
 
 
@@ -193,6 +204,50 @@ def test_prefetch_correct_values(http_h5_url):
 
     np.testing.assert_array_equal(baseline, prefetched)
     np.testing.assert_array_equal(baseline, arr[:128, :128])
+
+
+def test_read_hdf5_slice_convenience_wrapper(http_h5_url):
+    """``read_hdf5_slice`` should bundle prefetch + read into one call
+    AND save requests vs the naked ``dataset[sel]`` path."""
+    from opencodecs._hdf5_http import read_hdf5_slice
+    url_for, tmp = http_h5_url
+    rng = np.random.default_rng(2)
+    arr = rng.integers(0, 4000, size=(256, 256), dtype=np.uint16)
+    with h5py.File(tmp / "wrap.h5", "w") as f:
+        f.create_dataset("img", data=arr, chunks=(32, 32),
+                         compression="gzip")
+
+    # Naked read: serial chunk fetches.
+    with open_remote_hdf5(url_for("wrap.h5")) as f:
+        src_naked = _SOURCE_REGISTRY[f.id]
+        out_naked = f["img"][:256, :256]
+        naked_reqs = src_naked.stats["requests"]
+
+    # Wrapper: one parallel batch then the read.
+    with open_remote_hdf5(url_for("wrap.h5"), max_workers=4) as f:
+        src_wrap = _SOURCE_REGISTRY[f.id]
+        out_wrap = read_hdf5_slice(f["img"], np.s_[:256, :256])
+        wrap_reqs = src_wrap.stats["requests"]
+
+    np.testing.assert_array_equal(out_naked, out_wrap)
+    np.testing.assert_array_equal(out_wrap, arr)
+    assert wrap_reqs <= naked_reqs, (
+        f"convenience wrapper should be no slower than naked read: "
+        f"naked={naked_reqs}, wrap={wrap_reqs}"
+    )
+
+
+def test_read_hdf5_slice_falls_through_on_local_file(tmp_path):
+    """Files opened locally (no DataSource registered) should still work
+    with the convenience wrapper — it falls back to plain dataset[sel]."""
+    from opencodecs._hdf5_http import read_hdf5_slice
+    p = tmp_path / "local.h5"
+    arr = np.arange(100, dtype=np.uint16).reshape(10, 10)
+    with h5py.File(p, "w") as f:
+        f.create_dataset("d", data=arr)
+    with h5py.File(p, "r") as f:
+        out = read_hdf5_slice(f["d"], np.s_[:5, :5])
+    np.testing.assert_array_equal(out, arr[:5, :5])
 
 
 def test_remote_hdf5_filelike_seek_tell(http_h5_url):

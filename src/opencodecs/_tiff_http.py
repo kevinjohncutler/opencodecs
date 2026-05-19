@@ -90,6 +90,17 @@ class HTTPDataSource(DataSource):
         # whatever size matches your locality).
         readahead_threshold: int = 16 * 1024,
         readahead_window: int = 0,
+        # Adaptive read-ahead. ``readahead_window`` above is the fixed
+        # always-on window (default 0 = off); the adaptive path watches
+        # the access pattern and auto-enables a ``adaptive_window``-byte
+        # read-ahead after seeing N=``adaptive_streak_threshold``
+        # consecutive small cache misses where each falls within
+        # ``adaptive_locality`` of the previous one (the kind of pattern
+        # FITS HDU walks, h5py B-tree traversal, and TIFF IFD chains
+        # produce). Set ``adaptive_window=0`` to disable.
+        adaptive_window: int = 64 * 1024,
+        adaptive_streak_threshold: int = 3,
+        adaptive_locality: int = 64 * 1024,
     ):
         self.url = url
         self.timeout = float(timeout)
@@ -112,6 +123,16 @@ class HTTPDataSource(DataSource):
         self._coalesce_max = int(coalesce_max)
         self._readahead_threshold = int(readahead_threshold)
         self._readahead_window = int(readahead_window)
+        # Adaptive read-ahead bookkeeping. The streak counter advances
+        # whenever a small cache miss is "near" the previous one; once
+        # it crosses the threshold, ``_should_adaptive_readahead``
+        # returns True and the next miss-path read gets bumped to
+        # ``_adaptive_window`` bytes.
+        self._adaptive_window = int(adaptive_window)
+        self._adaptive_streak_threshold = int(adaptive_streak_threshold)
+        self._adaptive_locality = int(adaptive_locality)
+        self._adaptive_last_end: int | None = None
+        self._adaptive_streak = 0
         # Lazily-created thread pool for read_many. We don't pay the
         # 8-thread startup cost on single-read workflows.
         self._pool: concurrent.futures.ThreadPoolExecutor | None = None
@@ -181,22 +202,46 @@ class HTTPDataSource(DataSource):
             if covering is not None:
                 return covering
 
-        # Speculative read-ahead. Small misses get extended to
-        # ``readahead_window`` bytes so the next adjacent small read
-        # hits the covering cache without a round-trip. We don't
-        # extend already-large requests (they're typically tile / chunk
-        # reads where over-fetching wastes bandwidth) or when
-        # readahead is disabled.
+        # Speculative read-ahead. Small misses get extended to a
+        # bigger fetch so the next adjacent small read hits the
+        # covering cache without a round-trip. Two trigger paths:
+        #
+        #   1. Always-on ``readahead_window`` — user opted in by
+        #      passing the kwarg at construction (off by default).
+        #
+        #   2. Adaptive: the streak counter (advanced inside
+        #      ``_observe_miss`` below) crossed its threshold,
+        #      meaning we've seen N consecutive nearby small misses.
+        #      The next miss-path read gets the bigger fetch.
+        #
+        # Tile/chunk-sized requests (>= threshold) are never extended
+        # — over-fetching wastes bandwidth on data the caller probably
+        # won't touch.
         fetch_n = n
-        if (self._readahead_window > 0
-                and n <= self._readahead_threshold
-                and self._readahead_window > n):
-            fetch_n = self._readahead_window
+        is_small = n <= self._readahead_threshold
+        explicit = self._readahead_window > 0 and self._readahead_window > n
+        adaptive = (
+            self._adaptive_window > 0
+            and self._adaptive_streak >= self._adaptive_streak_threshold
+            and self._adaptive_window > n
+        )
+        if is_small and (explicit or adaptive):
+            fetch_n = max(
+                self._readahead_window if explicit else 0,
+                self._adaptive_window if adaptive else 0,
+            )
             # Don't fetch past EOF when the file size is known.
             if self._total_size is not None:
                 fetch_n = min(fetch_n, max(0, self._total_size - offset))
             if fetch_n < n:
                 fetch_n = n
+
+        # Streak bookkeeping for the adaptive path. Done BEFORE the
+        # actual fetch so the *current* miss counts toward the streak
+        # for the next call. We only count small reads — large reads
+        # are tiles/chunks and signal a different access pattern.
+        if is_small:
+            self._observe_miss(offset, n)
 
         chunk = self._range_request(offset, fetch_n)
         with self._lock:
@@ -208,6 +253,27 @@ class HTTPDataSource(DataSource):
                 self._cache_put((offset, n), exact)
                 return exact
         return chunk
+
+    def _observe_miss(self, offset: int, n: int) -> None:
+        """Update the adaptive-read-ahead streak counter.
+
+        Called from inside the cache-miss path of ``read_at`` after we
+        know the request isn't a tile / chunk read (``n`` is small).
+        Advances the streak when the new miss is "near" the previous
+        one (offset within ``adaptive_locality`` of the prior read's
+        end); resets to 1 otherwise. Once the streak crosses
+        ``adaptive_streak_threshold``, the *next* small miss gets the
+        bigger fetch.
+        """
+        if self._adaptive_window <= 0:
+            return
+        last_end = self._adaptive_last_end
+        if (last_end is not None
+                and abs(offset - last_end) <= self._adaptive_locality):
+            self._adaptive_streak += 1
+        else:
+            self._adaptive_streak = 1
+        self._adaptive_last_end = offset + n
 
     def _covering_lookup(self, offset: int, n: int) -> bytes | None:
         """Return bytes for ``[offset, offset+n)`` from any cached blob
@@ -411,6 +477,22 @@ class HTTPDataSource(DataSource):
             try:
                 conn.request("GET", self._path_q, headers=headers)
                 resp = conn.getresponse()
+                if resp.status == 416:
+                    # Range Not Satisfiable — caller asked past EOF.
+                    # File-like ``read`` returns b'' past EOF; mirror
+                    # that behavior here so probe-reads in the FITS /
+                    # TIFF HDU walkers ("any byte at the next offset?")
+                    # cleanly signal "no more file" without raising.
+                    resp.read()
+                    # Try to learn the size from Content-Range: */N.
+                    cr = resp.getheader("Content-Range")
+                    if cr and "*/" in cr:
+                        try:
+                            self._total_size = int(cr.rsplit("/", 1)[1])
+                        except ValueError:
+                            pass
+                    self._total_requests += 1
+                    return b""
                 if resp.status not in (200, 206):
                     err = http.client.HTTPException(
                         f"unexpected status {resp.status} for {self._path_q}"

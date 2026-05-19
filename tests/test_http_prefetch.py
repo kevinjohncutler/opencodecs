@@ -174,6 +174,74 @@ def test_covering_cache_skips_partial_overlaps(tmp_path):
 # ---------- read_many hits the same paths ----------
 
 
+def test_adaptive_prefetch_kicks_in_after_streak(tmp_path):
+    """Three nearby small cache misses should auto-promote subsequent
+    small reads to the adaptive window — without the user opting in."""
+    payload = bytes(range(256)) * 256  # 64 KB
+    with _served_file(tmp_path, payload) as (url, tracker):
+        ds = HTTPDataSource(
+            url, prefetch_bytes=0,
+            readahead_window=0,                 # explicit path OFF
+            adaptive_window=32 * 1024,
+            adaptive_streak_threshold=3,
+        )
+        baseline = tracker.requests
+
+        # Reads 1-3: sequential 1-KB misses. The third miss bumps the
+        # streak past the threshold; from that point on, the next
+        # small miss is the one that gets the bigger fetch.
+        ds.read_at(0, 1024)
+        ds.read_at(1024, 1024)
+        ds.read_at(2048, 1024)
+        # 4th read: small, nearby — triggers the bigger fetch.
+        ds.read_at(3072, 1024)
+        # Reads inside the adaptive window are now free.
+        for off in range(4096, 4096 + 16 * 1024, 1024):
+            _ = ds.read_at(off, 1024)
+
+        # 4 small misses (each a separate request) + 1 big adaptive
+        # fetch. Anything well above that means the trigger didn't
+        # fire or fired too late.
+        cost = tracker.requests - baseline
+        assert cost <= 5, (
+            f"adaptive prefetch never kicked in: {cost} requests for "
+            f"20 sequential 1 KB reads"
+        )
+        ds.close()
+
+
+def test_adaptive_prefetch_doesnt_fire_for_scattered_reads(tmp_path):
+    """When reads jump around (offsets far apart) the streak should
+    reset and the adaptive path should NOT fire — keeping bytes-tight
+    workloads efficient."""
+    payload = bytes(range(256)) * 2048  # 512 KB
+    with _served_file(tmp_path, payload) as (url, tracker):
+        ds = HTTPDataSource(
+            url, prefetch_bytes=0,
+            readahead_window=0,
+            adaptive_window=32 * 1024,
+            adaptive_streak_threshold=3,
+            adaptive_locality=8 * 1024,
+        )
+        baseline = tracker.requests
+        bytes_before = tracker.bytes_served
+
+        # Scattered reads, each more than ``adaptive_locality`` apart.
+        ds.read_at(0, 1024)
+        ds.read_at(100 * 1024, 1024)
+        ds.read_at(200 * 1024, 1024)
+        ds.read_at(300 * 1024, 1024)
+
+        bytes_after = tracker.bytes_served
+        # Each scattered read should have fetched only ~1 KB (plus
+        # http headers).
+        assert bytes_after - bytes_before <= 1024 * 4 + 2048, (
+            f"adaptive prefetch over-fired on scattered reads: "
+            f"{bytes_after - bytes_before} bytes for 4 KB requested"
+        )
+        ds.close()
+
+
 def test_read_many_uses_covering_cache(tmp_path):
     """A batch read after a single big read should be free."""
     payload = bytes(range(256)) * 256
