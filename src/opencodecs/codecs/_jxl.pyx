@@ -1403,6 +1403,7 @@ cdef class JxlWriter:
         float _distance
         int _effort
         int _decoding_speed
+        bint _progressive
         object _color_spec  # ColorSpec or None
         float _intensity_target  # nits; 0.0 = leave libjxl default
         bytes _icc_profile  # ICC profile bytes; if set, used instead of enum
@@ -1438,6 +1439,7 @@ cdef class JxlWriter:
         self._distance = 1.0
         self._effort = 5
         self._decoding_speed = 0
+        self._progressive = False
         self._color_spec = None
         self._intensity_target = 0.0
         self._icc_profile = None
@@ -1458,7 +1460,8 @@ cdef class JxlWriter:
     def __init__(self, dest=None, *, color=None, lossless=None,
                  quality=None, distance=None, effort=5, decoding_speed=0,
                  numthreads=None, animation=False, container=False,
-                 intensity_target=None, icc_profile=None):
+                 intensity_target=None, icc_profile=None,
+                 progressive=False):
         from opencodecs.core.color import parse_color, ColorSpec, JXL_TF_GAMMA
 
         # Resolve destination. dest=None means we hold the encoded bytes
@@ -1517,6 +1520,7 @@ cdef class JxlWriter:
         self._decoding_speed = int(decoding_speed) if decoding_speed else 0
         if self._decoding_speed < 0:
             self._decoding_speed = 0
+        self._progressive = bool(progressive)
         if self._decoding_speed > 4:
             self._decoding_speed = 4
 
@@ -1772,6 +1776,32 @@ cdef class JxlWriter:
                 _raise_enc(
                     'JxlEncoderFrameSettingsSetOption DECODING_SPEED', status,
                     JxlEncoderGetError(self._encoder))
+
+        if self._progressive:
+            # RESPONSIVE turns on the Squeeze transform for modular
+            # (lossless) streams — that's what gives the encoder a DC
+            # layer to fire FRAME_PROGRESSION on at decode time.
+            status = JxlEncoderFrameSettingsSetOption(
+                self._frame_settings,
+                JXL_ENC_FRAME_SETTING_RESPONSIVE,
+                <int64_t> 1,
+            )
+            if status != JXL_ENC_SUCCESS:
+                _raise_enc(
+                    'JxlEncoderFrameSettingsSetOption RESPONSIVE', status,
+                    JxlEncoderGetError(self._encoder))
+            # PROGRESSIVE_AC arms a DC-then-full pass schedule for
+            # VarDCT (lossy) streams. Setting it on a modular stream
+            # is a no-op so it's safe to set unconditionally here.
+            status = JxlEncoderFrameSettingsSetOption(
+                self._frame_settings,
+                JXL_ENC_FRAME_SETTING_PROGRESSIVE_AC,
+                <int64_t> 1,
+            )
+            if status != JXL_ENC_SUCCESS:
+                _raise_enc(
+                    'JxlEncoderFrameSettingsSetOption PROGRESSIVE_AC',
+                    status, JxlEncoderGetError(self._encoder))
 
         # Only call SetFrameBitDepth when we want a non-default bit depth
         # (i.e., FROM_CODESTREAM with a custom bits_per_sample). The default
@@ -2056,7 +2086,7 @@ cdef class JxlWriter:
 def encode(arr, *, color=None, lossless=None, quality=None, distance=None,
            effort=5, decoding_speed=0, numthreads=None, animation=False,
            container=False, intensity_target=None, icc_profile=None,
-           dest=None):
+           progressive=False, dest=None):
     """Encode a single ndarray (or animation stack) to JPEG XL bytes.
 
     For a single still image, pass a 2D / 3D array. For an animation stack
@@ -2067,6 +2097,14 @@ def encode(arr, *, color=None, lossless=None, quality=None, distance=None,
     by the brightest encoded value so the decoder knows the file extends
     past SDR. Default (None / 0) leaves libjxl's standard fallback (255 for
     SDR transfer; 10000 for PQ/HLG).
+
+    ``progressive=True`` enables responsive/progressive coding —
+    Squeeze for modular (lossless) streams and PROGRESSIVE_AC for
+    VarDCT (lossy) streams. The encoder writes a DC layer that
+    :func:`thumbnail_bytes` and ``downsample=8`` decode can extract
+    cheaply. Off by default because it costs a few percent file size
+    and isn't free at the encoder; turn it on for files you intend
+    to serve as web thumbnails or browse in galleries.
     """
     cdef cnp.ndarray a = np.asarray(arr)
 
@@ -2080,6 +2118,7 @@ def encode(arr, *, color=None, lossless=None, quality=None, distance=None,
             animation=True, container=container,
             intensity_target=intensity_target,
             icc_profile=icc_profile,
+            progressive=progressive,
         ) as w:
             for i in range(a.shape[0]):
                 w.write_frame(
@@ -2093,6 +2132,7 @@ def encode(arr, *, color=None, lossless=None, quality=None, distance=None,
         distance=distance, effort=effort, decoding_speed=decoding_speed,
         numthreads=numthreads, animation=False, container=container,
         intensity_target=intensity_target,
+        progressive=progressive,
     ) as w:
         w.write_frame(a, is_last=True)
         return w.close()
@@ -2291,7 +2331,12 @@ def thumbnail_bytes(data, *, numthreads=None):
         )
         if status != JXL_DEC_SUCCESS:
             _raise_dec('JxlDecoderSubscribeEvents', status)
-        status = JxlDecoderSetProgressiveDetail(dec, kLastPasses)
+        # kDC fires the FRAME_PROGRESSION event right after the 1:8 DC
+        # pass completes. Works for both VarDCT (AC progressive) AND
+        # modular (Squeeze responsive) streams when the encoder wrote
+        # a DC layer. kLastPasses only fires for VarDCT — that's why
+        # modular files returned None with kLastPasses.
+        status = JxlDecoderSetProgressiveDetail(dec, kDC)
         if status != JXL_DEC_SUCCESS:
             _raise_dec('JxlDecoderSetProgressiveDetail', status)
         status = JxlDecoderSetInput(dec, src_data, src_size)

@@ -198,6 +198,7 @@ def write(
     container: bool = False,
     intensity_target: float | None = None,
     icc_profile: bytes | None = None,
+    progressive: bool = False,
 ) -> bytes | None:
     """Encode `arr` as JPEG XL.
 
@@ -209,6 +210,14 @@ def write(
     (e.g. 1200 for an scRGB-style file where 1.0 = SDR diffuse white at
     100 nits and the file holds up to 12x SDR). Default (None) uses
     libjxl's per-transfer default.
+
+    ``progressive=True`` enables responsive/progressive coding. For
+    lossless (modular) streams this turns on the Squeeze transform; for
+    lossy (VarDCT) streams it turns on PROGRESSIVE_AC. Either way, the
+    encoded file gains a DC layer that :func:`thumbnail_bytes` and the
+    ``downsample=8`` decode path can extract cheaply. Off by default
+    (small file-size and encode-time cost); enable for gallery / web /
+    Jupyter-thumbnail workflows.
     """
     return encode(
         arr,
@@ -224,6 +233,7 @@ def write(
         container=container,
         intensity_target=intensity_target,
         icc_profile=icc_profile,
+        progressive=progressive,
     )
 
 
