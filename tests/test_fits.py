@@ -194,13 +194,27 @@ def test_compressed_fits_gzip_fallback_for_incompressible_tile(tmp_path):
     np.testing.assert_array_equal(ours, theirs)
 
 
-def test_compressed_fits_unsupported_type_raises(tmp_path):
-    """HCOMPRESS_1 and PLIO_1 are deferred — should fail loudly."""
-    img = np.arange(32 * 32, dtype=np.int16).reshape(32, 32)
+def test_compressed_fits_hcompress_int16(tmp_path):
+    """HCOMPRESS_1 decode for an int16 image — exercises the vendored
+    cfitsio fits_hdecompress through opencodecs.codecs._hcomp."""
+    img = np.arange(64 * 64, dtype=np.int16).reshape(64, 64) - 1000
     p = tmp_path / "hcompress.fits"
     astropy_fits.HDUList([
         astropy_fits.PrimaryHDU(),
         astropy_fits.CompImageHDU(img, compression_type="HCOMPRESS_1"),
     ]).writeto(p)
-    with pytest.raises(NotImplementedError, match="HCOMPRESS"):
+    ours = FitsStream(p).hdu(1).asarray()
+    theirs = astropy_fits.open(p)[1].data
+    np.testing.assert_array_equal(ours, theirs)
+
+
+def test_compressed_fits_unsupported_type_raises(tmp_path):
+    """PLIO_1 is still deferred — should fail loudly."""
+    img = np.arange(32 * 32, dtype=np.int16).reshape(32, 32).clip(0, 100)
+    p = tmp_path / "plio.fits"
+    astropy_fits.HDUList([
+        astropy_fits.PrimaryHDU(),
+        astropy_fits.CompImageHDU(img, compression_type="PLIO_1"),
+    ]).writeto(p)
+    with pytest.raises(NotImplementedError, match="PLIO_1"):
         FitsStream(p).hdu(1).asarray()

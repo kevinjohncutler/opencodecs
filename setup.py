@@ -1657,6 +1657,23 @@ extensions = [
         define_macros=[("NPY_NO_DEPRECATED_API", "NPY_1_7_API_VERSION")],
         language="c",
     ),
+    # H-compress decode for legacy FITS BINTABLE tiles (ZCMPTYPE=
+    # 'HCOMPRESS_1'). Vendored cfitsio sources with a minimal
+    # fitsio2.h stub — see 3rdparty/cfitsio/License.txt (BSD-style).
+    Extension(
+        name="opencodecs.codecs._hcomp",
+        sources=[
+            "src/opencodecs/codecs/_hcomp.pyx",
+            "3rdparty/cfitsio/fits_hdecompress.c",
+        ],
+        include_dirs=[
+            str(PKG_CODECS),
+            numpy.get_include(),
+            str(HERE / "3rdparty" / "cfitsio"),
+        ],
+        define_macros=[("NPY_NO_DEPRECATED_API", "NPY_1_7_API_VERSION")],
+        language="c",
+    ),
     # Radiance HDR (RGBE) — Bruce Walter / Greg Ward C library, vendored
     # as a single .c/.h pair. Public-domain origin (Greg Ward, LBL); the
     # vendored port carries the "USE AT YOUR OWN RISK" disclaimer in

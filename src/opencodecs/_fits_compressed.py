@@ -364,10 +364,34 @@ def decompress_image(
             tile_arr = np.frombuffer(raw, dtype=tile_decode_dtype)
         elif tile_ztype == "NOCOMPRESS":
             tile_arr = np.frombuffer(payload, dtype=tile_decode_dtype)
+        elif tile_ztype == "HCOMPRESS_1":
+            from .codecs._hcomp import decode_raw as _hcomp_decode_raw
+            # cfitsio's H-decompress returns ints regardless of the
+            # original BITPIX. The ``SMOOTH`` parameter is stored in
+            # ZNAMEn/ZVALn (default 0). HCOMPRESS_1's bytes-per-pixel
+            # for the decode buffer is 4 for ZBITPIX 8/16/32 and 8
+            # for ZBITPIX 64 — that's the type cfitsio decodes into,
+            # not the original BITPIX.
+            smooth = zparams.get("SMOOTH", 0)
+            hc_bpp = 8 if zbitpix == 64 else 4
+            raw_arr, ny_h, nx_h = _hcomp_decode_raw(
+                payload, smooth=smooth, bytes_per_pixel=hc_bpp,
+            )
+            if ny_h * nx_h != tile_nelems:
+                raise ValueError(
+                    f"compressed FITS HCOMPRESS_1: tile {row_idx} decoded "
+                    f"to {ny_h}x{nx_h}, expected {tile_h}x{tile_w}"
+                )
+            # cfitsio's hdecompress returns elements in (ny, nx) order
+            # where ny is the fastest-varying axis — matches numpy
+            # slow-first when we ask for shape (tile_h, tile_w).
+            # The output dtype above was int32/int64; cast down to
+            # the FITS target (int8/int16 for quantized integer tiles).
+            tile_arr = raw_arr.astype(tile_decode_dtype, copy=False)
         else:
             raise NotImplementedError(
                 f"compressed FITS: ZCMPTYPE={tile_ztype!r} is not supported "
-                f"yet (only RICE_1 / GZIP_1 / GZIP_2 / NOCOMPRESS)"
+                f"yet (only RICE_1 / GZIP_1 / GZIP_2 / NOCOMPRESS / HCOMPRESS_1)"
             )
 
         # Apply per-tile ZSCALE / ZZERO for quantized float compression.

@@ -11,25 +11,17 @@ take them as upper bounds.
 
 ---
 
-## Compressed FITS — `HCOMPRESS_1` and `PLIO_1`
+## Compressed FITS — `PLIO_1`
 
-* **Status**: partial — RICE_1, GZIP_1, GZIP_2, NOCOMPRESS, and the
-  GZIP_COMPRESSED_DATA / UNCOMPRESSED_DATA fallback columns all ship.
-  Per-tile ZSCALE / ZZERO quantization for floats is supported.
-* **What's left**:
-  * `HCOMPRESS_1` — quad-tree H-transform with thresholding. Lossy by
-    design; less common in modern archives but appears in legacy HST
-    and ground-survey data. Cfitsio has the reference implementation;
-    we'd vendor `hcompress.c` / `hdecompress.c` from cfitsio's
-    `zcompress/` directory and add a Cython binding similar to
-    `_rcomp.pyx`. ~3-4 hr.
-  * `PLIO_1` — IRAF mask-coding (run-length over a bit-packed mask).
-    Tiny (<300 lines), but only seen on segmentation masks in IRAF
-    pipelines. ~1-2 hr.
-* **Why deferred**: HST and most JWST exposures we care about use
-  RICE_1 or GZIP_2 (already shipped). HCOMPRESS_1 and PLIO_1 raise a
-  clear `NotImplementedError` so the user gets a precise signal when
-  they hit one.
+* **Status**: RICE_1, GZIP_1, GZIP_2, HCOMPRESS_1, NOCOMPRESS, and
+  the GZIP_COMPRESSED_DATA / UNCOMPRESSED_DATA fallback columns all
+  ship. HCOMPRESS_1 uses vendored cfitsio source
+  (``3rdparty/cfitsio/fits_hdecompress.c``) with a minimal
+  ``fitsio2.h`` stub.
+* **What's left**: ``PLIO_1`` — IRAF mask-coding (run-length over a
+  bit-packed mask). Tiny (<300 lines), but only seen on segmentation
+  masks in IRAF pipelines. ~1-2 hr. Raises a clear
+  ``NotImplementedError`` until then so users get a precise signal.
 
 ## EER file-level reader follow-ups
 

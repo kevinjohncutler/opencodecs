@@ -50,14 +50,25 @@ library is missing — see [INSTALL.md](INSTALL.md).
 | `zstd` | ✓ | ✓ | system libzstd | `.zst` |
 | `lz4` | ✓ | ✓ | system liblz4 (frame) | `.lz4` |
 | `brotli` | ✓ | ✓ | system libbrotli | `.br` |
-| `blosc2` | ✓ | ✓ | system c-blosc2 | `.b2` |
-| `deflate` | ✓ | ✓ | system zlib | `.zlib` |
+| `blosc2` | ✓ | ✓ | source-built c-blosc2 2.23 | `.b2` |
+| `deflate` | ✓ | ✓ | libdeflate / zlib-ng / zlib (auto-selected at build time) | `.zlib` |
+| `gzip` | ✓ | ✓ | stdlib gzip | `.gz` |
+| `none` | ✓ | ✓ | identity (filter-chain placeholder) | — |
+| `bz2` | ✓ | ✓ | stdlib bz2 | `.bz2` |
+| `lzma` | ✓ | ✓ | stdlib lzma | `.xz` |
+| `snappy` | ✓ | ✓ | system snappy | `.sz` |
 | `bitshuffle` | ✓ | ✓ | vendored bitshuffle (filter) | — |
 
 `bitshuffle` is a *filter*, not a stand-alone compressor: bit-level
 transpose that radically improves LZ77 ratios on typed numerical data.
 Output size equals input size; pair with `zstd` / `lz4`. Aliases:
 `bshuf`.
+
+`deflate` aliases: `zlib`, `zlibng`. Pass `backend="isal"` to opt into
+Intel ISA-L's igzip (~4× faster encode on x86_64; opt-in because
+output is ~19% bigger). The default backend is auto-selected at build
+time: libdeflate when present (fastest at default level), else
+zlib-ng-compat, else the stdlib zlib.
 
 ### Scientific / numerical-array codecs (ndarray ↔ bytes, self-describing)
 
@@ -107,6 +118,8 @@ Quick guidance:
 | `heif` | ✓ | ✓ | RGB / RGBA, lossy (HEVC) | libheif (+ aomenc) | `.heif`, `.heic` |
 | `jxl` | ✓ | ✓ | gray / RGB / RGBA, P3, HDR, multi-frame | vendored libjxl 0.11.2 | `.jxl` |
 | `bcdec` | — | ✓ | BC1-7 / DXT / BPTC GPU textures | vendored bcdec.h | `.dds` |
+| `rgbe` | ✓ | ✓ | float32 RGB HDR (Radiance) | vendored rgbe.c | `.hdr` |
+| `ultrahdr` | ✓ | ✓ | float16 / uint8 / uint16 RGBA HDR + SDR | system libultrahdr 1.4.x | `.jpg` (gainmap) |
 
 `htj2k` is JPEG-2000 Part 15 (High-Throughput) — same DWT front end
 as classic JPEG-2000 but ~10-20× faster entropy coding. Used by
@@ -121,6 +134,13 @@ than libjpeg-turbo at the same quality. Built only when MozJPEG is
 on the system (keg-only on Homebrew so it doesn't collide with
 plain libjpeg-turbo).
 
+`rgbe` is the canonical Radiance HDR format — float32 RGB shared-
+exponent encoding for high-dynamic-range photography and physically-
+based rendering output. `ultrahdr` is the ISO 21496 gainmap-JPEG
+format — Android Camera's default since A14 and what iOS 18+ reads
+natively. Decode dtype controls the output: `float16` returns linear
+BT.2100 HDR; `uint8` returns the SDR-tonemapped base JPEG.
+
 ### Multi-frame / chunked formats
 
 | Codec | Read | Write | Container | Notes |
@@ -132,6 +152,7 @@ plain libjpeg-turbo).
 | `hdf5` | ✓ | ✓ | HDF5 | Wraps `h5py.Dataset`. Remote HDF5 via `open_remote_hdf5(url)` — slices stream chunks over HTTP Range with one-shot parallel prefetch |
 | `eer` | ✓ | — | Thermo Fisher EER (cryo-EM event-list) | Native bitstream decoder + TIFF compression-tag dispatch (codes 65000-65002) |
 | `dicomweb` | ✓ | — | WADO-RS HTTP frame retrieval | Multipart/related parser; transfer-syntax dispatch through opencodecs's codec layer (JPEG-LS / HTJ2K / JPEG-2000 / RLE / raw) |
+| `fits` | ✓ | — | FITS (astronomy) | Multi-HDU walk; BITPIX 8/16/32/64/-32/-64; BZERO unsigned-int trick; compressed images (RICE_1, GZIP_1, GZIP_2, HCOMPRESS_1, NOCOMPRESS) with per-tile ZSCALE/ZZERO quantization. HTTP-range friendly — opening a 50 GB cube reads kilobytes. |
 
 #### TIFF writer specifics
 
