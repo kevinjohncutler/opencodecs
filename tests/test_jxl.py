@@ -327,3 +327,33 @@ def test_dtype_mismatch_between_frames():
 def test_quality_and_distance_are_mutually_exclusive():
     with pytest.raises(ValueError):
         JxlWriter(None, quality=80, distance=1.0)
+
+
+# ----------------------------- native downsample ----------------------------
+
+
+@pytest.mark.parametrize("ds", [1, 2, 4, 8])
+def test_downsample_shape(ds):
+    """downsample=N returns (H/N, W/N, C) — native progressive path
+    for N=8, slice fallback for N=2/4."""
+    arr = _grad_uint8(512, 512, 3)
+    blob = jxl.write(None, arr, lossless=False, distance=1.0)
+    out = jxl.read(blob, downsample=ds)
+    assert out.shape == (512 // ds, 512 // ds, 3)
+    assert out.dtype == arr.dtype
+
+
+def test_downsample_invalid_factor():
+    arr = _grad_uint8(64, 64, 3)
+    blob = jxl.write(None, arr)
+    with pytest.raises(ValueError):
+        jxl.read(blob, downsample=3)
+
+
+def test_downsample_via_reader_iter_frames():
+    arr = _grad_uint8(256, 256, 3)
+    blob = jxl.write(None, arr, lossless=False, distance=1.0)
+    with jxl.open(blob, downsample=4) as r:
+        frames = list(r.iter_frames())
+    assert len(frames) == 1
+    assert frames[0].shape == (64, 64, 3)

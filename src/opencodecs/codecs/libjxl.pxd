@@ -712,6 +712,12 @@ cdef extern from 'jxl/decode.h' nogil:
         JxlDecoder* dec
     )
 
+    # Reports the intended downsampling ratio for the progressive frame
+    # produced by the latest JXL_DEC_FRAME_PROGRESSION event. Per libjxl
+    # 0.11.2 decode.h, the return value is one of {1, 2, 4, 8} — the
+    # native downsample factors supported by JXL's progressive coding.
+    size_t JxlDecoderGetIntendedDownsamplingRatio(JxlDecoder* dec)
+
     JxlDecoderStatus JxlDecoderSetImageOutBitDepth(
         JxlDecoder* dec,
         const JxlBitDepth* bit_depth

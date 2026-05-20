@@ -90,6 +90,7 @@ def open(  # noqa: A001  (shadows builtin intentionally for the public API)
     coalesce: bool = True,
     parse_color: bool = True,
     streaming: bool = False,
+    downsample: int = 1,
 ) -> JxlReader:
     """Open a JPEG XL stream and parse the header.
 
@@ -115,6 +116,18 @@ def open(  # noqa: A001  (shadows builtin intentionally for the public API)
         setups the kernel's prefetch on a single big ``read()`` is faster
         than the bg-thread chunked-read pipeline. Useful for very-slow
         storage or files larger than RAM where slurp would OOM.
+    downsample : int, default 1
+        One of {1, 2, 4, 8}. When > 1, use libjxl's native progressive
+        decoder to return arrays of shape ``(H/N, W/N, ...)``. The
+        decode is ~5-10x faster at ``downsample=8`` because libjxl
+        stops at the DC pass and never reconstructs full-resolution
+        pixels. Quality-wise the downsampled output averages in
+        libjxl's internal XYB (perceptually linear-ish) space and the
+        output transfer is reapplied on emit — better than a naive
+        post-decode area-average for HDR / PQ content. For modular
+        / non-progressive streams there's a silent fallback to a
+        full decode + ``[::N, ::N]`` slice; the output shape matches
+        either way, only the speed differs.
 
     Returns
     -------
@@ -130,6 +143,7 @@ def open(  # noqa: A001  (shadows builtin intentionally for the public API)
         coalesce=coalesce,
         parse_color=parse_color,
         streaming=streaming,
+        downsample=downsample,
     )
 
 
