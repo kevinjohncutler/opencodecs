@@ -112,10 +112,12 @@ def open(  # noqa: A001  (shadows builtin intentionally for the public API)
     streaming : bool, default False
         If True and the source is a path / file-like with size > 4 MiB, use
         a background-thread chunked reader so file I/O can overlap with
-        libjxl's decode work. Off by default because for typical NAS+APFS
-        setups the kernel's prefetch on a single big ``read()`` is faster
-        than the bg-thread chunked-read pipeline. Useful for very-slow
-        storage or files larger than RAM where slurp would OOM.
+        libjxl's decode work. Off by default because for files this size
+        (single-frame ~3-10 MB JXLs) it's a wash: a 4Kx4K image on warm
+        APFS or warm SMB sees both paths within ~1 ms of each other —
+        decode is the bottleneck, I/O has nothing to overlap with.
+        Worth enabling only for very-slow storage (truly cold WAN /
+        spinning disk) or files larger than RAM where slurp would OOM.
     downsample : int, default 1
         One of {1, 2, 4, 8}. When > 1, use libjxl's native progressive
         decoder to return arrays of shape ``(H/N, W/N, ...)``. The
