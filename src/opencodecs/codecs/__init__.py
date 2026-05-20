@@ -86,6 +86,36 @@ def _user_cache_dir() -> Path:
 _CACHE_ROOT = _user_cache_dir() / "lib"
 
 
+def _build_lib_search_paths() -> list[Path]:
+    """Return every ``build/lib.*/opencodecs/codecs/`` directory we
+    should consult when ``src/opencodecs/codecs/`` is missing an
+    extension's ``.so`` (the SMB-stuck-inplace-copy failure mode).
+
+    Looks for ``build/`` next to ``src/`` — the standard ``setup.py``
+    layout. There may be multiple ``lib.<platform>-cpython-<ver>``
+    subdirs (cross-Python development); we include all of them, and
+    ``_find_so`` picks the newest matching artifact by mtime.
+    """
+    # _THIS_DIR is .../src/opencodecs/codecs/ → repo root is 3 dirs up.
+    repo_root = _THIS_DIR.parent.parent.parent
+    build_root = repo_root / "build"
+    if not build_root.is_dir():
+        return []
+    return [
+        d / "opencodecs" / "codecs"
+        for d in sorted(build_root.glob("lib.*"))
+        if (d / "opencodecs" / "codecs").is_dir()
+    ]
+
+
+# Search the in-place install dir first (the normal case), then fall
+# back to ``build/lib.*/opencodecs/codecs/`` for the cases where
+# ``setup.py build_ext --inplace`` silently failed to overwrite an
+# existing ``.so`` on an SMB mount. ``_find_so`` ties multiple matches
+# by mtime so a fresh build always wins.
+_SO_SEARCH_PATHS: list[Path] = [_THIS_DIR, *_build_lib_search_paths()]
+
+
 def _on_remote_mount(path: Path) -> bool:
     """True if `path` lives on a network filesystem dyld is hostile to."""
     if os.name == "nt":  # pragma: no cover - Windows-only branch
@@ -110,11 +140,39 @@ def _on_remote_mount(path: Path) -> bool:
 
 
 def _find_so(basename: str) -> Path | None:
+    """Locate the extension's ``.so`` (or ``.pyd`` on Windows).
+
+    Checks two directories in this order:
+
+    1. ``src/opencodecs/codecs/`` — the in-place install target that
+       ``setup.py build_ext --inplace`` writes to. Normal users see
+       extensions here.
+    2. ``build/lib.<platform>/opencodecs/codecs/`` — the intermediate
+       ``setup.py`` output directory. The "copy to src/" step that
+       ``--inplace`` does last is silently NO-OPed on SMB-mounted dev
+       trees when a stale ``.so`` is held open by a different process
+       (the failure mode we kept hitting). Falling back here makes the
+       build robust to that: a fresh ``setup.py build_ext`` (even
+       without ``--inplace``) leaves a loadable artifact on disk.
+
+    When both locations have a copy we prefer whichever has the newer
+    ``mtime`` — that's the just-built one. This is what makes
+    ``build_ext --inplace`` followed by an in-process reimport pick up
+    the new code even when the SMB inplace-copy silently failed.
+    """
+    candidates: list[Path] = []
     for suffix in importlib.machinery.EXTENSION_SUFFIXES:
-        candidate = _THIS_DIR / f"{basename}{suffix}"
-        if candidate.exists():
-            return candidate
-    return None  # pragma: no cover - extension always present in built env
+        for root in _SO_SEARCH_PATHS:
+            p = root / f"{basename}{suffix}"
+            if p.exists():
+                candidates.append(p)
+    if not candidates:
+        return None
+    if len(candidates) == 1:
+        return candidates[0]
+    # Prefer the freshest artifact — handles the SMB-stuck-stale-src
+    # case where build/ has a newer .so than src/.
+    return max(candidates, key=lambda p: p.stat().st_mtime)
 
 
 def _local_cache_path(src: Path) -> Path:
