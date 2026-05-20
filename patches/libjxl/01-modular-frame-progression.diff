@@ -1,0 +1,139 @@
+From: opencodecs <noreply@opencodecs.dev>
+Subject: [PATCH] Emit JXL_DEC_FRAME_PROGRESSION for modular streams with Squeeze
+
+The decoder's public C API gates JXL_DEC_FRAME_PROGRESSION emission on
+FrameEncoding::kVarDCT in dec_frame.h:SetPauseAtProgressive(). That
+gate predates the maturity of modular Squeeze flush support; the
+TODO(lode) comment this patch removes acknowledges it should lift.
+
+For a modular stream encoded with Squeeze applied
+(JXL_ENC_FRAME_SETTING_RESPONSIVE=1 + effort high enough for the
+encoder to actually invoke Squeeze), the LF group decode produces a
+valid 1:8 downsampled pyramid level. ProcessDCGroup decodes the LF
+layer with minShift=3; FinalizeDC() is a no-op for modular; the
+existing FrameDecoder::Flush() path calls
+modular_frame_decoder_.FinalizeDecoding() to undo the global Squeeze
+transform and produce float pixels.
+
+So everything past the gate works for Squeeze modular. This patch:
+
+* Lifts the kVarDCT gate at SetPauseAtProgressive so modular frames
+  can have progressive_detail_ set to kDC.
+* Adds a Squeeze check at the emission site in ProcessSections, so
+  modular streams without Squeeze (where Flush() would return
+  zero/garbage) don't fire spurious events.
+
+Behaviour by frame kind:
+
+* VarDCT: unchanged. The kVarDCT branch of can_emit_dc_progression
+  in ProcessSections matches the original gate.
+* Modular with Squeeze: FRAME_PROGRESSION fires after FinalizeDC,
+  JxlDecoderFlushImage returns the inverse-Squeezed 1:8 image.
+* Modular WITHOUT Squeeze: no event fires. Decoder proceeds to
+  FULL_IMAGE as before; callers fall back to full decode + slice.
+
+The Squeeze detection runs after ProcessDCGlobal (which calls
+DecodeGlobalInfo and populates the transform vectors), so the
+transforms list is reliably available at the gate site.
+
+Tested against libjxl v0.11.2 on macOS arm64.
+
+Author: opencodecs maintainers
+Upstream-status: not yet submitted
+
+---
+diff --git a/lib/jxl/dec_frame.cc b/lib/jxl/dec_frame.cc
+index 04c3ee0..0238172 100644
+--- a/lib/jxl/dec_frame.cc
++++ b/lib/jxl/dec_frame.cc
+@@ -665,7 +665,17 @@ Status FrameDecoder::ProcessSections(const SectionInfo* sections, size_t num,
+         pipeline_options));
+     JXL_RETURN_IF_ERROR(FinalizeDC());
+     JXL_RETURN_IF_ERROR(AllocateOutput());
+-    if (progressive_detail_ >= JxlProgressiveDetail::kDC) {
++    // opencodecs patch: for modular streams, only emit the DC
++    // progressive event when a Squeeze transform is actually present
++    // — without Squeeze, FrameDecoder::Flush() returns a zero/garbage
++    // 1:8 buffer and any caller relying on a meaningful LF would see
++    // a black image. VarDCT always carries a valid DC pyramid, so
++    // the gate is no-op for it.
++    bool can_emit_dc_progression =
++        frame_header_.encoding == FrameEncoding::kVarDCT ||
++        modular_frame_decoder_.HasSqueezeTransform();
++    if (progressive_detail_ >= JxlProgressiveDetail::kDC &&
++        can_emit_dc_progression) {
+       MarkSections(sections, num, section_status);
+       return true;
+     }
+diff --git a/lib/jxl/dec_frame.h b/lib/jxl/dec_frame.h
+index 26412fd..fe1f2d7 100644
+--- a/lib/jxl/dec_frame.h
++++ b/lib/jxl/dec_frame.h
+@@ -152,13 +152,13 @@ class FrameDecoder {
+         // Therefore, can't correctly pause for a progressive step if there is
+         // an extra channel (including alpha channel)
+         // TODO(firsching): Check if this is still the case.
+-        decoded_->metadata()->extra_channel_info.empty() &&
+-        // DC is not guaranteed to be available in modular mode and may be a
+-        // black image. If squeeze is used, it may be available depending on the
+-        // current implementation.
+-        // TODO(lode): do return DC if it's known that flushing at this point
+-        // will produce a valid 1/8th downscaled image with modular encoding.
+-        frame_header_.encoding == FrameEncoding::kVarDCT) {
++        decoded_->metadata()->extra_channel_info.empty()) {
++      // opencodecs patch: lift the FrameEncoding::kVarDCT gate. Modular
++      // streams written with RESPONSIVE=1 produce a valid 1:8 LF layer
++      // that JxlDecoderFlushImage exposes via the existing
++      // modular_frame_decoder_.FinalizeDecoding() path. The original
++      // kVarDCT-only gate predates that maturity — see TODO(lode) in
++      // upstream history.
+       progressive_detail_ = prog_detail;
+     } else {
+       progressive_detail_ = JxlProgressiveDetail::kFrames;
+diff --git a/lib/jxl/dec_modular.cc b/lib/jxl/dec_modular.cc
+index e8dc17f..c272dcc 100644
+--- a/lib/jxl/dec_modular.cc
++++ b/lib/jxl/dec_modular.cc
+@@ -287,6 +287,25 @@ Status ModularFrameDecoder::DecodeGlobalInfo(BitReader* reader,
+   return dec_status;
+ }
+
++// opencodecs patch: detect whether this modular stream carries a
++// Squeeze transform. Called from FrameDecoder::ProcessSections after
++// DecodeGlobalInfo, where both transform vectors are populated.
++//
++// Squeeze can live in either of two places: the special-case
++// ``global_transform`` vector (RCT-only fast path) or the regular
++// ``full_image.transform`` vector. We check both — Squeeze is
++// effectively always in full_image.transform since the special-case
++// move only fires for an isolated RCT transform.
++bool ModularFrameDecoder::HasSqueezeTransform() const {
++  for (const auto& t : global_transform) {
++    if (t.id == TransformId::kSqueeze) return true;
++  }
++  for (const auto& t : full_image.transform) {
++    if (t.id == TransformId::kSqueeze) return true;
++  }
++  return false;
++}
++
+ void ModularFrameDecoder::MaybeDropFullImage() {
+   if (full_image.transform.empty() && !have_something && all_same_shift) {
+     use_full_image = false;
+diff --git a/lib/jxl/dec_modular.h b/lib/jxl/dec_modular.h
+index 6081b52..325ff2d 100644
+--- a/lib/jxl/dec_modular.h
++++ b/lib/jxl/dec_modular.h
+@@ -128,6 +128,12 @@ class ModularFrameDecoder {
+   void MaybeDropFullImage();
+   bool UsesFullImage() const { return use_full_image; }
+   JxlMemoryManager* memory_manager() const { return memory_manager_; }
++  // opencodecs patch: returns true iff the modular stream applied a
++  // Squeeze (Haar-style 1:8 LF pyramid) transform during encode.
++  // Used by FrameDecoder::ProcessSections to gate JXL_DEC_FRAME_PROGRESSION
++  // emission so we only fire the event when JxlDecoderFlushImage can
++  // actually produce a meaningful coarse-resolution image.
++  bool HasSqueezeTransform() const;
+
+  private:
+   Status ModularImageToDecodedRect(const FrameHeader& frame_header, Image& gi,

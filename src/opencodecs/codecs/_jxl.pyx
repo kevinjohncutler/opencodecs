@@ -1208,9 +1208,9 @@ cdef class JxlReader:
             size_t expected_size
             int rc
             int dn = <int> self._downsample
+            size_t ratio
             bint buffer_set
             bint streaming = self._streaming
-            Py_ssize_t ds_h, ds_w
 
         while not self._exhausted:
             full_arr = np.empty(self._frame_shape, dtype=self._frame_dtype)
@@ -1237,25 +1237,19 @@ cdef class JxlReader:
                 break
 
             if rc == _RC_FRAME:
-                if out_ratio > 0:
-                    # Native progressive snapshot: libjxl wrote the
-                    # downsampled image into the top-left rectangle.
-                    ds_h = (
-                        self._basic_info.ysize + out_ratio - 1
-                    ) // out_ratio
-                    ds_w = (
-                        self._basic_info.xsize + out_ratio - 1
-                    ) // out_ratio
-                    if full_arr.ndim == 2:
-                        yield full_arr[:ds_h, :ds_w].copy()
-                    else:
-                        yield full_arr[:ds_h, :ds_w, :].copy()
+                # libjxl's FlushImage writes the *full-resolution*
+                # buffer with DC-only content (blocky / Squeezed)
+                # rather than a separate small image. Stride-sample
+                # at ``ratio`` to extract the actual downsampled view.
+                # Same slice pattern as the fallback path — only
+                # difference is that the progressive code path
+                # short-circuits libjxl past the AC passes via
+                # SkipCurrentFrame, so it's much faster.
+                ratio = out_ratio if out_ratio > 0 else <size_t> dn
+                if full_arr.ndim == 2:
+                    yield full_arr[::ratio, ::ratio].copy()
                 else:
-                    # Fallback: full decode, slice [::N, ::N].
-                    if full_arr.ndim == 2:
-                        yield full_arr[::dn, ::dn].copy()
-                    else:
-                        yield full_arr[::dn, ::dn, :].copy()
+                    yield full_arr[::ratio, ::ratio, :].copy()
                 continue
             if rc == _RC_EOF:
                 self._exhausted = True
