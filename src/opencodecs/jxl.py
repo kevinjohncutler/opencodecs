@@ -48,6 +48,7 @@ try:
         decode,
         check_signature,
         libjxl_version,
+        thumbnail_bytes,
     )
     _HAVE_BACKEND = True
 except ImportError as _exc:  # pragma: no cover - libjxl-missing stub; tested via import_or_stubs
@@ -62,7 +63,7 @@ except ImportError as _exc:  # pragma: no cover - libjxl-missing stub; tested vi
         )
 
     JxlReader = JxlWriter = None  # type: ignore[assignment]
-    encode = decode = check_signature = libjxl_version = _missing  # type: ignore[assignment]
+    encode = decode = check_signature = libjxl_version = thumbnail_bytes = _missing  # type: ignore[assignment]
 
 
 __all__ = [
@@ -72,6 +73,7 @@ __all__ = [
     "decode",
     "check_signature",
     "libjxl_version",
+    "thumbnail_bytes",
     "open",
     "read",
     "write",

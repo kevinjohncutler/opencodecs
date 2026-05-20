@@ -357,3 +357,53 @@ def test_downsample_via_reader_iter_frames():
         frames = list(r.iter_frames())
     assert len(frames) == 1
     assert frames[0].shape == (64, 64, 3)
+
+
+# ----------------------------- thumbnail_bytes ------------------------------
+
+
+def test_thumbnail_bytes_returns_smaller_valid_prefix():
+    """thumbnail_bytes returns a JXL bitstream prefix that's much
+    smaller than the full file. The prefix should start with a valid
+    JXL signature (codestream or container)."""
+    arr = _grad_uint8(1024, 1024, 3)
+    blob = jxl.write(None, arr, lossless=False, distance=1.0)
+    thumb = jxl.thumbnail_bytes(blob)
+    assert thumb is not None
+    assert len(thumb) < len(blob)
+    # Should be substantially smaller — DC pass is heavily entropy-coded
+    assert len(thumb) * 5 < len(blob)
+    # JXL codestream signature: \xFF\x0A, container signature: \x00\x00\x00\x0CJXL\x20
+    assert thumb.startswith(b'\xff\x0a') or thumb.startswith(b'\x00\x00\x00\x0c')
+
+
+def test_thumbnail_bytes_accepts_path(tmp_path):
+    arr = _grad_uint8(512, 512, 3)
+    p = tmp_path / 'img.jxl'
+    jxl.write(p, arr, lossless=False, distance=1.0)
+    thumb = jxl.thumbnail_bytes(p)
+    assert thumb is not None
+    assert len(thumb) < p.stat().st_size
+
+
+def test_thumbnail_bytes_accepts_bytesio():
+    arr = _grad_uint8(512, 512, 3)
+    blob = jxl.write(None, arr, lossless=False, distance=1.0)
+    thumb = jxl.thumbnail_bytes(io.BytesIO(blob))
+    assert thumb is not None
+    assert len(thumb) < len(blob)
+
+
+def test_thumbnail_bytes_none_for_tiny_non_progressive():
+    """An 8x8 image is too small to have a DC progressive pass —
+    libjxl finishes the whole frame before any FRAME_PROGRESSION
+    fires. thumbnail_bytes should return None so callers know to
+    fall back."""
+    arr = _grad_uint8(8, 8, 3)
+    blob = jxl.write(None, arr, lossless=True)
+    thumb = jxl.thumbnail_bytes(blob)
+    assert thumb is None
+
+
+def test_thumbnail_bytes_empty_input():
+    assert jxl.thumbnail_bytes(b'') is None
