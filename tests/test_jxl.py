@@ -362,18 +362,19 @@ def test_downsample_via_reader_iter_frames():
 # ----------------------------- thumbnail_bytes ------------------------------
 
 
-def test_thumbnail_bytes_returns_smaller_valid_prefix():
-    """thumbnail_bytes returns a JXL bitstream prefix that's much
-    smaller than the full file. The prefix should start with a valid
-    JXL signature (codestream or container)."""
+def test_thumbnail_bytes_returns_smaller_prefix():
+    """thumbnail_bytes returns the libjxl-consumed prefix at the DC
+    FRAME_PROGRESSION event. Starts with the JXL signature; much
+    smaller than the full file. Note: these bytes are NOT a
+    standalone-decodable JXL — see the function's docstring warning.
+    They're useful as a fast probe and to characterize DC-pass size."""
     arr = _grad_uint8(1024, 1024, 3)
     blob = jxl.write(None, arr, lossless=False, distance=1.0)
     thumb = jxl.thumbnail_bytes(blob)
     assert thumb is not None
     assert len(thumb) < len(blob)
-    # Should be substantially smaller — DC pass is heavily entropy-coded
     assert len(thumb) * 5 < len(blob)
-    # JXL codestream signature: \xFF\x0A, container signature: \x00\x00\x00\x0CJXL\x20
+    # JXL codestream signature: \xFF\x0A, container signature: \x00\x00\x00\x0C
     assert thumb.startswith(b'\xff\x0a') or thumb.startswith(b'\x00\x00\x00\x0c')
 
 

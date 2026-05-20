@@ -2237,23 +2237,35 @@ def frame_count(data, *, numthreads=None):
 
 
 def thumbnail_bytes(data, *, numthreads=None):
-    """Return a truncated JXL bitstream ending at the DC progressive pass.
+    """Return the JXL byte-prefix consumed up to the DC progressive pass.
 
-    The returned bytes form a *valid JXL* that any JXL-capable decoder
-    (libjxl, modern Chrome / WebKit / Edge) will render as the
-    1/8-resolution image. Typically **10-50x smaller** than a re-encoded
-    PNG/WebP thumbnail of the same image, because the DC pass is
-    aggressively entropy-coded in the original bitstream.
+    .. warning::
+        The returned bytes are **NOT a standalone JXL file**. libjxl's
+        own ``djxl --allow_partial_files`` rejects them ("Input file
+        is truncated and there is no preview available yet"), and
+        CoreGraphics renders them as an empty image. The prefix is
+        only usable inside the same decoder instance that produced
+        it (where ``JxlDecoderFlushImage`` knows how to interpret
+        the partial state). For shippable thumbnail bytes — e.g.
+        Jupyter ``IPython.display.Image``, HTTP responses, sidecar
+        files — use :func:`decode` with ``downsample=8`` and re-encode
+        the resulting ndarray (e.g. via ``opencodecs.webp.write``).
+
+    What this function IS useful for:
+
+    * A fast probe to decide whether a stream is progressive-coded.
+      Returns ``None`` for non-Squeeze modular and single-pass VarDCT
+      streams. Returns the consumed-bytes prefix otherwise.
+    * A way to characterize the size of the DC pass in the bitstream
+      (typically 1-10% of the full file).
 
     Returns ``None`` if the source has no progressive coding (modular
-    streams without Squeeze, single-pass VarDCT files written with the
-    progressive feature disabled). Caller falls back to
-    ``decode(data, downsample=8)`` + a re-encode in that case.
+    streams without Squeeze, single-pass VarDCT files written with
+    the progressive feature disabled).
 
-    Cost: one pass through libjxl's bitstream parser + DC decode setup,
-    ~25-30 ms on a 4Kx4K source on macOS arm64. After the offset is
-    known, the same prefix can be served from a cache with zero
-    further libjxl work.
+    Cost: ~5-30 ms on a 4Kx4K source on macOS arm64, depending on
+    whether progressive coding is present (early FRAME_PROGRESSION
+    event → fast; full scan to FULL_IMAGE then no event → ~5x slower).
 
     Parameters
     ----------
@@ -2266,8 +2278,13 @@ def thumbnail_bytes(data, *, numthreads=None):
     Returns
     -------
     bytes | None
-        Truncated bitstream, or None if the stream isn't progressive-
-        decodable at ratio=8.
+        Consumed prefix at the FRAME_PROGRESSION boundary, or None
+        if no such event ever fires for this stream.
+
+    See Also
+    --------
+    decode : with ``downsample=8`` to obtain an ndarray thumbnail
+        usable for any consumer.
     """
     cdef:
         const uint8_t[::1] view
