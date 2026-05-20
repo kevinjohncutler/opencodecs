@@ -1,0 +1,26 @@
+# Files to include in source distributions (sdist), beyond what
+# setuptools.packages.find pulls automatically from src/opencodecs/.
+#
+# The build infrastructure (`bench/build_libjxl.sh`) and the vendored
+# libjxl patches must be in the sdist so a downstream `pip install`
+# from a source tarball can auto-build the patched libjxl, exactly
+# like a developer checkout does.
+
+include bench/build_libjxl.sh
+recursive-include patches *.diff *.md
+
+# Build helpers / configs that aren't Python packages but ship in the
+# sdist for reproducibility.
+include pyproject.toml
+include setup.py
+include README.md
+include CHANGES.rst
+include LICENSE
+
+# Don't ship macOS AppleDouble sidecars or test data.
+global-exclude ._*
+global-exclude .DS_Store
+global-exclude __pycache__
+prune build
+prune dist
+prune .pytest_cache

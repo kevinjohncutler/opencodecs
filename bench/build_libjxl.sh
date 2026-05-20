@@ -95,17 +95,54 @@ JOBS="${JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/de
 USE_LTO="${USE_LTO:-1}"
 MARCH="${MARCH:-}"
 
+# Patch directory: every *.diff here is applied to the libjxl checkout
+# after submodule init, in lexical order. The contents of these files
+# are hashed into the install sentinel so editing/adding/removing a
+# patch triggers a full rebuild. See ../patches/libjxl/README.md.
+#
+# AppleDouble (._*) sidecar files on macOS SMB mounts are filtered
+# out — they're not real patches and would crash `git apply`.
+PATCHES_DIR="$REPO/patches/libjxl"
+if [ -d "$PATCHES_DIR" ]; then
+    PATCHES=$(find "$PATCHES_DIR" -maxdepth 1 -type f -name '*.diff' \
+        ! -name '._*' 2>/dev/null | sort)
+else
+    PATCHES=""
+fi
+# Build a portable hash of all patch contents (empty hash if no patches).
+hash_patches() {
+    if [ -z "$PATCHES" ]; then
+        printf 'no-patches'
+        return
+    fi
+    if command -v sha256sum >/dev/null 2>&1; then
+        # shellcheck disable=SC2086
+        cat $PATCHES | sha256sum | awk '{print substr($1,1,16)}'
+    elif command -v shasum >/dev/null 2>&1; then
+        # shellcheck disable=SC2086
+        cat $PATCHES | shasum -a 256 | awk '{print substr($1,1,16)}'
+    else
+        printf 'no-hasher'
+    fi
+}
+PATCHES_HASH=$(hash_patches)
+SENTINEL_VALUE="${LIBJXL_VERSION}+${PATCHES_HASH}"
+
 echo "==> opencodecs: building libjxl $LIBJXL_VERSION"
 echo "    workdir : $WORKDIR  (clone + build)"
 echo "    install : $PREFIX   (final lib location)"
 echo "    JOBS=$JOBS  USE_LTO=$USE_LTO  MARCH=${MARCH:-(portable)}"
+if [ -n "$PATCHES" ]; then
+    echo "    patches : $(printf '%s\n' $PATCHES | wc -l | tr -d ' ') file(s)  hash=$PATCHES_HASH"
+fi
 
-# Idempotency: if the requested version is already installed at $PREFIX,
-# exit early so cache restores translate to genuine zero-work runs.
+# Idempotency: if the requested version + same patches are already
+# installed at $PREFIX, exit early so cache restores translate to
+# genuine zero-work runs.
 SENTINEL="$PREFIX/.opencodecs-libjxl-version"
-if [ -f "$SENTINEL" ] && [ "$(cat "$SENTINEL" 2>/dev/null)" = "$LIBJXL_VERSION" ] \
+if [ -f "$SENTINEL" ] && [ "$(cat "$SENTINEL" 2>/dev/null)" = "$SENTINEL_VALUE" ] \
    && ( [ -e "$PREFIX/include/jxl/types.h" ] ); then
-    echo "==> libjxl $LIBJXL_VERSION already installed at $PREFIX (cache hit). Skipping."
+    echo "==> libjxl $SENTINEL_VALUE already installed at $PREFIX (cache hit). Skipping."
     exit 0
 fi
 
@@ -119,6 +156,30 @@ if [ ! -d "$SRC/.git" ]; then
 fi
 cd "$SRC"
 git submodule update --init --depth 1 --recursive
+
+# --- apply vendored patches (if any). Patches live in
+#     <repo>/patches/libjxl/*.diff and are applied in lexical order.
+#     We re-clean any prior application by restoring tracked files
+#     first, so re-running the script doesn't fail with "patch already
+#     applied" / "does not apply".
+if [ -n "$PATCHES" ]; then
+    echo "==> applying $(printf '%s\n' $PATCHES | wc -l | tr -d ' ') patch(es) from $PATCHES_DIR"
+    # Reset to a pristine state in case a previous run left half-applied
+    # changes. -q suppresses noise; --recurse-submodules would be ideal
+    # but isn't on every git version, so submodules get reset separately.
+    git -C "$SRC" reset --hard HEAD -q
+    git -C "$SRC" clean -fd -q
+    git -C "$SRC" submodule foreach --recursive --quiet \
+        'git reset --hard HEAD -q && git clean -fd -q' || true
+    for patch in $PATCHES; do
+        echo "    applying $(basename "$patch")"
+        if ! git -C "$SRC" apply --whitespace=nowarn "$patch"; then
+            echo "ERROR: failed to apply $patch against $LIBJXL_VERSION" >&2
+            echo "       rebase the patch against the pinned LIBJXL_VERSION" >&2
+            exit 1
+        fi
+    done
+fi
 
 # --- configure
 rm -rf "$BUILD"
@@ -174,9 +235,11 @@ cmake "$SRC" "${CMAKE_ARGS[@]}"
 "${BUILD_CMD[@]}"
 "${INSTALL_CMD[@]}"
 
-# Drop the version sentinel so the next run can short-circuit if nothing
-# changed. Cleared automatically by `rm -rf $PREFIX` on a forced rebuild.
-echo "$LIBJXL_VERSION" > "$PREFIX/.opencodecs-libjxl-version"
+# Drop the version+patches sentinel so the next run can short-circuit
+# if nothing changed. Cleared automatically by `rm -rf $PREFIX` on a
+# forced rebuild. Editing/adding/removing a patch changes the hash and
+# triggers a rebuild on the next run.
+echo "$SENTINEL_VALUE" > "$PREFIX/.opencodecs-libjxl-version"
 
 echo ""
 echo "==> opencodecs: libjxl installed to $PREFIX"

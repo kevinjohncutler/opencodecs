@@ -163,6 +163,95 @@ def _find_libjxl() -> tuple[Path | None, list[str], list[str]]:
     return None, [], []
 
 
+def _ensure_patched_libjxl() -> None:
+    """Run bench/build_libjxl.sh when our vendored patches require a fresh
+    libjxl build. The script is idempotent — it short-circuits with a
+    sentinel-file check when the cache already holds a build matching the
+    pinned ``LIBJXL_VERSION`` + ``sha256(patches)``.
+
+    Triggered when ALL of:
+
+    * ``patches/libjxl/*.diff`` files exist (otherwise there's no patch
+      content to apply and the system / Homebrew / conda libjxl is fine).
+    * The user-cache install at ``USER_CACHE_LIBJXL`` is absent OR has a
+      stale sentinel (different LIBJXL_VERSION or different patch hash).
+    * The user didn't set ``OPENCODECS_JXL_PREFIX`` (explicit override
+      always wins).
+    * The user didn't set ``OPENCODECS_NO_AUTOBUILD_LIBJXL=1`` (opt-out for
+      CI / wheel-builder workflows where libjxl is already vendored).
+    * Platform supports the bash script (skipped on Windows; users there
+      must set ``OPENCODECS_JXL_PREFIX`` explicitly or build manually).
+
+    On script failure (cmake / ninja / compiler missing, network down,
+    patch fails to apply), we raise with a clear message pointing at
+    the opt-out env var.
+    """
+    patches_dir = HERE / "patches" / "libjxl"
+    if not patches_dir.is_dir():
+        return
+    # Filter out macOS AppleDouble (._*) sidecars created on SMB mounts —
+    # they're not real patches and would crash ``git apply``.
+    patches = sorted(
+        p for p in patches_dir.glob("*.diff") if not p.name.startswith("._")
+    )
+    if not patches:
+        return
+
+    if os.environ.get("OPENCODECS_JXL_PREFIX"):
+        return
+    if os.environ.get("OPENCODECS_NO_AUTOBUILD_LIBJXL", "").strip().lower() in (
+        "1", "true", "yes", "on"
+    ):
+        return
+    if sys.platform == "win32":
+        # bash-only build script; the libjxl patches don't apply to
+        # whatever vendored Windows lib the user is linking against
+        # anyway. Let the regular detection path run.
+        return
+
+    script = HERE / "bench" / "build_libjxl.sh"
+    if not script.is_file():
+        return
+
+    # Mirror the sentinel computation in the bash script so we can do
+    # a cheap up-to-date check WITHOUT invoking bash.
+    import hashlib
+    h = hashlib.sha256()
+    for p in patches:
+        h.update(p.read_bytes())
+    patches_hash = h.hexdigest()[:16]
+    libjxl_version = os.environ.get("LIBJXL_VERSION", "v0.11.2")
+    expected = f"{libjxl_version}+{patches_hash}"
+
+    cache = _user_cache_libjxl()
+    sentinel = cache / ".opencodecs-libjxl-version"
+    if (
+        sentinel.is_file()
+        and sentinel.read_text().strip() == expected
+        and (cache / "include" / "jxl" / "types.h").is_file()
+    ):
+        return  # cache is current — no work to do
+
+    print(
+        f"opencodecs: building patched libjxl {libjxl_version} "
+        f"({len(patches)} patch(es), one-time step)"
+    )
+    print(f"           override with OPENCODECS_NO_AUTOBUILD_LIBJXL=1")
+    res = subprocess.run(["bash", str(script)], cwd=str(HERE))
+    if res.returncode != 0:
+        raise RuntimeError(
+            f"opencodecs: bench/build_libjxl.sh exited {res.returncode}.\n"
+            "  Required tools: git, cmake (>=3.16), ninja (or make), C++17 compiler.\n"
+            "  Ubuntu/Debian: sudo apt install -y cmake ninja-build g++ git\n"
+            "  macOS:         brew install cmake ninja\n"
+            "  To skip the auto-build and use an existing libjxl install,\n"
+            "  set OPENCODECS_NO_AUTOBUILD_LIBJXL=1 (and ensure the install\n"
+            "  matches our pinned LIBJXL_VERSION + patches, or wire the\n"
+            "  prefix in via OPENCODECS_JXL_PREFIX=...)."
+        )
+
+
+_ensure_patched_libjxl()
 chosen_prefix, include_dirs, library_dirs = _find_libjxl()
 
 SRC = HERE / "src"
