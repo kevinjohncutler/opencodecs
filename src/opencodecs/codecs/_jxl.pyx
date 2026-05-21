@@ -195,6 +195,52 @@ cdef _shape_from_basic_info(const JxlBasicInfo* info):
 
 
 # ---------------------------------------------------------------------------
+# Slice-with-subsample-mode helper. Used by the downsampled output path
+# (both the nogil fallback and the FlushImage-then-slice progressive
+# path). Centralizes the "top-left vs center" positional semantic and
+# the edge-pad fallback when a centered slice would otherwise come up
+# one row/col short for non-divisible source dimensions.
+# ---------------------------------------------------------------------------
+
+
+cdef object _subsample_slice(cnp.ndarray arr, int n, int mode):
+    """Return ``arr`` downsampled by ``n`` with the requested
+    positioning. Output shape is always ``ceil(src/n)`` per axis.
+
+    mode = 0 → top-left: ``arr[::n, ::n]`` (back-compat).
+    mode = 1 → center:   ``arr[n//2::n, n//2::n]`` plus an edge
+                          replicate row/col if the slice came up
+                          short (only happens when the source axis
+                          isn't divisible by n).
+    """
+    cdef:
+        int off, hp, wp
+        Py_ssize_t h_full, w_full, h_want, w_want
+    if mode == 0:
+        if arr.ndim == 2:
+            return arr[::n, ::n].copy()
+        return arr[::n, ::n, :].copy()
+    off = n // 2
+    h_full = arr.shape[0]
+    w_full = arr.shape[1]
+    h_want = (h_full + n - 1) // n
+    w_want = (w_full + n - 1) // n
+    if arr.ndim == 2:
+        out = arr[off::n, off::n].copy()
+    else:
+        out = arr[off::n, off::n, :].copy()
+    hp = <int> (h_want - out.shape[0])
+    wp = <int> (w_want - out.shape[1])
+    if hp <= 0 and wp <= 0:
+        return out
+    if arr.ndim == 2:
+        pad_widths = ((0, max(0, hp)), (0, max(0, wp)))
+    else:
+        pad_widths = ((0, max(0, hp)), (0, max(0, wp)), (0, 0))
+    return np.pad(out, pad_widths, mode='edge')
+
+
+# ---------------------------------------------------------------------------
 # Per-frame decode helper — runs the whole event loop in nogil so we don't
 # pay GIL ping-pong per JxlDecoderProcessInput call. Matches imagecodecs's
 # pattern. On Linux x86_64 this is the difference between 0.44x and ~1x
@@ -542,6 +588,17 @@ cdef class JxlReader:
         # fewer passes — at downsample=8 the decoder stops at the DC
         # stage which is ~5-10x cheaper than a full decode.
         size_t _downsample
+        # Subsample positioning. Output pixel (i, j) at downsample N
+        # represents either:
+        #   0 = top-left:  source pixel (i*N, j*N)
+        #   1 = center:    source content centered at
+        #                  (i*N + (N-1)/2, j*N + (N-1)/2)
+        # Default is top-left for back-compat with imagecodecs callers.
+        # Center is preferred for visual thumbnails so the downsampled
+        # raster registers correctly when overlaid on the full image
+        # (no half-block spatial shift when the high-res replaces the
+        # thumb).
+        int _subsample_mode  # 0 = top-left, 1 = center
 
     def __cinit__(self):
         self._decoder = NULL
@@ -566,6 +623,7 @@ cdef class JxlReader:
         self._coalesce = True
         self._keep_orientation = False
         self._downsample = 1
+        self._subsample_mode = 0  # top-left default
         self._closed = False
         self._frames_started = False
         self._exhausted = False
@@ -581,7 +639,7 @@ cdef class JxlReader:
 
     def __init__(self, data, *, numthreads=None, keep_orientation=False,
                  coalesce=True, parse_color=True, streaming=False,
-                 skip_frames=0, downsample=1):
+                 skip_frames=0, downsample=1, subsample='top-left'):
         # parse_color=True (default) subscribes to JXL_DEC_COLOR_ENCODING and
         # populates self.color from the encoded color tags. parse_color=False
         # skips that subscription and goes straight from BASIC_INFO to FULL_IMAGE,
@@ -685,6 +743,18 @@ cdef class JxlReader:
                 "ratios via JxlDecoderGetIntendedDownsamplingRatio."
             )
         self._downsample = <size_t> ds
+
+        # Validate subsample. Lowered to an int so the hot slice path
+        # avoids a Python attribute lookup per frame.
+        if subsample == 'top-left':
+            self._subsample_mode = 0
+        elif subsample == 'center':
+            self._subsample_mode = 1
+        else:
+            raise ValueError(
+                f"jxl: subsample must be 'top-left' or 'center' "
+                f"(got {subsample!r})."
+            )
 
         self._decoder = JxlDecoderCreate(NULL)
         if self._decoder == NULL:
@@ -1174,10 +1244,7 @@ cdef class JxlReader:
 
             if rc == _RC_FRAME:
                 if dn > 1:
-                    if frame.ndim == 2:
-                        yield frame[::dn, ::dn].copy()
-                    else:
-                        yield frame[::dn, ::dn, :].copy()
+                    yield _subsample_slice(frame, dn, self._subsample_mode)
                 else:
                     yield frame
                 continue
@@ -1246,10 +1313,8 @@ cdef class JxlReader:
                 # short-circuits libjxl past the AC passes via
                 # SkipCurrentFrame, so it's much faster.
                 ratio = out_ratio if out_ratio > 0 else <size_t> dn
-                if full_arr.ndim == 2:
-                    yield full_arr[::ratio, ::ratio].copy()
-                else:
-                    yield full_arr[::ratio, ::ratio, :].copy()
+                yield _subsample_slice(
+                    full_arr, <int> ratio, self._subsample_mode)
                 continue
             if rc == _RC_EOF:
                 self._exhausted = True
@@ -2134,7 +2199,7 @@ def encode(arr, *, color=None, lossless=None, quality=None, distance=None,
 
 def decode(data, *, numthreads=None, keep_orientation=False,
            coalesce=True, parse_color=False, streaming=False,
-           index=None, downsample=1):
+           index=None, downsample=1, subsample='top-left'):
     """Decode a JPEG XL bytes/path into a numpy array (single ndarray).
 
     Defaults to ``parse_color=False`` for the fast decode path — matches
@@ -2167,6 +2232,7 @@ def decode(data, *, numthreads=None, keep_orientation=False,
         keep_orientation=keep_orientation, coalesce=coalesce,
         parse_color=parse_color, streaming=streaming,
         skip_frames=skip, downsample=downsample,
+        subsample=subsample,
     ) as r:
         if index is None:
             return r.read()

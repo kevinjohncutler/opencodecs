@@ -13,6 +13,29 @@ release because most of it has shipped continuously to ``main``.
 Unreleased
 ----------
 
+**JXL ``subsample`` kwarg for downsample positioning**
+
+* Add ``subsample={'top-left', 'center'}`` kwarg to
+  ``opencodecs.jxl.read`` / ``open`` / ``iter_frames`` and the
+  underlying ``JxlReader`` / ``decode``.
+* ``'top-left'`` (default) keeps the historical
+  ``arr[::N, ::N]`` semantic — back-compat with imagecodecs and
+  every existing caller.
+* ``'center'`` takes ``arr[N//2::N, N//2::N]`` so each output
+  pixel represents the geometric centroid of its source NxN
+  block. The right choice for visual thumbnails: when the
+  downsampled raster gets drawn in an NxN region of an output
+  canvas (SVG ``<image>``, GL texture upload, …), centroid
+  semantics keep the thumb positionally self-consistent with
+  the full-res source. Top-left semantics shift features by
+  ~(N-1)/2 source-pixels.
+* Output shape is ``ceil(src/N)`` per axis in both modes.
+  When source dimensions aren't divisible by N, the centered
+  slice would otherwise come up one row/col short; we replicate
+  the bottom/right edge to preserve the shape contract.
+* No perf change — both modes are pure index/copy on the
+  already-decoded buffer. The decode path is unchanged.
+
 **Tier 3 streaming-reader plumbing**
 
 * Add ``HTTPDataSource`` covering-cache lookup: when ``read_at(off, n)``

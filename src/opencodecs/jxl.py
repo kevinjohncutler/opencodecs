@@ -93,6 +93,7 @@ def open(  # noqa: A001  (shadows builtin intentionally for the public API)
     parse_color: bool = True,
     streaming: bool = False,
     downsample: int = 1,
+    subsample: str = 'top-left',
 ) -> JxlReader:
     """Open a JPEG XL stream and parse the header.
 
@@ -132,6 +133,16 @@ def open(  # noqa: A001  (shadows builtin intentionally for the public API)
         / non-progressive streams there's a silent fallback to a
         full decode + ``[::N, ::N]`` slice; the output shape matches
         either way, only the speed differs.
+    subsample : {'top-left', 'center'}, default 'top-left'
+        Positional semantic for downsampled output. ``'top-left'``
+        takes ``arr[::N, ::N]`` (back-compat with imagecodecs). ``'center'``
+        takes ``arr[N//2::N, N//2::N]`` so each output pixel represents
+        the geometric centroid of its source NxN block — the right
+        choice for visual thumbnails so the downsampled raster
+        registers correctly when overlaid on the full-res image.
+        Both modes return shape ``ceil(src/N)`` per axis; centered
+        slices replicate the bottom/right edge if the source isn't
+        divisible by N.
 
     Returns
     -------
@@ -148,6 +159,7 @@ def open(  # noqa: A001  (shadows builtin intentionally for the public API)
         parse_color=parse_color,
         streaming=streaming,
         downsample=downsample,
+        subsample=subsample,
     )
 
 
@@ -245,12 +257,17 @@ def iter_frames(
     coalesce: bool = True,
     parse_color: bool = False,
     streaming: bool = False,
+    downsample: int = 1,
+    subsample: str = 'top-left',
 ) -> Iterator[np.ndarray]:
     """Yield decoded frames one at a time from `src`.
 
     Equivalent to ``open(src).iter_frames()`` but closes the reader when the
     generator is exhausted. Defaults to ``parse_color=False`` for speed —
     if you also want color/icc metadata, use ``open(...)`` directly.
+
+    ``downsample`` / ``subsample`` are forwarded to :func:`open`; see
+    that function's docstring for semantics.
     """
     reader = JxlReader(
         src,
@@ -259,6 +276,8 @@ def iter_frames(
         coalesce=coalesce,
         parse_color=parse_color,
         streaming=streaming,
+        downsample=downsample,
+        subsample=subsample,
     )
     try:
         yield from reader.iter_frames()

@@ -359,6 +359,61 @@ def test_downsample_via_reader_iter_frames():
     assert frames[0].shape == (64, 64, 3)
 
 
+# ----------------------------- subsample mode -------------------------------
+
+
+def test_subsample_default_is_top_left():
+    """Default subsample matches the historical [::N, ::N] semantic."""
+    img = np.tile(
+        np.linspace(0, 60000, 1024, dtype=np.uint16), (1024, 1)
+    )[..., None].repeat(3, -1)
+    blob = jxl.write(None, img, lossless=True, effort=1)
+    default = jxl.read(blob, downsample=8)
+    explicit = jxl.read(blob, downsample=8, subsample='top-left')
+    np.testing.assert_array_equal(default, explicit)
+
+
+def test_subsample_center_offsets_into_block():
+    """Center sample lands 4 columns to the right of top-left for N=8;
+    on a horizontal gradient that's a 4-column shift in source pixels."""
+    img = np.tile(
+        np.linspace(0, 60000, 1024, dtype=np.uint16), (1024, 1)
+    )[..., None].repeat(3, -1)
+    blob = jxl.write(None, img, lossless=True, effort=1)
+    tl = jxl.read(blob, downsample=8, subsample='top-left')
+    ce = jxl.read(blob, downsample=8, subsample='center')
+    # Same shape, different content.
+    assert tl.shape == ce.shape
+    # Center > top-left for each output position on a positive gradient.
+    assert ce[0, 0, 0] > tl[0, 0, 0]
+    # Difference at column 0 ≈ 4 * (gradient slope) = 4 * 60000/1023
+    diff = int(ce[0, 0, 0]) - int(tl[0, 0, 0])
+    expected = round(4 * 60000 / 1023)
+    assert abs(diff - expected) <= 2
+
+
+def test_subsample_invalid_raises():
+    arr = _grad_uint8(128, 128, 3)
+    blob = jxl.write(None, arr, lossless=True)
+    with pytest.raises(ValueError, match='subsample'):
+        jxl.read(blob, downsample=4, subsample='middle')
+
+
+@pytest.mark.parametrize("ds", [2, 4, 8])
+@pytest.mark.parametrize("mode", ['top-left', 'center'])
+def test_subsample_output_shape_is_ceil(ds, mode):
+    """Shape is ceil(src/N) per axis regardless of subsample mode.
+    Use a non-power-of-two-multiple dimension to exercise the
+    edge-pad path on the 'center' mode."""
+    h, w = 257, 259  # neither divisible by 8 (or 4, 2 in their full extents)
+    arr = _grad_uint8(h, w, 3)
+    blob = jxl.write(None, arr, lossless=True)
+    out = jxl.read(blob, downsample=ds, subsample=mode)
+    assert out.shape == (
+        -(-h // ds), -(-w // ds), 3
+    ), f'expected ({-(-h//ds)},{-(-w//ds)},3) got {out.shape}'
+
+
 # ----------------------------- thumbnail_bytes ------------------------------
 
 
