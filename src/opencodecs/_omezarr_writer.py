@@ -13,13 +13,18 @@ Scope of v1
     - blosc2 via opencodecs native ``_blosc2`` (v2 + v3)
     - gzip via stdlib (v2 + v3)
 * C-order arrays only (zarr-python's default).
+* Optional ``shards=`` (Zarr v3 sharding_indexed codec) — outer chunks
+  on disk are shards holding many inner sub-chunks plus a trailing
+  uint64 index. One file per shard, dramatically lower file-count
+  pressure on object stores. See ``write_zarr_array``.
 
 Deferred
 --------
-* Sharded v3 storage (write side — read side shipped previously)
 * User-supplied filter chains
 * Custom dimension separators (we always use "/")
 * HTTP write (S3 PUT)
+* CRC32C inner / index codec (needs crc32c dep; not blocking sharding
+  itself since the reader treats missing CRC as expected)
 """
 
 from __future__ import annotations
@@ -112,6 +117,7 @@ def write_zarr_array(
     arr: np.ndarray,
     *,
     chunks: tuple[int, ...] | None = None,
+    shards: tuple[int, ...] | None = None,
     compressor: str = "zstd",
     compression_level: int | None = None,
     zarr_format: int = 2,
@@ -134,6 +140,15 @@ def write_zarr_array(
     chunks : tuple or None
         Chunk shape per axis. ``None`` uses ``arr.shape`` (single chunk),
         which is fine for small arrays but unusual for OME-Zarr.
+    shards : tuple or None
+        Outer-shard shape (Zarr v3 only). When given, enables the
+        ``sharding_indexed`` codec: each shard file on disk holds
+        ``prod(shards / chunks)`` inner sub-chunks plus a trailing
+        index. Each shard axis must be a multiple of the corresponding
+        chunk axis. With ``shards=None`` (default) each chunk is its
+        own file. Sharding is the right choice for very large arrays
+        on object stores — fewer files, fewer ``PUT`` calls; the
+        reader does range-fetches per inner chunk.
     compressor : ``"none"``, ``"zstd"``, ``"blosc2"``, ``"gzip"`` or any
         numcodecs id for ``zarr_format=2``. For ``zarr_format=3`` only
         the named codecs above plus ``"none"`` are supported.
@@ -154,13 +169,36 @@ def write_zarr_array(
             f"chunks rank {len(chunks)} != array rank {arr.ndim}"
         )
 
+    if shards is not None:
+        if zarr_format != 3:
+            raise OmeZarrWriterError(
+                "sharding (shards=) is a Zarr v3 feature; pass "
+                "zarr_format=3 to enable it."
+            )
+        shards = tuple(int(s) for s in shards)
+        if len(shards) != arr.ndim:
+            raise OmeZarrWriterError(
+                f"shards rank {len(shards)} != array rank {arr.ndim}"
+            )
+        for s, c, axis in zip(shards, chunks, range(arr.ndim)):
+            if s % c != 0:
+                raise OmeZarrWriterError(
+                    f"shard axis {axis} ({s}) must be a multiple of "
+                    f"chunk axis ({c}); each shard holds a whole "
+                    f"number of inner chunks."
+                )
+
     n_workers = _resolve_workers(workers)
     if zarr_format == 2:
         _write_v2(root, arr, chunks, compressor, compression_level,
                   fill_value, n_workers)
     elif zarr_format == 3:
-        _write_v3(root, arr, chunks, compressor, compression_level,
-                  fill_value, n_workers)
+        if shards is not None:
+            _write_v3_sharded(root, arr, chunks, shards, compressor,
+                              compression_level, fill_value, n_workers)
+        else:
+            _write_v3(root, arr, chunks, compressor, compression_level,
+                      fill_value, n_workers)
     else:
         raise OmeZarrWriterError(
             f"zarr_format must be 2 or 3 (got {zarr_format})"
@@ -353,6 +391,198 @@ def _write_v3(
 
 
 # ---------------------------------------------------------------------------
+# Sharded v3 writer (sharding_indexed codec)
+# ---------------------------------------------------------------------------
+#
+# Layout per shard file (index_location="end", matching zarr-python's
+# default and what our :class:`OmeZarrArray` reader expects):
+#
+#     [chunk_0_bytes][chunk_1_bytes]...[chunk_N-1_bytes][index]
+#
+# The index is N pairs of little-endian ``uint64`` (offset, nbytes),
+# one per inner chunk position in shard-local row-major order. Absent
+# chunks (the array doesn't reach this slot — edge-of-array case)
+# have both fields set to ``2**64 - 1`` (the Zarr v3 sentinel).
+#
+# CRC32C on the index footer is supported by the reader but is *not*
+# emitted by this writer — it would add a hard runtime dep on the
+# ``crc32c`` library and the reader treats absence as a missing
+# trailing 4 bytes, not an error.
+
+_EMPTY_SENTINEL = (1 << 64) - 1
+
+
+def _v3_codecs_for_shard_inner(
+    arr: np.ndarray, compressor: str, level: int | None
+) -> list[dict]:
+    """Build the inner-chunk codec list for ``sharding_indexed``.
+
+    Mirrors the chain produced by :func:`_write_v3` (bytes + optional
+    compressor) so the writer is consistent across sharded and
+    non-sharded outputs.
+    """
+    endian = (
+        "little" if arr.dtype.itemsize == 1
+        or arr.dtype.byteorder in ("<", "=", "|")
+        else "big"
+    )
+    codecs: list[dict] = [
+        {"name": "bytes", "configuration": {"endian": endian}},
+    ]
+    if compressor == "zstd":
+        codecs.append({
+            "name": "zstd",
+            "configuration": {"level": level if level is not None else 3,
+                              "checksum": False},
+        })
+    elif compressor == "blosc2":
+        codecs.append({
+            "name": "blosc2",
+            "configuration": {"clevel": level if level is not None else 5},
+        })
+    elif compressor == "gzip":
+        codecs.append({
+            "name": "gzip",
+            "configuration": {"level": level if level is not None else 6},
+        })
+    return codecs
+
+
+def _encode_one_shard_v3(args):
+    """Worker: assemble one shard file.
+
+    Reads its slice of the source array, encodes each inner chunk in
+    row-major order, accumulates the concatenated payload + the
+    ``(offset, nbytes)`` index, and returns the ready-to-write bytes.
+    """
+    import struct
+    (arr, shard_idx, shard_shape, chunks, fill_value, compressor, level,
+     key_path) = args
+    ndim = arr.ndim
+
+    # Inner chunk grid within this shard.
+    chunks_per_shard = tuple(s // c for s, c in zip(shard_shape, chunks))
+
+    # Walk inner chunks in row-major order, encoding each.
+    def _inner_iter(axis: int, prefix: tuple[int, ...]):
+        if axis == ndim:
+            yield prefix
+            return
+        for i in range(chunks_per_shard[axis]):
+            yield from _inner_iter(axis + 1, prefix + (i,))
+
+    payload = bytearray()
+    index_pairs: list[tuple[int, int]] = []
+    cur_offset = 0
+
+    for inner in _inner_iter(0, ()):
+        # Global chunk index = shard_idx * chunks_per_shard + inner.
+        global_idx = tuple(
+            si * cps + ii
+            for si, cps, ii in zip(shard_idx, chunks_per_shard, inner)
+        )
+        # Source slice the inner chunk covers in the *array*. Use
+        # the same ``min(end, shape)`` clipping the unsharded writer
+        # uses (``_chunk_iter`` / ``_make_chunk_bytes``) so edge
+        # chunks pad correctly.
+        chunk_slc = tuple(
+            slice(gi * c, min((gi + 1) * c, dim))
+            for gi, c, dim in zip(global_idx, chunks, arr.shape)
+        )
+        # If the chunk slot is entirely past the array's end on any
+        # axis (zero-extent slice), mark it as missing.
+        if any(s.stop <= s.start for s in chunk_slc):
+            index_pairs.append((_EMPTY_SENTINEL, _EMPTY_SENTINEL))
+            continue
+        raw = _make_chunk_bytes(arr, chunk_slc, chunks, fill_value)
+        encoded = _encode_chunk(raw, compressor, level)
+        payload.extend(encoded)
+        index_pairs.append((cur_offset, len(encoded)))
+        cur_offset += len(encoded)
+
+    # Append the index footer.
+    index_bytes = b"".join(
+        struct.pack("<QQ", off, n) for off, n in index_pairs
+    )
+    payload.extend(index_bytes)
+
+    return key_path, bytes(payload)
+
+
+def _write_v3_sharded(
+    root: Path, arr: np.ndarray, chunks: tuple[int, ...],
+    shards: tuple[int, ...], compressor: str, level: int | None,
+    fill_value, n_workers: int = 1,
+) -> None:
+    """Zarr v3 ``zarr.json`` + one shard file per outer position."""
+    inner_codecs = _v3_codecs_for_shard_inner(arr, compressor, level)
+    sharding_cfg = {
+        "chunk_shape": list(chunks),
+        "codecs": inner_codecs,
+        # Bytes-only index (uint64 offset/nbytes pairs). We don't add
+        # CRC32C here; see module docstring.
+        "index_codecs": [
+            {"name": "bytes", "configuration": {"endian": "little"}},
+        ],
+        "index_location": "end",
+    }
+    metadata = {
+        "zarr_format": 3,
+        "node_type": "array",
+        "shape": list(arr.shape),
+        "data_type": _v3_dtype_name(arr.dtype),
+        "chunk_grid": {
+            "name": "regular",
+            "configuration": {"chunk_shape": list(shards)},
+        },
+        "chunk_key_encoding": {
+            "name": "default",
+            "configuration": {"separator": "/"},
+        },
+        "fill_value": fill_value,
+        "codecs": [
+            {"name": "sharding_indexed", "configuration": sharding_cfg},
+        ],
+        "attributes": {},
+        "storage_transformers": [],
+    }
+    (root / "zarr.json").write_text(json.dumps(metadata))
+
+    # One task per OUTER shard. The shard worker handles all inner
+    # chunks for that shard, so chunk-grain parallelism is per-shard.
+    # For large arrays with many shards that's still plenty of work
+    # to fill ``n_workers`` threads.
+    tasks = []
+    for shard_idx, _slc in _chunk_iter(arr.shape, shards):
+        sub = root / "c"
+        for i in shard_idx:
+            sub = sub / str(i)
+        tasks.append((arr, shard_idx, shards, chunks, fill_value,
+                      compressor, level, sub))
+
+    # Pre-create parent dirs serially so worker writes are
+    # collision-free (same pattern as the unsharded v3 path).
+    seen_parents = set()
+    for *_, sub in tasks:
+        p = sub.parent
+        if p not in seen_parents:
+            p.mkdir(parents=True, exist_ok=True)
+            seen_parents.add(p)
+
+    if n_workers <= 1 or len(tasks) <= 1:
+        for t in tasks:
+            key_path, out = _encode_one_shard_v3(t)
+            key_path.write_bytes(out)
+        return
+
+    with ThreadPoolExecutor(max_workers=n_workers) as pool:
+        futures = [pool.submit(_encode_one_shard_v3, t) for t in tasks]
+        for fut in as_completed(futures):
+            key_path, out = fut.result()
+            key_path.write_bytes(out)
+
+
+# ---------------------------------------------------------------------------
 # OmeZarrPyramidWriter — multi-scale group
 # ---------------------------------------------------------------------------
 
@@ -362,6 +592,7 @@ def write_omezarr_pyramid(
     levels: list[np.ndarray],
     *,
     chunks: tuple[int, ...] | None = None,
+    shards: tuple[int, ...] | None = None,
     compressor: str = "zstd",
     compression_level: int | None = None,
     zarr_format: int = 2,
@@ -439,11 +670,33 @@ def write_omezarr_pyramid(
             "attributes": {"ome": {"multiscales": multiscales}},
         }))
 
+    # Adapt shards per level: if the caller pinned ``shards=`` and a
+    # later level is smaller than ``shards``, clamp each shard axis
+    # down to the level's shape (still keeping it a multiple of
+    # ``chunks`` — drop to the smallest multiple of ``chunks`` that
+    # fits). For levels with any axis smaller than the chunk, skip
+    # sharding on that level entirely.
     for i, lvl in enumerate(levels):
+        lvl_chunks = chunks if chunks is not None else lvl.shape
+        lvl_shards = shards
+        if shards is not None:
+            adapted: list[int] = []
+            skip = False
+            for s, c, dim in zip(shards, lvl_chunks, lvl.shape):
+                # smallest multiple of c that's <= dim and <= s
+                cap = min(s, (dim // c) * c if dim >= c else 0)
+                if cap < c:
+                    # Level too small to fit even one chunk on this
+                    # axis — fall back to per-chunk layout for it.
+                    skip = True
+                    break
+                adapted.append(cap)
+            lvl_shards = None if skip else tuple(adapted)
         write_zarr_array(
             root / str(i),
             lvl,
-            chunks=chunks if chunks is not None else lvl.shape,
+            chunks=lvl_chunks,
+            shards=lvl_shards,
             compressor=compressor,
             compression_level=compression_level,
             zarr_format=zarr_format,
@@ -460,6 +713,7 @@ def write_omezarr_pyramid_auto(
     pyramid_min_size: int = 512,
     pyramid_axes: tuple[int, ...] | str | None = None,
     chunks: tuple[int, ...] | None = None,
+    shards: tuple[int, ...] | None = None,
     compressor: str = "zstd",
     compression_level: int | None = None,
     zarr_format: int = 2,
@@ -506,7 +760,7 @@ def write_omezarr_pyramid_auto(
     )
     write_omezarr_pyramid(
         path, levels,
-        chunks=chunks, compressor=compressor,
+        chunks=chunks, shards=shards, compressor=compressor,
         compression_level=compression_level,
         zarr_format=zarr_format, axes=axes,
         fill_value=fill_value, workers=workers,

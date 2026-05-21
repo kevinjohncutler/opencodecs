@@ -13,6 +13,32 @@ release because most of it has shipped continuously to ``main``.
 Unreleased
 ----------
 
+**OME-Zarr v3 sharded write**
+
+* Add ``shards=`` kwarg to ``opencodecs.write_zarr_array``,
+  ``write_omezarr_pyramid``, and ``write_omezarr_pyramid_auto``.
+  Enables the Zarr v3 ``sharding_indexed`` codec: each shard file
+  on disk packs ``prod(shards / chunks)`` inner sub-chunks plus
+  a trailing ``uint64`` ``(offset, nbytes)`` index. The reader
+  (which already supported sharded *reads* with HTTP-range
+  fetches) now has a writer counterpart, closing the OME-Zarr
+  v3 write story.
+* Validation: ``shards=`` requires ``zarr_format=3`` and each
+  shard axis must be a multiple of the corresponding chunk axis
+  (so each shard holds a whole number of inner chunks).
+* Pyramid writers auto-adapt ``shards`` per level — when a
+  downsampled level is smaller than the requested shard shape,
+  the shard clamps to the largest multiple of ``chunks`` that
+  fits, and falls back to per-chunk layout when a level is too
+  small to hold even one chunk.
+* Verified pixel-equal round-trip via the reference zarr-python
+  reader (including the edge-of-array case where the array
+  dimensions aren't a multiple of the shard shape — those slots
+  use the standard Zarr empty-chunk sentinel of ``2**64 - 1``).
+* Index uses bytes-only encoding (no CRC32C yet — would add a
+  ``crc32c`` runtime dep and the reader already handles its
+  absence gracefully).
+
 **JXL ``subsample`` kwarg for downsample positioning**
 
 * Add ``subsample={'top-left', 'center'}`` kwarg to

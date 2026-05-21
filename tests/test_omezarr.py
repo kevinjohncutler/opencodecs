@@ -628,6 +628,99 @@ def test_writer_array_round_trips_through_opencodecs(tmp_path, zarr_format):
     np.testing.assert_array_equal(back, arr)
 
 
+# ---- Sharded v3 writer ----
+
+
+@pytest.mark.parametrize("compressor", ["zstd", "gzip", "none"])
+def test_writer_sharded_round_trips_through_opencodecs(tmp_path, compressor):
+    """Sharded v3 write → our reader (which already supports sharding)."""
+    from opencodecs import write_zarr_array
+    rng = np.random.default_rng(7)
+    arr = rng.integers(0, 4000, size=(128, 128), dtype=np.uint16)
+    p = tmp_path / f"sharded_{compressor}"
+    write_zarr_array(
+        p, arr, chunks=(16, 16), shards=(64, 64),
+        compressor=compressor, zarr_format=3,
+    )
+    back = OmeZarrArray(p).read()
+    np.testing.assert_array_equal(back, arr)
+
+
+def test_writer_sharded_round_trips_through_zarr_python(tmp_path):
+    """Reference reader (zarr-python) reads our sharded output back
+    pixel-equal — proves the on-disk layout is spec-conformant."""
+    from opencodecs import write_zarr_array
+    rng = np.random.default_rng(8)
+    # Non-divisible shape exercises the edge / empty-chunk index path.
+    arr = rng.integers(0, 4000, size=(100, 96), dtype=np.uint16)
+    p = tmp_path / "sharded_zp"
+    write_zarr_array(
+        p, arr, chunks=(16, 16), shards=(64, 64),
+        compressor="zstd", zarr_format=3,
+    )
+    z = zarr.open(str(p), mode="r")
+    back = np.asarray(z[:])
+    np.testing.assert_array_equal(back, arr)
+
+
+def test_writer_sharded_disk_layout_is_one_file_per_shard(tmp_path):
+    """The on-disk file count equals (zarr.json) + (n_shards). This is
+    the whole point of sharding — fewer files than chunks."""
+    from opencodecs import write_zarr_array
+    arr = np.zeros((128, 128), dtype=np.uint16)
+    p = tmp_path / "shape_count"
+    write_zarr_array(
+        p, arr, chunks=(16, 16), shards=(64, 64),
+        compressor="none", zarr_format=3,
+    )
+    # 128/64 = 2 shards per axis → 4 shard files + zarr.json
+    files = [str(q) for q in p.rglob("*") if q.is_file()]
+    # 16x16 chunks would have been 64 files; sharded path: 4.
+    chunk_files = [f for f in files if "/c/" in f.replace("\\", "/")]
+    assert len(chunk_files) == 4, files
+    assert (p / "zarr.json").is_file()
+
+
+def test_writer_sharded_v3_only(tmp_path):
+    from opencodecs import write_zarr_array
+    arr = np.zeros((32, 32), dtype=np.uint16)
+    with pytest.raises(Exception, match="[Vv]3"):
+        write_zarr_array(
+            tmp_path / "x", arr,
+            chunks=(16, 16), shards=(32, 32),
+            zarr_format=2,
+        )
+
+
+def test_writer_sharded_validates_multiple_of_chunks(tmp_path):
+    from opencodecs import write_zarr_array
+    arr = np.zeros((64, 64), dtype=np.uint16)
+    with pytest.raises(Exception, match="multiple"):
+        write_zarr_array(
+            tmp_path / "x", arr,
+            chunks=(16, 16), shards=(64, 50),  # 50 not a multiple of 16
+            zarr_format=3,
+        )
+
+
+def test_writer_sharded_pyramid_round_trip(tmp_path):
+    """Pyramid writer with shards= round-trips through our pyramid
+    reader. The writer auto-adapts ``shards`` per level so smaller
+    levels don't need to be padded out."""
+    from opencodecs import write_omezarr_pyramid, OmeZarrPyramidDataset
+    base = np.arange(512 * 512, dtype=np.uint16).reshape(512, 512)
+    levels = [base, base[::2, ::2].copy(), base[::4, ::4].copy()]
+    p = tmp_path / "pyr_sharded.zarr"
+    write_omezarr_pyramid(
+        p, levels, chunks=(32, 32), shards=(128, 128),
+        compressor="zstd", zarr_format=3,
+    )
+    ds = OmeZarrPyramidDataset(p)
+    assert len(ds.levels) == 3
+    for i, lvl in enumerate(levels):
+        np.testing.assert_array_equal(ds.read_region(level=i), lvl)
+
+
 def test_writer_array_dtype_matrix(tmp_path):
     """Every numeric dtype we map round-trips at zarr_format=3."""
     from opencodecs import write_zarr_array
