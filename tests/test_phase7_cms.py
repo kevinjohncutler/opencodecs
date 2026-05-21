@@ -131,3 +131,105 @@ def test_cms_bad_profile_raises(srgb_profile):
     arr = np.zeros((4, 4, 3), dtype=np.uint8)
     with pytest.raises(ValueError, match="cmsOpenProfileFromMem"):
         c.decode(arr, profile_in=b"NOT AN ICC PROFILE")
+
+
+# ----- built-in profile factories + sRGB ↔ Display-P3 helpers -----
+
+
+def test_builtin_profile_icc_has_valid_signature():
+    """Both built-in profiles start with the ICC ``acsp`` magic at
+    offset 36 — the universal ICC file signature."""
+    from opencodecs._cms_codec import _builtin_profile_icc
+    for name in ("srgb", "display-p3"):
+        icc = _builtin_profile_icc(name)
+        assert isinstance(icc, bytes) and len(icc) > 128
+        assert icc[36:40] == b"acsp", f"{name}: missing ICC signature"
+
+
+def test_builtin_profile_icc_unknown_name():
+    from opencodecs._cms_codec import _builtin_profile_icc
+    with pytest.raises(ValueError, match="unknown built-in profile"):
+        _builtin_profile_icc("rec2020")
+
+
+def test_builtin_profile_icc_cache_returns_same_object():
+    """Repeated calls return the cached bytes — no rebuild per call."""
+    from opencodecs._cms_codec import _builtin_profile_icc
+    a = _builtin_profile_icc("display-p3")
+    b = _builtin_profile_icc("display-p3")
+    assert a is b
+
+
+def test_srgb_to_display_p3_primaries():
+    """sRGB primaries map to known Display-P3 values (perceptual intent).
+
+    Reference values come from a hand-check against the canonical
+    sRGB→P3 matrix; we allow ±2 codes of slack for lcms2 drift.
+    """
+    from opencodecs._cms_codec import srgb_to_display_p3_uint8
+    primaries = np.array(
+        [[[255, 0, 0], [0, 255, 0], [0, 0, 255]]], dtype=np.uint8
+    )
+    out = srgb_to_display_p3_uint8(primaries)
+    expected = np.array(
+        [[[234,  51,  35],
+          [117, 251,  76],
+          [  0,   0, 245]]],
+        dtype=np.int16,
+    )
+    diff = np.abs(out.astype(np.int16) - expected)
+    assert diff.max() <= 2, (
+        f"sRGB→P3 primaries drifted too far: got {out}, expected {expected}"
+    )
+
+
+def test_srgb_to_display_p3_gray_is_identity():
+    """Neutral gray is invariant: sRGB and Display-P3 share D65 white,
+    so achromatic samples round-trip within ±1 LSB."""
+    from opencodecs._cms_codec import srgb_to_display_p3_uint8
+    arr = np.tile(np.arange(0, 256, 16, dtype=np.uint8)[:, None, None], (1, 1, 3))
+    out = srgb_to_display_p3_uint8(arr)
+    diff = np.abs(out.astype(np.int16) - arr.astype(np.int16))
+    assert diff.max() <= 1, f"gray drift: max diff {diff.max()}"
+
+
+def test_srgb_to_display_p3_preserves_alpha():
+    """RGBA path: RGB plane is transformed, alpha passes verbatim."""
+    from opencodecs._cms_codec import srgb_to_display_p3_uint8
+    rng = np.random.default_rng(0)
+    rgb = rng.integers(0, 256, size=(8, 8, 3), dtype=np.uint8)
+    alpha = rng.integers(0, 256, size=(8, 8, 1), dtype=np.uint8)
+    rgba = np.concatenate([rgb, alpha], axis=-1)
+    out = srgb_to_display_p3_uint8(rgba)
+    assert out.shape == rgba.shape
+    np.testing.assert_array_equal(out[..., 3], rgba[..., 3])
+    rgb_only_out = srgb_to_display_p3_uint8(rgb)
+    np.testing.assert_array_equal(out[..., :3], rgb_only_out)
+
+
+def test_srgb_to_display_p3_rejects_wrong_dtype():
+    from opencodecs._cms_codec import srgb_to_display_p3_uint8
+    arr = np.zeros((4, 4, 3), dtype=np.uint16)
+    with pytest.raises(TypeError, match="uint8"):
+        srgb_to_display_p3_uint8(arr)
+
+
+def test_srgb_to_display_p3_rejects_wrong_shape():
+    from opencodecs._cms_codec import srgb_to_display_p3_uint8
+    with pytest.raises(ValueError, match=r"\(H, W, 3\|4\)"):
+        srgb_to_display_p3_uint8(np.zeros((4, 4), dtype=np.uint8))
+    with pytest.raises(ValueError, match=r"\(H, W, 3\|4\)"):
+        srgb_to_display_p3_uint8(np.zeros((4, 4, 5), dtype=np.uint8))
+
+
+def test_srgb_to_display_p3_out_kwarg():
+    """`out=` writes into a preallocated destination of the right
+    shape + dtype."""
+    from opencodecs._cms_codec import srgb_to_display_p3_uint8
+    rng = np.random.default_rng(1)
+    arr = rng.integers(0, 256, size=(8, 8, 3), dtype=np.uint8)
+    out = np.empty_like(arr)
+    ret = srgb_to_display_p3_uint8(arr, out=out)
+    reference = srgb_to_display_p3_uint8(arr)
+    np.testing.assert_array_equal(out, reference)
+    np.testing.assert_array_equal(ret, reference)

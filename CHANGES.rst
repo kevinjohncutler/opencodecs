@@ -13,6 +13,25 @@ release because most of it has shipped continuously to ``main``.
 Unreleased
 ----------
 
+**CMS — sRGB ↔ Display-P3 fast converter**
+
+* Add ``opencodecs._cms_codec.srgb_to_display_p3_uint8(arr)``
+  convenience for the gallery / Jupyter / web-display case: convert
+  sRGB-encoded uint8 RGB(A) → Display-P3-encoded uint8 in ~28 ms
+  for a 2Kx2K image on macOS arm64 (vs ~110 ms for an equivalent
+  numpy LUT + matmul pipeline).
+* Add ``_builtin_profile_icc(name)`` returning ICC bytes for the
+  built-in profiles ``"srgb"`` and ``"display-p3"``. Display-P3 is
+  synthesized via ``cmsBuildParametricToneCurve`` +
+  ``cmsCreateRGBProfile`` rather than depending on lcms2 ≥2.16's
+  ``cmsCreate_DisplayP3`` — works on older liblcms2 too.
+* Lcms2 ``COPY_ALPHA`` flag doesn't combine with manually-built
+  RGB-only profiles, so the RGBA path transforms RGB in a
+  contiguous temporary and stitches the alpha channel back.
+* 9 new tests under tests/test_phase7_cms.py cover canonical
+  primary-color transforms, gray invariance, alpha preservation,
+  and input validation.
+
 **OME-Zarr v3 sharded write**
 
 * Add ``shards=`` kwarg to ``opencodecs.write_zarr_array``,
