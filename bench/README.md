@@ -30,10 +30,10 @@ architecture because compilers autovectorise to different widths
 (NEON 128b on arm64, SSE2 128b / AVX2 256b on x86_64). The committed
 baselines were captured 2026-05-17 on:
 
-| machine    | architecture | system                       |
-|------------|--------------|------------------------------|
-| M1 Ultra   | arm64        | macOS 15.5, clang from Xcode |
-| the linux x86_64 host | x86_64     | Ubuntu, gcc 13               |
+| machine            | architecture | system                       |
+|--------------------|--------------|------------------------------|
+| M1 Ultra           | arm64        | macOS 15.5, clang from Xcode |
+| Threadripper-class | x86_64       | Ubuntu, gcc 13               |
 
 `--check` compares the current run to the baseline keyed by
 `platform.machine()` and fails if any encode-or-decode ratio drifts
@@ -71,11 +71,11 @@ After an intentional perf change:
 
 ```bash
 # bench locally on each machine you care about
-python bench/bench_codecs.py --update-baseline       # arm64
-ssh the linux x86_64 host "...python bench/bench_codecs.py --update-baseline"  # x86_64
+python bench/bench_codecs.py --update-baseline                          # arm64
+ssh $OPENCODECS_BENCH_HOST "python bench/bench_codecs.py --update-baseline"  # x86_64
 
-# pull the the linux x86_64 host baseline back
-scp the linux x86_64 host:.../bench/perf_baseline.x86_64.json bench/
+# pull the x86_64 baseline back
+scp $OPENCODECS_BENCH_HOST:.../bench/perf_baseline.x86_64.json bench/
 
 # commit both .json files together
 git add bench/perf_baseline.{arm64,x86_64}.json
@@ -101,7 +101,7 @@ git commit -m "perf: record new setpoints after <change>"
   * `jpeg2k/kodak_photo` on x86_64 is 1.8× slower for the same
     underlying reason — different default precincts / progression.
 
-* **The the linux x86_64 host x86_64 baseline in this repo was captured against
+* **The Threadripper x86_64 baseline in this repo was captured against
   an outdated pip-installed `opencodecs`** that masked the source-tree
   rebuild via `site-packages` precedence. A fresh re-bench needs:
   `python setup.py build_ext --inplace && pip install -e .

@@ -198,7 +198,11 @@ def test_czi_as_rgb_helper_bgr_pixel_types():
 
 
 import os
-_REAL_BGR_CZI = "</NAS>/[redacted_dataset_b]/[redacted_scan_b].czi"
+# Set OPENCODECS_TEST_BGR_CZI to point at a real BGR24 sub-block CZI to
+# enable this test. Skipped when not set (covered fixture below). Kept
+# out of the tracked path so private data layouts don't leak into the
+# repo.
+_REAL_BGR_CZI = os.environ.get("OPENCODECS_TEST_BGR_CZI", "")
 
 
 @pytest.mark.skipif(

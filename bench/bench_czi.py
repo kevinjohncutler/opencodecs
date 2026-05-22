@@ -100,13 +100,14 @@ def bench_path(label: str, path: str, *, drop_cache: bool):
 
 
 def main() -> None:
-    fp_nas = (
-        "</NAS>/[redacted_dataset_a]/"
-        "[redacted_scan_a]_"
-        "[redacted_scan_a_suffix].czi"
-    )
-    if not Path(fp_nas).is_file():
-        print(f"NAS file not found: {fp_nas}")
+    # Set OPENCODECS_BENCH_CZI to a CZI file on network storage for
+    # the NAS vs local-disk comparison.
+    fp_nas = os.environ.get("OPENCODECS_BENCH_CZI", "")
+    if not fp_nas or not Path(fp_nas).is_file():
+        print(
+            "set OPENCODECS_BENCH_CZI to a CZI file on a NAS mount to "
+            "run this benchmark; got " + repr(fp_nas)
+        )
         return
 
     # Copy NAS file to local /tmp for warm-disk comparison.

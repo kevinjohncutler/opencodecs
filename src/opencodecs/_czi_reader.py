@@ -200,9 +200,8 @@ class CziReader(Reader):
     _META_MAGIC = b"ZISRAWMETADATA"
     _SUBBLOCK_MAGIC = b"ZISRAWSUBBLOCK"
 
-    # Same XML-entity fixups *** applies. CZI metadata is sometimes
-    # double-escaped in older files (Zen wrote ``&amp;lt;`` instead of
-    # the literal ``<``).
+    # XML-entity fixups. CZI metadata is sometimes double-escaped in
+    # older files (Zen wrote ``&amp;lt;`` instead of the literal ``<``).
     _ENTITY_FIXUPS = (
         ("&lt;", "<"),
         ("&gt;", ">"),
@@ -624,8 +623,8 @@ class CziReader(Reader):
                 self._metadata_bytes_cache = b""
             else:
                 # mmap.__getitem__ on a slice returns a fresh bytes; we
-                # cache it so downstream Cython parsers (e.g. ***'s
-                # metadata_summary) see the same object on repeat calls.
+                # cache it so downstream parsers see the same object on
+                # repeat calls.
                 self._metadata_bytes_cache = self._mmap[
                     self._meta_xml_off:
                     self._meta_xml_off + self._meta_xml_size
@@ -638,8 +637,8 @@ class CziReader(Reader):
 
         Lazily decoded from ``metadata_bytes`` and cached. Use
         :attr:`metadata_bytes` instead when handing the payload to a
-        bytes-consuming parser (e.g. ***'s Cython modules) — that
-        avoids a wasted decode + re-encode round trip.
+        bytes-consuming Cython parser — that avoids a wasted decode +
+        re-encode round trip.
         """
         if self._metadata_xml_cache is None:
             text = self.metadata_bytes.decode("utf-8", errors="replace")

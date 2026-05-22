@@ -421,13 +421,9 @@ def test_hdf5_reader(tmp_path) -> None:
 # ---------------------------------------------------------------------------
 
 
-# Uses a real lab CZI; skip when the NAS isn't mounted.
+# Set OPENCODECS_TEST_LAB_CZI to a real lab CZI to enable parity check.
 import os.path
-_LAB_CZI = (
-    "</NAS>/[redacted_dataset_a]/"
-    "[redacted_scan_a]_"
-    "[redacted_scan_a_suffix].czi"
-)
+_LAB_CZI = os.environ.get("OPENCODECS_TEST_LAB_CZI", "")
 
 
 @pytest.mark.skipif(

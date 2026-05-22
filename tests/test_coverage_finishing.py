@@ -66,11 +66,7 @@ def test_zarr_jxlcodec_repr_with_color_includes_color():
 # ---------------------------------------------------------------------------
 
 
-_LAB_CZI = (
-    "</NAS>/[redacted_dataset_a]/"
-    "[redacted_scan_a]_"
-    "[redacted_scan_a_suffix].czi"
-)
+_LAB_CZI = os.environ.get("OPENCODECS_TEST_LAB_CZI", "")
 
 
 @pytest.mark.skipif(not os.path.isfile(_LAB_CZI), reason="lab CZI not mounted")

@@ -87,8 +87,8 @@ per-user cache:
 
 Install path is **off the source tree** by design: when the repo lives
 on a network mount, macOS Sequoia Gatekeeper blocks fresh dlopens of
-.dylib files there. The same shadow-cache pattern as `edt`, `a sibling project`,
-and `***`.
+.dylib files there. Same shadow-cache pattern several other
+network-mounted-source projects use.
 
 ```sh
 ./bench/build_libjxl.sh         # ~3 minutes
@@ -144,9 +144,11 @@ Some tests require `imagecodecs` as a parity reference. Install with
 `pip install imagecodecs` if not already present. Tests for codecs
 whose system library is absent are auto-skipped.
 
-The CZI tests look for a specific lab file at
-`</NAS>/...` and skip if not mounted. They're for in-house
-verification only and don't fail external installs.
+A handful of CZI tests look at a real lab file via the
+``OPENCODECS_TEST_LAB_CZI`` / ``OPENCODECS_TEST_BGR_CZI`` /
+``OPENCODECS_TEST_PYRAMID_CZI`` env vars and skip when those aren't
+set. They're for in-house verification only and don't fail external
+installs.
 
 ## Platform notes
 
@@ -156,7 +158,8 @@ Newly-built `.so` files on SMB-mounted volumes trip the "Apple could
 not verify" Gatekeeper dialog on first dlopen. opencodecs ships a
 shadow-cache loader (`opencodecs/codecs/__init__.py:_load_extension`)
 that copies the .so to `~/Library/Caches/opencodecs/lib/` before
-loading. Same pattern *** and edt use. Nothing to configure.
+loading. Standard workaround for the SMB+Sequoia interaction;
+nothing to configure on the user side.
 
 ### Linux x86_64 + multilib include dirs
 
@@ -202,7 +205,7 @@ Set-Location C:\Users\you\opencodecs
 ```
 
 To re-sync the source from a NAS mount, use `robocopy` (PSDrive paths
-like `HiprDrive:\` aren't accepted by `robocopy` directly — use the
+like `MyDrive:\` aren't accepted by `robocopy` directly — use the
 underlying UNC):
 
 ```pwsh
@@ -263,7 +266,7 @@ When invoking PowerShell from another shell (e.g. via SSH), three
 patterns to know:
 
 + `powershell -File <path>` does NOT accept PowerShell-drive paths
-  (`HiprDrive:\foo.ps1`). It needs a real Windows path. Copy first.
+  (`MyDrive:\foo.ps1`). It needs a real Windows path. Copy first.
 + This VM has Windows PowerShell 5.1 (`powershell.exe`), not
   PowerShell 7 (`pwsh.exe`). The instructions in this file use
   `powershell` because it's universal.

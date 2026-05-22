@@ -550,7 +550,7 @@ if "opencodecs.codecs._eer" in sys.modules and "opencodecs.codecs._tiff" in sys.
 # Containers (multi-frame / chunked, parallel-friendly):
 #   _tiff     libtiff or own     own parser is preferable for chunk-parallel
 #                                tile decode via BackgroundChunkReader
-#   _czi      Zeiss CZI parser   port from ***.io.czi (parallel pread)
+#   _czi      Zeiss CZI parser   native parallel-pread implementation
 #   _hdf5     h5py wrapper       Reader interface adapting h5py.Dataset
 #   _zarr_v3  BytesBytesCodec    native zarr v3 codec wrapping JxlCodec
 #

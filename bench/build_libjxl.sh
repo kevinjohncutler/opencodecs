@@ -26,9 +26,10 @@ REPO=$(cd "$HERE/.." && pwd)
 VENDOR="$REPO/vendor"
 
 # Install location for the built libjxl. Defaults to a per-user cache OFF
-# the source tree — this is the same "shadow to local disk" pattern that
-# edt / a sibling project / *** use for their .so files: when the source lives on
-# a network mount (smbfs / nfs), macOS Gatekeeper queues a notarization
+# the source tree — same "shadow to local disk" pattern that other
+# network-mounted-source projects use for their .so files: when the
+# source lives on a network mount (smbfs / nfs), macOS Gatekeeper
+# queues a notarization
 # check on every fresh dlopen and blocks the load. Installing libjxl to a
 # stable local-disk path lets dyld load it without prompting and keeps
 # the install persistent across rebuilds (unlike $TMPDIR).

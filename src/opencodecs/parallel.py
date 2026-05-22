@@ -10,7 +10,7 @@ parallel I/O are:
     ``POSIX_FADV_DONTNEED`` (Linux) bypasses the kernel page cache so
     benchmarks measure the real network read, not a warm-cache replay.
 
-Patterns ported from ``***.io.czi`` / ``***.io.npy``.
+Patterns ported from earlier in-house parallel-I/O work.
 """
 
 from __future__ import annotations

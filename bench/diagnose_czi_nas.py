@@ -119,13 +119,15 @@ def time_decode_from_bytes(path: str, n_workers: int) -> np.ndarray:
 
 
 def main() -> None:
-    fp_nas = (
-        "</NAS>/[redacted_dataset_a]/"
-        "[redacted_scan_a]_"
-        "[redacted_scan_a_suffix].czi"
-    )
-    if not Path(fp_nas).is_file():
-        print(f"NAS file not found: {fp_nas}")
+    import os
+    # Set OPENCODECS_BENCH_CZI to the absolute path of a lab CZI on
+    # network storage you want to diagnose.
+    fp_nas = os.environ.get("OPENCODECS_BENCH_CZI", "")
+    if not fp_nas or not Path(fp_nas).is_file():
+        print(
+            "Set OPENCODECS_BENCH_CZI to a lab CZI on a NAS mount to "
+            "run this diagnostic; got " + repr(fp_nas)
+        )
         return
 
     # warm caches

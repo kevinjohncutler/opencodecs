@@ -10,7 +10,9 @@ works, the per-file cost should be lower than the single-file number
 when reads are back-to-back.
 
 Compares opencodecs against czifile and (when available) aicspylibczi
-on a real glob of files from the HiprDrive archive.
+on a real glob of CZI files. Set ``OPENCODECS_BENCH_CZI_GLOB`` to a
+shell-glob pattern (e.g. ``/data/scans/*.czi``) selecting up to ~8
+typical-size files.
 """
 
 from __future__ import annotations
@@ -61,11 +63,16 @@ def _stable_pipeline(read_fn, files, n_passes: int = 3):
 
 
 def main() -> None:
-    candidates = sorted(
-        glob("</NAS>/[redacted_dataset_a]/*.czi")
-    )[:8]
+    pattern = os.environ.get("OPENCODECS_BENCH_CZI_GLOB", "")
+    if not pattern:
+        print(
+            "set OPENCODECS_BENCH_CZI_GLOB to a glob of typical-size "
+            "CZI files (e.g. /data/scans/*.czi) to run this benchmark"
+        )
+        return
+    candidates = sorted(glob(pattern))[:8]
     if not candidates:
-        print("no CZI files found at </NAS>/2024_02_02_*/")
+        print(f"no CZI files matched glob {pattern!r}")
         return
 
     total_bytes = sum(os.path.getsize(f) for f in candidates)

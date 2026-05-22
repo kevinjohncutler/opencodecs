@@ -7,8 +7,7 @@ Each native codec is one ``.pyx`` extension built into ``opencodecs/codecs/``
      tag; multiple platform-tagged ``.so`` files can coexist on a NAS).
   2. If the source is on a network mount (smbfs / nfs / afpfs) — which
      macOS Sequoia handles badly with dyld signature checks — shadow-copy
-     the ``.so`` to a per-user cache and ``dlopen`` from there. Same
-     pattern used by ``edt`` / ``a sibling project`` / ``***``.
+     the ``.so`` to a per-user cache and ``dlopen`` from there.
   3. Add the loaded module to ``sys.modules`` under the FQN so subsequent
      ``from opencodecs.codecs._foo import ...`` works.
 

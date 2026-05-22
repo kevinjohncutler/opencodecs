@@ -234,11 +234,10 @@ def test_compression_accepts_numpy_uint8(fmt):
 # ---------------------------------------------------------------------------
 
 
-_LAB_CZI = (
-    "</NAS>/[redacted_dataset_a]/"
-    "[redacted_scan_a]_"
-    "[redacted_scan_a_suffix].czi"
-)
+# Set OPENCODECS_TEST_LAB_CZI to a real multi-FOV lab CZI to enable the
+# edge-case tests below. Kept private to avoid embedding dataset paths
+# in tracked source.
+_LAB_CZI = os.environ.get("OPENCODECS_TEST_LAB_CZI", "")
 
 
 @pytest.mark.skipif(

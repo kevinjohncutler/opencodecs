@@ -319,9 +319,11 @@ def test_pyramid_fixture_validated_by_czifile(tmp_path):
         assert ours.pyramid_type == ptype
 
 
-_REAL_PYRAMID_CZI = (
-    "</NAS>/[redacted_dataset_b]/[redacted_scan_b].czi"
-)
+import os
+# Set OPENCODECS_TEST_PYRAMID_CZI to enable the lab-CZI comparison test.
+# Skipped when not set; the public OME pyramid fixture below covers the
+# main path on machines without private datasets.
+_REAL_PYRAMID_CZI = os.environ.get("OPENCODECS_TEST_PYRAMID_CZI", "")
 
 # OME-curated, publicly downloadable pyramid CZI:
 # https://downloads.openmicroscopy.org/images/Zeiss-CZI/zenodo-10577186/

@@ -199,11 +199,8 @@ def test_bmp_decode_paletted_rgb_palette():
 # ===========================================================================
 
 
-_LAB_CZI = (
-    "</NAS>/[redacted_dataset_a]/"
-    "[redacted_scan_a]_"
-    "[redacted_scan_a_suffix].czi"
-)
+# Set OPENCODECS_TEST_LAB_CZI to a real lab CZI to exercise these tests.
+_LAB_CZI = os.environ.get("OPENCODECS_TEST_LAB_CZI", "")
 
 
 pytestmark_czi = pytest.mark.skipif(
