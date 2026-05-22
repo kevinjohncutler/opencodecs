@@ -143,16 +143,17 @@ jobs:
           echo "OCBUILD_CONDA_PREFIX=${PREFIX_FWD}" >> "$GITHUB_ENV"
           echo "${CONDA_PREFIX}\\Library\\bin" >> "$GITHUB_PATH"
 
-      - name: Build SZ3 + pcodec from source (Windows)
-        if: runner.os == 'Windows'
-        shell: bash -el {0}
-        run: |
-          # Neither codec is on conda-forge. SZ3 is C++/CMake, pcodec is
-          # a Rust cdylib. Both go straight into $CONDA_PREFIX/Library so
-          # delvewheel finds them automatically (Library/bin is already
-          # on PATH via the prior step).
-          export OPENCODECS_LIBS_PREFIX="${CONDA_PREFIX}/Library"
-          bash bench/build_codec_libs.sh --only=SZ3,pcodec
+      # ----- SZ3 + pcodec source-build on Windows: DISABLED for v0.1.1 -----
+      # bench/build_codec_libs.sh produces gnu-style import libs (libSZ3c.dll.a)
+      # because the conda env's PATH puts gcc.exe ahead of cl.exe, so CMake
+      # auto-picks GCC. MSVC link.exe (used by cibuildwheel for the actual
+      # wheel) then can't consume the .dll.a. The fix is a CMake-generator
+      # override forcing MSVC on Windows — non-trivial, scheduled for a
+      # follow-up release. Windows wheels for v0.1.1 ship the same codec
+      # set as v0.1.0 did: no _sz3, _pcodec, _sperr, _brunsli (setup.py
+      # _REQUIRED_HEADERS auto-skips when SZ3c/sz3c.h + cpcodec.h aren't
+      # present in the conda env). macOS + Linux are unaffected and ship
+      # the full set.
 
       # ---------- cibuildwheel ----------
       - name: Build wheels
