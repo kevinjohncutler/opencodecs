@@ -2,40 +2,64 @@
 
 # opencodecs
 
+[![PyPI](https://img.shields.io/pypi/v/opencodecs.svg)](https://pypi.org/project/opencodecs/)
 [![Tests](https://github.com/kevinjohncutler/opencodecs/actions/workflows/tests.yml/badge.svg)](https://github.com/kevinjohncutler/opencodecs/actions/workflows/tests.yml)
 [![Build wheels](https://github.com/kevinjohncutler/opencodecs/actions/workflows/build_wheels.yml/badge.svg)](https://github.com/kevinjohncutler/opencodecs/actions/workflows/build_wheels.yml)
 
-Native, parallel-decode codecs for scientific imaging. One unified Codec
-/ Reader / Writer API across compression streams, single images,
-multi-frame stacks, and chunked containers.
+Native, parallel, cloud-aware codecs for scientific imaging. One
+unified Codec / Reader / Writer API across compression streams,
+single images, multi-frame stacks, and chunked containers — with
+HTTP range-fetch and per-chunk parallelism wired in at the bottom
+of the stack, not bolted on.
 
-Built for fast modern storage (NVMe, 10 G NAS) where the bottleneck is
-codec dispatch and per-tile parallelism, not raw I/O bandwidth. Native
-implementations of every codec — no runtime delegation to
-[imagecodecs](https://github.com/cgohlke/imagecodecs) — though we use
-its excellent test suite as a parity reference.
+Built for fast modern storage (NVMe, 10 G NAS, S3) where the
+bottleneck is codec dispatch and per-tile parallelism, not raw I/O
+bandwidth. Native implementations of every codec — no runtime
+delegation to [imagecodecs](https://github.com/cgohlke/imagecodecs) —
+though we use its excellent test suite as a parity reference.
+
+```sh
+pip install opencodecs
+```
 
 ```python
 import opencodecs as oc
 
+# 1. Look at any scientific image file
 arr = oc.read("scan.czi")              # auto-detect by extension
 arr = oc.read("photo.jxl")
 arr = oc.read(blob)                    # auto-detect by magic bytes
 
+# 2. Write with the right codec for the data
 oc.write("out.jxl", arr, lossless=True)
 oc.write("out.zst", b"...payload...", level=10)
 
-# Streaming reader for multi-frame / chunked formats
+# 3. Stream multi-frame / chunked formats
 with oc.get_codec("czi").open(path) as r:
     print(r.shape, r.dtype, r.n_frames)
     for tile in r:                     # iter_frames
         ...
     tile5 = r[5]                       # random access
 
+# 4. Fetch tiles of a remote pyramidal TIFF over HTTPS by range request
+with oc.open_pyramid("https://example.com/slide.svs") as p:
+    region = p.read_region(level=2, y=(1024, 2048), x=(1024, 2048))
+    # → 2-3 HTTP Range requests, not a full slide download
+
 # Discovery
 oc.list_codecs()                       # capability table
 oc.has_codec("avif")
 ```
+
+## Why opencodecs
+
+| Need | What you get |
+|---|---|
+| **Decode regions of cloud-hosted TIFF/Zarr/HDF5 without downloading the whole file** | Native `HTTPDataSource` with range-coalescing + adaptive read-ahead, wired into the TIFF/NDTiff/HDF5/Zarr/FITS pyramid readers |
+| **Per-chunk parallel decode of CZI/OME-TIFF/NDTiff stacks** | Built-in `ThreadPoolExecutor` orchestration with nogil-released codec calls; 3–10× over single-threaded reference readers on large stacks |
+| **Modern codec coverage (JPEG XL, AVIF, HEIF, JPEG-LS, Brunsli, Ultra HDR, OME-Zarr v3 sharded)** | All shipped, all with native bindings — no `pip install ten-other-packages` |
+| **Tier-1 scientific compressors (LERC, ZFP, SZ3, SPERR, pcodec, bitshuffle, blosc2, libaec)** | All shipped, source-built with `-O3 + LTO + hidden-visibility` for Pareto wins over distro builds |
+| **Lossless drop-in replacement for `imagecodecs`** | `tifffile_patch` opt-in shim reroutes tifffile's codec dispatch through opencodecs without changing your tifffile code |
 
 ## Codec capability matrix
 
@@ -339,61 +363,125 @@ reader.dataset_names            # all numeric datasets in the file
 reader.select(name)             # switch to a different dataset
 ```
 
+## Streaming-reader examples
+
+### 1. Fetch a region of a remote Aperio whole-slide TIFF
+
+```python
+import opencodecs as oc
+
+# Pyramidal SVS (Aperio) hosted on S3 / any HTTPS endpoint with Range support.
+with oc.open_pyramid("https://example.com/slide.svs") as p:
+    print(p.levels)               # [(80000, 60000, 3), (40000, 30000, 3), ...]
+    region = p.read_region(level=2, y=(1024, 3072), x=(2048, 4096))
+    # Total HTTP traffic: ~6 Range requests covering only the tiles
+    # that intersect this 2048×2048 bbox — typically 200 KB–2 MB,
+    # not the 4 GB whole slide.
+```
+
+The pyramid reader auto-detects the best level for the requested
+region, fetches only the intersecting TIFF tiles via HTTP Range,
+and assembles the output in-memory. Works the same on local files,
+NFS, SMB, S3, or any range-capable HTTP server.
+
+### 2. Convert a multi-level pyramid to OME-Zarr v3 sharded
+
+```python
+import opencodecs as oc
+
+with oc.open_pyramid("input.ome.tiff") as p:
+    levels = [p.read_region(level=i) for i in range(len(p.levels))]
+
+oc.write_omezarr_pyramid(
+    "output.zarr",
+    levels,
+    chunks=(512, 512),
+    shards=(2048, 2048),         # 16 chunks per shard, one file each
+    compressor="zstd",
+    zarr_format=3,
+)
+# 1 file per shard on disk instead of 1 file per chunk; per-chunk
+# random access still works via Range fetches into the shard.
+```
+
+For data going to S3, sharded Zarr v3 cuts your `PUT` and `LIST`
+costs by 1–2 orders of magnitude vs unsharded chunks while
+preserving per-chunk random-access via HTTP Range — the reader
+above understands the shard index automatically.
+
+### 3. Fast JPEG XL thumbnails (native progressive decode)
+
+```python
+import opencodecs.jxl as jxl
+
+# downsample=8 uses libjxl's native progressive decoder — stops at
+# the DC pass without reconstructing full-resolution pixels.
+thumb = jxl.read("scan.jxl", downsample=8, subsample="center")
+# 4Kx4K input → 512x512 ndarray in ~28 ms on macOS arm64
+# (vs ~40 ms for a full decode), positionally centroid-correct
+# so SVG / GL renderers don't get a ½-block shift.
+
+# For a partial JXL bitstream usable as a tiny browser-direct
+# thumbnail (works in Safari + modern Chrome):
+prefix = jxl.thumbnail_bytes("scan.jxl")
+# → ~85 KB out of a 3.5 MB source for a 4Kx4K image
+```
+
 ## Install
 
-See [INSTALL.md](INSTALL.md) for system dependencies per platform and
-build instructions, and [docs/publishing.md](docs/publishing.md) for
-the wheel-publishing pipeline (TestPyPI / PyPI via Trusted Publishing).
-Short version:
+```sh
+pip install opencodecs
+```
+
+Wheels are published for CPython 3.10–3.13 on macOS (arm64),
+Linux (x86_64 + aarch64), and Windows (amd64). Each wheel
+bundles libjxl, libavif, libheif, libwebp, libdeflate,
+c-blosc2, and friends — no system dependencies needed.
+
+For a source install, system development headers, or to build a
+tuned local libjxl, see [INSTALL.md](INSTALL.md). Wheel publishing
+runs through [docs/publishing.md](docs/publishing.md).
 
 ```sh
-# macOS
-brew install jpeg-turbo webp libavif libheif openjpeg libtiff hdf5 c-blosc2 \
-             charls openjph libdeflate zlib-ng-compat
-
-# Ubuntu / Debian
-sudo apt install -y libturbojpeg0-dev libwebp-dev libavif-dev libheif-dev \
-                    libopenjp2-7-dev libblosc2-dev libcharls-dev \
-                    liblz4-dev libspng-dev libtiff-dev libhdf5-dev \
-                    libdeflate-dev libopenjph-dev zlib1g-dev
-
-# Build
+# Source install — auto-detects system libs, source-builds libjxl
+git clone https://github.com/kevinjohncutler/opencodecs.git
 cd opencodecs
 pip install -e .
-# or
-python setup.py build_ext --inplace
 ```
 
 The build skips cleanly for any system library that's missing — useful
-extensions still build, missing ones print a one-line notice.
-
-libjxl 0.11.2 is vendored via `bench/build_libjxl.sh` (auto-builds + caches
-to `~/Library/Caches/opencodecs/libjxl/` on Mac, `~/.cache/opencodecs/libjxl/`
-on Linux). See INSTALL.md for the rationale (Homebrew/apt builds are
-0.5-0.7× slower than a tuned `-O3 + LTO` build).
+extensions still build, missing ones print a one-line notice. libjxl
+0.11.2 is auto-built from source via `bench/build_libjxl.sh` and
+cached under `~/Library/Caches/opencodecs/` (macOS) /
+`~/.cache/opencodecs/` (Linux). See INSTALL.md for the rationale
+(Homebrew/apt builds are 0.5-0.7× slower than a tuned `-O3 + LTO`
+build).
 
 ## Status
 
-- Core API stable; **1066 tests passing** (Mac M1 Ultra + Linux + Windows VM)
+- **v0.1.1** on PyPI (May 2026). Core API stable; **1066 tests passing**
+  on Mac M1 Ultra + Linux x86_64/aarch64 + Windows VM
 - Native readers + writers for the common scientific containers
-  (TIFF, BigTIFF, OME-TIFF, CZI, NDTiff, HDF5, JXL)
+  (TIFF, BigTIFF, OME-TIFF, CZI, NDTiff, HDF5, JXL, FITS,
+  OME-Zarr v2 + v3 sharded)
 - Cross-platform bench coverage: Mac arm64 (canonical), Windows 11 LTSC
-  (libvirt VM), Linux x86_64 (Threadripper)
+  (libvirt VM), Linux x86_64 (Threadripper-class)
 - Compression backend auto-detect (libdeflate → zlib-ng-compat → stdlib)
-- Cloud I/O primitives (`HTTPDataSource.read_many`, range coalescing,
-  HTTP/1.1 keep-alive) wired into TIFF / HDF5 / DICOMweb / CZI readers
+- Cloud I/O primitives (`HTTPDataSource` with covering-cache + adaptive
+  read-ahead) wired into TIFF / HDF5 / DICOMweb / CZI / FITS / Zarr v3
+  readers
 - `tifffile_patch` opt-in shim reroutes tifffile's codec dispatch through
   opencodecs for users who want only a partial swap
 
 Deferred work (see [`docs/TODO_DEFERRED.md`](docs/TODO_DEFERRED.md)):
 
-- SPERR (error-bounded lossy scientific compression) — CMake build needed
-- Brunsli (lossless JPEG transcoder) — source build needed; no brew formula
+- **Windows wheels currently miss `_sz3`, `_pcodec`, `_sperr`, `_brunsli`**
+  — toolchain mismatch (conda's bash picks GCC over MSVC for CMake);
+  v0.1.2 will restore them. macOS + Linux wheels have the full set.
 - CCITT Fax3/Fax4 encode — legacy fax; zero scientific users
 - JPEG-XR — abandoned format outside niche DICOM
 - libspng `filter_sum` SIMD — off the bench-tracked workload (`h2h_png_4mp_rgb`
   is at 1.14× already); filter-bound PNG-encode users could see another 2-3×
-- Wheels / PyPI release — install from source for now
 
 ## License
 
