@@ -240,7 +240,7 @@ autotools_build() {
 
 # ---- zlib ---------------------------------------------------------------
 build_zlib() {
-    local v="${VERSIONS_MAP[zlib]}"
+    local v="$(get_version zlib)"
     is_built zlib "$v" && { echo "  zlib $v already built"; return; }
     echo "==> zlib $v"
     local src
@@ -257,7 +257,7 @@ build_zlib() {
 # dylib install_name to `@rpath/` so the loader can resolve it after
 # we copy the .so off the SMB mount.
 build_zstd() {
-    local v="${VERSIONS_MAP[zstd]}"
+    local v="$(get_version zstd)"
     is_built zstd "$v" && { echo "  zstd $v already built"; return; }
     echo "==> zstd $v"
     local src
@@ -284,7 +284,7 @@ build_zstd() {
 
 # ---- lz4 ----------------------------------------------------------------
 build_lz4() {
-    local v="${VERSIONS_MAP[lz4]}"
+    local v="$(get_version lz4)"
     is_built lz4 "$v" && { echo "  lz4 $v already built"; return; }
     echo "==> lz4 $v"
     local src
@@ -302,7 +302,7 @@ build_giflib() {
     # Homebrew is API-compatible but Homebrew builds with -O2 portable
     # flags; we want -O3 + LTO + hidden-visibility on the same source
     # to close the encode gap vs imagecodecs.
-    local v="${VERSIONS_MAP[giflib]}"
+    local v="$(get_version giflib)"
     is_built giflib "$v" && { echo "  giflib $v already built"; return; }
     echo "==> giflib $v"
     local src
@@ -329,7 +329,7 @@ build_giflib() {
 }
 
 build_brotli() {
-    local v="${VERSIONS_MAP[brotli]}"
+    local v="$(get_version brotli)"
     is_built brotli "$v" && { echo "  brotli $v already built"; return; }
     echo "==> brotli $v"
     local src
@@ -361,7 +361,7 @@ build_brotli() {
 
 # ---- libdeflate ---------------------------------------------------------
 build_libdeflate() {
-    local v="${VERSIONS_MAP[libdeflate]}"
+    local v="$(get_version libdeflate)"
     is_built libdeflate "$v" && { echo "  libdeflate $v already built"; return; }
     echo "==> libdeflate $v"
     local src
@@ -372,7 +372,7 @@ build_libdeflate() {
 
 # ---- libpng (depends on zlib) ------------------------------------------
 build_libpng() {
-    local v="${VERSIONS_MAP[libpng]}"
+    local v="$(get_version libpng)"
     is_built libpng "$v" && { echo "  libpng $v already built"; return; }
     echo "==> libpng $v"
     local src
@@ -383,7 +383,7 @@ build_libpng() {
 
 # ---- libjpeg-turbo (TJv3 — required for opencodecs._jpeg) -------------
 build_libjpeg_turbo() {
-    local v="${VERSIONS_MAP[libjpeg-turbo]}"
+    local v="$(get_version libjpeg-turbo)"
     is_built libjpeg-turbo "$v" && { echo "  libjpeg-turbo $v already built"; return; }
     echo "==> libjpeg-turbo $v"
     if ! command -v nasm >/dev/null 2>&1 && ! command -v yasm >/dev/null 2>&1; then
@@ -397,7 +397,7 @@ build_libjpeg_turbo() {
 
 # ---- libwebp (depends on libpng, libjpeg) -------------------------------
 build_libwebp() {
-    local v="${VERSIONS_MAP[libwebp]}"
+    local v="$(get_version libwebp)"
     is_built libwebp "$v" && { echo "  libwebp $v already built"; return; }
     echo "==> libwebp $v"
     local src
@@ -411,7 +411,7 @@ build_libwebp() {
 
 # ---- openjpeg (jpeg2000) ------------------------------------------------
 build_openjpeg() {
-    local v="${VERSIONS_MAP[openjpeg]}"
+    local v="$(get_version openjpeg)"
     is_built openjpeg "$v" && { echo "  openjpeg $v already built"; return; }
     echo "==> openjpeg $v"
     local src
@@ -422,7 +422,7 @@ build_openjpeg() {
 
 # ---- c-blosc2 (depends on zstd, lz4) -----------------------------------
 build_c_blosc2() {
-    local v="${VERSIONS_MAP[c-blosc2]}"
+    local v="$(get_version c-blosc2)"
     is_built c-blosc2 "$v" && { echo "  c-blosc2 $v already built"; return; }
     echo "==> c-blosc2 $v"
     local src
@@ -441,7 +441,7 @@ build_c_blosc2() {
 
 # ---- libaom (slowest single build; AV1 encoder for libavif) ------------
 build_libaom() {
-    local v="${VERSIONS_MAP[libaom]}"
+    local v="$(get_version libaom)"
     [ "$ENABLE_AOM" = "1" ] || { echo "  libaom: ENABLE_AOM=0, skipping"; return; }
     is_built libaom "$v" && { echo "  libaom $v already built"; return; }
     echo "==> libaom $v (slow — ~3 min)"
@@ -454,7 +454,7 @@ build_libaom() {
 
 # ---- dav1d (AV1 decoder; faster than libaom decode) --------------------
 build_dav1d() {
-    local v="${VERSIONS_MAP[dav1d]}"
+    local v="$(get_version dav1d)"
     is_built dav1d "$v" && { echo "  dav1d $v already built"; return; }
     if ! command -v meson >/dev/null 2>&1; then
         echo "  dav1d: meson not found — skipping (libavif will use libaom decode)"
@@ -473,7 +473,7 @@ build_dav1d() {
 
 # ---- libavif (AV1 image; depends on libaom + dav1d) --------------------
 build_libavif() {
-    local v="${VERSIONS_MAP[libavif]}"
+    local v="$(get_version libavif)"
     is_built libavif "$v" && { echo "  libavif $v already built"; return; }
     echo "==> libavif $v"
     local src
@@ -490,7 +490,7 @@ build_libavif() {
 
 # ---- libde265 (HEVC decoder for libheif) -------------------------------
 build_libde265() {
-    local v="${VERSIONS_MAP[libde265]}"
+    local v="$(get_version libde265)"
     is_built libde265 "$v" && { echo "  libde265 $v already built"; return; }
     echo "==> libde265 $v"
     local src
@@ -501,7 +501,7 @@ build_libde265() {
 
 # ---- x265 (HEVC encoder for libheif — large C++ build) -----------------
 build_x265() {
-    local v="${VERSIONS_MAP[x265]}"
+    local v="$(get_version x265)"
     [ "$ENABLE_X265" = "1" ] || { echo "  x265: ENABLE_X265=0, skipping"; return; }
     is_built x265 "$v" && { echo "  x265 $v already built"; return; }
     echo "==> x265 $v (slow — ~2 min)"
@@ -513,7 +513,7 @@ build_x265() {
 
 # ---- libultrahdr (Google's gainmap JPEG; depends on libjpeg-turbo) ------
 build_libultrahdr() {
-    local v="${VERSIONS_MAP[libultrahdr]}"
+    local v="$(get_version libultrahdr)"
     is_built libultrahdr "$v" && { echo "  libultrahdr $v already built"; return; }
     echo "==> libultrahdr $v"
     local src
@@ -529,7 +529,7 @@ build_libultrahdr() {
 
 # ---- libheif (HEIC/HEIF; depends on x265 for encode, libde265 for decode) -
 build_libheif() {
-    local v="${VERSIONS_MAP[libheif]}"
+    local v="$(get_version libheif)"
     is_built libheif "$v" && { echo "  libheif $v already built"; return; }
     echo "==> libheif $v"
     local src
@@ -545,7 +545,7 @@ build_libheif() {
 
 # ---- libaec (CCSDS adaptive entropy coding) ----------------------------
 build_libaec() {
-    local v="${VERSIONS_MAP[libaec]}"
+    local v="$(get_version libaec)"
     is_built libaec "$v" && { echo "  libaec $v already built"; return; }
     echo "==> libaec $v"
     local src
@@ -558,7 +558,7 @@ build_libaec() {
 
 # ---- lerc (Esri Limited Error Raster Compression) ----------------------
 build_lerc() {
-    local v="${VERSIONS_MAP[lerc]}"
+    local v="$(get_version lerc)"
     is_built lerc "$v" && { echo "  lerc $v already built"; return; }
     echo "==> lerc $v"
     local src
@@ -566,7 +566,9 @@ build_lerc() {
     # Build with -O3 + LTO into a per-lib cache subdir the setup.py
     # probe (`_OC_USER_CACHE/lerc`) will pick up. Homebrew's libLerc
     # is built -O2 portable and benches 15% slower on decode.
-    local prev_prefix="$CMAKE_INSTALL_PREFIX"
+    # ``set -u`` is on at script scope, so source defaults for any
+    # var we may not have set yet.
+    local prev_prefix="${CMAKE_INSTALL_PREFIX:-}"
     local prev_cflags="${CMAKE_C_FLAGS_RELEASE_OVERRIDE:-}"
     local lerc_prefix
     if [ "$(uname)" = "Darwin" ]; then
@@ -592,7 +594,7 @@ build_lerc() {
 
 # ---- zfp (lossy float compression) -------------------------------------
 build_zfp() {
-    local v="${VERSIONS_MAP[zfp]}"
+    local v="$(get_version zfp)"
     is_built zfp "$v" && { echo "  zfp $v already built"; return; }
     echo "==> zfp $v"
     local src
@@ -603,7 +605,7 @@ build_zfp() {
 
 # ---- SZ3 (error-bounded lossy scientific) ------------------------------
 build_SZ3() {
-    local v="${VERSIONS_MAP[SZ3]}"
+    local v="$(get_version SZ3)"
     is_built SZ3 "$v" && { echo "  SZ3 $v already built"; return; }
     echo "==> SZ3 $v"
     local src
@@ -616,7 +618,7 @@ build_SZ3() {
 
 # ---- SPERR (wavelet-based scientific compressor) ----------------------
 build_SPERR() {
-    local v="${VERSIONS_MAP[SPERR]}"
+    local v="$(get_version SPERR)"
     is_built SPERR "$v" && { echo "  SPERR $v already built"; return; }
     echo "==> SPERR $v"
     local src
@@ -628,7 +630,7 @@ build_SPERR() {
 
 # ---- CharLS (JPEG-LS reference impl) ----------------------------------
 build_CharLS() {
-    local v="${VERSIONS_MAP[CharLS]}"
+    local v="$(get_version CharLS)"
     is_built CharLS "$v" && { echo "  CharLS $v already built"; return; }
     echo "==> CharLS $v"
     local src
@@ -649,7 +651,7 @@ build_CharLS() {
 # Brunsli's top-level CMake pulls in vintage googletest; modern CMake
 # refuses it without an explicit policy floor.
 build_brunsli() {
-    local v="${VERSIONS_MAP[brunsli]}"
+    local v="$(get_version brunsli)"
     is_built brunsli "$v" && { echo "  brunsli $v already built"; return; }
     echo "==> brunsli $v"
     local src
@@ -666,7 +668,7 @@ build_brunsli() {
 
 # ---- pcodec (Rust cdylib via cargo) ------------------------------------
 build_pcodec() {
-    local v="${VERSIONS_MAP[pcodec]}"
+    local v="$(get_version pcodec)"
     is_built pcodec "$v" && { echo "  pcodec $v already built"; return; }
     if ! command -v cargo >/dev/null 2>&1; then
         echo "  pcodec: cargo not found — skipping (codec auto-disables)"
@@ -680,19 +682,33 @@ build_pcodec() {
     install -d "$PREFIX/include" "$PREFIX/lib"
     cp "$src/pco_c/include/cpcodec.h" "$src/pco_c/include/cpcodec_generated.h" \
         "$PREFIX/include/"
-    if [ "$(uname)" = "Darwin" ]; then
-        cp "$src/target/release/libcpcodec.dylib" "$PREFIX/lib/"
-        # Install_name fix so RPATH-based loading works:
-        install_name_tool -id "@rpath/libcpcodec.dylib" "$PREFIX/lib/libcpcodec.dylib"
-    else
-        cp "$src/target/release/libcpcodec.so" "$PREFIX/lib/"
-    fi
+    case "$(uname -s)" in
+        Darwin)
+            cp "$src/target/release/libcpcodec.dylib" "$PREFIX/lib/"
+            # Install_name fix so RPATH-based loading works:
+            install_name_tool -id "@rpath/libcpcodec.dylib" \
+                "$PREFIX/lib/libcpcodec.dylib"
+            ;;
+        MINGW*|MSYS*|CYGWIN*)
+            # Windows: cargo produces ``cpcodec.dll`` (+ a ``.dll.lib``
+            # import library) in ``target/release/``. Install both so
+            # MSVC link can resolve cpcodec symbols at build time and
+            # the loader finds the dll at runtime.
+            install -d "$PREFIX/bin"
+            cp "$src/target/release/cpcodec.dll" "$PREFIX/bin/"
+            cp "$src/target/release/cpcodec.dll.lib" "$PREFIX/lib/" \
+                2>/dev/null || true
+            ;;
+        *)
+            cp "$src/target/release/libcpcodec.so" "$PREFIX/lib/"
+            ;;
+    esac
     mark_built pcodec "$v"
 }
 
 # ---- libjxl (delegate to dedicated script for parity) ------------------
 build_libjxl() {
-    local v="${VERSIONS_MAP[libjxl]}"
+    local v="$(get_version libjxl)"
     is_built libjxl "$v" && { echo "  libjxl $v already built"; return; }
     echo "==> libjxl $v (delegating to bench/build_libjxl.sh)"
     LIBJXL_VERSION="$v" \
@@ -703,15 +719,23 @@ build_libjxl() {
 }
 
 # ----------------------------------------------------------------------
-# Main: parse VERSIONS into a map, run builds in dependency order
+# Main: version lookup helper, run builds in dependency order
 # ----------------------------------------------------------------------
 
-declare -A VERSIONS_MAP
-for line in "${VERSIONS[@]}"; do
-    name="${line%% *}"
-    version="${line##* }"
-    VERSIONS_MAP[$name]="$version"
-done
+# Linear scan over VERSIONS; bash-3.2-compatible (macOS ships /bin/bash
+# 3.2 which lacks ``declare -A``). 20 entries — the scan is unmeasurably
+# fast next to a 200 MB cmake build.
+get_version() {
+    local target="$1" line
+    for line in "${VERSIONS[@]}"; do
+        if [ "${line%% *}" = "$target" ]; then
+            echo "${line##* }"
+            return 0
+        fi
+    done
+    echo "(unknown codec: $target)" >&2
+    return 1
+}
 
 echo "================================================================"
 echo "opencodecs codec library builder"
