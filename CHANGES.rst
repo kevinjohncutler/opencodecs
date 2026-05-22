@@ -10,6 +10,33 @@ Versions follow the same ``YYYY.M.D`` cadence as upstream when we
 publish; the entries below cluster work by date rather than by
 release because most of it has shipped continuously to ``main``.
 
+0.1.2 (2026-05-22)
+------------------
+
+**Windows wheels get the Tier 1 scientific compressors back**
+
+* Restored ``_sz3``, ``_pcodec``, ``_sperr``, ``_brunsli`` on Windows.
+  Root cause was conda's bash putting ``gcc.exe`` ahead of ``cl.exe``
+  on PATH; CMake then produced gnu-format ``libSZ3c.dll.a`` import
+  libraries that cibuildwheel's MSVC link.exe couldn't consume.
+* Workflow now uses ``ilammy/msvc-dev-cmd`` to source vcvars64.bat
+  before the SZ3+pcodec source-build step; CMake's auto-detect picks
+  cl.exe and produces MSVC-format ``SZ3c.lib`` / ``cpcodec.lib``.
+* Validated end-to-end on a Windows 11 VM (clean SZ3 install with
+  Ninja + cl.exe + vcvars-sourced env).
+* Windows wheels now match the macOS / Linux codec set.
+
+**README rewrite for the released project**
+
+* ``pip install opencodecs`` + PyPI badge at the top.
+* New "Why opencodecs" table mapping common scientific-imaging needs
+  to concrete shipping capabilities.
+* New "Streaming-reader examples" section with 3 copy-paste recipes:
+  HTTP region-fetch from a remote Aperio TIFF, TIFF → OME-Zarr v3
+  sharded conversion, and the native progressive JXL thumbnail path.
+* Status / Install sections updated for the 0.1.x cadence.
+
+
 0.1.1 (2026-05-21)
 ------------------
 

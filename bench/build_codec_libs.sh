@@ -176,6 +176,15 @@ CMAKE_COMMON=(
     -DCMAKE_POLICY_VERSION_MINIMUM=3.5
 )
 [ "$USE_LTO" = "1" ] && CMAKE_COMMON+=(-DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON)
+# Windows note: this script picks the Ninja generator (preferred) or
+# falls back to Make. On Windows, CMake's compiler auto-detection
+# scans PATH — so the **caller must source vcvars64.bat first** to
+# put cl.exe + the MSVC INCLUDE/LIB env in scope. Otherwise CMake
+# picks whichever compiler is first on PATH (often conda's gcc),
+# producing gnu-format import libraries that MSVC link.exe can't
+# consume from cibuildwheel later. The Visual Studio generator
+# self-discovers MSVC without vcvars but trips SZ3's multi-config
+# install bug; Ninja-with-vcvars is the working combination.
 if command -v ninja >/dev/null 2>&1; then
     CMAKE_GEN=(-G Ninja)
     BUILD_TOOL=(ninja -j"$JOBS")
