@@ -690,14 +690,27 @@ build_pcodec() {
                 "$PREFIX/lib/libcpcodec.dylib"
             ;;
         MINGW*|MSYS*|CYGWIN*)
-            # Windows: cargo produces ``cpcodec.dll`` (+ a ``.dll.lib``
-            # import library) in ``target/release/``. Install both so
-            # MSVC link can resolve cpcodec symbols at build time and
-            # the loader finds the dll at runtime.
+            # Windows: cargo emits ``cpcodec.dll`` in
+            # ``target/release/`` plus an MSVC import library — named
+            # ``cpcodec.dll.lib`` on modern rust (>= 1.61), or just
+            # ``cpcodec.lib`` on older builds. setup.py links via
+            # ``-lcpcodec`` so MSVC's link.exe searches for
+            # ``cpcodec.lib`` in ``$PREFIX/lib/`` — strip the
+            # ``.dll`` infix when copying. Install the dll itself
+            # to ``$PREFIX/bin/`` for delvewheel to scoop into the
+            # wheel.
             install -d "$PREFIX/bin"
             cp "$src/target/release/cpcodec.dll" "$PREFIX/bin/"
-            cp "$src/target/release/cpcodec.dll.lib" "$PREFIX/lib/" \
-                2>/dev/null || true
+            if [ -f "$src/target/release/cpcodec.dll.lib" ]; then
+                cp "$src/target/release/cpcodec.dll.lib" \
+                    "$PREFIX/lib/cpcodec.lib"
+            elif [ -f "$src/target/release/cpcodec.lib" ]; then
+                cp "$src/target/release/cpcodec.lib" "$PREFIX/lib/"
+            else
+                echo "  pcodec: no MSVC import lib found in target/release/" >&2
+                ls -la "$src/target/release/" >&2 || true
+                return 1
+            fi
             ;;
         *)
             cp "$src/target/release/libcpcodec.so" "$PREFIX/lib/"
