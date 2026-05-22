@@ -10,8 +10,11 @@ Versions follow the same ``YYYY.M.D`` cadence as upstream when we
 publish; the entries below cluster work by date rather than by
 release because most of it has shipped continuously to ``main``.
 
-Unreleased
-----------
+0.1.1 (2026-05-21)
+------------------
+
+Supersedes 0.1.0 (yanked). Same codec coverage as 0.1.0 plus the
+work since, with source-comment metadata scrubbed.
 
 **CMS — sRGB ↔ Display-P3 fast converter**
 
