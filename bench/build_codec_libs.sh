@@ -686,6 +686,25 @@ build_pcodec() {
     echo "==> pcodec $v (cargo build)"
     local src
     src=$(fetch_tar pcodec "$v" "https://github.com/pcodec/pcodec/archive/refs/tags/v$v.tar.gz")
+    # On Windows, rustc resolves ``link.exe`` via PATH and the GitHub
+    # runner's PATH puts ``C:\Program Files\Git\usr\bin`` ahead of MSVC's
+    # bin dir. That folder ships GNU coreutils' ``link.exe`` (a 2-arg
+    # symlink utility), which rejects rustc's command line with
+    # "/usr/bin/link: extra operand ...". Pin the linker explicitly to
+    # MSVC's link.exe via vcvars's $VCToolsInstallDir so cargo doesn't
+    # PATH-search for it.
+    case "$(uname -s)" in
+        MINGW*|MSYS*|CYGWIN*)
+            if [ -n "$VCToolsInstallDir" ]; then
+                export CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=$(
+                    cygpath -m "$VCToolsInstallDir/bin/Hostx64/x64/link.exe"
+                )
+                echo "  cargo linker: $CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER"
+            else
+                echo "  pcodec: VCToolsInstallDir not set; cargo may pick GNU link" >&2
+            fi
+            ;;
+    esac
     ( cd "$src" && cargo build --release -p cpcodec )
     # Copy the cdylib + header into the prefix layout opencodecs expects.
     install -d "$PREFIX/include" "$PREFIX/lib"
