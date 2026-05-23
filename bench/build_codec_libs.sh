@@ -219,12 +219,22 @@ fetch_tar() {
     # so callers can use `src=$(fetch_tar ...)` cleanly. Earlier version
     # printed "fetch <url>" to stdout which then poisoned cmake's
     # source-dir argument.
+    #
+    # Use a sentinel file (.fetched) rather than mere directory existence
+    # to signal a complete extract: an interrupted ``curl | tar -xz`` (CI
+    # job killed, ssh disconnected, disk full mid-extract) leaves an
+    # empty/partial dir on disk, and a naive ``[ ! -d "$src" ]`` check
+    # would then skip the fetch on the next run — leading to confusing
+    # "Cargo.toml not found" / "CMakeLists.txt missing" errors when the
+    # caller cd's into the empty dir.
     local name="$1" version="$2" url="$3" strip="${4:-1}"
     local src="$WORKDIR/$name-$version"
-    if [ ! -d "$src" ]; then
+    if [ ! -f "$src/.fetched" ]; then
+        rm -rf "$src"
         mkdir -p "$src"
         echo "    fetch  $url" >&2
         curl -fsSL "$url" | tar -xz --strip-components="$strip" -C "$src"
+        touch "$src/.fetched"
     fi
     echo "$src"
 }
