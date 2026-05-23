@@ -702,19 +702,29 @@ build_brunsli() {
     #           ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
     #           LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR})
     # On Linux/macOS that's enough — shared libs install via LIBRARY.
-    # On Windows the import .lib goes via ARCHIVE but the .dll is
-    # RUNTIME, which isn't listed — so neither file lands in PREFIX
-    # (only headers do). Setup.py's link step then dies with:
+    # On Windows the .dll (RUNTIME) and its import .lib (ARCHIVE for
+    # SHARED targets) aren't both listed, and the Ninja+MSVC path
+    # leaves them in different places under the build dir
+    # (.dll in _build/artifacts/, .lib next to the per-target intermediate
+    # CMakeFiles dir). Setup.py's link step then dies with:
     #   LINK : fatal error LNK1181: cannot open input file
     #   'brunslienc-c.lib'
-    # Work around by copying the artifacts ourselves.
+    # Find every brunsli*-c .dll/.lib under the build tree and copy
+    # them into PREFIX explicitly, regardless of which subdir CMake
+    # picked.
     case "$(uname -s)" in
         MINGW*|MSYS*|CYGWIN*)
             install -d "$PREFIX/lib" "$PREFIX/bin"
-            cp "$src/_build/artifacts/brunslidec-c.lib" \
-               "$src/_build/artifacts/brunslienc-c.lib" "$PREFIX/lib/"
-            cp "$src/_build/artifacts/brunslidec-c.dll" \
-               "$src/_build/artifacts/brunslienc-c.dll" "$PREFIX/bin/"
+            find "$src/_build" -type f \
+                \( -name 'brunslidec-c.dll' -o -name 'brunslienc-c.dll' \) \
+                -exec cp -v {} "$PREFIX/bin/" \;
+            find "$src/_build" -type f \
+                \( -name 'brunslidec-c.lib' -o -name 'brunslienc-c.lib' \) \
+                -exec cp -v {} "$PREFIX/lib/" \;
+            # Fail loudly if either side ended up empty — silent skip
+            # would just re-produce the LNK1181 downstream.
+            ls "$PREFIX/bin/brunsli"{dec,enc}"-c.dll" \
+               "$PREFIX/lib/brunsli"{dec,enc}"-c.lib" >&2
             ;;
     esac
     mark_built brunsli "$v"
