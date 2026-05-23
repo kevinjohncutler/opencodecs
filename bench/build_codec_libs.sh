@@ -633,7 +633,13 @@ build_SPERR() {
     local src
     src=$(fetch_tar SPERR "$v" \
         "https://github.com/NCAR/SPERR/archive/refs/tags/v$v.tar.gz")
-    cmake_build "$src" -DBUILD_CLI_UTILITIES=OFF -DUSE_OMP=ON
+    # USE_OMP=OFF for portable wheels. macOS clang lacks an OpenMP
+    # runtime by default (find_package(OpenMP) fails without libomp),
+    # and MSVC's OpenMP 2.0 impl rejects SPERR's ``size_t`` loop
+    # indices (C3016 errors on sperr_helper.cpp). OpenMP only
+    # parallelizes a handful of preprocessing loops; correctness is
+    # unaffected. Local builds wanting it can pass --extra-cmake-args.
+    cmake_build "$src" -DBUILD_CLI_UTILITIES=OFF -DUSE_OMP=OFF
     mark_built SPERR "$v"
 }
 
