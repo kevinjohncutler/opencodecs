@@ -639,7 +639,16 @@ build_SPERR() {
     # indices (C3016 errors on sperr_helper.cpp). OpenMP only
     # parallelizes a handful of preprocessing loops; correctness is
     # unaffected. Local builds wanting it can pass --extra-cmake-args.
-    cmake_build "$src" -DBUILD_CLI_UTILITIES=OFF -DUSE_OMP=OFF
+    #
+    # BUILD_UNIT_TESTS=OFF — SPERR's unit tests use ``std::iota``
+    # without including <numeric>. GCC/Clang transitively pull it in
+    # via other STL headers; MSVC doesn't (sperr_helper_unit_test.cpp
+    # line 257: ``error C2039: 'iota': is not a member of 'std'``).
+    # We don't need the tests anyway — just the library + headers.
+    cmake_build "$src" \
+        -DBUILD_CLI_UTILITIES=OFF \
+        -DBUILD_UNIT_TESTS=OFF \
+        -DUSE_OMP=OFF
     mark_built SPERR "$v"
 }
 
