@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "opencodecs"
-version = "0.1.2"
+version = "0.1.3"
 description = "Streaming, network-aware image codecs for scientific imaging (prototype: JPEG XL)"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -136,11 +136,13 @@ before-all = [
     # in any AlmaLinux 8 repo), and the libavif/libheif decode chain
     # (libde265 + dav1d + libavif + libheif — also absent from
     # AlmaLinux 8 + EPEL 8 + CRB). Plus Tier 1 scientific compressors
-    # (libaec, lerc, zfp, SZ3, pcodec — none in EPEL 8). All built from
-    # source via bench/build_codec_libs.sh into the cached
-    # /cibw-jxl-prefix mount. Skips encoders (aom, x265) — wheel ships
-    # decode-only AVIF/HEIF to keep build < 12 min cold + avoid GPL x265.
-    "bash -c 'PATH=$HOME/.cargo/bin:$PATH bash bench/build_codec_libs.sh --only=libjpeg-turbo,c-blosc2,libde265,dav1d,libavif,libheif,libaec,lerc,zfp,SZ3,pcodec'",
+    # (libaec, lerc, zfp, SZ3, pcodec, SPERR, brunsli — none in EPEL 8).
+    # brunsli vendors its own brotli submodule, so no system brotli
+    # dependency at link time. All built from source via
+    # bench/build_codec_libs.sh into the cached /cibw-jxl-prefix mount.
+    # Skips encoders (aom, x265) — wheel ships decode-only AVIF/HEIF to
+    # keep build < 12 min cold + avoid GPL x265.
+    "bash -c 'PATH=$HOME/.cargo/bin:$PATH bash bench/build_codec_libs.sh --only=libjpeg-turbo,c-blosc2,libde265,dav1d,libavif,libheif,libaec,lerc,zfp,SZ3,pcodec,SPERR,brunsli'",
     "bash bench/build_libjxl.sh",
 ]
 # Don't set OPENCODECS_*_PREFIX here — build_wheels.yml's
@@ -152,12 +154,13 @@ before-all = [
 # runs natively, no container).
 #
 # brew supplies: most originals + libaec/liblerc/zfp for Tier 1.
-# rust toolchain installed for pcodec's cargo build; SZ3 + pcodec are
-# then source-built into the per-user opencodecs cache by
-# bench/build_codec_libs.sh.
+# rust toolchain installed for pcodec's cargo build; SZ3 + pcodec +
+# SPERR + brunsli are then source-built into the per-user opencodecs
+# cache by bench/build_codec_libs.sh. brunsli vendors brotli as a
+# submodule so the brew brotli isn't required at link time.
 before-all = [
     "brew install jpeg-xl libavif libheif webp libpng jpeg-turbo openjpeg zstd brotli c-blosc2 lz4 libdeflate libaec liblerc zfp rust cmake ninja",
-    "bash bench/build_codec_libs.sh --only=SZ3,pcodec",
+    "bash bench/build_codec_libs.sh --only=SZ3,pcodec,SPERR,brunsli",
 ]
 # macos-latest is now macOS 15 (Sequoia) on arm64. Homebrew formulas are
 # compiled for 15.x, so any wheel target lower than 15 fails the delocate

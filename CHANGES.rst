@@ -10,21 +10,55 @@ Versions follow the same ``YYYY.M.D`` cadence as upstream when we
 publish; the entries below cluster work by date rather than by
 release because most of it has shipped continuously to ``main``.
 
+0.1.3 (2026-05-22)
+------------------
+
+**SPERR + brunsli land on every wheel**
+
+* Added ``SPERR`` and ``brunsli`` to the cibuildwheel codec-lib
+  build recipe for Linux, macOS, and Windows. Previously the
+  ``build_codec_libs.sh --only=...`` selection for cibuildwheel
+  ran only SZ3 + pcodec, so the SPERR / brunsli ``cmake_build``
+  paths (already in the script) never fired on CI — setup.py's
+  header probe dropped ``_sperr`` and ``_brunsli`` from every
+  wheel released through v0.1.2.
+* brunsli vendors its own brotli submodule via CMake, so no
+  additional system-brotli dependency at link time. Both libs
+  install into the per-user opencodecs cache and get bundled
+  into the wheel via auditwheel / delocate / delvewheel.
+* v0.1.3 ships ``_sperr`` (NCAR wavelet error-bounded compressor)
+  and ``_brunsli`` (Google lossless JPEG transcoder, ~22% smaller
+  storage) on all four wheel cells (Linux x86_64 + aarch64,
+  macOS arm64, Windows AMD64) × Python 3.10-3.13.
+
+**Errata for v0.1.2**
+
+* The v0.1.2 CHANGES claimed "Restored ``_sz3``, ``_pcodec``,
+  ``_sperr``, ``_brunsli`` on Windows." In reality only ``_sz3``
+  and ``_pcodec`` were restored — the SPERR / brunsli libs never
+  got into the ``--only=`` build selection, so their extensions
+  silently dropped via the missing-header probe. v0.1.3 closes
+  the gap.
+
+
 0.1.2 (2026-05-22)
 ------------------
 
-**Windows wheels get the Tier 1 scientific compressors back**
+**Windows wheels get _sz3 and _pcodec back**
 
-* Restored ``_sz3``, ``_pcodec``, ``_sperr``, ``_brunsli`` on Windows.
-  Root cause was conda's bash putting ``gcc.exe`` ahead of ``cl.exe``
-  on PATH; CMake then produced gnu-format ``libSZ3c.dll.a`` import
+* Restored ``_sz3`` and ``_pcodec`` on Windows. Root cause was
+  conda's bash putting ``gcc.exe`` ahead of ``cl.exe`` on PATH;
+  CMake then produced gnu-format ``libSZ3c.dll.a`` import
   libraries that cibuildwheel's MSVC link.exe couldn't consume.
 * Workflow now uses ``ilammy/msvc-dev-cmd`` to source vcvars64.bat
   before the SZ3+pcodec source-build step; CMake's auto-detect picks
   cl.exe and produces MSVC-format ``SZ3c.lib`` / ``cpcodec.lib``.
+* Cargo's MSVC linker pinned via
+  ``CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER`` so rustc doesn't
+  PATH-resolve to GNU coreutils' ``link.exe`` at
+  ``C:\Program Files\Git\usr\bin\link.exe``.
 * Validated end-to-end on a Windows 11 VM (clean SZ3 install with
   Ninja + cl.exe + vcvars-sourced env).
-* Windows wheels now match the macOS / Linux codec set.
 
 **README rewrite for the released project**
 

@@ -111,10 +111,12 @@ jobs:
             zstd brotli c-blosc2 lz4 libdeflate \
             libaec liblerc zfp \
             rust cmake ninja
-          # SZ3 + pcodec aren't packaged by brew; source-build into the
-          # per-user opencodecs cache. setup.py probes that prefix and
-          # delocate bundles the resulting dylibs into the wheel.
-          bash bench/build_codec_libs.sh --only=SZ3,pcodec
+          # SZ3 + pcodec + SPERR + brunsli aren't packaged by brew;
+          # source-build into the per-user opencodecs cache. setup.py
+          # probes that prefix and delocate bundles the resulting dylibs
+          # into the wheel. brunsli vendors brotli internally so no
+          # brew-brotli link dependency.
+          bash bench/build_codec_libs.sh --only=SZ3,pcodec,SPERR,brunsli
 
       - name: Miniconda + codec libs (Windows)
         if: runner.os == 'Windows'
@@ -149,13 +151,16 @@ jobs:
         with:
           arch: x64
 
-      - name: Build SZ3 + pcodec from source (Windows)
+      - name: Build SZ3 + pcodec + SPERR + brunsli from source (Windows)
         if: runner.os == 'Windows'
         shell: bash -el {0}
         run: |
-          # Neither codec is on conda-forge. SZ3 is C++/CMake, pcodec is
-          # a Rust cdylib. Both go straight into $CONDA_PREFIX/Library so
-          # delvewheel finds them automatically.
+          # None of these codecs are on conda-forge (or brunsli is
+          # explicitly unstable there). SZ3 + SPERR + brunsli are
+          # C++/CMake; pcodec is a Rust cdylib. brunsli vendors its
+          # own brotli submodule. Everything installs into the per-user
+          # opencodecs cache, and delvewheel picks up the DLLs from
+          # $CONDA_PREFIX/Library/bin via repair-wheel-command.
           #
           # The Enable-MSVC step above sources vcvars64.bat and exports
           # the MSVC env (cl.exe on PATH, INCLUDE/LIB set) to this step
@@ -163,7 +168,7 @@ jobs:
           # conda's gcc and produces gnu-format ``.dll.a`` import libs
           # that cibuildwheel's link.exe can't consume.
           export OPENCODECS_LIBS_PREFIX="${CONDA_PREFIX}/Library"
-          bash bench/build_codec_libs.sh --only=SZ3,pcodec
+          bash bench/build_codec_libs.sh --only=SZ3,pcodec,SPERR,brunsli
 
       # ---------- cibuildwheel ----------
       - name: Build wheels
