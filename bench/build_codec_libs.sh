@@ -717,11 +717,27 @@ build_brunsli() {
     # all symbols by default). Locally validated on the Windows host
     # (MSVC 14.41, Ninja, vcvars-sourced): produces brunsli{dec,enc}-c.lib
     # in artifacts/ alongside the .dlls.
+    #
+    # CMAKE_INTERPROCEDURAL_OPTIMIZATION=OFF on Windows — MSVC 14.44's
+    # link.exe crashes with STATUS_ACCESS_VIOLATION (exit code
+    # 3221225477) when combining /LTCG with /DEF (from
+    # WINDOWS_EXPORT_ALL_SYMBOLS) on brunsli's SHARED target. Local
+    # the Windows host builds with MSVC 14.41 succeed because we didn't
+    # enable LTO there; the failure is specific to the LTO+def+SHARED
+    # combination in the newer MSVC's link. Override the script's
+    # global USE_LTO=1 default for this one target.
+    local brunsli_extra_args=()
+    case "$(uname -s)" in
+        MINGW*|MSYS*|CYGWIN*)
+            brunsli_extra_args+=(-DCMAKE_INTERPROCEDURAL_OPTIMIZATION=OFF)
+            ;;
+    esac
     cmake_build "$src" \
         -DBUILD_TESTING=OFF \
         -DBRUNSLI_EMSCRIPTEN=OFF \
         -DCMAKE_WINDOWS_EXPORT_ALL_SYMBOLS=ON \
-        -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+        -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+        "${brunsli_extra_args[@]}"
     # brunsli.cmake's install() rule lacks RUNTIME DESTINATION so the
     # .dll isn't installed automatically; the import .lib is supposed
     # to come via ARCHIVE but doesn't fire in the Ninja+MSVC SHARED
