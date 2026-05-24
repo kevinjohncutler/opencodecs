@@ -153,8 +153,22 @@ mkdir -p "$PREFIX" "$WORKDIR"
 # libde265/x265 already installed; libavif needs libaom; etc.).
 export PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig:$PREFIX/lib64/pkgconfig:${PKG_CONFIG_PATH:-}"
 export CMAKE_PREFIX_PATH="$PREFIX:${CMAKE_PREFIX_PATH:-}"
-export CPPFLAGS="-I$PREFIX/include ${CPPFLAGS:-}"
-export LDFLAGS="-L$PREFIX/lib -L$PREFIX/lib64 -Wl,-rpath,$PREFIX/lib -Wl,-rpath,$PREFIX/lib64 ${LDFLAGS:-}"
+case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*)
+        # Windows / MSVC: do NOT export GCC/clang-style -L/-Wl,-rpath
+        # in LDFLAGS or -I in CPPFLAGS. CMake on Windows picks up those
+        # env vars and passes them through to link.exe (via vs_link_dll),
+        # which can't parse them and crashes with STATUS_ACCESS_VIOLATION
+        # (exit code 3221225477) when linking SHARED libs.
+        # CMAKE_PREFIX_PATH alone is enough — find_package() and the
+        # generic header/lib probe walk PREFIX correctly without
+        # POSIX-style flag scaffolding.
+        ;;
+    *)
+        export CPPFLAGS="-I$PREFIX/include ${CPPFLAGS:-}"
+        export LDFLAGS="-L$PREFIX/lib -L$PREFIX/lib64 -Wl,-rpath,$PREFIX/lib -Wl,-rpath,$PREFIX/lib64 ${LDFLAGS:-}"
+        ;;
+esac
 if [ "$(uname)" = "Linux" ]; then
     export LD_LIBRARY_PATH="$PREFIX/lib:$PREFIX/lib64:${LD_LIBRARY_PATH:-}"
 fi
