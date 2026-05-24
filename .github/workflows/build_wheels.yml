@@ -167,7 +167,33 @@ jobs:
           # via GITHUB_ENV. Without it CMake's auto-detect picks
           # conda's gcc and produces gnu-format ``.dll.a`` import libs
           # that cibuildwheel's link.exe can't consume.
+          #
+          # brunsli's SHARED-target link on v0.1.3 retag #7 (run
+          # 26350213014) failed with:
+          #   link.exe ... -L${CONDA_PREFIX}/Library/lib
+          #     -Wl,-rpath,${CONDA_PREFIX}/Library/lib /INCREMENTAL:NO ...
+          #   ninja: build stopped: subcommand failed.
+          # These -L/-Wl,-rpath flags are GCC/clang-style; MSVC link.exe
+          # can't parse them. SZ3/SPERR built fine on the same run so it's
+          # specific to brunsli's FetchContent(brotli)+SHARED-target path.
+          #
+          # Defense in depth:
+          # 1. Prepend the runner's system cmake to PATH so it shadows
+          #    conda-forge's patched cmake (which is the most likely
+          #    flag-injection source — its conda recipe carries a patch
+          #    to bake conda env paths into link commands).
+          # 2. Unset LDFLAGS/CFLAGS/CXXFLAGS/CPPFLAGS so any conda
+          #    activate hook that set them doesn't bleed in.
+          # 3. Print env diagnostics so the next failure (if any) shows
+          #    exactly which mechanism is still injecting the bad flags.
+          #
+          # Locally validated on the Windows host with the full ocbuild
+          # conda env: brunsli builds clean under the system cmake path.
+          export PATH="/c/Program Files/CMake/bin:$PATH"
+          unset LDFLAGS CFLAGS CXXFLAGS CPPFLAGS
           export OPENCODECS_LIBS_PREFIX="${CONDA_PREFIX}/Library"
+          echo "=== cmake in PATH ==="; which cmake; cmake --version | head -1
+          echo "=== relevant env ==="; env | grep -iE 'LDFLAGS|CFLAGS|CXXFLAGS|CPPFLAGS|CMAKE_ARGS|CONDA_TOOLCHAIN|CONDA_BACKUP' || true
           bash bench/build_codec_libs.sh --only=SZ3,pcodec,SPERR,brunsli
 
       # ---------- cibuildwheel ----------
