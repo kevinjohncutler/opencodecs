@@ -726,18 +726,23 @@ build_brunsli() {
     # enable LTO there; the failure is specific to the LTO+def+SHARED
     # combination in the newer MSVC's link. Override the script's
     # global USE_LTO=1 default for this one target.
-    local brunsli_extra_args=()
     case "$(uname -s)" in
         MINGW*|MSYS*|CYGWIN*)
-            brunsli_extra_args+=(-DCMAKE_INTERPROCEDURAL_OPTIMIZATION=OFF)
+            cmake_build "$src" \
+                -DBUILD_TESTING=OFF \
+                -DBRUNSLI_EMSCRIPTEN=OFF \
+                -DCMAKE_WINDOWS_EXPORT_ALL_SYMBOLS=ON \
+                -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+                -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=OFF
+            ;;
+        *)
+            cmake_build "$src" \
+                -DBUILD_TESTING=OFF \
+                -DBRUNSLI_EMSCRIPTEN=OFF \
+                -DCMAKE_WINDOWS_EXPORT_ALL_SYMBOLS=ON \
+                -DCMAKE_POLICY_VERSION_MINIMUM=3.5
             ;;
     esac
-    cmake_build "$src" \
-        -DBUILD_TESTING=OFF \
-        -DBRUNSLI_EMSCRIPTEN=OFF \
-        -DCMAKE_WINDOWS_EXPORT_ALL_SYMBOLS=ON \
-        -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
-        "${brunsli_extra_args[@]}"
     # brunsli.cmake's install() rule lacks RUNTIME DESTINATION so the
     # .dll isn't installed automatically; the import .lib is supposed
     # to come via ARCHIVE but doesn't fire in the Ninja+MSVC SHARED
