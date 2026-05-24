@@ -693,47 +693,35 @@ build_brunsli() {
     # supported source.
     src=$(fetch_tar brunsli "$v" \
         "https://github.com/google/brunsli/archive/refs/heads/$v.tar.gz")
-    # CMAKE_WINDOWS_EXPORT_ALL_SYMBOLS=ON — brunsli's C headers
-    # (c/include/brunsli/{encode,decode,…}.h) don't use
-    # __declspec(dllexport), so MSVC compiles the SHARED targets
-    # with zero exports and link.exe never emits an import library.
-    # This flag tells CMake to enumerate all symbols from the static
-    # objects, synthesize a .def, and pass /DEF to link.exe so an
-    # import lib (brunsli{dec,enc}-c.lib) gets produced. No-op on
-    # Linux/macOS (Unix ELF/Mach-O export all by default).
     cmake_build "$src" \
         -DBUILD_TESTING=OFF \
         -DBRUNSLI_EMSCRIPTEN=OFF \
-        -DCMAKE_WINDOWS_EXPORT_ALL_SYMBOLS=ON \
         -DCMAKE_POLICY_VERSION_MINIMUM=3.5
-    # brunsli.cmake's install() rule lacks RUNTIME DESTINATION:
-    #   install(TARGETS brunslidec-c brunslienc-c
-    #           ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
-    #           LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR})
-    # On Linux/macOS that's enough — shared libs install via LIBRARY.
-    # On Windows the .dll (RUNTIME) and its import .lib (ARCHIVE for
-    # SHARED targets) aren't both listed, and the Ninja+MSVC path
-    # leaves them in different places under the build dir
-    # (.dll in _build/artifacts/, .lib next to the per-target intermediate
-    # CMakeFiles dir). Setup.py's link step then dies with:
-    #   LINK : fatal error LNK1181: cannot open input file
-    #   'brunslienc-c.lib'
-    # Find every brunsli*-c .dll/.lib under the build tree and copy
-    # them into PREFIX explicitly, regardless of which subdir CMake
-    # picked.
+    # On Windows, brunsli's CMake install() rule covers headers only
+    # (no RUNTIME DESTINATION for the .dll, no import .lib generated
+    # for the SHARED brunsli{dec,enc}-c targets because the C headers
+    # lack __declspec(dllexport)). Match imagecodecs's approach: link
+    # _brunsli statically against brunsli's static libs + brunsli's
+    # vendored brotli static libs. Both sets are produced and live
+    # under _build/artifacts/ and _build/_deps/brotli-build/
+    # respectively; copy them into PREFIX/lib/ so setup.py's
+    # /LIBPATH:... search finds them.
     case "$(uname -s)" in
         MINGW*|MSYS*|CYGWIN*)
-            install -d "$PREFIX/lib" "$PREFIX/bin"
+            install -d "$PREFIX/lib"
             find "$src/_build" -type f \
-                \( -name 'brunslidec-c.dll' -o -name 'brunslienc-c.dll' \) \
-                -exec cp -v {} "$PREFIX/bin/" \;
-            find "$src/_build" -type f \
-                \( -name 'brunslidec-c.lib' -o -name 'brunslienc-c.lib' \) \
+                \( -name 'brunsli*-static.lib' \
+                -o -name 'brotli*-static.lib' \) \
                 -exec cp -v {} "$PREFIX/lib/" \;
-            # Fail loudly if either side ended up empty — silent skip
-            # would just re-produce the LNK1181 downstream.
-            ls "$PREFIX/bin/brunsli"{dec,enc}"-c.dll" \
-               "$PREFIX/lib/brunsli"{dec,enc}"-c.lib" >&2
+            # Loud post-check — fail the build if any of the six
+            # expected static archives is missing instead of leaving
+            # the downstream link step to die opaquely.
+            ls "$PREFIX/lib/brunslicommon-static.lib" \
+               "$PREFIX/lib/brunslidec-static.lib" \
+               "$PREFIX/lib/brunslienc-static.lib" \
+               "$PREFIX/lib/brotlicommon-static.lib" \
+               "$PREFIX/lib/brotlidec-static.lib" \
+               "$PREFIX/lib/brotlienc-static.lib" >&2
             ;;
     esac
     mark_built brunsli "$v"

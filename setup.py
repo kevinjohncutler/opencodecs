@@ -1584,6 +1584,14 @@ extensions = [
     ),
     # Brunsli (lossless JPEG transcoder, ~20% smaller storage): per-user
     # cache when built via bench/build_codec_libs.sh.
+    #
+    # On Linux/macOS we link against brunsli's shared C-API libs.
+    # On Windows those don't generate import libraries (brunsli's
+    # C headers lack __declspec(dllexport), so MSVC's SHARED build
+    # produces a .dll with no exports and no .lib). Match imagecodecs's
+    # approach instead: static-link against brunsli's static libs +
+    # its vendored brotli statics. build_codec_libs.sh::build_brunsli
+    # copies the six required .lib files into PREFIX/lib/ on Windows.
     Extension(
         name="opencodecs.codecs._brunsli",
         sources=["src/opencodecs/codecs/_brunsli.pyx"],
@@ -1592,7 +1600,12 @@ extensions = [
             *_resolve_include_dirs("brunsli/encode.h"),
         ],
         library_dirs=_lib_dirs_for_probes(),
-        libraries=["brunslienc-c", "brunslidec-c"],
+        libraries=(
+            ["brunslidec-static", "brunslienc-static", "brunslicommon-static",
+             "brotlidec-static", "brotlienc-static", "brotlicommon-static"]
+            if sys.platform == "win32"
+            else ["brunslienc-c", "brunslidec-c"]
+        ),
         extra_link_args=(
             [f"-Wl,-rpath,{_OC_USER_CACHE / 'brunsli' / 'lib'}"]
             if (_OC_USER_CACHE / "brunsli" / "lib").is_dir() else []
