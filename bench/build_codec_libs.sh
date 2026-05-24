@@ -693,35 +693,37 @@ build_brunsli() {
     # supported source.
     src=$(fetch_tar brunsli "$v" \
         "https://github.com/google/brunsli/archive/refs/heads/$v.tar.gz")
+    # CMAKE_WINDOWS_EXPORT_ALL_SYMBOLS=ON tells CMake to enumerate
+    # every symbol from the SHARED target's object files, synthesize
+    # a .def, and pass /DEF to link.exe so an import .lib gets
+    # generated alongside the .dll. Without it brunsli's C-API DLLs
+    # have zero exports (the headers don't use __declspec(dllexport))
+    # and no .lib materializes, leaving every downstream consumer
+    # unable to link. No-op on Linux/macOS (Unix ELF/Mach-O export
+    # all symbols by default). Locally validated on the Windows host
+    # (MSVC 14.41, Ninja, vcvars-sourced): produces brunsli{dec,enc}-c.lib
+    # in artifacts/ alongside the .dlls.
     cmake_build "$src" \
         -DBUILD_TESTING=OFF \
         -DBRUNSLI_EMSCRIPTEN=OFF \
+        -DCMAKE_WINDOWS_EXPORT_ALL_SYMBOLS=ON \
         -DCMAKE_POLICY_VERSION_MINIMUM=3.5
-    # On Windows, brunsli's CMake install() rule covers headers only
-    # (no RUNTIME DESTINATION for the .dll, no import .lib generated
-    # for the SHARED brunsli{dec,enc}-c targets because the C headers
-    # lack __declspec(dllexport)). Match imagecodecs's approach: link
-    # _brunsli statically against brunsli's static libs + brunsli's
-    # vendored brotli static libs. Both sets are produced and live
-    # under _build/artifacts/ and _build/_deps/brotli-build/
-    # respectively; copy them into PREFIX/lib/ so setup.py's
-    # /LIBPATH:... search finds them.
+    # brunsli.cmake's install() rule lacks RUNTIME DESTINATION so the
+    # .dll isn't installed automatically; the import .lib is supposed
+    # to come via ARCHIVE but doesn't fire in the Ninja+MSVC SHARED
+    # path. Copy both manually from _build/artifacts/ into PREFIX
+    # ({bin,lib}) — delvewheel then picks up the .dlls during
+    # repair-wheel-command.
     case "$(uname -s)" in
         MINGW*|MSYS*|CYGWIN*)
-            install -d "$PREFIX/lib"
-            find "$src/_build" -type f \
-                \( -name 'brunsli*-static.lib' \
-                -o -name 'brotli*-static.lib' \) \
-                -exec cp -v {} "$PREFIX/lib/" \;
-            # Loud post-check — fail the build if any of the six
-            # expected static archives is missing instead of leaving
-            # the downstream link step to die opaquely.
-            ls "$PREFIX/lib/brunslicommon-static.lib" \
-               "$PREFIX/lib/brunslidec-static.lib" \
-               "$PREFIX/lib/brunslienc-static.lib" \
-               "$PREFIX/lib/brotlicommon-static.lib" \
-               "$PREFIX/lib/brotlidec-static.lib" \
-               "$PREFIX/lib/brotlienc-static.lib" >&2
+            install -d "$PREFIX/lib" "$PREFIX/bin"
+            cp -v "$src/_build/artifacts/brunslidec-c.dll" \
+                  "$src/_build/artifacts/brunslienc-c.dll" "$PREFIX/bin/"
+            cp -v "$src/_build/artifacts/brunslidec-c.lib" \
+                  "$src/_build/artifacts/brunslienc-c.lib" "$PREFIX/lib/"
+            # Loud post-check fails the build if any file went missing.
+            ls "$PREFIX/bin/brunslidec-c.dll" "$PREFIX/bin/brunslienc-c.dll" \
+               "$PREFIX/lib/brunslidec-c.lib" "$PREFIX/lib/brunslienc-c.lib" >&2
             ;;
     esac
     mark_built brunsli "$v"
