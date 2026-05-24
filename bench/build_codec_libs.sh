@@ -693,9 +693,18 @@ build_brunsli() {
     # supported source.
     src=$(fetch_tar brunsli "$v" \
         "https://github.com/google/brunsli/archive/refs/heads/$v.tar.gz")
+    # CMAKE_WINDOWS_EXPORT_ALL_SYMBOLS=ON — brunsli's C headers
+    # (c/include/brunsli/{encode,decode,…}.h) don't use
+    # __declspec(dllexport), so MSVC compiles the SHARED targets
+    # with zero exports and link.exe never emits an import library.
+    # This flag tells CMake to enumerate all symbols from the static
+    # objects, synthesize a .def, and pass /DEF to link.exe so an
+    # import lib (brunsli{dec,enc}-c.lib) gets produced. No-op on
+    # Linux/macOS (Unix ELF/Mach-O export all by default).
     cmake_build "$src" \
         -DBUILD_TESTING=OFF \
         -DBRUNSLI_EMSCRIPTEN=OFF \
+        -DCMAKE_WINDOWS_EXPORT_ALL_SYMBOLS=ON \
         -DCMAKE_POLICY_VERSION_MINIMUM=3.5
     # brunsli.cmake's install() rule lacks RUNTIME DESTINATION:
     #   install(TARGETS brunslidec-c brunslienc-c
