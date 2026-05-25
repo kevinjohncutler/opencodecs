@@ -265,8 +265,14 @@ jobs:
         shell: bash
         run: |
           set -e
+          # macOS runners ship `python3` but not `python` after
+          # cibuildwheel tears down its per-build venv. Linux + Windows
+          # bash images all expose `python3`. Use `python3` directly so
+          # the step doesn't fail with "python: command not found" on
+          # mac (v0.1.4 first retag tripped this).
+          PY=$(command -v python3 || command -v python)
           for wheel in wheelhouse/*.whl; do
-            python ci/check_wheel_contents.py "$wheel"
+            "$PY" ci/check_wheel_contents.py "$wheel"
           done
 
       - uses: actions/upload-artifact@v4
