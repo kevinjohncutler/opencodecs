@@ -671,11 +671,16 @@ def _maybe_build_mozjpeg_ext() -> list[Extension]:
         if not (c / "include" / "turbojpeg.h").exists():
             continue
         # Find the actual lib file. Linux multiarch ships under
-        # lib/<triple>/, plain /usr/local installs use lib/.
+        # lib/<triple>/, plain /usr/local installs use lib/, and
+        # AlmaLinux/RHEL (manylinux_2_28) puts 64-bit libs under lib64/
+        # by default — that's the GNU autoconf convention on those
+        # distros, and mozjpeg's CMake picks it up.
         lib_candidates = [
             ("lib", "libturbojpeg.dylib"),
             ("lib", "libturbojpeg.so"),
             ("lib", "libturbojpeg.so.0"),
+            ("lib64", "libturbojpeg.so"),
+            ("lib64", "libturbojpeg.so.0"),
             ("lib/x86_64-linux-gnu", "libturbojpeg.so"),
             ("lib/x86_64-linux-gnu", "libturbojpeg.so.0"),
             ("lib/aarch64-linux-gnu", "libturbojpeg.so"),
@@ -732,9 +737,18 @@ def _maybe_build_mozjpeg_ext() -> list[Extension]:
         ],
         library_dirs=[str(prefix / lib_subdir)],
         # Use absolute path on macOS to dodge the SDK-stub issue we
-        # hit with zlib-ng-compat.
+        # hit with zlib-ng-compat. On macOS we ALSO add the lib dir
+        # to LC_RPATH because mozjpeg's libturbojpeg has
+        # install_name=@rpath/libturbojpeg.0.dylib; without an rpath
+        # to a keg-only prefix like /opt/homebrew/opt/mozjpeg/lib,
+        # delocate can't resolve the LC_LOAD_DYLIB and the wheel
+        # repair fails with "@rpath/libturbojpeg.0.dylib not found".
         libraries=[],
-        extra_link_args=[str(prefix / lib_subdir / lib_filename)],
+        extra_link_args=(
+            [str(prefix / lib_subdir / lib_filename)]
+            + ([f"-Wl,-rpath,{prefix / lib_subdir}"]
+                if sys.platform == "darwin" else [])
+        ),
         define_macros=[("NPY_NO_DEPRECATED_API", "NPY_1_7_API_VERSION")],
         language="c",
     )]

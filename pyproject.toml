@@ -159,8 +159,11 @@ before-all = [
 # cache by bench/build_codec_libs.sh. brunsli vendors brotli as a
 # submodule so the brew brotli isn't required at link time.
 before-all = [
-    "brew install jpeg-xl libavif libheif webp libpng jpeg-turbo openjpeg mozjpeg zstd brotli c-blosc2 lz4 libdeflate libaec liblerc zfp rust cmake ninja",
-    "bash bench/build_codec_libs.sh --only=SZ3,pcodec,SPERR,brunsli",
+    # mozjpeg removed from this brew install — the formula ships libjpeg
+    # only, not libturbojpeg, so the _mozjpeg probe couldn't find what it
+    # needed. Source-build via build_codec_libs.sh produces both libs.
+    "brew install jpeg-xl libavif libheif webp libpng jpeg-turbo openjpeg zstd brotli c-blosc2 lz4 libdeflate libaec liblerc zfp rust cmake ninja",
+    "bash bench/build_codec_libs.sh --only=SZ3,pcodec,SPERR,brunsli,mozjpeg",
 ]
 # macos-latest is now macOS 15 (Sequoia) on arm64. Homebrew formulas are
 # compiled for 15.x, so any wheel target lower than 15 fails the delocate
