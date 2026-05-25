@@ -158,4 +158,69 @@ def make_pyramid_levels(
     return out
 
 
-__all__ = ["make_pyramid_levels"]
+def iter_pyramid_levels(
+    image: np.ndarray,
+    *,
+    levels: int | None = None,
+    downsample: int = 2,
+    min_size: int = 512,
+    axes: tuple[int, ...] | str | None = None,
+):
+    """Generator variant of :func:`make_pyramid_levels`.
+
+    Yields one level at a time, computing each from the previous on
+    demand. Lets a streaming pyramid writer drop a finished level
+    before computing the next, reducing peak memory from
+    ``~1.33 × level0`` (geometric series of all levels in RAM) to
+    ``~2 × current_level`` (one level held + one being computed).
+    Especially valuable for large whole-slide / cryo-EM images where
+    level 0 already dominates RAM.
+
+    Same args + stop conditions as :func:`make_pyramid_levels`.
+    """
+    if downsample != 2:
+        raise ValueError("only downsample=2 is currently supported")
+    if image.ndim < 2:
+        raise ValueError(
+            f"iter_pyramid_levels: image must be at least 2D; got {image.ndim}"
+        )
+    if axes is None:
+        ax_tuple: tuple[int, ...] = (image.ndim - 2, image.ndim - 1)
+    elif isinstance(axes, str):
+        canonical = "tczyx"
+        if len(axes) > image.ndim or len(axes) > len(canonical):
+            raise ValueError(
+                f"axes={axes!r} doesn't fit image of rank {image.ndim}"
+            )
+        for ch in axes:
+            if ch not in canonical:
+                raise ValueError(
+                    f"axes={axes!r}: unknown axis '{ch}' "
+                    f"(use chars from 'tczyx')"
+                )
+        ax_tuple = tuple(image.ndim - len(axes) + i for i in range(len(axes)))
+    else:
+        ax_tuple = tuple(int(a) for a in axes)
+
+    yield image
+    current = image
+    emitted = 1
+    while True:
+        next_shape = list(current.shape)
+        for ax in ax_tuple:
+            next_shape[ax] = max(1, current.shape[ax] // 2)
+        if levels is not None and emitted >= levels:
+            return
+        if levels is None:
+            if any(next_shape[ax] < min_size for ax in ax_tuple):
+                return
+            if all(current.shape[ax] <= 1 for ax in ax_tuple):
+                return
+        if all(current.shape[ax] <= 1 for ax in ax_tuple):
+            return
+        current = _downsample_2x_meanpool(current, ax_tuple)
+        emitted += 1
+        yield current
+
+
+__all__ = ["make_pyramid_levels", "iter_pyramid_levels"]

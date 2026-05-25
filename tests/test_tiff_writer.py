@@ -369,6 +369,74 @@ def test_writer_pyramid_subifds_basic(tmp_path):
             np.testing.assert_array_equal(back, lvl)
 
 
+def test_pyramid_auto_stream_matches_materialize(tmp_path):
+    """write_pyramid_auto(stream_levels=True) must produce a wheel-bit-
+    identical file vs the materialize-all path (stream_levels=False)."""
+    _need_tiff()
+    base = (np.arange(512 * 512, dtype=np.uint16) % 4096).reshape(512, 512)
+
+    p_stream = tmp_path / "pyr_stream.tif"
+    p_mat = tmp_path / "pyr_materialize.tif"
+    with TiffWriter(p_stream) as w:
+        w.write_pyramid_auto(
+            base, tile=(64, 64), compression="deflate",
+            stream_levels=True,
+        )
+    with TiffWriter(p_mat) as w:
+        w.write_pyramid_auto(
+            base, tile=(64, 64), compression="deflate",
+            stream_levels=False,
+        )
+    # Output files should be byte-identical: same downsample algorithm,
+    # same encode path, same IFD layout — just different scheduling.
+    assert p_stream.read_bytes() == p_mat.read_bytes(), (
+        "stream_levels=True diverged from stream_levels=False"
+    )
+
+
+def test_iter_pyramid_levels_matches_make_pyramid_levels():
+    """Generator and list builders must produce identical level arrays."""
+    from opencodecs._pyramid_build import (
+        iter_pyramid_levels, make_pyramid_levels,
+    )
+    base = (np.arange(640 * 480, dtype=np.uint16) % 4096).reshape(640, 480)
+    list_levels = make_pyramid_levels(base, min_size=64)
+    iter_levels = list(iter_pyramid_levels(base, min_size=64))
+    assert len(list_levels) == len(iter_levels)
+    for a, b in zip(list_levels, iter_levels):
+        np.testing.assert_array_equal(a, b)
+
+
+def test_pyramid_reader_parallel_decode_matches_serial(tmp_path):
+    """Parallel tile decode (num_decode_workers>1) must produce the
+    exact same bytes as the serial path (num_decode_workers=1)."""
+    _need_tiff()
+    from opencodecs._tiff_pyramid import TiffPyramidReader
+    p = tmp_path / "pyr_parallel.tif"
+    # 512x512 with 64x64 tiles — 64 tiles per level, plenty of work
+    # to fan across a thread pool. Use deflate so the decoder is
+    # actually doing work each tile (vs uncompressed memcpy).
+    base = (np.arange(512 * 512, dtype=np.uint16) % 4096).reshape(512, 512)
+    levels = [base, base[::2, ::2].copy(), base[::4, ::4].copy()]
+    with TiffWriter(p) as w:
+        w.write_pyramid(levels, tile=(64, 64), compression="deflate")
+
+    with TiffPyramidReader(str(p), num_decode_workers=1) as r_serial:
+        full_serial = r_serial.read_region(
+            0, y=(0, base.shape[0]), x=(0, base.shape[1])
+        )
+        crop_serial = r_serial.read_region(0, y=(64, 320), x=(64, 320))
+    with TiffPyramidReader(str(p), num_decode_workers=8) as r_par:
+        full_par = r_par.read_region(
+            0, y=(0, base.shape[0]), x=(0, base.shape[1])
+        )
+        crop_par = r_par.read_region(0, y=(64, 320), x=(64, 320))
+    np.testing.assert_array_equal(full_par, full_serial)
+    np.testing.assert_array_equal(crop_par, crop_serial)
+    # Sanity: the data round-tripped correctly under both paths.
+    np.testing.assert_array_equal(full_serial, base)
+
+
 def test_writer_pyramid_subifds_top_level_chain_is_just_main(tmp_path):
     """SubIFD layout means only ONE top-level IFD — the sub-resolutions
     aren't reachable via the next-IFD chain. Confirms our writer

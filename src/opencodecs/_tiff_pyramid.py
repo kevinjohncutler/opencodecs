@@ -15,6 +15,8 @@ Range requests.
 
 from __future__ import annotations
 
+import os
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -76,6 +78,7 @@ class TiffPyramidReader(PyramidReader):
         *,
         read_at=None,
         ifd_index: int | None = None,
+        num_decode_workers: int | None = None,
     ):
         """Open a TIFF and discover its pyramid structure.
 
@@ -95,12 +98,27 @@ class TiffPyramidReader(PyramidReader):
               ``[n]`` + that IFD's SubIFDs. Useful for multi-series
               OME-TIFFs where each top-level IFD is a different scene
               (T/C/Z plane), each with its own SubIFD pyramid.
+        num_decode_workers : int or None
+            Thread-pool size for parallel tile decoding inside
+            :meth:`read_region`. Compressed TIFF tile decoders (JPEG,
+            JPEG-2000, deflate, zstd) release the GIL during the C
+            call, so threads scale the decode step across cores even
+            on CPython. ``None`` (default) picks
+            ``min(os.cpu_count(), 8)``; pass ``1`` to force the serial
+            path (matches the pre-parallel behavior for benchmarks
+            / regression diff). Parallel decode kicks in only when at
+            least 4 tiles overlap the read region — fewer than that
+            and the thread-pool spin-up cost outweighs the win.
         """
         # Pass-through to TiffStream — it accepts paths, bytes,
         # file-likes, or a custom read_at callable (HTTPDataSource).
         self._stream = TiffStream(src, read_at=read_at) if read_at is not None \
             else TiffStream(src)
         self._ifd_index = ifd_index
+        if num_decode_workers is None:
+            self._num_decode_workers = min(os.cpu_count() or 1, 8)
+        else:
+            self._num_decode_workers = max(1, int(num_decode_workers))
         self._levels = self._build_levels()
 
     # ----- ABC contract -----
@@ -262,8 +280,26 @@ class TiffPyramidReader(PyramidReader):
         else:
             blobs = [self._stream._read(o, n) for (o, n) in ranges]
 
-        for (ty, tx), raw in zip(coords, blobs):
-            decoded = page._decode_segment(raw)
+        # Parallel decode path: when 4+ tiles overlap the bbox and the
+        # user hasn't pinned workers=1, fan decode out across a thread
+        # pool. Compressed TIFF tile codecs (JPEG / JPEG-2000 / deflate
+        # / zstd / lzw / webp / lerc) all release the GIL during the
+        # C decompress step, so threads scale across cores on CPython.
+        # Output bytes are identical to the serial path — only the
+        # scheduling changes. The 4-tile threshold dodges thread-pool
+        # spin-up cost on small region reads (single-tile cluster).
+        n_tiles = len(blobs)
+        nw = self._num_decode_workers
+        if n_tiles >= 4 and nw > 1:
+            with ThreadPoolExecutor(
+                max_workers=min(nw, n_tiles),
+                thread_name_prefix="tiff-decode",
+            ) as ex:
+                decoded_tiles = list(ex.map(page._decode_segment, blobs))
+        else:
+            decoded_tiles = [page._decode_segment(b) for b in blobs]
+
+        for (ty, tx), decoded in zip(coords, decoded_tiles):
             # Byte-stream codecs return flat; image codecs return shaped.
             if decoded.ndim == 1:
                 tile = decoded.reshape(full_tile_shape)

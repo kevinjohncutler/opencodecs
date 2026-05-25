@@ -1275,6 +1275,7 @@ class TiffWriter:
         photometric: str | int = "auto",
         metadata: str | None = None,
         subifds: bool = False,
+        stream_levels: bool = True,
     ) -> list[dict]:
         """Write a pyramid built automatically from a single full-res image.
 
@@ -1285,11 +1286,59 @@ class TiffWriter:
         produces just 2 levels (no surprise size bloat). Pass
         ``pyramid_levels=N`` to force a specific depth.
 
-        See :func:`opencodecs._pyramid_build.make_pyramid_levels` for
+        Parameters
+        ----------
+        stream_levels : bool
+            When ``True`` (default) and ``subifds=False`` (COG layout),
+            compute each level on demand and drop it once written,
+            holding at most one finished level + one being computed
+            in memory. Peak memory drops from ``~1.33 × level0``
+            (whole geometric series in RAM) to ``~2 × current_level``,
+            useful for whole-slide / cryo-EM inputs where level 0
+            already dominates RAM. Set to ``False`` to force the
+            materialize-all-then-write path (matches the pre-stream
+            behavior; required when ``subifds=True`` because the
+            SubIFD layout writes sub-resolution IFDs before the main
+            IFD).
+
+        See :func:`opencodecs._pyramid_build.iter_pyramid_levels` for
         the downsampling algorithm (2x2 mean pool on the trailing 2
         spatial axes by default).
         """
-        from ._pyramid_build import make_pyramid_levels
+        from ._pyramid_build import iter_pyramid_levels, make_pyramid_levels
+
+        # Streaming path: COG layout writes IFDs in source order so we
+        # can produce and consume one level at a time. SubIFD layout
+        # writes sub-resolution IFDs *before* the main IFD (their
+        # offsets are referenced by tag 330 on the main IFD), which
+        # forces us to know all sub-level offsets up front — and that
+        # in turn means we have to materialize every level first.
+        if stream_levels and not subifds:
+            infos: list[dict] = []
+            for i, arr in enumerate(iter_pyramid_levels(
+                image,
+                levels=pyramid_levels,
+                min_size=pyramid_min_size,
+                axes=pyramid_axes,
+            )):
+                infos.append(self.write_page(
+                    arr,
+                    tile=tile,
+                    compression=compression,
+                    compression_level=compression_level,
+                    predictor=predictor,
+                    photometric=photometric,
+                    subfiletype=0 if i == 0 else 1,
+                    metadata=metadata if i == 0 else None,
+                ))
+                # No explicit `del arr` — the iter_pyramid_levels
+                # generator already drops its reference to the
+                # previous level once it produces the next one, so
+                # the only remaining live reference here is our
+                # loop variable, which the next iteration overwrites.
+            return infos
+
+        # Non-streaming fallback (or SubIFD layout).
         levels = make_pyramid_levels(
             image,
             levels=pyramid_levels,
