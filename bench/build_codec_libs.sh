@@ -669,10 +669,29 @@ build_SPERR() {
     # via other STL headers; MSVC doesn't (sperr_helper_unit_test.cpp
     # line 257: ``error C2039: 'iota': is not a member of 'std'``).
     # We don't need the tests anyway — just the library + headers.
-    cmake_build "$src" \
-        -DBUILD_CLI_UTILITIES=OFF \
-        -DBUILD_UNIT_TESTS=OFF \
-        -DUSE_OMP=OFF
+    #
+    # On Windows the same pattern as brunsli applies: SPERR's C-API
+    # header (SPERR_C_API.h) has no __declspec(dllexport), so the
+    # SHARED build produces SPERR.dll with no exports and no import
+    # SPERR.lib. Pass WINDOWS_EXPORT_ALL_SYMBOLS=ON for the .lib +
+    # CMAKE_INTERPROCEDURAL_OPTIMIZATION=OFF to dodge the MSVC
+    # /LTCG + /DEF + SHARED link.exe crash (STATUS_ACCESS_VIOLATION).
+    case "$(uname -s)" in
+        MINGW*|MSYS*|CYGWIN*)
+            cmake_build "$src" \
+                -DBUILD_CLI_UTILITIES=OFF \
+                -DBUILD_UNIT_TESTS=OFF \
+                -DUSE_OMP=OFF \
+                -DCMAKE_WINDOWS_EXPORT_ALL_SYMBOLS=ON \
+                -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=OFF
+            ;;
+        *)
+            cmake_build "$src" \
+                -DBUILD_CLI_UTILITIES=OFF \
+                -DBUILD_UNIT_TESTS=OFF \
+                -DUSE_OMP=OFF
+            ;;
+    esac
     mark_built SPERR "$v"
 }
 
