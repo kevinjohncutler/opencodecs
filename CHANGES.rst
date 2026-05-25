@@ -10,7 +10,7 @@ Versions follow the same ``YYYY.M.D`` cadence as upstream when we
 publish; the entries below cluster work by date rather than by
 release because most of it has shipped continuously to ``main``.
 
-0.1.5 (unreleased)
+0.1.4 (2026-05-25)
 ------------------
 
 **libvips-inspired streaming improvements**
@@ -52,10 +52,6 @@ release because most of it has shipped continuously to ``main``.
   ``test_pyramid_reader_parallel_decode_matches_serial``,
   ``test_pyramid_auto_stream_matches_materialize``,
   ``test_iter_pyramid_levels_matches_make_pyramid_levels``.
-
-
-0.1.4 (2026-05-25)
-------------------
 
 **MozJPEG ships on every wheel**
 
