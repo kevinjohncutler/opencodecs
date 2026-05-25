@@ -101,6 +101,18 @@ class HTTPDataSource(DataSource):
         adaptive_window: int = 64 * 1024,
         adaptive_streak_threshold: int = 3,
         adaptive_locality: int = 64 * 1024,
+        # Sequential-access mode (libvips-style streaming). When set to
+        # "sequential", read_at uses a single rolling buffer rather than
+        # the LRU cache — assumes the caller reads the file ~once in
+        # forward order (raster-scan over a huge COG, FITS HDU walk,
+        # NDTiff frame stream). Memory stays bounded to
+        # ``sequential_chunk_bytes`` regardless of file size; backward
+        # seeks still work but invalidate the buffer and issue a fresh
+        # Range request. Default "random" keeps the LRU + adaptive
+        # read-ahead path for the bulk of callers (TIFF IFD walks,
+        # pyramid level switches, FITS table scans).
+        access: str = "random",
+        sequential_chunk_bytes: int = 4 * 1024 * 1024,
     ):
         self.url = url
         self.timeout = float(timeout)
@@ -133,6 +145,21 @@ class HTTPDataSource(DataSource):
         self._adaptive_locality = int(adaptive_locality)
         self._adaptive_last_end: int | None = None
         self._adaptive_streak = 0
+
+        if access not in ("random", "sequential"):
+            raise ValueError(
+                f"access must be 'random' or 'sequential', got {access!r}"
+            )
+        self._access = access
+        self._sequential_chunk_bytes = int(sequential_chunk_bytes)
+        # Single rolling buffer that covers [_seq_buf_off, _seq_buf_off + len).
+        # Sequential mode keeps this in lieu of the LRU.
+        self._seq_buf: bytes | None = None
+        self._seq_buf_off: int = 0
+        # Bookkeeping for sequential observability — analogous to
+        # _total_requests/_total_bytes_fetched for the LRU path.
+        self._sequential_refills = 0
+        self._sequential_backward_seeks = 0
         # Lazily-created thread pool for read_many. We don't pay the
         # 8-thread startup cost on single-read workflows.
         self._pool: concurrent.futures.ThreadPoolExecutor | None = None
@@ -188,6 +215,9 @@ class HTTPDataSource(DataSource):
         # Serve from prefetched head if the requested range fits.
         if self._prefetch_buffer and end <= len(self._prefetch_buffer):
             return self._prefetch_buffer[offset:end]
+
+        if self._access == "sequential":
+            return self._read_at_sequential(offset, n)
 
         # Exact-range LRU lookup.
         with self._lock:
@@ -253,6 +283,53 @@ class HTTPDataSource(DataSource):
                 self._cache_put((offset, n), exact)
                 return exact
         return chunk
+
+    def _read_at_sequential(self, offset: int, n: int) -> bytes:
+        """Serve ``[offset, offset+n)`` from a single rolling buffer.
+
+        Sequential mode replaces the LRU + adaptive-readahead machinery
+        with one ``sequential_chunk_bytes``-sized buffer that slides
+        forward as the caller reads. Memory is bounded to one chunk
+        regardless of file size.
+
+        Cases:
+
+        * Hit: ``[offset, offset+n)`` lies within the current buffer
+          (``[_seq_buf_off, _seq_buf_off+len(_seq_buf))``). Slice and
+          return. No network call.
+        * Miss (forward): the request starts at or past the current
+          buffer end, or starts before the buffer (backward seek). Fetch
+          a fresh ``max(sequential_chunk_bytes, n)`` bytes starting at
+          ``offset`` and replace the buffer. Bytes behind ``offset`` are
+          dropped — sequential mode trades random-access locality for
+          bounded memory.
+        """
+        end = offset + n
+        buf = self._seq_buf
+        if buf is not None:
+            bo = self._seq_buf_off
+            be = bo + len(buf)
+            if bo <= offset and end <= be:
+                return buf[offset - bo : offset - bo + n]
+            if offset < bo:
+                # Backward seek — count for observability so users can
+                # spot a workload that's actually random and would
+                # benefit from access="random".
+                self._sequential_backward_seeks += 1
+
+        chunk_n = max(self._sequential_chunk_bytes, n)
+        if self._total_size is not None:
+            chunk_n = min(chunk_n, max(0, self._total_size - offset))
+            if chunk_n < n:
+                # Caller asked for past-EOF; let the range request
+                # surface the underlying error rather than silently
+                # truncating.
+                chunk_n = n
+        chunk = self._range_request(offset, chunk_n)
+        self._seq_buf = chunk
+        self._seq_buf_off = offset
+        self._sequential_refills += 1
+        return chunk[:n] if len(chunk) >= n else chunk
 
     def _observe_miss(self, offset: int, n: int) -> None:
         """Update the adaptive-read-ahead streak counter.
@@ -432,6 +509,12 @@ class HTTPDataSource(DataSource):
             "cache_entries": len(self._cache),
             "cache_used_bytes": self._cache_used,
             "total_size": self._total_size,
+            "access": self._access,
+            "sequential_refills": self._sequential_refills,
+            "sequential_backward_seeks": self._sequential_backward_seeks,
+            "sequential_buf_bytes": (
+                len(self._seq_buf) if self._seq_buf is not None else 0
+            ),
         }
 
     # ------------------------------------------------------------------

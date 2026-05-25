@@ -316,6 +316,80 @@ def test_http_url_auto_routes_to_pyramid(http_tiff_url):
 
 
 # ---------------------------------------------------------------------------
+# Sequential access mode
+# ---------------------------------------------------------------------------
+
+
+def test_http_sequential_serves_from_rolling_buffer(http_tiff_url):
+    """Sequential mode: forward reads within one chunk → no extra Range
+    requests; one buffer refill covers many consecutive small reads."""
+    url_for, tmp_path, _ = http_tiff_url
+    payload = b"abcdefghij" * 1000  # 10 KB
+    (tmp_path / "blob.bin").write_bytes(payload)
+
+    src = HTTPDataSource(
+        url_for("blob.bin"),
+        prefetch_bytes=0,
+        access="sequential",
+        sequential_chunk_bytes=4096,
+    )
+    try:
+        # First read at offset 0 should trigger a 4 KB chunk fetch and
+        # serve 100 bytes from it.
+        assert src.read_at(0, 100) == payload[:100]
+        assert src.stats["sequential_refills"] == 1
+        assert src.stats["requests"] == 1
+
+        # Next 30 forward reads inside the chunk: zero new fetches.
+        for i in range(1, 31):
+            assert src.read_at(i * 100, 100) == payload[i*100:(i+1)*100]
+        assert src.stats["sequential_refills"] == 1
+        assert src.stats["requests"] == 1
+
+        # Reading past the chunk end triggers a refill.
+        assert src.read_at(5000, 100) == payload[5000:5100]
+        assert src.stats["sequential_refills"] == 2
+        assert src.stats["requests"] == 2
+
+        # Memory is bounded to the chunk size — the LRU isn't filling.
+        assert src.stats["cache_used_bytes"] == 0
+        assert src.stats["cache_entries"] == 0
+    finally:
+        src.close()
+
+
+def test_http_sequential_backward_seek_counted(http_tiff_url):
+    """A backward read still works but counts a backward-seek event so
+    benchmark consumers can spot a workload that isn't sequential."""
+    url_for, tmp_path, _ = http_tiff_url
+    payload = bytes(range(256)) * 100  # 25.6 KB
+    (tmp_path / "blob.bin").write_bytes(payload)
+
+    src = HTTPDataSource(
+        url_for("blob.bin"),
+        prefetch_bytes=0,
+        access="sequential",
+        sequential_chunk_bytes=2048,
+    )
+    try:
+        # Forward 1st read fills the buffer at offset 5000.
+        assert src.read_at(5000, 100) == payload[5000:5100]
+        assert src.stats["sequential_backward_seeks"] == 0
+
+        # Backward read forces a refill + bumps the counter.
+        assert src.read_at(100, 50) == payload[100:150]
+        assert src.stats["sequential_backward_seeks"] == 1
+        assert src.stats["sequential_refills"] == 2
+    finally:
+        src.close()
+
+
+def test_http_sequential_invalid_access_raises():
+    with pytest.raises(ValueError, match="access must be"):
+        HTTPDataSource("http://example.invalid/x", access="bogus")
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
