@@ -698,11 +698,16 @@ build_SPERR() {
             sed -i \
                 's|.*INTERPROCEDURAL_OPTIMIZATION TRUE.*|    # Patched: IPO disabled for Windows MSVC + WINDOWS_EXPORT_ALL_SYMBOLS|' \
                 "$src/src/CMakeLists.txt"
+            # Belt + suspenders: also override CMAKE_INTERPROCEDURAL_OPTIMIZATION
+            # globally. CMAKE_COMMON sets it ON via USE_LTO=1 default; that
+            # would still enable IPO on SPERR even with the per-target
+            # override sed'd out.
             cmake_build "$src" \
                 -DBUILD_CLI_UTILITIES=OFF \
                 -DBUILD_UNIT_TESTS=OFF \
                 -DUSE_OMP=OFF \
-                -DCMAKE_WINDOWS_EXPORT_ALL_SYMBOLS=ON
+                -DCMAKE_WINDOWS_EXPORT_ALL_SYMBOLS=ON \
+                -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=OFF
             ;;
         *)
             cmake_build "$src" \
