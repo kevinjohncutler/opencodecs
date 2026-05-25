@@ -678,12 +678,25 @@ build_SPERR() {
     # /LTCG + /DEF + SHARED link.exe crash (STATUS_ACCESS_VIOLATION).
     case "$(uname -s)" in
         MINGW*|MSYS*|CYGWIN*)
+            # SPERR's src/CMakeLists.txt line 55 unconditionally
+            # force-enables IPO/LTO per-target:
+            #   set_property(TARGET SPERR PROPERTY
+            #       INTERPROCEDURAL_OPTIMIZATION TRUE)
+            # This overrides our global
+            # -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=OFF flag, so
+            # MSVC compiles SPERR.dll's objects with /GL and link.exe
+            # gets /LTCG + /DEF (from WINDOWS_EXPORT_ALL_SYMBOLS),
+            # which crashes (STATUS_ACCESS_VIOLATION). Patch the
+            # override out on Windows only — Linux/macOS keep IPO
+            # for the perf they were tuned for.
+            sed -i \
+                's|set_property(TARGET SPERR PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)|# Patched: disabled for Windows MSVC + WINDOWS_EXPORT_ALL_SYMBOLS|' \
+                "$src/src/CMakeLists.txt"
             cmake_build "$src" \
                 -DBUILD_CLI_UTILITIES=OFF \
                 -DBUILD_UNIT_TESTS=OFF \
                 -DUSE_OMP=OFF \
-                -DCMAKE_WINDOWS_EXPORT_ALL_SYMBOLS=ON \
-                -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=OFF
+                -DCMAKE_WINDOWS_EXPORT_ALL_SYMBOLS=ON
             ;;
         *)
             cmake_build "$src" \
