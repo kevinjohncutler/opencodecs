@@ -689,8 +689,14 @@ build_SPERR() {
             # which crashes (STATUS_ACCESS_VIOLATION). Patch the
             # override out on Windows only — Linux/macOS keep IPO
             # for the perf they were tuned for.
+            # Match the indented line: `    set_property(TARGET SPERR
+            # PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)`. Earlier
+            # exact-match sed missed the 4-space indent. Use a lenient
+            # any-content pattern; verified on the Windows VM (MSVC 14.44 — same
+            # version as CI): after patch, no IPO line remains and
+            # ninja produces both SPERR.dll + SPERR.lib cleanly.
             sed -i \
-                's|set_property(TARGET SPERR PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)|# Patched: disabled for Windows MSVC + WINDOWS_EXPORT_ALL_SYMBOLS|' \
+                's|.*INTERPROCEDURAL_OPTIMIZATION TRUE.*|    # Patched: IPO disabled for Windows MSVC + WINDOWS_EXPORT_ALL_SYMBOLS|' \
                 "$src/src/CMakeLists.txt"
             cmake_build "$src" \
                 -DBUILD_CLI_UTILITIES=OFF \
