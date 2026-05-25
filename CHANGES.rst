@@ -10,6 +10,50 @@ Versions follow the same ``YYYY.M.D`` cadence as upstream when we
 publish; the entries below cluster work by date rather than by
 release because most of it has shipped continuously to ``main``.
 
+0.1.5 (unreleased)
+------------------
+
+**libvips-inspired streaming improvements**
+
+* ``HTTPDataSource(access='sequential', sequential_chunk_bytes=4*1024*1024)``
+  — opt-in libvips-style sequential read mode. Replaces the LRU +
+  adaptive read-ahead with a single rolling buffer that slides forward
+  as the caller reads. Memory stays bounded to one chunk regardless of
+  file size. Target workload: tile-by-tile raster scan over a huge
+  COG / OME-TIFF served over HTTP. Backward seeks still work but
+  invalidate the buffer; ``stats['sequential_backward_seeks']`` tracks
+  the count so users can spot a workload that's actually random and
+  would benefit from ``access='random'``.
+
+* ``TiffPyramidReader.read_region`` now parallelises tile decode
+  across a thread pool (default ``min(cpu_count(), 8)``). The
+  compressed-tile decoders (JPEG, JPEG-2000, deflate, zstd, LZW, WebP,
+  LERC) all release the GIL in their C path, so threads scale across
+  cores on CPython. Kicks in only when the region covers 4+ tiles —
+  fewer than that and thread-pool spin-up cost dominates. Pass
+  ``num_decode_workers=1`` to force the serial path for benchmarks /
+  regression-diff.
+
+* ``TiffWriter.write_pyramid_auto`` gained ``stream_levels=True``
+  (default for COG layout). Computes and writes one level at a time
+  via a new ``iter_pyramid_levels`` generator, dropping each finished
+  level before computing the next. Peak memory drops from
+  ``~1.33 × level0`` (entire geometric series materialised) to
+  ``~2 × current_level``. Useful when level 0 already dominates RAM
+  (whole-slide pathology, cryo-EM tomograms). Output file is
+  byte-identical to the materialize-all path. SubIFD layout
+  (``subifds=True``) still uses the materialize path because that
+  layout writes sub-resolution IFD offsets into the main IFD's tag
+  330 — sub-level offsets have to be known up front.
+
+  Validated via tests:
+  ``test_http_sequential_serves_from_rolling_buffer``,
+  ``test_http_sequential_backward_seek_counted``,
+  ``test_pyramid_reader_parallel_decode_matches_serial``,
+  ``test_pyramid_auto_stream_matches_materialize``,
+  ``test_iter_pyramid_levels_matches_make_pyramid_levels``.
+
+
 0.1.4 (2026-05-25)
 ------------------
 
