@@ -47,6 +47,7 @@ MUST_SHIP_ALL_PLATFORMS = {
     "_png",
     "_jpeg",
     "_jpeg2k",
+    "_mozjpeg",
     "_webp",
     "_avif",
     "_heif",

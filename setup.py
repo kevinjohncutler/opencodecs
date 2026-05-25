@@ -638,12 +638,30 @@ def _maybe_build_mozjpeg_ext() -> list[Extension]:
     # by symbol absence alone. For generic system prefixes like /usr or
     # /usr/local we additionally require a ``mozjpeg/`` include subdir
     # so we don't misidentify vanilla libjpeg-turbo as MozJPEG.
-    candidates = [
+    # Keg-style per-user cache install from
+    # bench/build_codec_libs.sh::build_mozjpeg (Linux/macOS) and the
+    # cibuildwheel Windows install (under $OPENCODECS_CODEC_LIBS_PREFIX
+    # or $CONDA_PREFIX/Library). All "keg-style" — no mozjpeg/ include
+    # subdir needed because the prefix itself is mozjpeg-only.
+    candidates: list[tuple[Path, bool]] = [
+        (_OC_USER_CACHE / "mozjpeg", False),
         (Path("/opt/homebrew/opt/mozjpeg"), False),
         (Path("/usr/local/opt/mozjpeg"), False),
+    ]
+    _libs_prefix_env = os.environ.get("OPENCODECS_CODEC_LIBS_PREFIX")
+    if _libs_prefix_env:
+        _libs_prefix_path = Path(_libs_prefix_env)
+        candidates.append((_libs_prefix_path / "mozjpeg", False))
+        # Conda Library/ layout: $CONDA_PREFIX/Library/mozjpeg
+        candidates.append((_libs_prefix_path / "Library" / "mozjpeg", False))
+    _conda = os.environ.get("CONDA_PREFIX")
+    if _conda:
+        candidates.append((Path(_conda) / "mozjpeg", False))
+        candidates.append((Path(_conda) / "Library" / "mozjpeg", False))
+    candidates.extend([
         (Path("/usr"), True),
         (Path("/usr/local"), True),
-    ]
+    ])
     prefix = None
     lib_subdir = None  # "lib" or "lib/x86_64-linux-gnu" etc.
     lib_filename = None
@@ -662,15 +680,27 @@ def _maybe_build_mozjpeg_ext() -> list[Extension]:
             ("lib/x86_64-linux-gnu", "libturbojpeg.so.0"),
             ("lib/aarch64-linux-gnu", "libturbojpeg.so"),
             ("lib/aarch64-linux-gnu", "libturbojpeg.so.0"),
+            # Windows MSVC build (mozjpeg's CMake produces turbojpeg.lib
+            # import library next to turbojpeg.dll in bin/).
+            ("lib", "turbojpeg.lib"),
         ]
         for subdir, name in lib_candidates:
             libpath = c / subdir / name
             if not libpath.exists():
                 continue
             # MozJPEG branches off libjpeg-turbo 1.x — it lacks the v3
-            # tj3* API. If we're already constrained to a mozjpeg subdir,
-            # accept any libturbojpeg under it. Otherwise probe symbols.
-            if require_mozjpeg_subdir:
+            # tj3* API. Three cases for accepting a candidate:
+            #   (a) require_mozjpeg_subdir=True (generic /usr or /usr/local
+            #       with a mozjpeg/ include subdir) — trust the layout.
+            #   (b) prefix path is named '.../mozjpeg' or '.../mozjpeg/'
+            #       (homebrew keg, our per-user cache build, conda env
+            #       subdir) — the dedicated dir name is the signal; skip
+            #       symbol probing. This is required on Windows where nm
+            #       isn't on PATH and on minimal Linux runners that don't
+            #       ship binutils.
+            #   (c) otherwise: probe libturbojpeg's symbol table with nm
+            #       to confirm it's a MozJPEG build (lacks tj3Compress8).
+            if require_mozjpeg_subdir or c.name == "mozjpeg":
                 prefix = c
                 lib_subdir = subdir
                 lib_filename = name

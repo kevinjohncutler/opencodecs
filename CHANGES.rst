@@ -10,6 +10,46 @@ Versions follow the same ``YYYY.M.D`` cadence as upstream when we
 publish; the entries below cluster work by date rather than by
 release because most of it has shipped continuously to ``main``.
 
+0.1.4 (2026-05-25)
+------------------
+
+**MozJPEG ships on every wheel**
+
+* Added MozJPEG (Mozilla's libjpeg-turbo fork) to the cibuildwheel
+  codec-lib build set on Linux, macOS, and Windows. MozJPEG produces
+  JPEG files ~10-15% smaller than baseline libjpeg-turbo at the same
+  quality setting (progressive encoding + trellis quantization +
+  better quantization tables). The ``_mozjpeg`` extension has shipped
+  on macOS wheels for a while via brew; v0.1.4 brings it to
+  Linux + Windows so the codec is available everywhere.
+* New ``build_mozjpeg`` recipe in ``bench/build_codec_libs.sh``
+  installs into a keg-style ``mozjpeg/`` subdir under the prefix
+  (rather than the shared ``$PREFIX/{include,lib}``) to avoid the
+  libturbojpeg / libjpeg name collision with the libjpeg-turbo 3.x
+  install. setup.py's mozjpeg probe was extended to recognise the
+  new candidate paths on Linux (``~/.cache/opencodecs/mozjpeg``),
+  Windows (``$CONDA_PREFIX/Library/mozjpeg``), and the Windows
+  fallback (no ``nm``: trust the keg-style directory name).
+* Locally validated on the Windows VM (MSVC 14.44 — same as CI) and
+  the Linux x86_64 host (Linux x86_64): ``bash bench/build_codec_libs.sh
+  --only=mozjpeg`` followed by ``setup.py build_ext --inplace``
+  produces ``_mozjpeg.{pyd,so}`` cleanly. Per the new lesson in
+  CLAUDE.md, this iteration was validated end-to-end through the
+  same script CI runs, with the same env vars, before any push.
+
+**Post-publish wheel coverage check (CI hardening)**
+
+* New ``ci/check_wheel_contents.py`` runs in the wheel-build job
+  immediately after ``cibuildwheel`` produces each wheel. It unzips
+  the wheel, walks ``opencodecs/codecs/``, and asserts every codec
+  in the ``MUST_SHIP_ALL_PLATFORMS`` set has a ``.pyd``/``.so``
+  present. Missing codec → matrix job fails → publish step gated.
+* Catches the v0.1.2-style "changelog overclaim" silent-drop class
+  of bugs at build time instead of after publish. v0.1.2's Windows
+  wheels shipped without ``_sperr``/``_brunsli`` despite the
+  changelog claim; this check would have failed that build.
+
+
 0.1.3 (2026-05-22)
 ------------------
 

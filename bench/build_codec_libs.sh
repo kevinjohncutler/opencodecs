@@ -55,6 +55,7 @@ VERSIONS=(
     "libjpeg-turbo   3.1.2"
     "libwebp         1.6.0"
     "openjpeg        2.5.5"
+    "mozjpeg         4.1.5"
 
     # Container / multi-codec (medium)
     # c-blosc2 pinned at 2.x because 3.x changed the default filter chain
@@ -401,6 +402,45 @@ build_libdeflate() {
     src=$(fetch_tar libdeflate "$v" "https://github.com/ebiggers/libdeflate/archive/refs/tags/v$v.tar.gz")
     cmake_build "$src" -DLIBDEFLATE_BUILD_GZIP=OFF
     mark_built libdeflate "$v"
+}
+
+# ---- MozJPEG (libjpeg-turbo fork; ~10-15% smaller JPEGs) ---------------
+# Installs into a dedicated "keg-style" subdir so its libturbojpeg /
+# libjpeg don't collide with the libjpeg-turbo 3.x install at $PREFIX
+# (both share the same .so/.dll/.lib names). setup.py's mozjpeg probe
+# expects exactly this keg-style layout.
+build_mozjpeg() {
+    local v="$(get_version mozjpeg)"
+    is_built mozjpeg "$v" && { echo "  mozjpeg $v already built"; return; }
+    echo "==> mozjpeg $v"
+    local src
+    src=$(fetch_tar mozjpeg "$v" \
+        "https://github.com/mozilla/mozjpeg/archive/refs/tags/v$v.tar.gz")
+    local mozjpeg_prefix
+    case "$(uname -s)" in
+        Darwin)
+            mozjpeg_prefix="${HOME}/Library/Caches/opencodecs/mozjpeg"
+            ;;
+        MINGW*|MSYS*|CYGWIN*)
+            mozjpeg_prefix="${PREFIX}/mozjpeg"
+            ;;
+        *)
+            mozjpeg_prefix="${XDG_CACHE_HOME:-$HOME/.cache}/opencodecs/mozjpeg"
+            ;;
+    esac
+    install -d "$mozjpeg_prefix"
+    local build="$src/_build"
+    rm -rf "$build"
+    mkdir -p "$build"
+    ( cd "$build" \
+      && cmake "${CMAKE_GEN[@]}" "${CMAKE_COMMON[@]}" \
+          -DCMAKE_INSTALL_PREFIX="$mozjpeg_prefix" \
+          -DENABLE_STATIC=OFF -DENABLE_SHARED=ON \
+          -DWITH_TURBOJPEG=ON -DWITH_JPEG8=ON \
+          -DPNG_SUPPORTED=OFF \
+          "$src" \
+      && "${BUILD_TOOL[@]}" && "${INSTALL_TOOL[@]}" )
+    mark_built mozjpeg "$v"
 }
 
 # ---- libpng (depends on zlib) ------------------------------------------
@@ -930,6 +970,7 @@ ORDERED=(
     libjpeg-turbo
     libwebp
     openjpeg
+    mozjpeg
     c-blosc2
     libaom
     dav1d
@@ -960,6 +1001,7 @@ for name in "${ORDERED[@]}"; do
             giflib)          build_giflib ;;
             libpng)          build_libpng ;;
             libjpeg-turbo)   build_libjpeg_turbo ;;
+            mozjpeg)         build_mozjpeg ;;
             libwebp)         build_libwebp ;;
             openjpeg)        build_openjpeg ;;
             c-blosc2)        build_c_blosc2 ;;
