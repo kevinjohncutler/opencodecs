@@ -63,23 +63,21 @@ take them as upper bounds.
   2. **Live IDC / NASA SnowEx smoke test**, same pattern as the
      DICOMweb item above. ~1-2 hr.
 
-## HTTPDataSource prefetch tuning (cross-cutting)
+## HTTPDataSource prefetch tuning (cross-cutting) — done
 
-* **Status**: covering-cache lookup + opt-in speculative read-ahead
-  shipped (commit landing with this doc edit). Any read that lands
-  inside a previously-cached blob is now free; passing
-  ``readahead_window=65536`` to ``HTTPDataSource`` turns on the
-  speculative-fetch path that batches sequential small reads (FITS
-  HDU walks, h5py B-tree traversal, TIFF IFD chains). 6 regression
-  tests in ``tests/test_http_prefetch.py`` verify both behaviors
-  hit / skip the network as expected. Off by default because the
-  bytes-tight assertions in ``tests/test_http_byte_savings.py``
-  showed that sparse-access workloads pay for the wasted bytes.
-* **What's left**: adaptive trigger. Today the read-ahead is a
-  binary kwarg — on or off. A smarter trigger that watches for
-  N adjacent small reads and only then escalates to the larger
-  window would get the wins for both sequential and sparse
-  workloads without the user having to know up-front. ~2-3 hr.
+* **Status**: shipped end-to-end.
+  * Covering-cache lookup + opt-in fixed-window read-ahead (commit
+    ``f7a0889``).
+  * Adaptive trigger (commit ``4d435ae``): the streak counter in
+    ``_observe_miss`` watches for N adjacent small misses inside
+    ``adaptive_locality`` of each other and auto-promotes the next
+    miss to an ``adaptive_window`` fetch. On by default with
+    ``adaptive_window=65536``, ``adaptive_streak_threshold=3``;
+    set ``adaptive_window=0`` to disable.
+  * Eight regression tests across ``tests/test_http_prefetch.py``
+    verify both the explicit and adaptive paths fire / skip the
+    network correctly; ``tests/test_http_byte_savings.py`` keeps the
+    sparse-workload bytes-budget assertions green.
 
 ## libspng PAETH filter NEON / SSE intrinsics
 
