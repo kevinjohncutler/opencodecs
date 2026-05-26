@@ -217,11 +217,23 @@ def _load_extension(basename: str):
 
 
 # Eagerly load every shipped extension. Failures (missing .so files for
-# extensions still being built) are silent — registry will simply skip
-# registering codecs whose backing extension didn't load.
+# extensions still being built, OR successfully-built .so files whose
+# transitive shared-library deps aren't on the loader path — e.g. an
+# editable install of opencodecs that ships ``_sz3.so`` but where the
+# host doesn't have ``libSZ3c.so`` installed system-wide) are silent —
+# registry will simply skip registering codecs whose backing extension
+# didn't load.
 _loaded: dict = {}
+_load_failures: dict = {}
 for _name in _EXTENSIONS:
-    _loaded[_name] = _load_extension(_name)
+    try:
+        _loaded[_name] = _load_extension(_name)
+    except ImportError as _exc:
+        # Transitive dlopen failure (e.g. ``libSZ3c.so: cannot open
+        # shared object file``). Honour the silent-skip contract so one
+        # broken codec doesn't take down the rest of the package.
+        _loaded[_name] = None
+        _load_failures[_name] = _exc
 
 # Convenient direct attribute access (back-compat).
 _jxl = _loaded.get("_jxl")

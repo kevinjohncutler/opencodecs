@@ -1125,6 +1125,36 @@ extensions = [
         extra_link_args=extra_link_args,
         language="c",
     ),
+    # libultrahdr (Ultra-HDR / ISO 21496-1). Links against system libuhdr.
+    # macOS: `brew install libultrahdr` -> /opt/homebrew/{include,lib}.
+    # Linux: build from https://github.com/google/libultrahdr.
+    # If the header/dylib aren't present, the Extension still appears in
+    # the wheel build plan -- the public opencodecs.uhdr module catches
+    # ImportError and substitutes a clear "install libultrahdr" stub.
+    Extension(
+        name="opencodecs.codecs._uhdr",
+        sources=["src/opencodecs/codecs/_uhdr.pyx"],
+        include_dirs=[
+            str(PKG_CODECS),
+            numpy.get_include(),
+            *_resolve_include_dirs("ultrahdr_api.h"),
+        ],
+        library_dirs=[],
+        libraries=["uhdr"],
+        define_macros=[
+            ("NPY_NO_DEPRECATED_API", "NPY_1_7_API_VERSION"),
+        ],
+        # Aggressive optimisation is critical for the gain-map kernel
+        # to auto-vectorise (NEON on Apple Silicon, AVX2 on x86). The
+        # polynomial log2 in _gain_map_kernel only beats numpy's
+        # vectorised log2 when the compiler turns it into SIMD.
+        extra_compile_args=[
+            "-O3",
+            "-ffast-math",  # fine for gain-map output (uint8, ~1% tolerance)
+            "-fno-math-errno",
+        ],
+        language="c",
+    ),
     # QOI: vendored single-header (3rdparty/qoi/qoi.h). Compile the impl
     # via QOI_IMPLEMENTATION; no external library needed.
     Extension(
@@ -1881,7 +1911,7 @@ _REQUIRED_HEADERS = {
     "opencodecs.codecs._snappy": ("snappy-c.h",),
     "opencodecs.codecs._pcodec": ("cpcodec.h",),
     "opencodecs.codecs._jpeg":   ("turbojpeg.h",),
-    "opencodecs.codecs._ultrahdr": ("ultrahdr_api.h",),
+    "opencodecs.codecs._uhdr":   ("ultrahdr_api.h",),
     "opencodecs.codecs._isal":   ("isa-l/igzip_lib.h",),
     "opencodecs.codecs._webp":   ("webp/encode.h",),
     "opencodecs.codecs._jpeg2k": ("openjpeg-2.5/openjpeg.h", "openjpeg-2.4/openjpeg.h"),
