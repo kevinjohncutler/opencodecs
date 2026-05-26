@@ -11,32 +11,32 @@ take them as upper bounds.
 
 ---
 
-## Compressed FITS — `PLIO_1`
+## Compressed FITS — `PLIO_1` — done
 
-* **Status**: RICE_1, GZIP_1, GZIP_2, HCOMPRESS_1, NOCOMPRESS, and
-  the GZIP_COMPRESSED_DATA / UNCOMPRESSED_DATA fallback columns all
-  ship. HCOMPRESS_1 uses vendored cfitsio source
-  (``3rdparty/cfitsio/fits_hdecompress.c``) with a minimal
-  ``fitsio2.h`` stub.
-* **What's left**: ``PLIO_1`` — IRAF mask-coding (run-length over a
-  bit-packed mask). Tiny (<300 lines), but only seen on segmentation
-  masks in IRAF pipelines. ~1-2 hr. Raises a clear
-  ``NotImplementedError`` until then so users get a precise signal.
+* **Status**: every standard FITS tile-compression algorithm now
+  ships. RICE_1, GZIP_1, GZIP_2, HCOMPRESS_1, NOCOMPRESS,
+  GZIP_COMPRESSED_DATA / UNCOMPRESSED_DATA fallbacks, and PLIO_1.
+  PLIO_1 vendors cfitsio's ``3rdparty/cfitsio/pliocomp.c`` (Doug
+  Tody, NRAO; public-domain) and exposes a tiny
+  ``opencodecs.codecs._plio.decode_raw`` shim. The PLIO column uses
+  ``1PI`` (int16 opcodes) rather than ``1PB``, so
+  ``_fits_compressed.py`` now tracks the COMPRESSED_DATA column's
+  element-byte-width to compute the heap-payload length correctly.
+  Round-trip tested against astropy in
+  ``tests/test_fits.py::test_compressed_fits_plio_1_roundtrip``.
 
 ## EER file-level reader follow-ups
 
-* **Status**: `_eer_reader.py` (the file-level wrapper) and the
-  bitstream decoder both ship. Frame iteration + sum across ranges
-  work.
-* **What's left**:
-  1. Dose-corrected temporal-binning helpers (apply a per-frame dose
-     curve when summing — currently the API only does flat sums).
-  2. Real-acquisition test fixture (a Falcon-4 sample file from an
-     actual scope; the synthetic bitstream test catches encoding
-     bugs but not file-container quirks the wild EER writers emit).
-* **Effort**: 1-2 hr for the dose helper; the fixture is a "find a
-  willing collaborator + redistribute the data under an open
-  license" task more than a coding one.
+* **Status**: ``_eer_reader.py`` + the bitstream decoder ship.
+  ``sum(start, stop, *, weights=None, dtype=...)`` now supports a
+  per-frame dose curve via the ``weights`` argument (commit landing
+  with this doc edit). Frame iteration, flat-sum, weighted-sum, and
+  range-validation are all tested.
+* **What's left**: a real-acquisition test fixture (a Falcon-4
+  sample file from an actual scope; the synthetic bitstream tests
+  cover encoding logic but not file-container quirks wild EER
+  writers emit). This is a "find a willing collaborator +
+  redistribute under an open license" task more than a coding one.
 
 ## DICOMweb live integration test — done
 

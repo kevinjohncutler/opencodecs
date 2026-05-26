@@ -80,6 +80,7 @@ class EerReader(Reader):
         start: int = 0,
         stop: int | None = None,
         *,
+        weights: "np.ndarray | None" = None,
         dtype: np.dtype | type = np.uint16,
     ) -> np.ndarray:
         """Accumulate frames ``[start, stop)`` into one count image.
@@ -90,8 +91,18 @@ class EerReader(Reader):
         events per pixel; pass ``dtype=np.uint32`` if you're summing
         a long acquisition where any pixel might exceed that.
 
+        Pass ``weights`` to apply a per-frame dose curve — useful when
+        the detector dose-rate varies across the acquisition (e.g. a
+        beam-induced-motion correction that down-weights early
+        high-drift frames, or a temporal-binning scheme that emphasises
+        frames at the peak of the exposure). ``weights[k]`` multiplies
+        the k-th frame inside the requested range. Passing weights
+        forces a float accumulator so partial contributions don't get
+        truncated; override with ``dtype=np.float32`` for tighter
+        memory on large detectors.
+
         Frame-by-frame decode + in-place accumulation, so peak memory
-        is one frame's worth, not n_frames × frame.
+        is one frame's worth, not ``n_frames × frame``.
         """
         if stop is None:
             stop = self.n_frames
@@ -101,11 +112,29 @@ class EerReader(Reader):
                 f"for {self.n_frames} frames"
             )
 
-        out = np.zeros(self.shape, dtype=dtype)
-        for i in range(start, stop):
-            # Each .frame() returns a fresh uint8 array; add via
-            # broadcasting into the accumulator dtype.
-            np.add(out, self.frame(i), out=out, casting="unsafe")
+        if weights is None:
+            out = np.zeros(self.shape, dtype=dtype)
+            for i in range(start, stop):
+                # Each .frame() returns a fresh uint8 array; add via
+                # broadcasting into the accumulator dtype.
+                np.add(out, self.frame(i), out=out, casting="unsafe")
+            return out
+
+        w = np.asarray(weights, dtype=np.float64)
+        if w.shape != (stop - start,):
+            raise ValueError(
+                f"EerReader.sum: weights shape {w.shape} doesn't match "
+                f"frame range length {stop - start}"
+            )
+        # When weights are present, an integer accumulator would
+        # silently truncate fractional contributions. Promote to
+        # float64 unless the caller explicitly asked for a float dtype.
+        acc_dtype = np.dtype(dtype)
+        if acc_dtype.kind not in ("f", "c"):
+            acc_dtype = np.float64
+        out = np.zeros(self.shape, dtype=acc_dtype)
+        for k, i in enumerate(range(start, stop)):
+            out += self.frame(i) * w[k]
         return out
 
     def close(self) -> None:

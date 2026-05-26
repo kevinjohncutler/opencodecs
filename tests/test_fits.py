@@ -208,13 +208,22 @@ def test_compressed_fits_hcompress_int16(tmp_path):
     np.testing.assert_array_equal(ours, theirs)
 
 
-def test_compressed_fits_unsupported_type_raises(tmp_path):
-    """PLIO_1 is still deferred — should fail loudly."""
-    img = np.arange(32 * 32, dtype=np.int16).reshape(32, 32).clip(0, 100)
+def test_compressed_fits_plio_1_roundtrip(tmp_path):
+    """PLIO_1 (IRAF mask coding) — astropy writes a PLIO_1-compressed
+    int16 mask, opencodecs decodes it back to the original."""
+    # Mask-like int16 with small run-lengths — exercises the PLIO
+    # run-length encoder's typical workload (segmentation labels).
+    rng = np.random.default_rng(0)
+    img = np.zeros((48, 48), dtype=np.int16)
+    img[10:20, 10:20] = 3
+    img[20:35, 5:30] = 7
+    img[35:, :] = rng.integers(0, 4, size=(13, 48), dtype=np.int16)
     p = tmp_path / "plio.fits"
     astropy_fits.HDUList([
         astropy_fits.PrimaryHDU(),
         astropy_fits.CompImageHDU(img, compression_type="PLIO_1"),
     ]).writeto(p)
-    with pytest.raises(NotImplementedError, match="PLIO_1"):
-        FitsStream(p).hdu(1).asarray()
+    ours = FitsStream(p).hdu(1).asarray()
+    theirs = astropy_fits.open(p)[1].data
+    np.testing.assert_array_equal(ours, theirs)
+    np.testing.assert_array_equal(ours, img)

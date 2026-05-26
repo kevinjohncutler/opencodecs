@@ -23,8 +23,12 @@ Supported ``ZCMPTYPE`` values:
   bytes, ...), gzips, and the decoder reverses. Useful for floats.
 * ``NOCOMPRESS`` — tiles are stored raw (no compression).
 
-Deferred: ``HCOMPRESS_1`` (less common, lossy), ``PLIO_1`` (IRAF mask
-encoding; rare outside astronomy).
+* ``HCOMPRESS_1`` — quadtree H-compress, legacy HST + survey data.
+* ``PLIO_1`` — IRAF run-length mask encoding (segmentation / catalog
+  masks). Rare outside astronomy.
+
+No FITS tile compression algorithm is deferred — full RICE_1 /
+GZIP_1 / GZIP_2 / NOCOMPRESS / HCOMPRESS_1 / PLIO_1 coverage.
 """
 
 from __future__ import annotations
@@ -225,6 +229,12 @@ def decompress_image(
     is_q = False
     gzip_is_q = False
     uncomp_is_q = False
+    # Element-byte-width of the COMPRESSED_DATA VLA. ``1PB`` (= 1) for
+    # byte-output compressors (RICE_1 / GZIP_1 / GZIP_2 / HCOMPRESS_1);
+    # ``1PI`` (= 2) for PLIO_1 which stores its run-length opcodes as
+    # 16-bit shorts. The descriptor's count is in elements, not bytes,
+    # so we need this to compute the actual heap-payload byte length.
+    comp_elem_size = 1
     cursor = 0
     for col in range(1, tfields + 1):
         ttype = header.get(f"TTYPE{col}", "").strip().upper()
@@ -236,6 +246,14 @@ def decompress_image(
             if ttype == "COMPRESSED_DATA":
                 comp_col_offset = cursor
                 is_q = col_is_q
+                # Pull the element-type letter from TFORMn (e.g. 'B'
+                # from '1PB(8192)' or 'I' from '1PI(8192)'). The letter
+                # follows 'P' or 'Q'; bytes is the safe default.
+                p_idx = tform.find("Q" if col_is_q else "P")
+                if p_idx >= 0 and p_idx + 1 < len(tform):
+                    comp_elem_size = _TFORM_TYPE_WIDTH.get(
+                        tform[p_idx + 1], 1,
+                    ) or 1
             elif ttype == "GZIP_COMPRESSED_DATA":
                 gzip_col_offset = cursor
                 gzip_is_q = col_is_q
@@ -334,8 +352,12 @@ def decompress_image(
                 tile_ztype = "NOCOMPRESS"
                 tile_is_quantized = False
                 tile_decode_dtype = out_dtype
+        # nelems_payload is element count; multiply by the column's
+        # element byte width to get the actual heap byte length (1 for
+        # PB, 2 for PI / PLIO_1 shorts).
+        payload_nbytes = nelems_payload * comp_elem_size
         payload = bytes(buf[heap_start + heap_off
-                            : heap_start + heap_off + nelems_payload])
+                            : heap_start + heap_off + payload_nbytes])
 
         if tile_ztype == "RICE_1" or tile_ztype == "":
             tile_raw_u = _rice_decode_raw(
@@ -388,10 +410,18 @@ def decompress_image(
             # The output dtype above was int32/int64; cast down to
             # the FITS target (int8/int16 for quantized integer tiles).
             tile_arr = raw_arr.astype(tile_decode_dtype, copy=False)
+        elif tile_ztype == "PLIO_1":
+            from .codecs._plio import decode_raw as _plio_decode_raw
+            # PLIO is used for integer masks (segmentation, catalog
+            # masks). pl_l2pi decodes into int32; cast down to the
+            # FITS target dtype (typically int8 / int16).
+            tile_arr_i32 = _plio_decode_raw(payload, nelements=tile_nelems)
+            tile_arr = tile_arr_i32.astype(tile_decode_dtype, copy=False)
         else:
             raise NotImplementedError(
                 f"compressed FITS: ZCMPTYPE={tile_ztype!r} is not supported "
-                f"yet (only RICE_1 / GZIP_1 / GZIP_2 / NOCOMPRESS / HCOMPRESS_1)"
+                f"yet (only RICE_1 / GZIP_1 / GZIP_2 / NOCOMPRESS / "
+                f"HCOMPRESS_1 / PLIO_1)"
             )
 
         # Apply per-tile ZSCALE / ZZERO for quantized float compression.

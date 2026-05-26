@@ -58,6 +58,7 @@ MUST_SHIP_ALL_PLATFORMS = {
     "_ndtiff",
     "_eer",
     "_hcomp",
+    "_plio",
     "_rcomp",
     "_bcdec",
     "_bytetools",

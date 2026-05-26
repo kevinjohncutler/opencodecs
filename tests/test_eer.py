@@ -305,6 +305,41 @@ def test_eer_reader_sum_validates_range(tmp_path):
             r.sum(start=0, stop=99)
 
 
+def test_eer_reader_sum_weighted(tmp_path):
+    """``sum(weights=...)`` applies a per-frame dose curve so the
+    accumulator can down-weight high-drift frames or boost peak-dose
+    frames. Identical input frames + weights [0.5, 1.0, 2.0] must
+    give 3.5x one frame's counts."""
+    from opencodecs._eer_reader import EerReader
+
+    encoded = b"\x03\x1b\xfc\xb1\x35\xfb"
+    shape = (20, 16)
+    blob = _build_multi_frame_eer_tiff([encoded] * 3, shape)
+    path = tmp_path / "synth.eer"
+    path.write_bytes(blob)
+
+    one = decode(encoded, shape, 7, 1, 1).astype(np.float64)
+    expected = one * 0.5 + one * 1.0 + one * 2.0
+    with EerReader(str(path)) as r:
+        weighted = r.sum(weights=np.array([0.5, 1.0, 2.0]))
+    assert weighted.dtype == np.float64
+    np.testing.assert_allclose(weighted, expected)
+
+
+def test_eer_reader_sum_weighted_rejects_wrong_length(tmp_path):
+    from opencodecs._eer_reader import EerReader
+    encoded = b"\x03\x1b\xfc\xb1\x35\xfb"
+    blob = _build_multi_frame_eer_tiff([encoded] * 3, (20, 16))
+    path = tmp_path / "synth.eer"
+    path.write_bytes(blob)
+    with EerReader(str(path)) as r:
+        with pytest.raises(ValueError, match="weights"):
+            r.sum(weights=np.array([1.0, 1.0]))  # 2 weights for 3 frames
+        with pytest.raises(ValueError, match="weights"):
+            # 2 weights for a 1-frame range
+            r.sum(start=0, stop=1, weights=np.array([1.0, 1.0]))
+
+
 def test_eer_codec_registered_and_dispatches(tmp_path):
     """``oc.has_codec('eer')`` is True and ``oc.get_codec('eer').open()``
     returns an EerReader. Confirms the registration wiring works."""
