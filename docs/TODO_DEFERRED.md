@@ -38,30 +38,28 @@ take them as upper bounds.
   willing collaborator + redistribute the data under an open
   license" task more than a coding one.
 
-## DICOMweb live integration test
+## DICOMweb live integration test — done
 
-* **Status**: client ships, 13 unit tests pass against synthetic
-  multipart/related responses.
-* **What's left**: a smoke test against a real DICOMweb server (the
-  IDC public WADO-RS endpoint is the obvious target). The current
-  tests prove the parser is right; the live test would catch
-  network-stack regressions (HTTPS retries, chunked transfer,
-  Content-Type quirks) that synthetic tests miss.
-* **Effort**: 2-3 hr to write a careful test that skips cleanly when
-  the network is unavailable.
+* **Status**: shipped in commit ``4d435ae``. The 13 synthetic-response
+  unit tests are joined by ``test_dicomweb_live_orthanc_demo_end_to_end``,
+  which runs QIDO → WADO frame fetch → decode against
+  ``demo.orthanc-server.com`` and skips cleanly when the endpoint is
+  unreachable.
 
-## HDF5 cloud — concurrent prefetch + live test
+## HDF5 cloud — concurrent prefetch + live test — done
 
-* **Status**: single-threaded HTTP-range reader ships via
-  `open_remote_hdf5(url)`; h5py's normal chunked-dataset path handles
-  everything else.
-* **What's left**:
-  1. **Concurrent multi-chunk prefetch**. The h5py driver issues
-     range requests one chunk at a time. A coalescing prefetch
-     dispatcher (similar to the one in `TiffPyramidReader`) would
-     hide network latency when a slice touches many chunks. ~4-6 hr.
-  2. **Live IDC / NASA SnowEx smoke test**, same pattern as the
-     DICOMweb item above. ~1-2 hr.
+* **Status**: both halves shipped.
+  * Concurrent multi-chunk prefetch lives in
+    ``prefetch_hdf5_chunks`` (``src/opencodecs/_hdf5_http.py``): walks
+    ``dataset.iter_chunks(sel)``, resolves each chunk's
+    ``(byte_offset, size)`` via ``get_chunk_info_by_coord``, then
+    issues a single ``source.read_many`` batch. Subsequent ``dataset[sel]``
+    serves from the LRU cache without a fresh round-trip.
+    ``test_prefetch_collapses_chunk_fetches`` and
+    ``test_prefetch_correct_values`` cover the dispatcher.
+  * Live smoke test ``test_remote_hdf5_live_github_endpoint`` runs
+    against the HDFGroup-hosted reference file on github and skips
+    when offline.
 
 ## HTTPDataSource prefetch tuning (cross-cutting) — done
 
