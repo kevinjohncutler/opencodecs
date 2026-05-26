@@ -212,16 +212,46 @@ fi
 
 # Cache fingerprint per lib — if the file exists at $PREFIX/.opencodecs/<name>
 # AND its content matches the requested version, we skip the rebuild.
+#
+# Marker format (two lines):
+#   <version>
+#   <install_dir>      # optional; recipes that install OUTSIDE $PREFIX
+#                      # (e.g. lerc/mozjpeg/sperr/brunsli land in
+#                      # ~/.cache/opencodecs/<lib>) pass it so is_built
+#                      # can verify the actual install survived.
+#
+# Why the install_dir line exists: CI caches $PREFIX (= /cibw-jxl-prefix
+# inside cibuildwheel's manylinux container), so the marker file survives
+# across runs. But per-user-cache install dirs (~/.cache/opencodecs/<lib>)
+# are NOT cached. Without the install-dir check, a cache hit would short-
+# circuit the recipe with "already built" while the actual library is
+# gone — and setup.py's header probe silently drops the extension,
+# producing wheels missing _lerc / _mozjpeg.
 HASHDIR="$PREFIX/.opencodecs"
 mkdir -p "$HASHDIR"
 
 is_built() {
     local name="$1" version="$2"
-    [ "$(cat "$HASHDIR/$name" 2>/dev/null || true)" = "$version" ]
+    local marker="$HASHDIR/$name"
+    [ -f "$marker" ] || return 1
+    local recorded_version recorded_dir
+    recorded_version="$(sed -n '1p' "$marker" 2>/dev/null || true)"
+    recorded_dir="$(sed -n '2p' "$marker" 2>/dev/null || true)"
+    [ "$recorded_version" = "$version" ] || return 1
+    # If recipe recorded its install dir, verify it's still on disk.
+    if [ -n "$recorded_dir" ] && [ ! -d "$recorded_dir" ]; then
+        return 1
+    fi
+    return 0
 }
 
 mark_built() {
-    echo "$2" > "$HASHDIR/$1"
+    local name="$1" version="$2" install_dir="${3:-}"
+    if [ -n "$install_dir" ]; then
+        printf '%s\n%s\n' "$version" "$install_dir" > "$HASHDIR/$name"
+    else
+        printf '%s\n' "$version" > "$HASHDIR/$name"
+    fi
 }
 
 # ----------------------------------------------------------------------
@@ -313,7 +343,7 @@ build_zstd() {
         install_name_tool -id @rpath/libzstd.1.dylib \
             "$zstd_prefix/lib/libzstd.${v}.dylib"
     fi
-    mark_built zstd "$v"
+    mark_built zstd "$v" "$zstd_prefix"
 }
 
 # ---- lz4 ----------------------------------------------------------------
@@ -359,7 +389,7 @@ build_giflib() {
         install_name_tool -id @rpath/libgif.7.dylib \
             "$prefix/lib/libgif.7.2.0.dylib"
     fi
-    mark_built giflib "$v"
+    mark_built giflib "$v" "$prefix"
 }
 
 build_brotli() {
@@ -390,7 +420,7 @@ build_brotli() {
         -DCMAKE_INSTALL_PREFIX="$brotli_prefix" \
         "$src" \
       && "${BUILD_TOOL[@]}" && "${INSTALL_TOOL[@]}" )
-    mark_built brotli "$v"
+    mark_built brotli "$v" "$brotli_prefix"
 }
 
 # ---- libdeflate ---------------------------------------------------------
@@ -440,7 +470,7 @@ build_mozjpeg() {
           -DPNG_SUPPORTED=OFF \
           "$src" \
       && "${BUILD_TOOL[@]}" && "${INSTALL_TOOL[@]}" )
-    mark_built mozjpeg "$v"
+    mark_built mozjpeg "$v" "$mozjpeg_prefix"
 }
 
 # ---- libpng (depends on zlib) ------------------------------------------
@@ -662,7 +692,7 @@ build_lerc() {
         -DCMAKE_INSTALL_PREFIX="$lerc_prefix" \
         "$src" \
       && "${BUILD_TOOL[@]}" && "${INSTALL_TOOL[@]}" )
-    mark_built lerc "$v"
+    mark_built lerc "$v" "$lerc_prefix"
 }
 
 # ---- zfp (lossy float compression) -------------------------------------
