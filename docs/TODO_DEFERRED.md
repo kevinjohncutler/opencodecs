@@ -79,25 +79,26 @@ take them as upper bounds.
 
 ## libspng PAETH filter NEON / SSE intrinsics
 
-* **Status**: switch-in-loop split into per-filter functions is shipped
-  — clang/gcc autovectorise everything except PAETH. Real-world PNG
-  encode already beats imagecodecs ~1.5-3× on natural-image data.
-* **What's left**: hand-written NEON / SSE kernel for PAETH would
-  shave another 10-20% on RGBA8 photographic data. Cython doesn't
-  emit SIMD intrinsics; would need a small `.c` shim.
-* **Why deferred**: we're well ahead of imagecodecs already; this is
-  in "diminishing returns" territory.
+* **Status**: decode-side PAETH SIMD is already in the vendored
+  libspng — `3rdparty/libspng/spng.c` ships both SSE2
+  (``defilter_paeth{3,4}`` near line 6688) and NEON
+  (``defilter_paeth{3,4}`` near line 7078) defilters. PNG decode is
+  not the gap.
+* **What's left**: encode-side PAETH filter selection still uses the
+  generic scalar path in libspng — no SSE2 / NEON kernel for the
+  forward-filter loop. A small ``.c`` shim could shave ~10-20% on
+  RGBA8 encode of natural-image data.
+* **Why deferred**: PNG encode is already ~1.5-3× ahead of
+  imagecodecs on natural-image data, so this is diminishing-returns
+  territory.
 
-## blosc2 perf — Mac is at parity; Linux build verified, src/.so SMB-wedged
+## blosc2 perf — Mac + Linux at parity — done
 
-* **Status**: Mac (`a237f29`) at parity with imagecodecs after
-  matching `typesize=8` default + cache-build of c-blosc2 2.23.0.
-  Linux build verified at the `build/lib.linux.../` level (NEEDED =
-  libblosc2.so.7, pointing at our cache). The `src/.so` copied
-  artifact is stuck in an SMB-inconsistent state on the NAS — neither
-  `rm`, `mv`, nor in-place overwrite work from either side.
-* **What's left**: clean rebuild after SMB remount / reboot — should
-  resolve automatically. No code change.
+* **Status**: Mac (`a237f29`) and Linux x86_64 both at parity with
+  imagecodecs. Both ``_blosc2`` and ``_b2nd`` artifacts are present
+  in ``src/opencodecs/codecs/`` for the two arches; the SMB-wedged
+  rebuild state cleared after the remount as expected. No code
+  change was needed.
 
 ## Excluded by user filter (won't ship)
 
