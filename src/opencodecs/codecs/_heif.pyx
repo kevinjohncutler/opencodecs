@@ -221,6 +221,20 @@ cdef struct write_buffer:
     size_t size
 
 
+# Static-storage empty/error strings for the writer callback's
+# heif_error.message field. libheif >= 1.18 calls strlen() on the
+# returned message even when code == 0 and rejects NULL with
+# "heif_writer callback returned a null error text", so we must hand
+# back a valid C string. Empty for success, descriptive for OOM.
+cdef extern from *:
+    """
+    static const char _HEIF_WRITER_OK[] = "";
+    static const char _HEIF_WRITER_OOM[] = "out of memory expanding heif write buffer";
+    """
+    const char* _HEIF_WRITER_OK
+    const char* _HEIF_WRITER_OOM
+
+
 cdef heif_error _writer_cb(
     heif_context* ctx, const void* data, size_t size, void* userdata,
 ) noexcept nogil:
@@ -228,7 +242,7 @@ cdef heif_error _writer_cb(
     cdef heif_error err
     err.code = <heif_error_code> 0
     err.subcode = 0
-    err.message = NULL
+    err.message = _HEIF_WRITER_OK
     cdef size_t new_cap
     cdef uint8_t* new_data
     if buf.size + size > buf.cap:
@@ -238,6 +252,7 @@ cdef heif_error _writer_cb(
         new_data = <uint8_t*> realloc(buf.data, new_cap)
         if new_data == NULL:
             err.code = <heif_error_code> 1  # libheif treats nonzero as failure
+            err.message = _HEIF_WRITER_OOM
             return err
         buf.data = new_data
         buf.cap = new_cap
