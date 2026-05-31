@@ -10,6 +10,74 @@ Versions follow the same ``YYYY.M.D`` cadence as upstream when we
 publish; the entries below cluster work by date rather than by
 release because most of it has shipped continuously to ``main``.
 
+0.1.5 (2026-05-31)
+------------------
+
+**New codecs**
+
+* ``opencodecs.uhdr`` — Ultra-HDR / ISO 21496-1 (gainmap JPEG) via a
+  direct Cython binding to Google's libultrahdr. ``encode(hdr, ...)``
+  wraps libuhdr's full pipeline; ``encode_native(hdr, sdr=None, ...)``
+  is a fused-Cython fast path that computes SDR base + gain map in
+  ``nogil`` kernels (IEEE-754 polynomial log2/pow, cross-platform —
+  no Apple Accelerate intrinsics), JPEG-encodes both layers in
+  parallel via a 3-worker ThreadPoolExecutor, then hands the
+  pre-encoded JPEGs to libuhdr's api-4 for container assembly.
+  Measured 31 ms median for a 2000² float HDR on M-series Mac vs
+  ~173 ms for the libuhdr reference path — 5.5× faster. The
+  ``sdr=`` argument lets callers (notably tilescan pipelines) supply
+  their own SDR base instead of accepting the peak-normalised default.
+
+* ``PLIO_1`` — IRAF run-length mask coding closes the last FITS
+  tile-compression gap. Vendors cfitsio's ``pliocomp.c`` (Doug Tody /
+  NRAO, public-domain) and adds the tiny
+  ``opencodecs.codecs._plio.decode_raw`` shim. Round-trip tested
+  against astropy. The ``COMPRESSED_DATA`` BINTABLE column walker
+  now tracks per-column element byte width so the ``1PI`` (int16
+  opcodes) layout PLIO uses works alongside the ``1PB`` byte VLA the
+  other compressors use.
+
+**New API**
+
+* ``EerReader.sum(start, stop, *, weights=None, dtype=...)`` —
+  per-frame dose curve. ``weights[k]`` multiplies the k-th frame in
+  the requested range; output promotes to float64 when weights are
+  given so fractional contributions don't truncate. Use case:
+  beam-induced-motion correction and temporal-binning schemes that
+  emphasise different exposures across the acquisition.
+
+**Bug fixes**
+
+* HEIF encode against libheif ≥ 1.18 — newer libheif calls
+  ``strlen()`` on the user write-callback's ``heif_error.message``
+  even on success and rejects a ``NULL`` pointer with *"heif_writer
+  callback returned a null error text"*. The callback now hands back
+  a static empty string on success and a descriptive string on OOM.
+  Six tests (``test_heif_*``, ``test_phase5_icc.py[heif]``) go back
+  to green across every CI matrix entry.
+
+**CI / build**
+
+* ``bench/build_codec_libs.sh`` — the ``is_built`` cache-marker now
+  records the install dir alongside the version and re-verifies the
+  install dir exists before short-circuiting a recipe. Without this,
+  cibuildwheel's manylinux cache (which only covers ``/cibw-jxl-prefix``)
+  preserved the marker for recipes that install to
+  ``~/.cache/opencodecs/<lib>/`` outside the cached prefix —
+  ``lerc``, ``mozjpeg``, ``brotli``, ``zstd``, ``giflib`` — so the
+  recipe thought it was done while the actual library files were
+  gone. ``_lerc`` + ``_mozjpeg`` had been silently dropped from
+  Linux wheels for this reason; the fix restores them.
+
+* ``test_omezarr.py`` skips at module level on zarr-python < 3 —
+  fixtures use the v3 API surface, which doesn't exist on the v2
+  branch pip resolves on Python 3.10.
+
+* ``test_eer_imagecodecs_cross_validate`` is now symmetric on
+  decoder error: if either implementation raises, both must raise
+  for the combo to count. Tolerates imagecodecs ≥ 2026.5's tighter
+  output-buffer sizing.
+
 0.1.4 (2026-05-25)
 ------------------
 

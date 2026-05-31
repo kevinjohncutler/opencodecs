@@ -18,6 +18,19 @@ import numpy as np
 import pytest
 
 zarr = pytest.importorskip("zarr")
+# Fixtures use zarr-python's v3 surface (``zarr.create_array``,
+# ``zarr_format=`` kwarg, ``zarr.codecs.ZstdCodec``/``GzipCodec``).
+# On Python 3.10 pip resolves to zarr 2.x because the v3 wheel requires
+# Python ≥ 3.11, and these calls explode with AttributeError. Skip the
+# whole module rather than gate every test individually — the
+# opencodecs reader path itself (``OmeZarrArray``) doesn't depend on
+# zarr, so all that's lost on a v2 host is the test fixture-builder.
+if not zarr.__version__.startswith("3"):
+    pytest.skip(
+        f"OME-Zarr fixtures require zarr-python v3; this host has "
+        f"zarr {zarr.__version__}",
+        allow_module_level=True,
+    )
 import opencodecs as oc
 from opencodecs._omezarr import OmeZarrArray, OmeZarrPyramidDataset
 
