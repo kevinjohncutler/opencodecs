@@ -69,12 +69,16 @@ streaming write-out without changing their code.
 
 **CI / build robustness**
 
-* ``_uhdr`` extension now links ``-lmvec -lm`` on Linux. GCC at
-  ``-O3 -ffast-math`` auto-vectorises the sRGB LUT-init ``pow()``
-  calls into ``_ZGV*`` symbols from glibc's libmvec. AlmaLinux 8's
-  manylinux toolchain auto-links libmvec so the issue was masked
-  in CI, but Ubuntu's GCC doesn't — caught when verifying on a
-  the linux x86_64 host Ubuntu 25.04 box.
+* ``_uhdr`` extension's ``-ffast-math`` is now narrowed to
+  ``-ffast-math -fno-finite-math-only
+  -fno-unsafe-math-optimizations -fno-math-errno
+  -fno-trapping-math``. The ``-funsafe-math-optimizations``
+  sub-flag is what tells GCC to replace libm calls with libmvec's
+  vectorised ``_ZGV*`` variants, which link-fail on Ubuntu (Ubuntu's
+  default gcc doesn't auto-link libmvec like manylinux_2_28 does)
+  and aren't available at all on aarch64. Same flag set the edt
+  extension uses for the same reason. Keeps FMA + reordering
+  perf; eliminates the libmvec dependency entirely.
 * The libaec source URL moved from ``gitlab.dkrz.de`` (now
   auth-gated; anonymous requests redirect to ``/users/sign_in``)
   to DKRZ's GitHub mirror at
