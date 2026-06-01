@@ -702,7 +702,20 @@ def _maybe_build_uhdr_ext() -> list[Extension]:
     else:
         libraries = ["uhdr"]
         if sys.platform == "linux":
-            extra_link_args = [f"-Wl,-rpath,{prefix / lib_subdir}"]
+            # GCC under ``-O3 -ffast-math`` auto-vectorises ``pow()``
+            # calls (in our sRGB LUT init) into ``_ZGV*_pow`` symbols
+            # from glibc's libmvec.so. The link line normally pulls
+            # libm only, leaving those references unresolved at
+            # ``dlopen()`` time. AlmaLinux 8's manylinux toolchain
+            # happens to auto-link libmvec which masks the bug in CI,
+            # but Ubuntu's GCC doesn't — caught when verifying on
+            # the linux x86_64 host. Link both explicitly so the .so resolves
+            # everywhere.
+            extra_link_args = [
+                f"-Wl,-rpath,{prefix / lib_subdir}",
+                "-lmvec",
+                "-lm",
+            ]
 
     return [Extension(
         name="opencodecs.codecs._uhdr",
