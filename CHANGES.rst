@@ -67,6 +67,23 @@ function is ``fp.write(encode_native(...))`` today; the API exists
 so callers can adopt it now and pick up any future libuhdr
 streaming write-out without changing their code.
 
+**CI / build robustness**
+
+* ``_uhdr`` extension now links ``-lmvec -lm`` on Linux. GCC at
+  ``-O3 -ffast-math`` auto-vectorises the sRGB LUT-init ``pow()``
+  calls into ``_ZGV*`` symbols from glibc's libmvec. AlmaLinux 8's
+  manylinux toolchain auto-links libmvec so the issue was masked
+  in CI, but Ubuntu's GCC doesn't — caught when verifying on a
+  the linux x86_64 host Ubuntu 25.04 box.
+* The libaec source URL moved from ``gitlab.dkrz.de`` (now
+  auth-gated; anonymous requests redirect to ``/users/sign_in``)
+  to DKRZ's GitHub mirror at
+  ``github.com/Deutsches-Klimarechenzentrum/libaec``.
+* ``fetch_tar`` now has a 4-attempt shell retry loop with empty-
+  extract detection — covers transient mirror outages that
+  curl's own ``--retry`` doesn't see (e.g. 200 OK with a
+  truncated body).
+
 0.1.5 (2026-05-31)
 ------------------
 
