@@ -711,11 +711,18 @@ def _maybe_build_uhdr_ext() -> list[Extension]:
             # but Ubuntu's GCC doesn't — caught when verifying on
             # the linux x86_64 host. Link both explicitly so the .so resolves
             # everywhere.
+            #
+            # libmvec is x86_64-only in glibc — aarch64 has no
+            # equivalent (no ``_ZGV*`` symbols are emitted there
+            # either, because GCC doesn't have a vectorised libm to
+            # target). So gate ``-lmvec`` on the target arch.
             extra_link_args = [
                 f"-Wl,-rpath,{prefix / lib_subdir}",
-                "-lmvec",
                 "-lm",
             ]
+            import platform as _platform
+            if _platform.machine() in ("x86_64", "amd64"):
+                extra_link_args.insert(1, "-lmvec")
 
     return [Extension(
         name="opencodecs.codecs._uhdr",
