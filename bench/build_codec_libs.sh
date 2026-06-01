@@ -720,7 +720,13 @@ build_libaec() {
     local src
     # libaec releases use a YYYYMMDD-tagged tarball on its gitlab; the
     # GitHub mirror has clean version tags.
-    src=$(fetch_tar libaec "$v" "https://gitlab.dkrz.de/k202009/libaec/-/archive/v$v/libaec-v$v.tar.gz")
+    # DKRZ migrated libaec's anonymous-download path: gitlab.dkrz.de
+    # now redirects unauthenticated requests to /users/sign_in (caught
+    # while debugging the v0.1.6 wheel build — 4 retries × empty body
+    # each). The official mirror is now at
+    # github.com/Deutsches-Klimarechenzentrum/libaec; GitHub's CDN
+    # actually serves the tarballs reliably.
+    src=$(fetch_tar libaec "$v" "https://github.com/Deutsches-Klimarechenzentrum/libaec/archive/refs/tags/v$v.tar.gz")
     cmake_build "$src" -DBUILD_TESTING=OFF
     mark_built libaec "$v"
 }
