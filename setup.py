@@ -702,27 +702,7 @@ def _maybe_build_uhdr_ext() -> list[Extension]:
     else:
         libraries = ["uhdr"]
         if sys.platform == "linux":
-            # GCC under ``-O3 -ffast-math`` auto-vectorises ``pow()``
-            # calls (in our sRGB LUT init) into ``_ZGV*_pow`` symbols
-            # from glibc's libmvec.so. The link line normally pulls
-            # libm only, leaving those references unresolved at
-            # ``dlopen()`` time. AlmaLinux 8's manylinux toolchain
-            # happens to auto-link libmvec which masks the bug in CI,
-            # but Ubuntu's GCC doesn't — caught when verifying on
-            # the linux x86_64 host. Link both explicitly so the .so resolves
-            # everywhere.
-            #
-            # libmvec is x86_64-only in glibc — aarch64 has no
-            # equivalent (no ``_ZGV*`` symbols are emitted there
-            # either, because GCC doesn't have a vectorised libm to
-            # target). So gate ``-lmvec`` on the target arch.
-            extra_link_args = [
-                f"-Wl,-rpath,{prefix / lib_subdir}",
-                "-lm",
-            ]
-            import platform as _platform
-            if _platform.machine() in ("x86_64", "amd64"):
-                extra_link_args.insert(1, "-lmvec")
+            extra_link_args = [f"-Wl,-rpath,{prefix / lib_subdir}"]
 
     return [Extension(
         name="opencodecs.codecs._uhdr",
@@ -740,8 +720,23 @@ def _maybe_build_uhdr_ext() -> list[Extension]:
         # to auto-vectorise (NEON on Apple Silicon, AVX2 on x86). The
         # polynomial log2 in _gain_map_kernel only beats numpy's
         # vectorised log2 when the compiler turns it into SIMD.
+        #
+        # The fno-finite-math-only / fno-unsafe-math-optimizations pair
+        # subtracts back the two sub-flags of -ffast-math that bite us:
+        # ``-funsafe-math-optimizations`` is what tells GCC to replace
+        # libm calls with libmvec's vectorised ``_ZGV*`` variants, which
+        # link-fail on Ubuntu and aren't present at all on aarch64.
+        # ``-ffinite-math-only`` breaks our clip-to-[0,1] paths by
+        # assuming no NaN/Inf can appear. Same flag set that the edt
+        # extension uses for the same reason — keeps FMA + reordering
+        # speed without the libmvec dependency.
         extra_compile_args=(
-            ["-O3", "-ffast-math", "-fno-math-errno"]
+            [
+                "-O3", "-ffast-math",
+                "-fno-finite-math-only",
+                "-fno-unsafe-math-optimizations",
+                "-fno-math-errno", "-fno-trapping-math",
+            ]
             if sys.platform != "win32" else ["/O2"]
         ),
         language="c",
