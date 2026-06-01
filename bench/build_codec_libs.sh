@@ -621,12 +621,47 @@ build_libultrahdr() {
     echo "==> libultrahdr $v"
     local src
     src=$(fetch_tar libultrahdr "$v" "https://github.com/google/libultrahdr/archive/refs/tags/v$v.tar.gz")
-    cmake_build "$src" \
-        -DUHDR_BUILD_DEPS=OFF \
-        -DUHDR_BUILD_EXAMPLES=OFF \
-        -DUHDR_BUILD_TESTS=OFF \
-        -DUHDR_BUILD_FUZZERS=OFF \
-        -DUHDR_BUILD_BENCHMARK=OFF
+    case "$(uname -s)" in
+        MINGW*|MSYS*|CYGWIN*)
+            # libultrahdr's CMakeLists.txt gates the install() rules on
+            # `NOT WIN32` (see CMakeLists.txt around line 470 in v1.4.0),
+            # so `ninja install` fails with "unknown target 'install'"
+            # on Windows even when the build itself succeeds. Configure
+            # + build only, then copy the artifacts into $PREFIX manually
+            # — same pattern as brunsli's Windows install branch above.
+            local build="$src/_build"
+            rm -rf "$build"
+            mkdir -p "$build"
+            ( cd "$build" && cmake "${CMAKE_GEN[@]}" "${CMAKE_COMMON[@]}" \
+                -DUHDR_BUILD_DEPS=OFF \
+                -DUHDR_BUILD_EXAMPLES=OFF \
+                -DUHDR_BUILD_TESTS=OFF \
+                -DUHDR_BUILD_FUZZERS=OFF \
+                -DUHDR_BUILD_BENCHMARK=OFF \
+                "$src" \
+              && "${BUILD_TOOL[@]}" )
+            # MSVC ninja drops uhdr.dll + uhdr.lib alongside the build
+            # objects in _build/. Header lives in src/ultrahdr_api.h.
+            install -d "$PREFIX/include" "$PREFIX/lib" "$PREFIX/bin"
+            cp -v "$src/ultrahdr_api.h" "$PREFIX/include/"
+            cp -v "$build/uhdr.dll" "$PREFIX/bin/"
+            cp -v "$build/uhdr.lib" "$PREFIX/lib/"
+            # Loud post-check fails the build if any expected file is
+            # missing — better to fail here than to silently produce a
+            # wheel without _uhdr.
+            ls "$PREFIX/include/ultrahdr_api.h" \
+               "$PREFIX/bin/uhdr.dll" \
+               "$PREFIX/lib/uhdr.lib" >&2
+            ;;
+        *)
+            cmake_build "$src" \
+                -DUHDR_BUILD_DEPS=OFF \
+                -DUHDR_BUILD_EXAMPLES=OFF \
+                -DUHDR_BUILD_TESTS=OFF \
+                -DUHDR_BUILD_FUZZERS=OFF \
+                -DUHDR_BUILD_BENCHMARK=OFF
+            ;;
+    esac
     mark_built libultrahdr "$v"
 }
 
