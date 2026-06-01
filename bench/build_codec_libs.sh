@@ -278,16 +278,16 @@ fetch_tar() {
         rm -rf "$src"
         mkdir -p "$src"
         echo "    fetch  $url" >&2
-        # --retry / --retry-all-errors: gitlab.dkrz.de (libaec mirror)
-        # times out intermittently and silently delivers a partial stream
-        # — without --fail-with-body the curl exit code stays 0, tar
-        # produces an empty dir, and the next CMake invocation explodes
-        # with "no CMakeLists.txt". Cap at 5 attempts × 4 s back-off so
-        # we don't paper over a permanent outage.
+        # --retry / --retry-connrefused / --retry-delay: gitlab.dkrz.de
+        # (libaec mirror) times out intermittently. cibuildwheel's
+        # manylinux_2_28 (AlmaLinux 8) ships curl 7.61, so we can't use
+        # --retry-all-errors (that's 7.71+, and an unknown flag aborts
+        # curl immediately, which is exactly how v0.1.6 attempt #3 broke).
+        # --retry alone covers 5xx + 408 + 429 + timeouts (all the
+        # actual flake modes we've hit) on every supported curl.
         # --max-time 300: hard cap at 5 min per attempt so a stuck
-        # connection doesn't burn the CI runner. Default no timeout
-        # left the previous v0.1.6 build hanging on libaec for 2:12.
-        curl --retry 5 --retry-delay 4 --retry-all-errors \
+        # connection doesn't burn the CI runner.
+        curl --retry 5 --retry-delay 4 --retry-connrefused \
              --max-time 300 -fsSL "$url" \
              | tar -xz --strip-components="$strip" -C "$src"
         # Belt-and-braces: tar on an empty stream returns 0, so a silent
