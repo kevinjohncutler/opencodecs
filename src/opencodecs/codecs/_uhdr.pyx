@@ -39,7 +39,7 @@ cimport numpy as cnp
 from libc.stdint cimport uint8_t, uint16_t, uint32_t
 from libc.stdlib cimport malloc, free
 from libc.string cimport memcpy, memset
-from libc.math cimport log2f, powf
+from libc.math cimport log2f, powf, pow as c_pow
 from cpython.bytes cimport PyBytes_FromStringAndSize
 
 from libuhdr cimport *
@@ -238,7 +238,7 @@ cdef void _init_srgb_eotf_lut() noexcept nogil:
         if v <= 0.04045:
             _SRGB_EOTF_LUT[i] = <float>(v / 12.92)
         else:
-            _SRGB_EOTF_LUT[i] = <float>(((v + 0.055) / 1.055) ** 2.4)
+            _SRGB_EOTF_LUT[i] = <float>c_pow((v + 0.055) / 1.055, 2.4)
     _SRGB_EOTF_LUT_INIT = True
 
 
@@ -324,7 +324,7 @@ cdef void _init_srgb_oetf_u8_lut() noexcept nogil:
         if x <= 0.0031308:
             e = 12.92 * x
         else:
-            e = (1.0 + a) * (x ** (1.0 / 2.4)) - a
+            e = (1.0 + a) * c_pow(x, 1.0 / 2.4) - a
         if e < 0.0:
             e = 0.0
         elif e > 1.0:

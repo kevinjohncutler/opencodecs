@@ -275,30 +275,42 @@ fetch_tar() {
     local name="$1" version="$2" url="$3" strip="${4:-1}"
     local src="$WORKDIR/$name-$version"
     if [ ! -f "$src/.fetched" ]; then
-        rm -rf "$src"
-        mkdir -p "$src"
-        echo "    fetch  $url" >&2
-        # --retry / --retry-connrefused / --retry-delay: gitlab.dkrz.de
-        # (libaec mirror) times out intermittently. cibuildwheel's
-        # manylinux_2_28 (AlmaLinux 8) ships curl 7.61, so we can't use
-        # --retry-all-errors (that's 7.71+, and an unknown flag aborts
-        # curl immediately, which is exactly how v0.1.6 attempt #3 broke).
-        # --retry alone covers 5xx + 408 + 429 + timeouts (all the
-        # actual flake modes we've hit) on every supported curl.
-        # --max-time 300: hard cap at 5 min per attempt so a stuck
-        # connection doesn't burn the CI runner.
-        curl --retry 5 --retry-delay 4 --retry-connrefused \
-             --max-time 300 -fsSL "$url" \
-             | tar -xz --strip-components="$strip" -C "$src"
-        # Belt-and-braces: tar on an empty stream returns 0, so a silent
-        # curl flake can still leave the dir empty. Verify there's at
-        # least one entry before declaring the fetch good.
-        if [ -z "$(ls -A "$src" 2>/dev/null)" ]; then
-            echo "fetch_tar: extracted dir $src is empty; $url likely flaked" >&2
+        # Outer retry loop catches "200 OK with partial/empty body" cases
+        # that curl --retry can't see — most famously gitlab.dkrz.de
+        # (libaec's only upstream), which routinely closes connections
+        # mid-stream with a clean HTTP 200. curl --retry-all-errors
+        # would help but is curl 7.71+ and cibuildwheel's manylinux_2_28
+        # base (AlmaLinux 8) ships curl 7.61. So we DIY: extract, check
+        # for empty dir, sleep, retry. 4 attempts × 8 s back-off keeps
+        # a permanent outage from burning the runner forever.
+        local attempt=0 max_attempts=4
+        while [ $attempt -lt $max_attempts ]; do
+            attempt=$((attempt + 1))
+            rm -rf "$src"
+            mkdir -p "$src"
+            if [ $attempt -eq 1 ]; then
+                echo "    fetch  $url" >&2
+            else
+                echo "    fetch  $url  (attempt $attempt/$max_attempts)" >&2
+                sleep $((attempt * 4))
+            fi
+            # --retry covers 5xx/408/429/timeouts on curl 7.52+;
+            # --max-time 300 caps a single stuck attempt at 5 min.
+            curl --retry 5 --retry-delay 4 --retry-connrefused \
+                 --max-time 300 -fsSL "$url" \
+                 | tar -xz --strip-components="$strip" -C "$src" \
+                 || true
+            if [ -n "$(ls -A "$src" 2>/dev/null)" ]; then
+                touch "$src/.fetched"
+                break
+            fi
+            echo "    fetch_tar: $url produced empty dir (attempt $attempt)" >&2
+        done
+        if [ ! -f "$src/.fetched" ]; then
+            echo "fetch_tar: $url failed after $max_attempts attempts" >&2
             rm -rf "$src"
             return 1
         fi
-        touch "$src/.fetched"
     fi
     echo "$src"
 }
