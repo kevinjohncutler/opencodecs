@@ -453,8 +453,8 @@ def compute_gain_map_u8(hdr_lin_p3, sdr_u8, *,
         max_b = <float>max(peak / 203.0, min_content_boost + 1e-6)
     else:
         max_b = <float>float(max_content_boost)
-    cdef float log2_min = <float>(np.log2(min_b) if min_b > 0 else 0.0)
-    cdef float log2_max = <float>np.log2(max_b)
+    cdef float log2_min = log2f(min_b) if min_b > 0 else 0.0
+    cdef float log2_max = log2f(max_b)
     cdef float gamma_f = <float>float(gamma)
 
     cdef cnp.ndarray[cnp.uint8_t, ndim=3, mode='c'] gain_out = np.empty(
@@ -698,8 +698,8 @@ def apply_gainmap_fp32(sdr_u8, gain_u8, metadata, *, display_boost=None):
         g[c] = <float> _g[c]
         osdr[c] = <float> _osdr[c]
         ohdr[c] = <float> _ohdr[c]
-        log2_min[c] = <float> (np.log2(min_b[c]) if min_b[c] > 0 else 0.0)
-        log2_max[c] = <float> np.log2(max_b[c])
+        log2_min[c] = log2f(min_b[c]) if min_b[c] > 0 else 0.0
+        log2_max[c] = log2f(max_b[c])
 
     cdef int multi_channel = 1 if gain_ch >= 3 else 0
 
@@ -720,8 +720,10 @@ def apply_gainmap_fp32(sdr_u8, gain_u8, metadata, *, display_boost=None):
         db = cap_min
     if db > cap_max:
         db = cap_max
-    weight = (np.log2(db) - np.log2(cap_min)) / (
-        np.log2(cap_max) - np.log2(cap_min))
+    cdef double cap_min_log = log2f(cap_min)
+    cdef double cap_max_log = log2f(cap_max)
+    cdef double db_log = log2f(db)
+    weight = (db_log - cap_min_log) / (cap_max_log - cap_min_log)
     if weight < 0.0:
         weight = 0.0
     elif weight > 1.0:

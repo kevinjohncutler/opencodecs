@@ -278,7 +278,26 @@ fetch_tar() {
         rm -rf "$src"
         mkdir -p "$src"
         echo "    fetch  $url" >&2
-        curl -fsSL "$url" | tar -xz --strip-components="$strip" -C "$src"
+        # --retry / --retry-all-errors: gitlab.dkrz.de (libaec mirror)
+        # times out intermittently and silently delivers a partial stream
+        # — without --fail-with-body the curl exit code stays 0, tar
+        # produces an empty dir, and the next CMake invocation explodes
+        # with "no CMakeLists.txt". Cap at 5 attempts × 4 s back-off so
+        # we don't paper over a permanent outage.
+        # --max-time 300: hard cap at 5 min per attempt so a stuck
+        # connection doesn't burn the CI runner. Default no timeout
+        # left the previous v0.1.6 build hanging on libaec for 2:12.
+        curl --retry 5 --retry-delay 4 --retry-all-errors \
+             --max-time 300 -fsSL "$url" \
+             | tar -xz --strip-components="$strip" -C "$src"
+        # Belt-and-braces: tar on an empty stream returns 0, so a silent
+        # curl flake can still leave the dir empty. Verify there's at
+        # least one entry before declaring the fetch good.
+        if [ -z "$(ls -A "$src" 2>/dev/null)" ]; then
+            echo "fetch_tar: extracted dir $src is empty; $url likely flaked" >&2
+            rm -rf "$src"
+            return 1
+        fi
         touch "$src/.fetched"
     fi
     echo "$src"
