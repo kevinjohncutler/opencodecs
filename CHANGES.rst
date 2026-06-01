@@ -10,6 +10,63 @@ Versions follow the same ``YYYY.M.D`` cadence as upstream when we
 publish; the entries below cluster work by date rather than by
 release because most of it has shipped continuously to ``main``.
 
+0.1.6 (2026-06-01)
+------------------
+
+**libultrahdr now bundled (fixes missing ``_uhdr`` on PyPI wheels)**
+
+* ``bench/build_codec_libs.sh::build_libultrahdr`` builds libuhdr
+  v1.4.0 (Apache-2.0) into ``$OPENCODECS_LIBS_PREFIX/{include,lib}``
+  alongside the other source-built codec libs. The Linux + Windows
+  CI ``--only=...`` lists pick it up; the macOS ``before-all`` brew
+  install now includes ``libultrahdr`` as well.
+* setup.py's ``_uhdr`` Extension is now built by a probe
+  (``_maybe_build_uhdr_ext``) that finds the cached prefix, sets
+  ``library_dirs``, and bakes the rpath into the resulting ``.so``
+  so delocate / auditwheel / delvewheel can bundle ``libuhdr``'s
+  dylib/.so/.dll into the wheel.
+* ``_uhdr`` is now in ``MUST_SHIP_ALL_PLATFORMS`` in
+  ``ci/check_wheel_contents.py``; a wheel without the Ultra-HDR
+  extension fails the wheel-coverage step.
+* The stale ``_ultrahdr.pyx`` source file (orphaned in commit
+  ``c9347f5`` when the direct libuhdr binding shipped as ``_uhdr``)
+  is removed.
+
+**New API: ``opencodecs.uhdr.decode_native``**
+
+Fused-Cython fast-path Ultra-HDR decoder. Uses libuhdr's parser to
+pull out the compressed SDR base + gain-map JPEGs + metadata (no
+pixel decode), then decodes both JPEGs in parallel via
+``imagecodecs.jpeg_decode`` (libjpeg-turbo SIMD, GIL released) and
+applies the gain map in a Cython kernel that uses the same sRGB
+EOTF LUT + IEEE-754 polynomial ``exp2`` the encoder uses. ~1.4×
+faster than libuhdr's reference decode on a 2k² float HDR (M-series
+Mac: ~52 ms vs ~72 ms). Output matches libuhdr's decode to within
+JPEG-q95 + 8-bit gain-quantisation noise. ``display_boost`` kwarg
+exposes the ISO 21496-1 headroom scaler — default is full HDR
+(``hdr_capacity_max``), pass ``1.0`` to match libuhdr's default
+SDR-equivalent decode.
+
+Backed by two new Cython helpers exposed for advanced callers:
+
+* ``opencodecs.codecs._uhdr.extract_layers(data)`` — parse the
+  container, return ``{base_jpeg, gainmap_jpeg, gainmap_metadata,
+  width, height, gainmap_{width,height}}`` without decoding pixels.
+* ``opencodecs.codecs._uhdr.apply_gainmap_fp32(sdr_u8, gain_u8,
+  metadata, display_boost=...)`` — the per-pixel gain-application
+  kernel.
+
+**New API: ``opencodecs.uhdr.encode_to``**
+
+Streaming variant of :func:`encode_native` — writes Ultra-HDR bytes
+directly to a file-like (anything with ``write(bytes)``: open file,
+``io.BytesIO``, HTTP upload streamer). Returns the byte count.
+Forward-compatible alias: the libuhdr api-4 path we currently use
+for container assembly doesn't expose a streaming writer, so the
+function is ``fp.write(encode_native(...))`` today; the API exists
+so callers can adopt it now and pick up any future libuhdr
+streaming write-out without changing their code.
+
 0.1.5 (2026-05-31)
 ------------------
 

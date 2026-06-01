@@ -35,7 +35,7 @@ from opencodecs.codecs._uhdr import (
     libuhdr_version,
     UhdrError,
 )
-from opencodecs.uhdr import encode_native
+from opencodecs.uhdr import encode_native, decode_native, encode_to
 
 
 # ---------------------------------------------------------------------------
@@ -290,6 +290,96 @@ def test_compute_gain_map_and_sdr_helpers():
     for key in ("max_content_boost", "min_content_boost", "gamma",
                 "hdr_capacity_min", "hdr_capacity_max"):
         assert key in meta
+
+
+# ---------------------------------------------------------------------------
+# decode_native: fused-Cython fast-path decoder
+# ---------------------------------------------------------------------------
+
+
+def test_decode_native_returns_expected_keys():
+    """decode_native returns hdr + sdr_u8 + gainmap_u8 + metadata."""
+    hdr = _synthetic_hdr_rgb(64, 64)
+    data = encode_native(hdr, quality=95)
+    info = decode_native(data)
+    assert set(info.keys()) >= {
+        "hdr", "sdr_u8", "gainmap_u8", "gainmap_metadata",
+        "width", "height",
+    }
+    assert info["hdr"].dtype == np.float16
+    assert info["hdr"].shape == (64, 64, 3)
+    assert info["sdr_u8"].dtype == np.uint8
+    assert info["gainmap_u8"].dtype == np.uint8
+    assert info["width"] == 64 and info["height"] == 64
+
+
+def test_decode_native_matches_libuhdr_at_sdr_boost():
+    """At display_boost=1.0 decode_native should match libuhdr's
+    default decode (also display_boost=1.0) within JPEG-q95 + 8-bit
+    gain-quantisation noise."""
+    hdr = _synthetic_hdr_rgb(64, 64)
+    data = encode_native(hdr, quality=95)
+
+    lib = decode(data, want_hdr=True)["hdr_fp16"][..., :3].astype(np.float32)
+    nat = decode_native(data, dtype=np.float32, display_boost=1.0)["hdr"]
+
+    # Per-channel mean diff should be small (~JPEG q95 noise).
+    diff = np.abs(lib - nat)
+    assert diff.mean() < 0.05, (
+        f"native vs libuhdr decode mean diff {diff.mean():.4f} > 0.05"
+    )
+    # Channel-wise means should track each other within ~25%.
+    ratio = nat.mean(axis=(0, 1)) / np.maximum(lib.mean(axis=(0, 1)), 1e-6)
+    assert (ratio > 0.75).all() and (ratio < 1.25).all(), (
+        f"per-channel ratio out of bounds: native={nat.mean(axis=(0,1))}, "
+        f"lib={lib.mean(axis=(0,1))}"
+    )
+
+
+def test_decode_native_full_boost_is_brighter_than_sdr():
+    """display_boost=hdr_capacity_max should produce a brighter HDR
+    raster than display_boost=1.0 (the SDR-equivalent)."""
+    hdr = _synthetic_hdr_rgb(64, 64)
+    data = encode_native(hdr, quality=95)
+
+    sdr_view = decode_native(data, dtype=np.float32, display_boost=1.0)["hdr"]
+    hdr_view = decode_native(data, dtype=np.float32)["hdr"]  # default = full
+    # Full-HDR view should have strictly more energy than SDR view.
+    assert hdr_view.mean() > sdr_view.mean() * 1.5
+
+
+def test_decode_native_parallel_matches_serial():
+    """parallel=True kicks the two JPEG decodes into threads. Result
+    must be bit-identical to the serial path (same kernel inputs)."""
+    hdr = _synthetic_hdr_rgb(64, 64)
+    data = encode_native(hdr, quality=95)
+    a = decode_native(data, parallel=True)["hdr"]
+    b = decode_native(data, parallel=False)["hdr"]
+    np.testing.assert_array_equal(a, b)
+
+
+def test_decode_native_dtype_fp32_skips_cast():
+    hdr = _synthetic_hdr_rgb(32, 32)
+    data = encode_native(hdr, quality=95)
+    info = decode_native(data, dtype=np.float32)
+    assert info["hdr"].dtype == np.float32
+
+
+# ---------------------------------------------------------------------------
+# encode_to: streaming write to file-like
+# ---------------------------------------------------------------------------
+
+
+def test_encode_to_writes_to_bytesio():
+    """encode_to mirrors encode_native but emits bytes to a file-like
+    instead of returning them. Bytes match the encode_native output."""
+    hdr = _synthetic_hdr_rgb(64, 64)
+    direct = encode_native(hdr, quality=95)
+    buf = io.BytesIO()
+    n = encode_to(buf, hdr, quality=95)
+    assert n == len(direct)
+    assert buf.getvalue() == direct
+    assert is_uhdr(buf.getvalue()) is True
 
 
 # ---------------------------------------------------------------------------

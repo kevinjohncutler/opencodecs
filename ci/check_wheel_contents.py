@@ -59,6 +59,7 @@ MUST_SHIP_ALL_PLATFORMS = {
     "_eer",
     "_hcomp",
     "_plio",
+    "_uhdr",
     "_rcomp",
     "_bcdec",
     "_bytetools",

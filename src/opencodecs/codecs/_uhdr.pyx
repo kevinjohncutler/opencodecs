@@ -280,10 +280,10 @@ cdef extern from *:
         float log2m = -1.7417939f + m * (2.8212026f + m * -1.0792091f);
         return (float)e + log2m;
     }
-    static inline float _fast_pow(float x, float p) {
-        /* x^p = 2^(p * log2(x)); only valid for x > 0. */
-        if (x <= 0.0f) return 0.0f;
-        float l = _fast_log2(x) * p;
+    static inline float _fast_exp2(float l) {
+        /* 2^l, full-range. Factor out integer exponent + cubic
+           polynomial on fractional part. Inverse of _fast_log2 to
+           same ~3e-3 RMSE. */
         float fe = (l < 0.0f) ? (l - 1.0f) : l;
         int e = (int)fe;
         float f = l - (float)e;
@@ -293,8 +293,14 @@ cdef extern from *:
         memcpy(&pe, &bits, sizeof(pe));
         return pe * pow2f;
     }
+    static inline float _fast_pow(float x, float p) {
+        /* x^p = 2^(p * log2(x)); only valid for x > 0. */
+        if (x <= 0.0f) return 0.0f;
+        return _fast_exp2(_fast_log2(x) * p);
+    }
     """
     float _fast_log2(float x) noexcept nogil
+    float _fast_exp2(float l) noexcept nogil
     float _fast_pow(float x, float p) noexcept nogil
 
 
@@ -528,6 +534,301 @@ def compute_sdr_base_u8(hdr_lin_p3, peak=None):
         _init_srgb_oetf_u8_lut()
         _sdr_from_hdr_kernel(hdr_ptr, sdr_ptr, total, inv_peak)
     return sdr_out
+
+
+# ---------------------------------------------------------------------------
+# Decode fast path: apply ISO 21496-1 gain map to SDR base
+# ---------------------------------------------------------------------------
+#
+# Mirror of the encode_native kernel chain. libuhdr's reference decode does
+# everything (MPF parse + JPEG decode + gain apply) inside one C++ entry
+# point with a scalar per-pixel loop. The native fast path:
+#   1. uses libuhdr's parser to pull out the compressed SDR + gain JPEGs
+#      and the gain-map metadata (no pixel decode);
+#   2. decodes both JPEGs in parallel via imagecodecs.jpeg_decode
+#      (libjpeg-turbo SIMD, GIL released);
+#   3. applies the gain map per-pixel in this Cython kernel (sRGB EOTF
+#      LUT + polynomial exp2 for the boost factor) into fp32 RGB;
+#   4. casts fp32 → fp16 via numpy (hardware F16C/NEON).
+#
+# Two wins over libuhdr's path: parallelised JPEG decode + fused/no-alloc
+# gain application. Output matches libuhdr's decoded fp16 RGBA to within
+# the quantisation noise of an 8-bit gain map round-trip.
+
+cdef void _apply_gainmap_kernel(
+    const uint8_t* sdr_u8,         # (H*W*sdr_ch,) base raster
+    int sdr_ch,                    # 3 or 4
+    const uint8_t* gain_u8,        # (H*W*gain_ch,) gain raster
+    int gain_ch,                   # 1 (single-channel) or 3/4 (multi-channel)
+    float* hdr_out,                # (H*W*3,) fp32 linear HDR RGB
+    Py_ssize_t n_pixels,
+    # Per-channel ISO 21496-1 gainmap metadata (3 entries each).
+    const float* log2_min,
+    const float* log2_max,
+    const float* gamma,
+    const float* offset_sdr,
+    const float* offset_hdr,
+    float display_weight,          # ISO 21496-1 display-boost weight, [0,1]
+    int multi_channel,             # 0 = use index 0 for all RGB; 1 = per-channel
+) noexcept nogil:
+    """Apply gainmap to SDR base → fp32 HDR. Inverse of _gain_map_kernel.
+
+    Per-channel: hdr = (sdr_lin + offset_sdr) * exp2(lerp(log2_min,
+    log2_max, gain_norm^gamma) * display_weight) - offset_hdr. The
+    display_weight is the ISO 21496-1 headroom scaler — 0 returns the
+    SDR base unchanged, 1 returns the full-HDR raster the encoder
+    targeted. Uses _SRGB_EOTF_LUT for sdr_u8 → sdr_lin (256-entry
+    float32 LUT) and _fast_exp2 for the boost factor; both
+    auto-vectorise under -O3 -ffast-math.
+    """
+    cdef Py_ssize_t i
+    cdef int c, gi
+    cdef float sdr_lin, gain_norm, weight, log2_factor, factor
+    cdef bint per_channel = (multi_channel != 0)
+    cdef bint any_gamma = (
+        gamma[0] != 1.0 or gamma[1] != 1.0 or gamma[2] != 1.0
+    )
+    for i in range(n_pixels):
+        for c in range(3):
+            sdr_lin = _SRGB_EOTF_LUT[sdr_u8[i * sdr_ch + c]]
+            if per_channel:
+                gi = gain_u8[i * gain_ch + c]
+            else:
+                gi = gain_u8[i * gain_ch]
+            gain_norm = gi * (1.0 / 255.0)
+            if any_gamma and gamma[c] != 1.0:
+                weight = _fast_pow(gain_norm, gamma[c])
+            else:
+                weight = gain_norm
+            log2_factor = (
+                log2_min[c] + weight * (log2_max[c] - log2_min[c])
+            ) * display_weight
+            factor = _fast_exp2(log2_factor)
+            hdr_out[i * 3 + c] = (sdr_lin + offset_sdr[c]) * factor - offset_hdr[c]
+
+
+@cython.boundscheck(False)
+@cython.wraparound(False)
+def apply_gainmap_fp32(sdr_u8, gain_u8, metadata, *, display_boost=None):
+    """Apply an ISO 21496-1 gain map to a decoded SDR base.
+
+    Returns a ``(H, W, 3)`` ``float32`` linear-light HDR raster
+    (1.0 = SDR-reference white = 203 nits). Caller casts to ``float16``
+    for the libuhdr-compatible UHDR_CT_LINEAR output convention.
+
+    Parameters
+    ----------
+    sdr_u8 : (H, W, 3 or 4) uint8 ndarray
+        Decoded SDR base raster — sRGB-encoded uint8 RGB (or RGBA).
+    gain_u8 : (H, W, 1/3/4) uint8 ndarray
+        Decoded gain-map raster. Single-channel gain (axis-3 size 1)
+        applies the same boost to every RGB channel; multi-channel
+        (size 3 or 4) applies per-channel boosts. Must match
+        ``sdr_u8``'s ``(H, W)``.
+    metadata : dict
+        ISO 21496-1 gainmap metadata. Same shape as
+        :func:`compute_gain_map_u8`'s output: scalar or 3-element
+        list per field. Required keys: ``max_content_boost``,
+        ``min_content_boost``, ``gamma`` (default 1.0), ``offset_sdr``
+        (default 0.0), ``offset_hdr`` (default 0.0),
+        ``hdr_capacity_min``, ``hdr_capacity_max``.
+    display_boost : float, optional
+        Target display headroom (linear-scale; 1.0 = SDR display,
+        ``hdr_capacity_max`` = full HDR). ``None`` (default) uses
+        ``hdr_capacity_max`` from the metadata — the encoded raster's
+        full HDR. Pass 1.0 to match libuhdr's default decode which
+        returns the SDR-equivalent.
+
+    See Also
+    --------
+    extract_layers : pull base + gain + metadata out of a container.
+    """
+    sdr_arr = np.ascontiguousarray(sdr_u8, dtype=np.uint8)
+    gain_arr = np.ascontiguousarray(gain_u8, dtype=np.uint8)
+    if sdr_arr.ndim != 3 or sdr_arr.shape[2] not in (3, 4):
+        raise ValueError(
+            f"sdr_u8 must be (H, W, 3) or (H, W, 4); got {tuple(sdr_arr.shape)}")
+    if gain_arr.ndim != 3 or gain_arr.shape[2] not in (1, 3, 4):
+        raise ValueError(
+            f"gain_u8 must be (H, W, 1/3/4); got {tuple(gain_arr.shape)}")
+    if (gain_arr.shape[0] != sdr_arr.shape[0]
+            or gain_arr.shape[1] != sdr_arr.shape[1]):
+        raise ValueError(
+            f"gain_u8 shape {tuple(gain_arr.shape)} doesn't match sdr_u8 "
+            f"(H, W) = ({int(sdr_arr.shape[0])}, {int(sdr_arr.shape[1])})")
+
+    cdef cnp.ndarray sdr_carr = sdr_arr
+    cdef cnp.ndarray gain_carr = gain_arr
+    cdef Py_ssize_t H = sdr_carr.shape[0]
+    cdef Py_ssize_t W = sdr_carr.shape[1]
+    cdef int sdr_ch = <int> sdr_carr.shape[2]
+    cdef int gain_ch = <int> gain_carr.shape[2]
+    cdef Py_ssize_t n_pixels = H * W
+
+    # Unpack metadata. Accept scalars OR 3-element lists / arrays so the
+    # same code path works for our single-channel encoder and for the
+    # multi-channel libuhdr output.
+    cdef float min_b[3]
+    cdef float max_b[3]
+    cdef float g[3]
+    cdef float osdr[3]
+    cdef float ohdr[3]
+    cdef float log2_min[3]
+    cdef float log2_max[3]
+
+    def _triplet(key, default):
+        v = metadata.get(key, default)
+        if hasattr(v, "__len__") and not isinstance(v, (bytes, bytearray)):
+            if len(v) < 1:
+                return [float(default)] * 3
+            if len(v) == 1:
+                return [float(v[0])] * 3
+            return [float(v[0]), float(v[1]), float(v[2])]
+        return [float(v)] * 3
+
+    _min = _triplet("min_content_boost", 1.0)
+    _max = _triplet("max_content_boost", 2.0)
+    _g = _triplet("gamma", 1.0)
+    _osdr = _triplet("offset_sdr", 0.0)
+    _ohdr = _triplet("offset_hdr", 0.0)
+    cdef int c
+    for c in range(3):
+        min_b[c] = <float> _min[c]
+        max_b[c] = <float> _max[c]
+        g[c] = <float> _g[c]
+        osdr[c] = <float> _osdr[c]
+        ohdr[c] = <float> _ohdr[c]
+        log2_min[c] = <float> (np.log2(min_b[c]) if min_b[c] > 0 else 0.0)
+        log2_max[c] = <float> np.log2(max_b[c])
+
+    cdef int multi_channel = 1 if gain_ch >= 3 else 0
+
+    # Display-boost weight per ISO 21496-1. Default = hdr_capacity_max
+    # (full HDR). Pass 1.0 to recover libuhdr's default (SDR-equivalent).
+    cap_min = float(metadata.get("hdr_capacity_min", 1.0))
+    cap_max = float(metadata.get("hdr_capacity_max",
+                                  max(_max[0], _max[1], _max[2])))
+    if display_boost is None:
+        db = cap_max
+    else:
+        db = float(display_boost)
+    if cap_min <= 0:
+        cap_min = 1.0
+    if cap_max <= cap_min:
+        cap_max = cap_min + 1e-6
+    if db < cap_min:
+        db = cap_min
+    if db > cap_max:
+        db = cap_max
+    weight = (np.log2(db) - np.log2(cap_min)) / (
+        np.log2(cap_max) - np.log2(cap_min))
+    if weight < 0.0:
+        weight = 0.0
+    elif weight > 1.0:
+        weight = 1.0
+    cdef float display_weight = <float> weight
+
+    cdef cnp.ndarray[cnp.float32_t, ndim=3, mode='c'] out = np.empty(
+        (H, W, 3), dtype=np.float32)
+    cdef const uint8_t* sdr_ptr = <const uint8_t*> cnp.PyArray_DATA(sdr_carr)
+    cdef const uint8_t* gain_ptr = <const uint8_t*> cnp.PyArray_DATA(gain_carr)
+    cdef float* out_ptr = <float*> cnp.PyArray_DATA(out)
+
+    with nogil:
+        _init_srgb_eotf_lut()
+        _apply_gainmap_kernel(
+            sdr_ptr, sdr_ch, gain_ptr, gain_ch, out_ptr, n_pixels,
+            log2_min, log2_max, g, osdr, ohdr,
+            display_weight, multi_channel,
+        )
+    return out
+
+
+def extract_layers(data):
+    """Pull the compressed SDR base + gain-map JPEGs + metadata out of an
+    ISO 21496-1 container without doing any pixel decode.
+
+    Returns a dict with keys:
+
+    * ``base_jpeg`` (bytes): the SDR base JPEG (HDR-unaware viewers
+      see exactly this).
+    * ``gainmap_jpeg`` (bytes): the gain-map JPEG (single- or
+      multi-channel, depending on the encoder).
+    * ``gainmap_metadata`` (dict): the parsed gainmap metadata —
+      same shape as the encode-side :func:`compute_gain_map_u8`
+      output but with per-channel arrays for multi-channel encoders.
+    * ``width``, ``height``: base image dimensions.
+    * ``gainmap_width``, ``gainmap_height``: gain-map dimensions
+      (may be smaller than the base — libuhdr supports a
+      ``gainmap_scale_factor`` for size savings).
+
+    Used by :func:`opencodecs.uhdr.decode_native` to route the
+    container teardown through libuhdr's parser but keep the
+    JPEG decode + gain-application in our fast-path Cython kernel.
+    """
+    cdef const unsigned char[::1] view = _coerce_bytes_view(data)
+    cdef uhdr_codec_private_t* dec
+    cdef uhdr_compressed_image_t in_img
+    cdef uhdr_error_info_t info
+    cdef uhdr_mem_block_t* base_blk
+    cdef uhdr_mem_block_t* gain_blk
+    cdef uhdr_gainmap_metadata_t* gm_meta
+
+    if view.shape[0] == 0:
+        raise ValueError("empty input")
+
+    dec = uhdr_create_decoder()
+    if dec == NULL:
+        raise UhdrError("uhdr_create_decoder returned NULL (OOM)")
+    result = {}
+    try:
+        memset(&in_img, 0, sizeof(in_img))
+        in_img.data = <void*> &view[0]
+        in_img.data_sz = <size_t> view.shape[0]
+        in_img.capacity = <size_t> view.shape[0]
+        in_img.cg = UHDR_CG_UNSPECIFIED
+        in_img.ct = UHDR_CT_UNSPECIFIED
+        in_img.range = UHDR_CR_UNSPECIFIED
+        info = uhdr_dec_set_image(dec, &in_img)
+        _check(info, "uhdr_dec_set_image")
+        info = uhdr_dec_probe(dec)
+        _check(info, "uhdr_dec_probe")
+
+        result["width"] = int(uhdr_dec_get_image_width(dec))
+        result["height"] = int(uhdr_dec_get_image_height(dec))
+        result["gainmap_width"] = int(uhdr_dec_get_gainmap_width(dec))
+        result["gainmap_height"] = int(uhdr_dec_get_gainmap_height(dec))
+
+        base_blk = uhdr_dec_get_base_image(dec)
+        if base_blk == NULL or base_blk.data == NULL or base_blk.data_sz == 0:
+            raise UhdrError("uhdr_dec_get_base_image returned empty")
+        result["base_jpeg"] = PyBytes_FromStringAndSize(
+            <char*> base_blk.data, <Py_ssize_t> base_blk.data_sz)
+
+        gain_blk = uhdr_dec_get_gainmap_image(dec)
+        if gain_blk == NULL or gain_blk.data == NULL or gain_blk.data_sz == 0:
+            raise UhdrError("uhdr_dec_get_gainmap_image returned empty")
+        result["gainmap_jpeg"] = PyBytes_FromStringAndSize(
+            <char*> gain_blk.data, <Py_ssize_t> gain_blk.data_sz)
+
+        gm_meta = uhdr_dec_get_gainmap_metadata(dec)
+        if gm_meta == NULL:
+            raise UhdrError("uhdr_dec_get_gainmap_metadata returned NULL")
+        result["gainmap_metadata"] = {
+            "max_content_boost": [
+                float(gm_meta.max_content_boost[i]) for i in range(3)],
+            "min_content_boost": [
+                float(gm_meta.min_content_boost[i]) for i in range(3)],
+            "gamma": [float(gm_meta.gamma[i]) for i in range(3)],
+            "offset_sdr": [float(gm_meta.offset_sdr[i]) for i in range(3)],
+            "offset_hdr": [float(gm_meta.offset_hdr[i]) for i in range(3)],
+            "hdr_capacity_min": float(gm_meta.hdr_capacity_min),
+            "hdr_capacity_max": float(gm_meta.hdr_capacity_max),
+            "use_base_cg": int(gm_meta.use_base_cg),
+        }
+    finally:
+        uhdr_release_decoder(dec)
+    return result
 
 
 cdef void _rgb_to_rgba_pack_kernel(const uint8_t* src, uint8_t* dst,

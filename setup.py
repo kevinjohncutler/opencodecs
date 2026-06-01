@@ -626,6 +626,108 @@ def _maybe_build_ext_simple(
     return []
 
 
+def _maybe_build_uhdr_ext() -> list[Extension]:
+    """Build the ``_uhdr`` (libultrahdr / Ultra-HDR JPEG) extension when
+    libuhdr is on the system. Probes the cibuildwheel cached prefix,
+    the per-user opencodecs cache (from ``build_codec_libs.sh``),
+    homebrew's keg, and the standard system prefixes. Bakes an rpath
+    into the resulting ``.so`` so the linked ``libuhdr`` dylib is
+    findable at import time without ``LD_LIBRARY_PATH``.
+
+    Apache-2.0; bundled into the wheel by the standard
+    delocate/auditwheel/delvewheel repair step.
+    """
+    candidates: list[Path] = []
+    # 1. Explicit codec-libs prefix wins (set in CI to /cibw-jxl-prefix
+    #    on Linux, $CONDA_PREFIX on Windows).
+    _libs_prefix_env = os.environ.get("OPENCODECS_CODEC_LIBS_PREFIX")
+    if _libs_prefix_env:
+        candidates.append(Path(_libs_prefix_env))
+        # Conda's Windows layout puts headers under <prefix>/Library/.
+        candidates.append(Path(_libs_prefix_env) / "Library")
+    # 2. Standalone CMake-built libuhdr from build_codec_libs.sh on a
+    #    dev machine (installs into the per-user `libs` cache root).
+    candidates.append(_OC_USER_CACHE / "libs")
+    # 3. Homebrew keg (macOS).
+    candidates.extend([
+        Path("/opt/homebrew/opt/libultrahdr"),
+        Path("/usr/local/opt/libultrahdr"),
+    ])
+    # 4. Generic system prefixes.
+    candidates.extend([Path("/usr/local"), Path("/usr")])
+
+    prefix = None
+    lib_subdir = None  # "lib" or "lib64" or "Library/lib"
+    lib_filename = None
+    lib_candidates = [
+        ("lib", "libuhdr.dylib"),
+        ("lib", "libuhdr.so"),
+        ("lib", "libuhdr.so.1"),
+        ("lib64", "libuhdr.so"),
+        ("lib64", "libuhdr.so.1"),
+        ("lib", "libuhdr.1.dylib"),
+        # Windows (conda-forge / build_codec_libs.sh layout): the
+        # CMake build emits uhdr.lib alongside uhdr.dll under bin/.
+        ("lib", "uhdr.lib"),
+        ("Library/lib", "uhdr.lib"),
+    ]
+    for c in candidates:
+        if not (c / "include" / "ultrahdr_api.h").is_file() \
+                and not (c / "Library" / "include" / "ultrahdr_api.h").is_file():
+            continue
+        # If Library/ subdir holds the headers, that's the real prefix.
+        if (c / "Library" / "include" / "ultrahdr_api.h").is_file():
+            c = c / "Library"
+        for subdir, name in lib_candidates:
+            if (c / subdir / name).is_file():
+                prefix = c
+                lib_subdir = subdir
+                lib_filename = name
+                break
+        if prefix is not None:
+            break
+    if prefix is None:
+        return []
+
+    extra_link_args: list[str] = []
+    if sys.platform == "darwin":
+        # Absolute-path link + rpath fallback. libuhdr's
+        # install_name is @rpath/libuhdr.X.dylib, so delocate needs
+        # the rpath to be present to resolve LC_LOAD_DYLIB.
+        extra_link_args = [
+            str(prefix / lib_subdir / lib_filename),
+            f"-Wl,-rpath,{prefix / lib_subdir}",
+        ]
+        libraries = []
+    else:
+        libraries = ["uhdr"]
+        if sys.platform == "linux":
+            extra_link_args = [f"-Wl,-rpath,{prefix / lib_subdir}"]
+
+    return [Extension(
+        name="opencodecs.codecs._uhdr",
+        sources=["src/opencodecs/codecs/_uhdr.pyx"],
+        include_dirs=[
+            str(PKG_CODECS),
+            numpy.get_include(),
+            str(prefix / "include"),
+        ],
+        library_dirs=[str(prefix / lib_subdir)],
+        libraries=libraries,
+        extra_link_args=extra_link_args,
+        define_macros=[("NPY_NO_DEPRECATED_API", "NPY_1_7_API_VERSION")],
+        # Aggressive optimisation for the gain-map / SDR-base kernels
+        # to auto-vectorise (NEON on Apple Silicon, AVX2 on x86). The
+        # polynomial log2 in _gain_map_kernel only beats numpy's
+        # vectorised log2 when the compiler turns it into SIMD.
+        extra_compile_args=(
+            ["-O3", "-ffast-math", "-fno-math-errno"]
+            if sys.platform != "win32" else ["/O2"]
+        ),
+        language="c",
+    )]
+
+
 def _maybe_build_mozjpeg_ext() -> list[Extension]:
     """Build the optional ``_mozjpeg`` extension when MozJPEG is
     installed. MozJPEG ships its libturbojpeg under a keg-only prefix
@@ -1125,36 +1227,14 @@ extensions = [
         extra_link_args=extra_link_args,
         language="c",
     ),
-    # libultrahdr (Ultra-HDR / ISO 21496-1). Links against system libuhdr.
-    # macOS: `brew install libultrahdr` -> /opt/homebrew/{include,lib}.
-    # Linux: build from https://github.com/google/libultrahdr.
-    # If the header/dylib aren't present, the Extension still appears in
-    # the wheel build plan -- the public opencodecs.uhdr module catches
-    # ImportError and substitutes a clear "install libultrahdr" stub.
-    Extension(
-        name="opencodecs.codecs._uhdr",
-        sources=["src/opencodecs/codecs/_uhdr.pyx"],
-        include_dirs=[
-            str(PKG_CODECS),
-            numpy.get_include(),
-            *_resolve_include_dirs("ultrahdr_api.h"),
-        ],
-        library_dirs=[],
-        libraries=["uhdr"],
-        define_macros=[
-            ("NPY_NO_DEPRECATED_API", "NPY_1_7_API_VERSION"),
-        ],
-        # Aggressive optimisation is critical for the gain-map kernel
-        # to auto-vectorise (NEON on Apple Silicon, AVX2 on x86). The
-        # polynomial log2 in _gain_map_kernel only beats numpy's
-        # vectorised log2 when the compiler turns it into SIMD.
-        extra_compile_args=[
-            "-O3",
-            "-ffast-math",  # fine for gain-map output (uint8, ~1% tolerance)
-            "-fno-math-errno",
-        ],
-        language="c",
-    ),
+    # libultrahdr (Ultra-HDR / ISO 21496-1). Bundled via
+    # bench/build_codec_libs.sh::build_libultrahdr (Apache-2.0). The
+    # _maybe_build_uhdr_ext probe finds the cached install prefix
+    # (homebrew keg, $OPENCODECS_LIBS_PREFIX, per-user cache, or the
+    # cibuildwheel mount) and bakes in the matching rpath so delocate /
+    # auditwheel / delvewheel can bundle libuhdr's dylib/.so/.dll into
+    # the wheel.
+    *_maybe_build_uhdr_ext(),
     # QOI: vendored single-header (3rdparty/qoi/qoi.h). Compile the impl
     # via QOI_IMPLEMENTATION; no external library needed.
     Extension(
@@ -1410,23 +1490,10 @@ extensions = [
         )]
         if _has_header("isa-l/igzip_lib.h") else []
     ),
-    # Ultra HDR (gainmap JPEG, ISO 21496) via Google's libultrahdr.
-    # Optional; the prebuilt brew bottle is fine because the codec is
-    # bottlenecked by libjpeg-turbo's SIMD encoders (which we tune
-    # separately). depends on libjpeg-turbo, no C++ runtime visible at
-    # our ABI.
-    *_maybe_build_ext_simple(
-        name="opencodecs.codecs._ultrahdr",
-        source="src/opencodecs/codecs/_ultrahdr.pyx",
-        prefixes=[
-            str(_OC_USER_CACHE / "libs"),
-            "/opt/homebrew/opt/libultrahdr",
-            "/usr/local/opt/libultrahdr",
-            "/usr/local", "/usr",
-        ],
-        probe_header="ultrahdr_api.h",
-        libname="uhdr",
-    ),
+    # Ultra HDR is now wired via _maybe_build_uhdr_ext() above (see
+    # the `_uhdr` extension probe). The old stale `_ultrahdr` block
+    # was orphaned when commit c9347f5 replaced the Python wrapper
+    # with the direct libuhdr binding.
     # EER (Thermo Fisher Electron Event Representation) — cryo-EM
     # event-list decoder, vendored from imagecodecs imcd.c (BSD-3).
     # No external deps; always built.

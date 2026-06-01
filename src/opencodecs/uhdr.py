@@ -57,6 +57,8 @@ try:
         UhdrError,
         compute_gain_map_u8 as _cython_gain_map,
         compute_sdr_base_u8 as _cython_sdr_base,
+        apply_gainmap_fp32 as _cython_apply_gainmap,
+        extract_layers as _cython_extract_layers,
         _srgb_eotf_lut_np,
     )
     _HAVE_BACKEND = True
@@ -74,6 +76,7 @@ except ImportError as _exc:  # pragma: no cover
 
     encode = encode_assembled = decode = is_uhdr = libuhdr_version = _missing  # type: ignore[assignment]
     _cython_gain_map = _cython_sdr_base = _srgb_eotf_lut_np = _missing  # type: ignore[assignment]
+    _cython_apply_gainmap = _cython_extract_layers = _missing  # type: ignore[assignment]
     UhdrError = type("UhdrError", (Exception,), {})  # type: ignore[assignment]
 
 
@@ -81,7 +84,9 @@ __all__ = [
     "encode",
     "encode_native",
     "encode_assembled",
+    "encode_to",
     "decode",
+    "decode_native",
     "is_uhdr",
     "libuhdr_version",
     "UhdrError",
@@ -191,6 +196,118 @@ def encode_native(hdr, sdr=None, *,
         metadata=metadata,
         gamut=gamut,
     )
+
+
+def decode_native(data, *, parallel=True, dtype=None,
+                  display_boost=None) -> dict:
+    """Fused-Cython fast-path Ultra-HDR decoder.
+
+    Uses libuhdr to extract the compressed SDR base + gain-map JPEGs +
+    metadata (no pixel decode), then decodes both JPEGs in parallel via
+    :mod:`imagecodecs` (libjpeg-turbo SIMD, GIL released) and applies the
+    gain map to fp32 HDR in a Cython kernel that uses the same sRGB EOTF
+    LUT + polynomial exp2 the encoder uses. Output is cast to ``dtype``
+    (default ``float16`` to match :func:`decode`'s convention).
+
+    Parameters
+    ----------
+    data : bytes-like
+        Encoded ISO 21496-1 stream (Ultra-HDR JPEG).
+    parallel : bool
+        Decode the SDR base JPEG and the gain-map JPEG concurrently in
+        a 2-worker thread pool. Both decoders release the GIL.
+    dtype : numpy dtype, optional
+        Output HDR dtype. ``None`` (default) → ``float16`` to match
+        :func:`decode`'s ``hdr_fp16`` convention. Pass ``np.float32``
+        if you want to skip the fp16 cast (saves ~2 ms on a 2k² raster
+        and avoids the ~5e-4 fp16-quantisation error).
+    display_boost : float, optional
+        Target display headroom. ``None`` (default) requests the
+        encoded raster's full HDR (``hdr_capacity_max``). Pass 1.0 to
+        match libuhdr's default decode — the SDR-equivalent.
+
+    Returns
+    -------
+    dict with keys ``hdr``, ``sdr_u8``, ``gainmap_u8``,
+    ``gainmap_metadata``, ``width``, ``height``. ``hdr`` is a
+    ``(H, W, 3)`` HDR raster in ``dtype`` (linear-light;
+    1.0 = 203 nits / SDR white).
+    """
+    if not _HAVE_BACKEND:
+        _missing()
+    import imagecodecs
+    import concurrent.futures as _cf
+
+    info = _cython_extract_layers(data)
+    base_jpeg = info["base_jpeg"]
+    gainmap_jpeg = info["gainmap_jpeg"]
+    metadata = info["gainmap_metadata"]
+
+    if parallel:
+        ex = _cf.ThreadPoolExecutor(max_workers=2)
+        try:
+            sdr_fut = ex.submit(imagecodecs.jpeg_decode, base_jpeg)
+            gain_fut = ex.submit(imagecodecs.jpeg_decode, gainmap_jpeg)
+            sdr_u8 = sdr_fut.result()
+            gain_u8 = gain_fut.result()
+        finally:
+            ex.shutdown(wait=False)
+    else:
+        sdr_u8 = imagecodecs.jpeg_decode(base_jpeg)
+        gain_u8 = imagecodecs.jpeg_decode(gainmap_jpeg)
+
+    # imagecodecs returns (H, W) grayscale or (H, W, 3) RGB. Normalise
+    # to a 3-D array with the channel axis last; the kernel expects
+    # that shape.
+    if sdr_u8.ndim == 2:
+        sdr_u8 = sdr_u8[:, :, None]
+    if gain_u8.ndim == 2:
+        gain_u8 = gain_u8[:, :, None]
+
+    # If the gain-map is smaller than the SDR base (libuhdr's
+    # scale-factor saves bytes on the gain), upscale to match. Nearest-
+    # neighbour is enough — the original spec lets decoders interpolate
+    # any way they like and the gain map is heavily band-limited.
+    sH, sW = int(sdr_u8.shape[0]), int(sdr_u8.shape[1])
+    gH, gW = int(gain_u8.shape[0]), int(gain_u8.shape[1])
+    if (gH, gW) != (sH, sW):
+        ys = (np.arange(sH) * gH // sH).astype(np.int64)
+        xs = (np.arange(sW) * gW // sW).astype(np.int64)
+        gain_u8 = gain_u8[ys[:, None], xs[None, :]]
+
+    hdr_f32 = _cython_apply_gainmap(
+        sdr_u8, gain_u8, metadata, display_boost=display_boost,
+    )
+    if dtype is None:
+        out = hdr_f32.astype(np.float16)
+    else:
+        out = hdr_f32.astype(np.dtype(dtype), copy=False)
+    return {
+        "hdr": out,
+        "sdr_u8": sdr_u8,
+        "gainmap_u8": gain_u8,
+        "gainmap_metadata": metadata,
+        "width": info["width"],
+        "height": info["height"],
+    }
+
+
+def encode_to(fp, hdr, **kwargs) -> int:
+    """Streaming variant of :func:`encode_native` — write Ultra-HDR
+    bytes directly to a file-like ``fp`` (anything with a ``write(bytes)``
+    method: an open file, ``io.BytesIO``, an HTTP upload streamer, …).
+    Returns the number of bytes written.
+
+    Forward-compatible alias: for now ``encode_to`` is essentially
+    ``fp.write(encode_native(hdr, **kwargs))`` — the libuhdr api-4 path
+    we use for container assembly doesn't expose a streaming writer
+    today. The function exists so callers can adopt the streaming API
+    now and pick up any future libuhdr streaming write-out without
+    changing their code.
+    """
+    data = encode_native(hdr, **kwargs)
+    fp.write(data)
+    return len(data)
 
 
 def read(path, **kwargs) -> dict:

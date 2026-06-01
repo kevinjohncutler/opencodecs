@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "opencodecs"
-version = "0.1.5"
+version = "0.1.6"
 description = "Streaming, network-aware image codecs for scientific imaging (prototype: JPEG XL)"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -142,7 +142,7 @@ before-all = [
     # bench/build_codec_libs.sh into the cached /cibw-jxl-prefix mount.
     # Skips encoders (aom, x265) — wheel ships decode-only AVIF/HEIF to
     # keep build < 12 min cold + avoid GPL x265.
-    "bash -c 'PATH=$HOME/.cargo/bin:$PATH bash bench/build_codec_libs.sh --only=libjpeg-turbo,c-blosc2,libde265,dav1d,libavif,libheif,libaec,lerc,zfp,SZ3,pcodec,SPERR,brunsli,mozjpeg'",
+    "bash -c 'PATH=$HOME/.cargo/bin:$PATH bash bench/build_codec_libs.sh --only=libjpeg-turbo,c-blosc2,libde265,dav1d,libavif,libheif,libaec,lerc,zfp,SZ3,pcodec,SPERR,brunsli,mozjpeg,libultrahdr'",
     "bash bench/build_libjxl.sh",
 ]
 # Don't set OPENCODECS_*_PREFIX here — build_wheels.yml's
@@ -162,7 +162,7 @@ before-all = [
     # mozjpeg removed from this brew install — the formula ships libjpeg
     # only, not libturbojpeg, so the _mozjpeg probe couldn't find what it
     # needed. Source-build via build_codec_libs.sh produces both libs.
-    "brew install jpeg-xl libavif libheif webp libpng jpeg-turbo openjpeg zstd brotli c-blosc2 lz4 libdeflate libaec liblerc zfp rust cmake ninja",
+    "brew install jpeg-xl libavif libheif webp libpng jpeg-turbo openjpeg zstd brotli c-blosc2 lz4 libdeflate libaec liblerc zfp rust cmake ninja libultrahdr",
     "bash bench/build_codec_libs.sh --only=SZ3,pcodec,SPERR,brunsli,mozjpeg",
 ]
 # macos-latest is now macOS 15 (Sequoia) on arm64. Homebrew formulas are
