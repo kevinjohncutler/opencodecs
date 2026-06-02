@@ -1,0 +1,90 @@
+name: Warm codec-libs cache
+
+# Why: GitHub Actions caches are isolated by ref scope. A workflow run on
+# a tag ref (refs/tags/vX.Y.Z) can read caches from its own ref or the
+# default branch (main), but NOT from sibling tag refs. So the codec-libs
+# cache saved during one tag's wheel build is invisible to the next tag's
+# wheel build — every release starts cold, paying ~10 min of source-build
+# overhead in CIBW_BEFORE_ALL_LINUX.
+#
+# This workflow runs cibuildwheel on main pushes with CIBW_BUILD=cp310-*
+# (single Python — minimal extra cost beyond the BEFORE_ALL step). The
+# resulting cache lands on refs/heads/main, where tag-push wheel builds
+# can fall back to it via the standard cache-scope rules. Net trade:
+# +~15 min per main push that touches the build scripts; -~10 min per
+# tag-push wheel build per Linux cell.
+#
+# Triggers on path changes only — we don't need to warm the cache when
+# unrelated files change (the existing cache stays valid until the key
+# components change).
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - bench/build_libjxl.sh
+      - bench/build_codec_libs.sh
+      - .github/workflows/cache_warm.yml
+      - .github/workflows/build_wheels.yml
+      - pyproject.toml
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  LIBJXL_VERSION: v0.11.2
+  CACHE_VERSION: 1
+
+jobs:
+  warm:
+    name: Warm cache · ${{ matrix.archs_linux }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            archs_linux: x86_64
+          - os: ubuntu-24.04-arm
+            archs_linux: aarch64
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Same cache key as build_wheels.yml — that's the whole point. When
+      # this completes successfully on a main push, the next tag-push run
+      # will find the cache via the main-branch fallback.
+      - name: Cache codec-libs install (Linux)
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.cibw-cache/usr-local
+          key: cibw-codec-libs-v${{ env.CACHE_VERSION }}-${{ runner.os }}-${{ matrix.archs_linux }}-${{ env.LIBJXL_VERSION }}-${{ hashFiles('bench/build_libjxl.sh', 'bench/build_codec_libs.sh') }}
+
+      # Run cibuildwheel restricted to one Python so the BEFORE_ALL step
+      # runs (and writes the codec libs into the mounted cache dir), but
+      # we don't pay the 4×-Python wheel-compile cost. CIBW_TEST_SKIP="*"
+      # avoids any pytest run on the one wheel we build (we throw it
+      # away).
+      - name: Build wheels (cache-warming, cp310 only)
+        uses: pypa/cibuildwheel@v3.3.1
+        with:
+          output-dir: ./wheelhouse
+        env:
+          CIBW_ARCHS_LINUX: ${{ matrix.archs_linux }}
+          CIBW_BUILD: 'cp310-*'
+          CIBW_TEST_SKIP: '*'
+          CIBW_CONTAINER_ENGINE: 'docker; create_args: -v ${{ github.workspace }}/.cibw-cache/usr-local:/cibw-jxl-prefix'
+          CIBW_ENVIRONMENT_LINUX: >-
+            LIBJXL_VERSION=${{ env.LIBJXL_VERSION }}
+            OPENCODECS_LIBJXL_PREFIX=/cibw-jxl-prefix
+            OPENCODECS_LIBS_PREFIX=/cibw-jxl-prefix
+            OPENCODECS_JXL_PREFIX=/cibw-jxl-prefix
+            OPENCODECS_CODEC_LIBS_PREFIX=/cibw-jxl-prefix
+            ENABLE_AOM=0
+            ENABLE_X265=0
+            LD_LIBRARY_PATH=/cibw-jxl-prefix/lib64:/cibw-jxl-prefix/lib:$LD_LIBRARY_PATH
+
+      # No artifact upload — these wheels are discarded.
