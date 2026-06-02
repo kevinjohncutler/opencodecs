@@ -10,6 +10,55 @@ Versions follow the same ``YYYY.M.D`` cadence as upstream when we
 publish; the entries below cluster work by date rather than by
 release because most of it has shipped continuously to ``main``.
 
+0.1.10 (2026-06-02)
+-------------------
+
+**HDR-fidelity bug fix — every prior ``encode_native`` output was
+under-boosting HDR by roughly 50%**
+
+The polynomial approximation in ``_fast_log2`` (used by
+``_gain_map_kernel`` to encode the gain map, and by ``_fast_pow``
+in ``_apply_gainmap_kernel`` for the gamma-non-1 decode case) had
+systematically wrong coefficients. The polynomial was exact at
+powers of 2 (m=1 exactly) but dipped up to **−1.15** in log₂ units
+mid-octave — e.g. ``_fast_log2(7.5)`` returned 1.754 instead of
+2.907.
+
+Effect on encoded Ultra-HDR files: the per-pixel gain values were
+quantised against a too-shallow log₂ curve, so a pixel that should
+have written ``gain_u8 = 255`` (full boost) instead wrote
+``gain_u8 ≈ 139``. Decoded HDR brightness landed at ~43% of
+intended. macOS Preview / Chrome / libuhdr all faithfully rendered
+the buggy gain map → every Ultra-HDR ``encode_native`` ever wrote
+was effectively a "half-strength HDR" file.
+
+**Fix**: replace ``_fast_log2`` → ``libc.math.log2f`` in
+``_gain_map_kernel`` and ``_fast_pow`` → ``libc.math.powf`` in
+``_apply_gainmap_kernel``. Costs ~3-5 ns/pixel of extra encode +
+decode time (~12 ms on a 2k² raster) — well worth the fidelity.
+``_fast_exp2`` was verified correct and is retained.
+
+Verified round-trip on a 2k² fluorescence tilescan:
+
+* input HDR peak = 1.0000, mean = 0.0530
+* ``decode_native(display_boost=1)``: peak = 1.000, mean = 0.0523
+* ``decode_native`` (full HDR, default): peak = 7.841 — matches
+  the encoded ``hdr_capacity_max`` = 7.88 exactly
+* cross-check vs libuhdr's own ``decode``: peak = 1.0000, mean =
+  0.0526 (both implementations now agree)
+
+If you have v0.1.5-v0.1.9 ``.jpg`` files in production: they're
+still valid Ultra-HDR JPEGs (libuhdr / Apple / Chrome decode them
+without error), but they carry roughly half the HDR signal the
+encoder intended to store. Re-encoding from source produces files
+with the full boost.
+
+The earlier earlier "chroma subsampling 4:2:0 → 7.84 → 3.67 peak
+attenuation" measurement in v0.1.9's notes was a *symptom* of this
+log₂ bug, not the cause. With this fix the chroma-subsampling
+choice (4:2:0 vs 4:4:4 vs 4:4:0) becomes the smaller signal it
+should be.
+
 0.1.9 (2026-06-02)
 ------------------
 

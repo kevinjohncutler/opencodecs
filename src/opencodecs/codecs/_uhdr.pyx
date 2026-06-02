@@ -477,7 +477,13 @@ cdef void _gain_map_kernel(const float* hdr_lin,   # (N*3,) HDR linear, 1.0=peak
             gain = min_boost
         elif gain > max_boost:
             gain = max_boost
-        norm = (_fast_log2(gain) - log2_min) * inv_range
+        # log2f from libc.math — historically used a polynomial
+        # approximation here (_fast_log2), but its coefficients had
+        # a ~−1.15 RMSE in mid-octave, which encoded the gain map at
+        # ~50% of its intended boost. log2f costs a function call
+        # (~3-5 ns) per pixel; for 2k² content that's ~12 ms extra
+        # encode time vs the broken approximation. Worth every ns.
+        norm = (log2f(gain) - log2_min) * inv_range
         if norm < 0.0:
             norm = 0.0
         elif norm > 1.0:
@@ -672,7 +678,9 @@ cdef void _apply_gainmap_kernel(
                 gi = gain_u8[i * gain_ch]
             gain_norm = gi * (1.0 / 255.0)
             if any_gamma and gamma[c] != 1.0:
-                weight = _fast_pow(gain_norm, gamma[c])
+                # powf from libc.math — _fast_pow used a broken
+                # _fast_log2 internally; same bug as the encode side.
+                weight = powf(gain_norm, gamma[c])
             else:
                 weight = gain_norm
             log2_factor = (
