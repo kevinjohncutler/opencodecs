@@ -258,6 +258,7 @@ __all__ = [
     "is_uhdr",
     "probe",
     "read_thumbnail",
+    "read_thumbnail_hdr",
     "read_thumbnail_bytes",
     "libuhdr_version",
     "UhdrError",
@@ -271,6 +272,7 @@ def encode_native(hdr, sdr=None, *,
                    quality=95, gain_quality=None, gain_scale=1,
                    sdr_subsampling=None, lossless=False,
                    thumbnail_size=None, thumbnail_quality=80,
+                   thumbnail_hdr=True,
                    max_content_boost=None,
                    min_content_boost=1.0, gamma=1.0, parallel=True,
                    out=None):
@@ -360,17 +362,31 @@ def encode_native(hdr, sdr=None, *,
         2-core+ machines.
     thumbnail_size : int, optional
         If set, embed a square thumbnail of at most ``thumbnail_size``
-        px on each side inside the file's APP1 EXIF segment. The
-        thumbnail is a separately-encoded JPEG of the (peak-
-        normalised) SDR base raster, decimated by integer stride.
-        Adds ~2-10 KB to the file and ~5 ms to the encode. Reads
-        via :func:`read_thumbnail` (~1 ms regardless of source
-        resolution) — useful for archive browsers, HTTP-range
-        thumbnail fetches, file managers that auto-extract EXIF
-        thumbnails. ``None`` (default) embeds nothing.
+        px on each side inside the file's APP1 EXIF segment. By
+        default the thumbnail is itself a mini Ultra-HDR (SDR base
+        + downsampled gain map + MPF box), so HDR-aware viewers
+        preserve peak brightness when previewing — same boost as the
+        main image. SDR-only EXIF readers see the SDR base layer as
+        a plain JPEG and ignore the MPF block, so backward-compat is
+        preserved. Adds ~25-35 KB to the file and ~3 ms to the
+        encode. Reads via :func:`read_thumbnail` (uint8 SDR, ~1 ms)
+        or :func:`read_thumbnail_hdr` (fp32 HDR, ~1.2 ms).
+        ``None`` (default) embeds nothing. Both the SDR base and
+        gain map use centered-stride decimation so the thumbnail
+        coordinate system aligns with the full-res image (no half-
+        pixel bias).
     thumbnail_quality : int
-        JPEG quality (1-100) for the thumbnail layer. Default 80;
-        the thumbnail is a preview, not the primary product.
+        JPEG quality (1-100) for the thumbnail's SDR base and gain
+        map. Default 80; the thumbnail is a preview, not the
+        primary product.
+    thumbnail_hdr : bool
+        ``True`` (default) embeds an Ultra-HDR thumbnail (preserves
+        peak brightness in HDR-aware viewers). ``False`` embeds a
+        plain SDR JPEG thumbnail — smaller (~20 KB instead of ~30
+        KB) but renders at SDR-white (~200 nits) on HDR displays,
+        not the main image's full HDR boost. Useful when targeting
+        legacy EXIF readers that don't tolerate MPF segments in
+        thumbnail bytes.
     out : file-like, optional
         If given (anything with ``write(buf)``: open file,
         ``io.BytesIO``, HTTP upload sink), the assembled container
@@ -428,9 +444,13 @@ def encode_native(hdr, sdr=None, *,
         # float64 and runs multiple passes, eating ~100ms; stride
         # decimation is ~5ms). Cuts gain JPEG encode work by scale²
         # and gain bytes proportionally.
+        # Centered offset so the decoder's bilinear upscale lands the
+        # gain samples on the same image coordinates as the SDR base.
         if gain_scale == 1:
             return gain_u8
-        return np.ascontiguousarray(gain_u8[::gain_scale, ::gain_scale])
+        off = gain_scale // 2
+        return np.ascontiguousarray(
+            gain_u8[off::gain_scale, off::gain_scale])
 
     # Gain map = per-pixel HDR boost multiplier. JPEG default 4:2:0
     # chroma subsampling averages boost values over 2x2 blocks, which
@@ -462,8 +482,8 @@ def encode_native(hdr, sdr=None, *,
                                  max_content_boost=mcb,
                                  min_content_boost=min_content_boost,
                                  gamma=gamma)
-            gain_u8, metadata = gain_fut.result()
-            gain_u8 = _maybe_downscale_gain(gain_u8)
+            gain_full, metadata = gain_fut.result()
+            gain_u8 = _maybe_downscale_gain(gain_full)
             gainmap_fut = ex.submit(
                 imagecodecs.jpeg_encode, gain_u8, gain_quality,
                 subsampling='440')
@@ -472,31 +492,75 @@ def encode_native(hdr, sdr=None, *,
         finally:
             ex.shutdown(wait=False)
     else:
-        gain_u8, metadata = _cython_gain_map(
+        gain_full, metadata = _cython_gain_map(
             hdr_arr, sdr_arr,
             sdr_white_nits=sdr_white_nits,
             max_content_boost=mcb,
             min_content_boost=min_content_boost,
             gamma=gamma,
         )
-        gain_u8 = _maybe_downscale_gain(gain_u8)
+        gain_u8 = _maybe_downscale_gain(gain_full)
         base_jpeg = _encode_base(sdr_arr)
         gainmap_jpeg = imagecodecs.jpeg_encode(
             gain_u8, gain_quality, subsampling='440')
 
     if thumbnail_size is not None and thumbnail_size > 0:
-        # Build the thumbnail from the SDR base raster (post-OETF, so
-        # exactly the SDR-display visual). Integer stride-decimate to
-        # the requested max dimension, then JPEG-encode small.
+        # Centered-stride decimate the SDR base (and, for UHDR
+        # thumbnails, the FULL-resolution gain map). Centered offset
+        # (stride//2) puts each sample at the middle of its
+        # stride×stride block — top-left stride would introduce a
+        # half-stride coordinate bias against the full-res image.
         max_dim = max(sdr_arr.shape[0], sdr_arr.shape[1])
         if max_dim > thumbnail_size:
             stride = (max_dim + thumbnail_size - 1) // thumbnail_size
-            thumb_raster = np.ascontiguousarray(sdr_arr[::stride, ::stride])
+            off = stride // 2
+            thumb_sdr_raster = np.ascontiguousarray(
+                sdr_arr[off::stride, off::stride])
         else:
-            thumb_raster = sdr_arr
-        thumb_jpeg = imagecodecs.jpeg_encode(
-            thumb_raster, int(thumbnail_quality))
-        exif_seg = _build_exif_thumbnail_segment(thumb_jpeg)
+            stride = 1
+            off = 0
+            thumb_sdr_raster = sdr_arr
+        thumb_sdr_jpeg = imagecodecs.jpeg_encode(
+            thumb_sdr_raster, int(thumbnail_quality))
+        if thumbnail_hdr:
+            # Mini-UHDR thumbnail: stride-decimate the FULL-resolution
+            # gain raster with the same centered offset, JPEG-encode at
+            # 4:4:4 chroma (per-pixel boost fidelity in a 250-ish-px
+            # raster has zero chroma-bleed room to give up), and ask
+            # libuhdr's api-4 to wrap base + gain + the main image's
+            # metadata into a self-contained Ultra-HDR JPEG. That goes
+            # into the parent file's EXIF IFD-1 slot as the thumbnail.
+            # Using gain_full (pre-_maybe_downscale_gain) avoids
+            # compounding the gain_scale downsample with the thumbnail
+            # stride.
+            if stride > 1:
+                thumb_gain_raster = np.ascontiguousarray(
+                    gain_full[off::stride, off::stride])
+            else:
+                thumb_gain_raster = gain_full
+            # Match shapes if SDR/gain edge alignment diverged on the
+            # last row/col (e.g. odd dim + stride trimming).
+            h = min(thumb_sdr_raster.shape[0], thumb_gain_raster.shape[0])
+            w = min(thumb_sdr_raster.shape[1], thumb_gain_raster.shape[1])
+            if thumb_gain_raster.shape[:2] != (h, w) or \
+                    thumb_sdr_raster.shape[:2] != (h, w):
+                thumb_sdr_raster = thumb_sdr_raster[:h, :w]
+                thumb_gain_raster = thumb_gain_raster[:h, :w]
+                thumb_sdr_jpeg = imagecodecs.jpeg_encode(
+                    np.ascontiguousarray(thumb_sdr_raster),
+                    int(thumbnail_quality))
+            thumb_gain_jpeg = imagecodecs.jpeg_encode(
+                thumb_gain_raster, int(thumbnail_quality),
+                subsampling='440')
+            thumb_blob = encode_assembled(
+                base_jpeg=thumb_sdr_jpeg,
+                gainmap_jpeg=thumb_gain_jpeg,
+                metadata=metadata,
+                gamut=gamut,
+            )
+            exif_seg = _build_exif_thumbnail_segment(thumb_blob)
+        else:
+            exif_seg = _build_exif_thumbnail_segment(thumb_sdr_jpeg)
     else:
         exif_seg = None
 
@@ -676,15 +740,62 @@ def read_thumbnail_bytes(data) -> bytes | None:
 
 
 def read_thumbnail(data):
-    """Return the embedded EXIF thumbnail as a decoded numpy array, or
-    ``None`` if no thumbnail is present. Convenience wrapper around
-    :func:`read_thumbnail_bytes` + ``imagecodecs.jpeg_decode``.
+    """Return the embedded EXIF thumbnail as a decoded uint8 numpy
+    array, or ``None`` if no thumbnail is present. Convenience wrapper
+    around :func:`read_thumbnail_bytes` + ``imagecodecs.jpeg_decode``.
+
+    The thumbnail may itself be an Ultra-HDR file (default for
+    ``encode_native(thumbnail_size=N)``) — this function returns only
+    the SDR base layer (libjpeg-turbo ignores the MPF box). Use
+    :func:`read_thumbnail_hdr` for fp32 HDR pixels.
     """
     raw = read_thumbnail_bytes(data)
     if raw is None:
         return None
     import imagecodecs
     return imagecodecs.jpeg_decode(raw)
+
+
+def read_thumbnail_hdr(data, *, dtype=None, display_boost=None):
+    """Return the embedded EXIF thumbnail as a decoded HDR float array,
+    or ``None`` if no thumbnail is present.
+
+    If the embedded thumbnail is itself an Ultra-HDR JPEG (default for
+    files written by :func:`encode_native` with ``thumbnail_size=``,
+    ``thumbnail_hdr=True``), this decodes it through :func:`decode_native`
+    — preserving the main image's HDR peak in the thumbnail. If the
+    embedded thumbnail is a plain SDR JPEG (``thumbnail_hdr=False``
+    files, or legacy files), the SDR pixels are returned as fp32
+    scaled to ``[0, 1]``.
+
+    Parameters
+    ----------
+    data : bytes-like
+        The parent Ultra-HDR JPEG.
+    dtype : numpy dtype, optional
+        Output HDR dtype (default ``float32``). Forwarded to
+        :func:`decode_native` for UHDR thumbnails.
+    display_boost : float, optional
+        Target headroom; forwarded to :func:`decode_native`. ``None``
+        (default) requests the encoded raster's full HDR.
+
+    Returns
+    -------
+    ndarray (H, W, 3) float (default fp32), or ``None``.
+    """
+    raw = read_thumbnail_bytes(data)
+    if raw is None:
+        return None
+    import numpy as np
+    if dtype is None:
+        dtype = np.float32
+    if is_uhdr(raw):
+        out = decode_native(raw, dtype=dtype, display_boost=display_boost)
+        return out["hdr"]
+    import imagecodecs
+    sdr = imagecodecs.jpeg_decode(raw)
+    return (sdr.astype(np.dtype(dtype), copy=False) / 255.0).astype(
+        np.dtype(dtype), copy=False)
 
 
 def read(path, **kwargs) -> dict:

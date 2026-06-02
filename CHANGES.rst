@@ -10,6 +10,56 @@ Versions follow the same ``YYYY.M.D`` cadence as upstream when we
 publish; the entries below cluster work by date rather than by
 release because most of it has shipped continuously to ``main``.
 
+0.1.12 (2026-06-02)
+-------------------
+
+**Embedded EXIF thumbnail is now Ultra-HDR by default**
+
+The thumbnail introduced in v0.1.11 was a plain SDR JPEG, which on an
+HDR display renders at SDR-white (~200 nits) — a visible brightness
+gap against the main image's full HDR boost (e.g. ~1600 nits at
+``sdr_white_nits=1600``). For sparse-bright content (fluorescence
+dye spots, specular highlights) the brightness gap can be ~10× and is
+the dominant artifact when previewing.
+
+``encode_native(thumbnail_size=N)`` now embeds a mini Ultra-HDR
+(SDR base + downsampled gain map + MPF) by default, so HDR-aware
+viewers preserve peak brightness. SDR-only EXIF readers see the SDR
+base layer as a plain JPEG and ignore the MPF block, so backward
+compatibility is preserved.
+
+* New kwarg ``thumbnail_hdr=True`` (default) — set to ``False`` to
+  fall back to the v0.1.11 plain-SDR-thumbnail behavior. Useful when
+  targeting legacy EXIF readers that don't tolerate MPF segments in
+  thumbnail bytes.
+* Both the SDR base and gain map are decimated by **centered**
+  integer stride (offset = stride // 2) so the thumbnail's
+  coordinate origin lines up with the full-res image at scale
+  ``1/stride``. The previous top-left stride introduced a half-stride
+  pixel bias.
+* The same centered-stride fix is applied to the main image's
+  gain-map downscale (``gain_scale=2/4/...``).
+* Thumbnail-gain JPEG uses the full-resolution computed gain map
+  (pre-``gain_scale``) so the thumbnail's peak fidelity isn't
+  compounded by the main image's gain-scale loss.
+
+Read side adds ``opencodecs.uhdr.read_thumbnail_hdr(data)`` —
+returns the thumbnail as a fp32 HDR ndarray. For UHDR thumbnails this
+routes through :func:`decode_native` (peak HDR pixels). For plain-SDR
+thumbnails (legacy or ``thumbnail_hdr=False``) it returns
+``sdr_u8 / 255``.
+
+Size cost: ~30 KB per file vs the v0.1.11 SDR thumbnail (e.g. 53 KB
+vs 23 KB at ``thumbnail_size=250, thumbnail_quality=85``). The
+read-side decode time is unchanged (~1 ms).
+
+5 new tests in ``tests/test_uhdr.py``:
+``test_thumbnail_is_uhdr_by_default``,
+``test_thumbnail_hdr_false_emits_plain_sdr_jpeg``,
+``test_read_thumbnail_hdr_preserves_main_peak``,
+``test_read_thumbnail_hdr_fallback_on_sdr_thumb``,
+``test_read_thumbnail_hdr_none_when_no_thumbnail``.
+
 0.1.11 (2026-06-02)
 -------------------
 

@@ -42,6 +42,7 @@ from opencodecs.uhdr import (
     probe,
     read_thumbnail,
     read_thumbnail_bytes,
+    read_thumbnail_hdr,
 )
 
 
@@ -590,6 +591,80 @@ def test_thumbnail_smaller_than_source_no_upscale():
     data = encode_native(hdr, quality=95, thumbnail_size=256)
     t = read_thumbnail(data)
     assert t.shape == (32, 32, 3)
+
+
+def test_thumbnail_is_uhdr_by_default():
+    """thumbnail_size=N defaults to an UHDR-formatted thumbnail (SDR
+    base + gain map + MPF) so HDR-aware viewers preserve peak brightness
+    when previewing. SDR-only readers still see a plain JPEG."""
+    hdr = _synthetic_hdr_rgb(96, 96)
+    data = encode_native(hdr, quality=95, thumbnail_size=32)
+    raw = read_thumbnail_bytes(data)
+    assert raw is not None
+    assert is_uhdr(raw) is True, (
+        "default thumbnail should be Ultra-HDR; got plain JPEG")
+
+
+def test_thumbnail_hdr_false_emits_plain_sdr_jpeg():
+    """thumbnail_hdr=False opts out of UHDR thumbnails and embeds a
+    plain SDR JPEG (smaller; legacy-EXIF-reader-safe)."""
+    hdr = _synthetic_hdr_rgb(96, 96)
+    data_hdr = encode_native(hdr, quality=95, thumbnail_size=32,
+                             thumbnail_hdr=True)
+    data_sdr = encode_native(hdr, quality=95, thumbnail_size=32,
+                             thumbnail_hdr=False)
+    raw_hdr = read_thumbnail_bytes(data_hdr)
+    raw_sdr = read_thumbnail_bytes(data_sdr)
+    assert is_uhdr(raw_hdr) is True
+    assert is_uhdr(raw_sdr) is False
+    # Plain-SDR thumbnail should be strictly smaller than the UHDR one
+    # (saves the gain map + MPF overhead). Hold this loose — at 32 px
+    # the difference can be small.
+    assert len(raw_sdr) < len(raw_hdr)
+
+
+def test_read_thumbnail_hdr_preserves_main_peak():
+    """For the default (UHDR) thumbnail, read_thumbnail_hdr decodes the
+    thumbnail through the gain-map pipeline → peak HDR brightness
+    matches the main image's, not the SDR-clipped 1.0 ceiling."""
+    # Use a synthetic HDR with a clear bright dye-spot-like peak so
+    # the stride-decimation has something to preserve.
+    rng = np.random.default_rng(0)
+    hdr = (rng.random((128, 128, 3), dtype=np.float32) * 0.5
+           + 0.1).astype(np.float32)
+    # Plant a bright peak at a centered-stride grid point so stride
+    # decimation lands on it (stride = 128//32 = 4; off=2; (2, 2) is on
+    # the grid → thumb pixel (0, 0) samples there).
+    hdr[2, 2, :] = 6.0
+    data = encode_native(hdr, quality=95,
+                         thumbnail_size=32, thumbnail_quality=95)
+
+    th_hdr = read_thumbnail_hdr(data)
+    assert th_hdr.dtype == np.float32
+    assert th_hdr.shape == (32, 32, 3)
+    # The thumbnail's peak should be well above SDR-white (1.0), close
+    # to the planted 6.0 (some loss from JPEG quantization + gain-map
+    # round-trip is expected; require ≥ 3× SDR-white).
+    assert th_hdr.max() > 3.0, (
+        f"thumbnail HDR peak {th_hdr.max():.3f} suggests SDR-clipped path")
+
+
+def test_read_thumbnail_hdr_fallback_on_sdr_thumb():
+    """When thumbnail_hdr=False, read_thumbnail_hdr returns fp32 [0, 1]
+    (no HDR boost available, scaled from the SDR uint8). Caller can
+    detect via peak ≤ 1.0."""
+    hdr = _synthetic_hdr_rgb(96, 96)
+    data = encode_native(hdr, quality=95, thumbnail_size=32,
+                         thumbnail_hdr=False)
+    th = read_thumbnail_hdr(data)
+    assert th.dtype == np.float32
+    assert th.max() <= 1.0
+
+
+def test_read_thumbnail_hdr_none_when_no_thumbnail():
+    hdr = _synthetic_hdr_rgb(32, 32)
+    data = encode_native(hdr, quality=95)
+    assert read_thumbnail_hdr(data) is None
 
 
 def test_probe_returns_dimensions_and_metadata():
