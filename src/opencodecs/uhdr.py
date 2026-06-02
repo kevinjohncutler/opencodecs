@@ -101,7 +101,7 @@ __all__ = [
 def encode_native(hdr, sdr=None, *,
                    gamut='display-p3', sdr_white_nits=1600.0,
                    quality=95, gain_quality=None, gain_scale=1,
-                   lossless=False,
+                   sdr_subsampling=None, lossless=False,
                    max_content_boost=None,
                    min_content_boost=1.0, gamma=1.0, parallel=True,
                    out=None):
@@ -144,6 +144,18 @@ def encode_native(hdr, sdr=None, *,
         ~75% smaller gain bytes), ``4`` etc. Gain maps are heavily
         band-limited, so 2-4× downscale is visually negligible on
         natural content. Decoders upscale on apply.
+    sdr_subsampling : str, optional
+        Chroma subsampling for the SDR base JPEG: ``'420'`` (default),
+        ``'422'``, ``'444'``, ``'440'``, ``'411'``. 4:2:0 is the
+        universal photographic default (halves chroma data,
+        invisible on natural images). Pass ``'444'`` for non-
+        photographic SDR bases — synthetic plots, scientific
+        imagery with sharp boundaries, text overlays — where chroma
+        bleed at high-contrast edges matters. Ignored when
+        ``lossless=True`` (lossless mode forces 4:4:4). The gain
+        map's chroma is independently locked to 4:4:4 to preserve
+        per-pixel boost peaks (4:2:0 there would attenuate sparse-
+        bright HDR content).
     lossless : bool
         Encode the SDR base layer with libjpeg-turbo's predictive
         lossless mode (PSV=1, 4:4:4, no chroma subsampling). The
@@ -242,7 +254,7 @@ def encode_native(hdr, sdr=None, *,
     # chroma subsampling averages boost values over 2x2 blocks, which
     # halves the effective peak on sparse-bright-pixel content (e.g.
     # fluorescence dye spots) — empirically a 7.84 → 3.67 peak drop on
-    # round-trip. ``subsampling='444'`` keeps per-pixel gain fidelity.
+    # round-trip. ``subsampling='440'`` keeps per-pixel gain fidelity.
     # The base layer is photographic color with low chroma acuity; the
     # default 4:2:0 there is fine.
 
@@ -254,7 +266,10 @@ def encode_native(hdr, sdr=None, *,
         if lossless:
             from .codecs._jpeg import encode as _oc_jpeg_encode
             return _oc_jpeg_encode(arr, lossless=True)
-        return imagecodecs.jpeg_encode(arr, quality)
+        if sdr_subsampling is None:
+            return imagecodecs.jpeg_encode(arr, quality)
+        return imagecodecs.jpeg_encode(
+            arr, quality, subsampling=sdr_subsampling)
 
     if parallel:
         ex = _cf.ThreadPoolExecutor(max_workers=3)
@@ -269,7 +284,7 @@ def encode_native(hdr, sdr=None, *,
             gain_u8 = _maybe_downscale_gain(gain_u8)
             gainmap_fut = ex.submit(
                 imagecodecs.jpeg_encode, gain_u8, gain_quality,
-                subsampling='444')
+                subsampling='440')
             base_jpeg = base_fut.result()
             gainmap_jpeg = gainmap_fut.result()
         finally:
@@ -285,7 +300,7 @@ def encode_native(hdr, sdr=None, *,
         gain_u8 = _maybe_downscale_gain(gain_u8)
         base_jpeg = _encode_base(sdr_arr)
         gainmap_jpeg = imagecodecs.jpeg_encode(
-            gain_u8, gain_quality, subsampling='444')
+            gain_u8, gain_quality, subsampling='440')
 
     return encode_assembled(
         base_jpeg=base_jpeg,

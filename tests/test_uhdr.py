@@ -508,6 +508,23 @@ def test_encode_native_lossless_is_bit_exact_in_sdr_layer():
         f"{np.abs(rec.astype(np.int16) - sdr_in.astype(np.int16)).max()}")
 
 
+def test_encode_native_sdr_subsampling_controls_base_layer_size():
+    """``sdr_subsampling='444'`` keeps full chroma in the SDR base
+    layer, producing a larger file than the default ``'420'``."""
+    hdr = _synthetic_hdr_rgb(96, 96)
+    blob_420 = encode_native(hdr, quality=95, sdr_subsampling="420")
+    blob_444 = encode_native(hdr, quality=95, sdr_subsampling="444")
+    assert is_uhdr(blob_420) is True
+    assert is_uhdr(blob_444) is True
+    assert len(blob_444) > len(blob_420), (
+        f"expected 4:4:4 to produce a larger SDR base than 4:2:0; "
+        f"got {len(blob_444)} vs {len(blob_420)}")
+    # Both still HDR-decode through decode_native.
+    for blob in (blob_420, blob_444):
+        info = decode_native(blob, dtype=np.float32)
+        assert info["hdr"].shape[:2] == hdr.shape[:2]
+
+
 def test_probe_returns_dimensions_and_metadata():
     """probe(data) parses just the MPF metadata without any pixel
     decode, ~100× faster than decode() for indexing workloads."""
