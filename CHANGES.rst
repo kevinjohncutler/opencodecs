@@ -10,6 +10,46 @@ Versions follow the same ``YYYY.M.D`` cadence as upstream when we
 publish; the entries below cluster work by date rather than by
 release because most of it has shipped continuously to ``main``.
 
+0.1.9 (2026-06-02)
+------------------
+
+**Lossless SDR base layer on encode (opt-in)**
+
+``opencodecs.codecs._jpeg.encode`` gained a ``lossless=False`` kwarg
+that switches libjpeg-turbo into predictive lossless mode
+(``TJPARAM_LOSSLESS=1``, PSV=1, forced 4:4:4 chroma). Output is
+bit-exact through the libjpeg-turbo decoder, at the cost of ~3-5×
+larger files vs ``level=95`` baseline DCT on natural-image content.
+
+``opencodecs.uhdr.encode_native(lossless=True)`` routes the SDR base
+layer through that lossless path while keeping the gain map lossy
+(there's no perceptual benefit to making a band-limited gain map
+lossless, and it would balloon the file).
+
+Empirical caveats — verified on macOS 15 with an HDR-capable
+display:
+
+* macOS Preview, Chrome 116+, and any viewer that parses the MPF /
+  XMP gain-map block directly **HDR-render the output normally**.
+* libuhdr's reference ``uhdr_decode`` (and therefore
+  ``opencodecs.uhdr.decode``) **rejects** the file. It enforces a
+  strict ``JCS_YCbCr`` / ``JCS_GRAYSCALE`` colorspace check that
+  lossless-mode JPEG (which writes ``JCS_RGB``) fails.
+* Apple's ``CGImageSource`` ``Headroom`` property and
+  ``kCGImageAuxiliaryDataTypeISOGainMap`` aux-data accessors miss
+  the HDR signal (same root cause), even though Preview's actual
+  render path composites the gain map correctly.
+* ``opencodecs.uhdr.decode_native`` reads it cleanly — it uses our
+  own gain-application kernel without libuhdr's colorspace gate.
+
+Use only when exact SDR-base-pixel preservation is a hard
+requirement (archival, scientific imaging) and every consumer in
+your pipeline is either Preview / Chrome / ``decode_native``. The
+``v0.1.8`` note that called lossless "not a conforming Ultra-HDR
+file" was too strong — it's non-conforming to libuhdr's reference
+decoder and Apple's narrow ImageIO API, but visual HDR consumers
+accept it just fine.
+
 0.1.8 (2026-06-02)
 ------------------
 

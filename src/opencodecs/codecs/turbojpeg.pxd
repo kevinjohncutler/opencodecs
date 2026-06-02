@@ -37,6 +37,9 @@ cdef extern from 'turbojpeg.h' nogil:
         TJPARAM_JPEGHEIGHT
         TJPARAM_PRECISION
         TJPARAM_COLORSPACE
+        TJPARAM_LOSSLESS
+        TJPARAM_LOSSLESSPSV
+        TJPARAM_LOSSLESSPT
 
     tjhandle tj3Init(int initType)
     void tj3Destroy(tjhandle handle)

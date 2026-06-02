@@ -457,6 +457,57 @@ def test_decode_native_dct_scale_preserves_hdr_signal():
         f"scaled mean differs too far: full={fm}, half={hm}")
 
 
+def test_encode_native_lossless_sdr_base():
+    """encode_native(lossless=True) produces a valid Ultra-HDR
+    container whose SDR base is a libjpeg-turbo lossless JPEG.
+    Caveats: libuhdr's wrapped decode() rejects, our decode_native
+    works. File is larger than the baseline."""
+    hdr = _synthetic_hdr_rgb(64, 64)
+    baseline = encode_native(hdr, quality=95)
+    lossless = encode_native(hdr, lossless=True)
+    assert is_uhdr(lossless) is True
+    assert len(lossless) > len(baseline), (
+        f"expected lossless > baseline; got {len(lossless)} vs {len(baseline)}")
+    # decode_native works on both
+    nat = decode_native(lossless, dtype=np.float32, display_boost=1.0)
+    assert nat["hdr"].shape[:2] == hdr.shape[:2]
+    assert np.isfinite(nat["hdr"]).all()
+    # libuhdr's wrapped decode rejects on the colorspace check
+    with pytest.raises((UhdrError, RuntimeError)):
+        decode(lossless, want_hdr=True)
+
+
+def test_encode_native_lossless_is_bit_exact_in_sdr_layer():
+    """The defining property of ``lossless=True``: the SDR base JPEG
+    inside the assembled Ultra-HDR container decodes byte-for-byte
+    back to the caller-supplied SDR raster. With ``lossless=False``
+    (baseline DCT q95) the same round-trip has noticeable
+    quantization noise."""
+    import imagecodecs
+    rng = np.random.default_rng(0)
+    # Use the user-supplied ``sdr=`` path so encode_native skips the
+    # sRGB OETF / peak-normalize step that compute_sdr_base_u8 would
+    # apply on bare-float input.
+    sdr_in = rng.integers(0, 255, size=(32, 48, 3), dtype=np.uint8)
+    hdr_dummy = sdr_in.astype(np.float32)  # shape sentinel; ignored
+    data = encode_native(
+        hdr_dummy, sdr=sdr_in, quality=95, lossless=True,
+        max_content_boost=2.0,
+    )
+    info = decode_native(data, dtype=np.float32, display_boost=1.0)
+    # Pull the round-tripped SDR base raster back out:
+    assert info["sdr_u8"].shape[:2] == sdr_in.shape[:2]
+    if info["sdr_u8"].shape[-1] == 4:
+        rec = info["sdr_u8"][..., :3]
+    else:
+        rec = info["sdr_u8"]
+    # Bit-exact: not a single LSB difference between caller bytes
+    # and the bytes that came back through the lossless JPEG layer.
+    assert np.array_equal(rec, sdr_in), (
+        f"lossless SDR not bit-exact: max diff "
+        f"{np.abs(rec.astype(np.int16) - sdr_in.astype(np.int16)).max()}")
+
+
 def test_probe_returns_dimensions_and_metadata():
     """probe(data) parses just the MPF metadata without any pixel
     decode, ~100× faster than decode() for indexing workloads."""

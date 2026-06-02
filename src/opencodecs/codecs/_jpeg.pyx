@@ -29,6 +29,7 @@ from turbojpeg cimport (
     TJSAMP_GRAY, TJSAMP_444, TJSAMP_422, TJSAMP_420, TJSAMP_440, TJSAMP_411,
     TJPARAM_QUALITY, TJPARAM_SUBSAMP,
     TJPARAM_JPEGWIDTH, TJPARAM_JPEGHEIGHT,
+    TJPARAM_LOSSLESS, TJPARAM_LOSSLESSPSV,
 )
 
 from cpython.bytes cimport PyBytes_FromStringAndSize
@@ -53,23 +54,36 @@ _SUBSAMP_MAP = {
 
 def encode(data, *, level: int | None = None,
            subsampling: object = None,
-           iccprofile: bytes | None = None) -> bytes:
+           iccprofile: bytes | None = None,
+           lossless: bool = False) -> bytes:
     """Encode a 2D or 3D uint8 array as JPEG.
 
     ``level`` is the JPEG quality 0-100 (default 95, matching
     ``imagecodecs.jpeg_encode`` so the file we emit is at least as
     high quality as ic's default — see docs/codec_api_conventions.md
     "Default settings: Pareto-better than the reference, no cheating").
+    Ignored when ``lossless=True``.
+
     ``subsampling`` chooses the chroma subsampling for color JPEGs:
     "420" (default — same as imagecodecs / cjpeg / every JPEG tool),
     "422", "444", "440", "411". Higher ratios produce smaller files
     and encode/decode faster at a small chroma-resolution cost; "444"
     keeps full chroma. Pass ``"444"`` to match opencodecs's previous
-    behavior. Ignored for grayscale input.
+    behavior. Ignored for grayscale input. Forced to ``"444"`` when
+    ``lossless=True`` (lossless mode rejects chroma subsampling).
 
     ``iccprofile`` embeds an ICC color profile in an APP2 marker.
     libjpeg-turbo copies the bytes, so the caller can release them
     immediately after encode returns.
+
+    ``lossless=True`` switches libjpeg-turbo into predictive lossless
+    mode (PSV=1, point-transform=0). Output is bit-exact through the
+    libjpeg-turbo decoder. ~3-5× larger than ``level=95`` baseline
+    DCT on natural-image content. Niche — only useful when exact
+    pixel preservation is the requirement (archival, scientific
+    imaging). Note that lossless-mode JPEGs are JCS_RGB-tagged;
+    some downstream tools (including libuhdr's ``uhdr_decode``)
+    reject non-YCbCr/grayscale color spaces.
     """
     cdef:
         cnp.ndarray arr
@@ -102,8 +116,11 @@ def encode(data, *, level: int | None = None,
         pf = TJPF_RGB
         # 4:2:0 is the JPEG-encoder universal default — matches
         # imagecodecs and cjpeg. Halves chroma data → ~2x faster
-        # encode + decode and ~2x smaller files.
-        if subsampling is None:
+        # encode + decode and ~2x smaller files. Lossless mode
+        # rejects chroma subsampling, so force 4:4:4 there.
+        if lossless:
+            subsamp = TJSAMP_444
+        elif subsampling is None:
             subsamp = TJSAMP_420
         else:
             key = str(subsampling).lower().strip()
@@ -128,6 +145,22 @@ def encode(data, *, level: int | None = None,
     if handle == NULL:
         raise JpegError('tj3Init(COMPRESS) failed')
     try:
+        # Lossless mode is set BEFORE quality / subsamp — libjpeg-turbo
+        # tj3Set rejects subsamp values that lossless wouldn't accept,
+        # so the order matters when we transition between modes on a
+        # reused handle (not our case here, but the discipline is
+        # cheap).
+        if lossless:
+            if tj3Set(handle, TJPARAM_LOSSLESS, 1) < 0:
+                raise JpegError(
+                    f'tj3Set(LOSSLESS): {tj3GetErrorStr(handle).decode()}')
+            # PSV=1 is "predictor: pixel to the left" — the smallest
+            # output for typical content. PSV 2-7 swap the predictor;
+            # marginal differences on natural images. Point-transform
+            # left at default 0 (no right-shift; full precision).
+            if tj3Set(handle, TJPARAM_LOSSLESSPSV, 1) < 0:
+                raise JpegError(
+                    f'tj3Set(LOSSLESSPSV): {tj3GetErrorStr(handle).decode()}')
         if tj3Set(handle, TJPARAM_QUALITY, quality) < 0:
             raise JpegError(
                 f'tj3Set(QUALITY): {tj3GetErrorStr(handle).decode()}')

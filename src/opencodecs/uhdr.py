@@ -101,6 +101,7 @@ __all__ = [
 def encode_native(hdr, sdr=None, *,
                    gamut='display-p3', sdr_white_nits=1600.0,
                    quality=95, gain_quality=None, gain_scale=1,
+                   lossless=False,
                    max_content_boost=None,
                    min_content_boost=1.0, gamma=1.0, parallel=True,
                    out=None):
@@ -143,6 +144,33 @@ def encode_native(hdr, sdr=None, *,
         ~75% smaller gain bytes), ``4`` etc. Gain maps are heavily
         band-limited, so 2-4× downscale is visually negligible on
         natural content. Decoders upscale on apply.
+    lossless : bool
+        Encode the SDR base layer with libjpeg-turbo's predictive
+        lossless mode (PSV=1, 4:4:4, no chroma subsampling). The
+        gain map keeps its lossy encode (no perceptual benefit to
+        making that lossless). Output is ~3-5× larger than the
+        ``quality=95`` baseline-DCT default on natural images.
+
+        Caveats — empirically verified on macOS 15 + HDR display:
+
+        * macOS Preview, Chrome 116+, and any viewer that parses
+          the MPF / XMP gain-map block directly will HDR-render the
+          output normally.
+        * libuhdr's reference ``uhdr_decode`` (and thus
+          :func:`decode`) rejects the file — it enforces a strict
+          ``JCS_YCbCr`` / ``JCS_GRAYSCALE`` colorspace check that
+          lossless-mode JPEG (which writes ``JCS_RGB``) fails.
+        * Apple's ``CGImageSource`` ``Headroom`` / ``ISOGainMap``
+          aux-data accessors also miss the HDR signal (same root
+          cause), even though Preview's actual renderer composites
+          fine.
+        * :func:`decode_native` reads it cleanly — it uses our own
+          gain-application kernel without the colorspace gate.
+
+        Use only when exact SDR-base-pixel preservation is a hard
+        requirement (archival, scientific imaging) AND every
+        consumer in your pipeline is either Preview / Chrome /
+        ``decode_native``.
     max_content_boost, min_content_boost, gamma
         Gain-map metadata. See :func:`compute_gain_map_u8`.
     parallel : bool
@@ -210,10 +238,28 @@ def encode_native(hdr, sdr=None, *,
             return gain_u8
         return np.ascontiguousarray(gain_u8[::gain_scale, ::gain_scale])
 
+    # Gain map = per-pixel HDR boost multiplier. JPEG default 4:2:0
+    # chroma subsampling averages boost values over 2x2 blocks, which
+    # halves the effective peak on sparse-bright-pixel content (e.g.
+    # fluorescence dye spots) — empirically a 7.84 → 3.67 peak drop on
+    # round-trip. ``subsampling='444'`` keeps per-pixel gain fidelity.
+    # The base layer is photographic color with low chroma acuity; the
+    # default 4:2:0 there is fine.
+
+    # When lossless=True the SDR base goes through our own _jpeg.encode
+    # so we can hit the TJPARAM_LOSSLESS path that imagecodecs doesn't
+    # expose. The gain map stays lossy; there's no perceptual reason
+    # to make it lossless and doing so would balloon the file.
+    def _encode_base(arr):
+        if lossless:
+            from .codecs._jpeg import encode as _oc_jpeg_encode
+            return _oc_jpeg_encode(arr, lossless=True)
+        return imagecodecs.jpeg_encode(arr, quality)
+
     if parallel:
         ex = _cf.ThreadPoolExecutor(max_workers=3)
         try:
-            base_fut = ex.submit(imagecodecs.jpeg_encode, sdr_arr, quality)
+            base_fut = ex.submit(_encode_base, sdr_arr)
             gain_fut = ex.submit(_cython_gain_map, hdr_arr, sdr_arr,
                                  sdr_white_nits=sdr_white_nits,
                                  max_content_boost=mcb,
@@ -222,7 +268,8 @@ def encode_native(hdr, sdr=None, *,
             gain_u8, metadata = gain_fut.result()
             gain_u8 = _maybe_downscale_gain(gain_u8)
             gainmap_fut = ex.submit(
-                imagecodecs.jpeg_encode, gain_u8, gain_quality)
+                imagecodecs.jpeg_encode, gain_u8, gain_quality,
+                subsampling='444')
             base_jpeg = base_fut.result()
             gainmap_jpeg = gainmap_fut.result()
         finally:
@@ -236,8 +283,9 @@ def encode_native(hdr, sdr=None, *,
             gamma=gamma,
         )
         gain_u8 = _maybe_downscale_gain(gain_u8)
-        base_jpeg = imagecodecs.jpeg_encode(sdr_arr, quality)
-        gainmap_jpeg = imagecodecs.jpeg_encode(gain_u8, gain_quality)
+        base_jpeg = _encode_base(sdr_arr)
+        gainmap_jpeg = imagecodecs.jpeg_encode(
+            gain_u8, gain_quality, subsampling='444')
 
     return encode_assembled(
         base_jpeg=base_jpeg,
