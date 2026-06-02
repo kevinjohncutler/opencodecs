@@ -652,6 +652,27 @@ build_libultrahdr() {
     echo "==> libultrahdr $v"
     local src
     src=$(fetch_tar libultrahdr "$v" "https://github.com/google/libultrahdr/archive/refs/tags/v$v.tar.gz")
+    # Apply opencodecs-vendored patches. Anything under
+    # patches/libultrahdr/*.patch is applied in lexicographic order
+    # (00- prefix conventions): correctness/security cherry-picks from
+    # post-v1.4.0 upstream + our own additions (e.g. the streaming-
+    # write callback API). Patches use ``git format-patch`` output, so
+    # ``patch -p1`` is the right strip level. ``.fetched`` sentinel
+    # means we only apply patches once per fetch_tar cache; rerunning
+    # the recipe with patches already applied is a no-op.
+    local patch_dir="$REPO/patches/libultrahdr"
+    if [ -d "$patch_dir" ] && [ ! -f "$src/.patched" ]; then
+        local p
+        for p in "$patch_dir"/*.patch; do
+            [ -f "$p" ] || continue
+            echo "    apply  $(basename "$p")"
+            ( cd "$src" && patch -p1 --quiet < "$p" ) || {
+                echo "fetch_tar: failed to apply $(basename "$p")" >&2
+                return 1
+            }
+        done
+        touch "$src/.patched"
+    fi
     case "$(uname -s)" in
         MINGW*|MSYS*|CYGWIN*)
             # libultrahdr's CMakeLists.txt gates the install() rules on

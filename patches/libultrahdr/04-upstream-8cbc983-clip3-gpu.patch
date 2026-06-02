@@ -1,0 +1,25 @@
+From 8cbc983d2f6c2171af5cbcdb8801102f83fe92ab Mon Sep 17 00:00:00 2001
+From: DichenZhang1 <140119224+DichenZhang1@users.noreply.github.com>
+Date: Sat, 29 Nov 2025 20:25:20 -0800
+Subject: [PATCH] Fix CLIP3 parameter order for gainmap_weight
+
+---
+ lib/src/gpu/applygainmap_gl.cpp | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/lib/src/gpu/applygainmap_gl.cpp b/lib/src/gpu/applygainmap_gl.cpp
+index f5eba87..e2799a4 100644
+--- a/lib/src/gpu/applygainmap_gl.cpp
++++ b/lib/src/gpu/applygainmap_gl.cpp
+@@ -411,7 +411,7 @@ uhdr_error_info_t applyGainMapGLES(uhdr_raw_image_t* sdr_intent, uhdr_raw_image_
+         (log2(display_boost) - log2(gainmap_metadata->hdr_capacity_min)) /
+         (log2(gainmap_metadata->hdr_capacity_max) - log2(gainmap_metadata->hdr_capacity_min));
+     // avoid extrapolating the gain map to fill the displayable range
+-    gainmap_weight = CLIP3(0.0f, gainmap_weight, 1.0f);
++    gainmap_weight = CLIP3(gainmap_weight, 0.0f, 1.0f);
+   } else {
+     gainmap_weight = 1.0f;
+   }
+-- 
+2.42.0
+

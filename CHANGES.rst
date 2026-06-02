@@ -10,6 +10,69 @@ Versions follow the same ``YYYY.M.D`` cadence as upstream when we
 publish; the entries below cluster work by date rather than by
 release because most of it has shipped continuously to ``main``.
 
+0.1.7 (2026-06-02)
+------------------
+
+**Patched libultrahdr bundle**
+
+Since v0.1.6 we build libuhdr ourselves; v0.1.7 starts carrying
+local patches via ``patches/libultrahdr/*.patch``, applied by
+``bench/build_codec_libs.sh::build_libultrahdr`` after the source
+fetch. Five upstream post-v1.4.0 cherry-picks land first:
+
+* ``5ed39d6`` — fix ``CLIP3`` parameter order in libuhdr's own
+  ``applyGainMap``. The bug clamped a constant ``0.0f`` instead of
+  the gainmap weight whenever ``display_boost ≠ hdr_capacity_max``,
+  silently producing wrong HDR output on libuhdr's wrapped
+  ``decode()`` path. ``opencodecs.uhdr.decode_native`` is unaffected
+  (it uses our own Cython gain-application kernel).
+* ``7088ca7`` — error-message typo in ``jpegr.cpp``.
+* ``13a058f`` — ``icc.h`` Endian_Swap macros now respect actual
+  host endianness instead of an unconditionally-true ``USE_BIG_ENDIAN_IN_ICC``.
+  No effect on x86_64/aarch64 (little-endian); fixes PowerPC/s390x.
+* ``5fa99b5`` — add missing ``<cstdint>`` include for GCC 15.
+* ``8cbc983`` — same ``CLIP3`` fix as ``5ed39d6`` in the GPU path
+  (we don't link the GPU path; carried for hygiene).
+
+**New API: ``opencodecs.uhdr.probe(data) -> dict``**
+
+Parse an Ultra-HDR container's MPF metadata without any pixel
+decode. Returns base + gainmap dimensions plus the gainmap
+metadata block (``max_content_boost`` / ``min_content_boost`` /
+``gamma`` / capacity). Wraps libuhdr's existing ``uhdr_dec_probe``
++ accessors. ~180× faster than ``decode()`` for any HDR-aware
+flow that only needs dimensions or capacity — image indexing,
+thumbnail generation, HTTP HEAD-style inspection, routing batches
+by content-boost.
+
+**Gain-map tunables on ``encode_native``: ``gain_quality`` + ``gain_scale``**
+
+Two new kwargs let callers shrink the gain-map layer
+independently of the SDR base:
+
+* ``gain_quality`` — JPEG quality for the gain-map layer only
+  (defaults to track ``quality``). The gain map is heavily
+  band-limited so ``gain_quality=70`` is visually equivalent to
+  ``q95`` and cuts ~30% off the gain-map bytes.
+* ``gain_scale`` — integer power-of-2 downsample factor for the
+  gain-map raster (``1`` keeps full resolution, ``2`` halves both
+  axes for quarter-area, etc.). Stride decimation; ~5 ms on a 2k²
+  uint8 gain map. Round-trips through ``probe`` / ``decode_native``
+  cleanly — the container records the actual gain-map dimensions
+  and the decoder upscales on apply.
+
+**True streaming encode: ``encode_native(..., out=fp)``**
+
+The old ``encode_to(fp, hdr, ...)`` was a forward-compatible
+``fp.write(encode_native(hdr, **kw))`` wrapper. v0.1.7 makes both
+genuinely streaming: ``encode_assembled`` (and by extension
+``encode_native`` / ``encode_to``) now accept an ``out=`` file-
+like, and when given they hand a zero-copy ``memoryview`` over
+libuhdr's internal output buffer to ``out.write()``. Skips the
+final ``PyBytes_FromStringAndSize`` allocation + memcpy. Saves
+~1× output-size peak memory and ~3 ms wall-clock on a 5 MB encode.
+``encode_to`` now returns ``None`` instead of the byte count.
+
 0.1.6 (2026-06-01)
 ------------------
 

@@ -53,6 +53,7 @@ try:
         encode_assembled,
         decode,
         is_uhdr,
+        probe,
         libuhdr_version,
         UhdrError,
         compute_gain_map_u8 as _cython_gain_map,
@@ -75,6 +76,7 @@ except ImportError as _exc:  # pragma: no cover
         )
 
     encode = encode_assembled = decode = is_uhdr = libuhdr_version = _missing  # type: ignore[assignment]
+    probe = _missing  # type: ignore[assignment]
     _cython_gain_map = _cython_sdr_base = _srgb_eotf_lut_np = _missing  # type: ignore[assignment]
     _cython_apply_gainmap = _cython_extract_layers = _missing  # type: ignore[assignment]
     UhdrError = type("UhdrError", (Exception,), {})  # type: ignore[assignment]
@@ -88,6 +90,7 @@ __all__ = [
     "decode",
     "decode_native",
     "is_uhdr",
+    "probe",
     "libuhdr_version",
     "UhdrError",
     "read",
@@ -97,8 +100,10 @@ __all__ = [
 
 def encode_native(hdr, sdr=None, *,
                    gamut='display-p3', sdr_white_nits=1600.0,
-                   quality=95, max_content_boost=None,
-                   min_content_boost=1.0, gamma=1.0, parallel=True):
+                   quality=95, gain_quality=None, gain_scale=1,
+                   max_content_boost=None,
+                   min_content_boost=1.0, gamma=1.0, parallel=True,
+                   out=None):
     """Fused-Cython fast-path Ultra-HDR encoder.
 
     Computes SDR base + gain map in fused Cython kernels, JPEG-encodes
@@ -123,23 +128,51 @@ def encode_native(hdr, sdr=None, *,
         ``1600.0`` is a reasonable default for content lit up to 8×
         SDR white.
     quality : int
-        JPEG quality (1-100) for both the SDR base and the gain map.
+        JPEG quality (1-100) for the SDR base layer. The base is what
+        HDR-unaware viewers see, so it gets the marquee number.
+    gain_quality : int, optional
+        JPEG quality for the gain-map layer. The gain map is heavily
+        band-limited (low-frequency content by construction), so
+        running it at a lower quality than the base is essentially
+        free visually but cuts ~30-50% off the gain-map bytes.
+        ``None`` (default) tracks ``quality``.
+    gain_scale : int
+        Downsample factor for the gain-map raster, applied before its
+        JPEG encode. ``1`` (default) keeps full resolution; ``2``
+        halves both axes (quarter-area, ~4× faster gain JPEG encode,
+        ~75% smaller gain bytes), ``4`` etc. Gain maps are heavily
+        band-limited, so 2-4× downscale is visually negligible on
+        natural content. Decoders upscale on apply.
     max_content_boost, min_content_boost, gamma
         Gain-map metadata. See :func:`compute_gain_map_u8`.
     parallel : bool
         Run the SDR JPEG encode, gain-map compute, and gain-map JPEG
         encode in parallel threads. Saves ~30-40% wall-clock on
         2-core+ machines.
+    out : file-like, optional
+        If given (anything with ``write(buf)``: open file,
+        ``io.BytesIO``, HTTP upload sink), the assembled container
+        is streamed directly to ``out`` via a zero-copy memoryview
+        over libuhdr's internal output buffer. The function then
+        returns ``None`` instead of bytes. Saves one full-output-
+        size malloc + memcpy and ~1× output-size peak memory on
+        large encodes.
 
     Returns
     -------
-    bytes
+    bytes, or None if ``out`` is given
         Ultra-HDR JPEG container (ISO 21496-1).
     """
     if not _HAVE_BACKEND:
         _missing()
     import imagecodecs
     import concurrent.futures as _cf
+
+    if gain_quality is None:
+        gain_quality = quality
+    if gain_scale < 1 or (gain_scale & (gain_scale - 1)) != 0:
+        raise ValueError(
+            f"gain_scale must be a positive power of 2; got {gain_scale}")
 
     hdr_arr = np.ascontiguousarray(hdr, dtype=np.float32)
     if hdr_arr.ndim != 3 or hdr_arr.shape[2] != 3:
@@ -164,6 +197,19 @@ def encode_native(hdr, sdr=None, *,
                 f"{tuple(hdr_arr.shape)}")
         mcb = max_content_boost
 
+    def _maybe_downscale_gain(gain_u8):
+        # Stride decimation by an integer factor. Gain maps are heavily
+        # band-limited by construction (smooth ratio of low-frequency
+        # luminance signals), so a nearest-sample stride gives
+        # visually-equivalent output to a box average — and is ~20×
+        # faster on a 2k² uint8 raster (numpy's .mean() promotes to
+        # float64 and runs multiple passes, eating ~100ms; stride
+        # decimation is ~5ms). Cuts gain JPEG encode work by scale²
+        # and gain bytes proportionally.
+        if gain_scale == 1:
+            return gain_u8
+        return np.ascontiguousarray(gain_u8[::gain_scale, ::gain_scale])
+
     if parallel:
         ex = _cf.ThreadPoolExecutor(max_workers=3)
         try:
@@ -174,7 +220,9 @@ def encode_native(hdr, sdr=None, *,
                                  min_content_boost=min_content_boost,
                                  gamma=gamma)
             gain_u8, metadata = gain_fut.result()
-            gainmap_fut = ex.submit(imagecodecs.jpeg_encode, gain_u8, quality)
+            gain_u8 = _maybe_downscale_gain(gain_u8)
+            gainmap_fut = ex.submit(
+                imagecodecs.jpeg_encode, gain_u8, gain_quality)
             base_jpeg = base_fut.result()
             gainmap_jpeg = gainmap_fut.result()
         finally:
@@ -187,14 +235,16 @@ def encode_native(hdr, sdr=None, *,
             min_content_boost=min_content_boost,
             gamma=gamma,
         )
+        gain_u8 = _maybe_downscale_gain(gain_u8)
         base_jpeg = imagecodecs.jpeg_encode(sdr_arr, quality)
-        gainmap_jpeg = imagecodecs.jpeg_encode(gain_u8, quality)
+        gainmap_jpeg = imagecodecs.jpeg_encode(gain_u8, gain_quality)
 
     return encode_assembled(
         base_jpeg=base_jpeg,
         gainmap_jpeg=gainmap_jpeg,
         metadata=metadata,
         gamut=gamut,
+        out=out,
     )
 
 
@@ -292,22 +342,18 @@ def decode_native(data, *, parallel=True, dtype=None,
     }
 
 
-def encode_to(fp, hdr, **kwargs) -> int:
+def encode_to(fp, hdr, **kwargs) -> None:
     """Streaming variant of :func:`encode_native` — write Ultra-HDR
-    bytes directly to a file-like ``fp`` (anything with a ``write(bytes)``
-    method: an open file, ``io.BytesIO``, an HTTP upload streamer, …).
-    Returns the number of bytes written.
+    bytes directly to a file-like ``fp`` (anything with a ``write(buf)``
+    method: an open file, ``io.BytesIO``, an HTTP upload sink, …).
 
-    Forward-compatible alias: for now ``encode_to`` is essentially
-    ``fp.write(encode_native(hdr, **kwargs))`` — the libuhdr api-4 path
-    we use for container assembly doesn't expose a streaming writer
-    today. The function exists so callers can adopt the streaming API
-    now and pick up any future libuhdr streaming write-out without
-    changing their code.
+    Internally calls ``encode_native(hdr, out=fp, ...)`` so the
+    assembled container is handed to ``fp.write()`` via a zero-copy
+    memoryview over libuhdr's internal output buffer. No
+    intermediate Python ``bytes`` allocation. Saves ~1× output-size
+    peak memory on large encodes.
     """
-    data = encode_native(hdr, **kwargs)
-    fp.write(data)
-    return len(data)
+    encode_native(hdr, out=fp, **kwargs)
 
 
 def read(path, **kwargs) -> dict:

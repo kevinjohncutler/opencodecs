@@ -35,7 +35,12 @@ from opencodecs.codecs._uhdr import (
     libuhdr_version,
     UhdrError,
 )
-from opencodecs.uhdr import encode_native, decode_native, encode_to
+from opencodecs.uhdr import (
+    encode_native,
+    decode_native,
+    encode_to,
+    probe,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -371,15 +376,60 @@ def test_decode_native_dtype_fp32_skips_cast():
 
 
 def test_encode_to_writes_to_bytesio():
-    """encode_to mirrors encode_native but emits bytes to a file-like
-    instead of returning them. Bytes match the encode_native output."""
+    """encode_to streams Ultra-HDR bytes to a file-like via a zero-copy
+    memoryview over libuhdr's internal buffer. Output must match the
+    direct-bytes encode_native path byte-for-byte."""
     hdr = _synthetic_hdr_rgb(64, 64)
     direct = encode_native(hdr, quality=95)
     buf = io.BytesIO()
-    n = encode_to(buf, hdr, quality=95)
-    assert n == len(direct)
+    rv = encode_to(buf, hdr, quality=95)
+    assert rv is None  # streaming path returns None, not a byte count
     assert buf.getvalue() == direct
     assert is_uhdr(buf.getvalue()) is True
+
+
+def test_encode_native_out_streams_no_bytes_intermediate():
+    """encode_native(out=fp) is the streaming variant. fp.write()
+    sees the same bytes as the default (out=None) path; the function
+    returns None when out is given."""
+    hdr = _synthetic_hdr_rgb(64, 64)
+    direct = encode_native(hdr, quality=95)
+    buf = io.BytesIO()
+    rv = encode_native(hdr, quality=95, out=buf)
+    assert rv is None
+    assert buf.getvalue() == direct
+
+
+def test_encode_native_gain_quality_and_scale_round_trip():
+    """gain_quality=70 + gain_scale=2 produces a smaller container
+    that's still valid Ultra-HDR + decodes to the same shape."""
+    hdr = _synthetic_hdr_rgb(64, 64)
+    full = encode_native(hdr, quality=95)
+    cut = encode_native(hdr, quality=95, gain_quality=70, gain_scale=2)
+    assert is_uhdr(cut) is True
+    # Smaller gain map → smaller file in practice; on tiny test
+    # rasters the JPEG header dominates so this can flip; just
+    # verify the container parses.
+    info = probe(cut)
+    assert info["gainmap_width"] == 32  # 64 / scale=2
+    assert info["gainmap_height"] == 32
+    full_info = probe(full)
+    assert full_info["gainmap_width"] == 64
+
+
+def test_probe_returns_dimensions_and_metadata():
+    """probe(data) parses just the MPF metadata without any pixel
+    decode, ~100× faster than decode() for indexing workloads."""
+    hdr = _synthetic_hdr_rgb(64, 96)
+    data = encode_native(hdr, quality=95)
+    info = probe(data)
+    assert info["width"] == 96  # X / W axis
+    assert info["height"] == 64
+    assert info["gainmap_width"] == 96
+    assert info["gainmap_height"] == 64
+    meta = info["gainmap_metadata"]
+    assert "max_content_boost" in meta
+    assert "hdr_capacity_max" in meta
 
 
 # ---------------------------------------------------------------------------

@@ -41,6 +41,10 @@ from libc.stdlib cimport malloc, free
 from libc.string cimport memcpy, memset
 from libc.math cimport log2f, powf, pow as c_pow
 from cpython.bytes cimport PyBytes_FromStringAndSize
+from cpython.memoryview cimport PyMemoryView_FromMemory
+
+cdef extern from "Python.h":
+    int PyBUF_READ
 
 from libuhdr cimport *
 
@@ -69,6 +73,77 @@ def is_uhdr(data) -> bool:
     if view.shape[0] == 0:
         return False
     return is_uhdr_image(<void*>&view[0], <int>view.shape[0]) != 0
+
+
+def probe(data) -> dict:
+    """Parse an Ultra-HDR container's MPF metadata without decoding any
+    pixels. Returns base + gainmap dimensions plus the gainmap metadata
+    block (max/min content boost, gamma, etc.).
+
+    Roughly an order of magnitude faster than ``decode()`` for any HDR-
+    aware use case that just needs dimensions or capacity — image
+    indexing, thumbnail generation, HTTP HEAD-style inspection,
+    routing a batch by content-boost. Uses libuhdr's ``uhdr_dec_probe``
+    under the hood (parses MPF + XMP, never touches the JPEG image
+    segments), then surfaces the parsed metadata via the existing
+    ``uhdr_dec_get_*`` accessors.
+
+    Returns
+    -------
+    dict with keys ``width``, ``height``, ``gainmap_width``,
+    ``gainmap_height``, ``gainmap_metadata`` (same shape as the
+    metadata dict from :func:`decode` and :func:`extract_layers`).
+    """
+    cdef const unsigned char[::1] view = _coerce_bytes_view(data)
+    cdef uhdr_codec_private_t* dec
+    cdef uhdr_compressed_image_t in_img
+    cdef uhdr_error_info_t info
+    cdef uhdr_gainmap_metadata_t* gm_meta
+
+    if view.shape[0] == 0:
+        raise ValueError("empty input")
+    dec = uhdr_create_decoder()
+    if dec == NULL:
+        raise UhdrError("uhdr_create_decoder returned NULL (OOM)")
+    try:
+        memset(&in_img, 0, sizeof(in_img))
+        in_img.data = <void*> &view[0]
+        in_img.data_sz = <size_t> view.shape[0]
+        in_img.capacity = <size_t> view.shape[0]
+        in_img.cg = UHDR_CG_UNSPECIFIED
+        in_img.ct = UHDR_CT_UNSPECIFIED
+        in_img.range = UHDR_CR_UNSPECIFIED
+
+        info = uhdr_dec_set_image(dec, &in_img)
+        _check(info, "uhdr_dec_set_image")
+        info = uhdr_dec_probe(dec)
+        _check(info, "uhdr_dec_probe")
+
+        result = {
+            "width": int(uhdr_dec_get_image_width(dec)),
+            "height": int(uhdr_dec_get_image_height(dec)),
+            "gainmap_width": int(uhdr_dec_get_gainmap_width(dec)),
+            "gainmap_height": int(uhdr_dec_get_gainmap_height(dec)),
+        }
+        gm_meta = uhdr_dec_get_gainmap_metadata(dec)
+        if gm_meta != NULL:
+            result["gainmap_metadata"] = {
+                "max_content_boost": [
+                    float(gm_meta.max_content_boost[i]) for i in range(3)],
+                "min_content_boost": [
+                    float(gm_meta.min_content_boost[i]) for i in range(3)],
+                "gamma": [float(gm_meta.gamma[i]) for i in range(3)],
+                "offset_sdr": [float(gm_meta.offset_sdr[i]) for i in range(3)],
+                "offset_hdr": [float(gm_meta.offset_hdr[i]) for i in range(3)],
+                "hdr_capacity_min": float(gm_meta.hdr_capacity_min),
+                "hdr_capacity_max": float(gm_meta.hdr_capacity_max),
+                "use_base_cg": int(gm_meta.use_base_cg),
+            }
+        else:
+            result["gainmap_metadata"] = None
+        return result
+    finally:
+        uhdr_release_decoder(dec)
 
 
 # ---------------------------------------------------------------------------
@@ -934,7 +1009,8 @@ def _hdr_to_rgba_fp16(hdr, alpha=None):
 # Encode
 # ---------------------------------------------------------------------------
 
-def encode_assembled(*, base_jpeg, gainmap_jpeg, metadata, gamut="display-p3"):
+def encode_assembled(*, base_jpeg, gainmap_jpeg, metadata, gamut="display-p3",
+                     out=None):
     """Native fast-path: assemble an Ultra-HDR JPEG from pre-encoded
     base + gain map + caller-computed metadata.
 
@@ -947,6 +1023,13 @@ def encode_assembled(*, base_jpeg, gainmap_jpeg, metadata, gamut="display-p3"):
     The high-level helper :func:`opencodecs.uhdr.encode_native`
     computes the gain map + parallel-encodes both layers + calls
     this. Use that unless you need finer control.
+
+    Pass ``out=<file-like>`` to stream the assembled bytes directly
+    to a writer (open file, ``io.BytesIO``, HTTP upload sink, …)
+    without going through a Python ``bytes`` intermediate. Returns
+    ``None`` in that case; otherwise returns the assembled bytes.
+    Saves one full-output-size malloc + memcpy and ~1× the encoded
+    size of peak memory.
 
     Parameters
     ----------
@@ -1045,6 +1128,20 @@ def encode_assembled(*, base_jpeg, gainmap_jpeg, metadata, gamut="display-p3"):
         out_stream = uhdr_get_encoded_stream(enc)
         if out_stream == NULL or out_stream.data == NULL:
             raise UhdrError("uhdr_get_encoded_stream returned NULL")
+        if out is not None:
+            # Streaming write path: hand a zero-copy memoryview over
+            # libuhdr's internal buffer to the caller's write(). The
+            # encoder is released in the finally block after write()
+            # returns, so the buffer remains valid throughout. No
+            # PyBytes allocation, no memcpy of the encoded output —
+            # ~1× output-size peak-memory savings on big rasters.
+            mv = PyMemoryView_FromMemory(
+                <char*>out_stream.data,
+                <Py_ssize_t>out_stream.data_sz,
+                PyBUF_READ,
+            )
+            out.write(mv)
+            return None
         out_bytes = PyBytes_FromStringAndSize(
             <char*>out_stream.data, <Py_ssize_t>out_stream.data_sz)
     finally:

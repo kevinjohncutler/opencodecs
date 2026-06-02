@@ -1,0 +1,25 @@
+From 7088ca71e24da3241b21335bb8ddd9823311a99d Mon Sep 17 00:00:00 2001
+From: DichenZhang1 <140119224+DichenZhang1@users.noreply.github.com>
+Date: Fri, 5 Sep 2025 19:33:41 -0700
+Subject: [PATCH] Update jpegr.cpp: fixed a typo
+
+---
+ lib/src/jpegr.cpp | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/lib/src/jpegr.cpp b/lib/src/jpegr.cpp
+index 8ce700f..9c6108b 100644
+--- a/lib/src/jpegr.cpp
++++ b/lib/src/jpegr.cpp
+@@ -1739,7 +1739,7 @@ uhdr_error_info_t JpegR::extractPrimaryImageAndGainMap(uhdr_compressed_image_t*
+     uhdr_error_info_t status;
+     status.error_code = UHDR_CODEC_INVALID_PARAM;
+     status.has_detail = 1;
+-    snprintf(status.detail, sizeof status.detail, "input uhdr image does not any valid images");
++    snprintf(status.detail, sizeof status.detail, "input uhdr image does not contain any valid images");
+     return status;
+   }
+ 
+-- 
+2.42.0
+
