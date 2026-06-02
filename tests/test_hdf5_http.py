@@ -35,6 +35,11 @@ from opencodecs._tiff_http import HTTPDataSource
 class _RangedHandler(http.server.SimpleHTTPRequestHandler):
     """Range-supporting handler; shared verbatim with test_tiff_http."""
 
+    # HTTP/1.1 so persistent connections work — without this the
+    # default HTTP/1.0 closes after every response and the 256-chunk
+    # prefetch test does 256 TCP reconnects, swamping the test server.
+    protocol_version = "HTTP/1.1"
+
     def do_GET(self):
         rng = self.headers.get("Range")
         if not rng:
@@ -47,11 +52,20 @@ class _RangedHandler(http.server.SimpleHTTPRequestHandler):
             start_s, end_s = span.split("-", 1)
             start = int(start_s) if start_s else 0
             path = self.translate_path(self.path)
-            data = Path(path).read_bytes()
-            total = len(data)
+            # Stat for size; pread only the requested range. The previous
+            # implementation did Path(path).read_bytes() for every request,
+            # so 256 parallel chunk fetches against a 512KB file moved
+            # 134 MB of disk I/O — under CI load this overran the
+            # HTTPDataSource timeout and surfaced as flaky
+            # `test_prefetch_collapses_chunk_fetches` failures.
+            import os
+            total = os.path.getsize(path)
             end = int(end_s) if end_s else total - 1
             end = min(end, total - 1)
-            chunk = data[start:end + 1]
+            chunk_size = end - start + 1
+            with open(path, "rb") as fh:
+                fh.seek(start)
+                chunk = fh.read(chunk_size)
             self.send_response(206)
             self.send_header("Content-Type", "application/octet-stream")
             self.send_header("Accept-Ranges", "bytes")
@@ -69,6 +83,10 @@ class _RangedHandler(http.server.SimpleHTTPRequestHandler):
 
 @pytest.fixture
 def http_h5_url(tmp_path):
+    # request_queue_size default is 5 — too small when prefetch fans
+    # out 8 parallel chunk fetches simultaneously; surplus SYNs get
+    # rejected and the client falls into recv timeout territory.
+    socketserver.ThreadingTCPServer.request_queue_size = 64
     server = socketserver.ThreadingTCPServer(
         ("127.0.0.1", 0),
         lambda *a, **kw: _RangedHandler(*a, directory=str(tmp_path), **kw),

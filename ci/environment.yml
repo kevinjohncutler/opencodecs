@@ -27,6 +27,12 @@ dependencies:
   - libaec
   - lerc
   - zfp
+  # lcms2 needed at TEST time on Windows. opencodecs._cms_codec does a
+  # ctypes.CDLL("lcms2.dll") at first use; without the conda package the
+  # DLL isn't on PATH and 8 test_phase7_cms.py tests fail with ImportError.
+  # Linux + macOS pick lcms2 up from system / brew so the entry is no-op
+  # there but harmless.
+  - lcms2
   - rust
   - cmake
   - ninja
