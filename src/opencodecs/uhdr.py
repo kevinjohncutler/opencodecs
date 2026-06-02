@@ -42,7 +42,173 @@ Decode back to fp16 HDR pixels::
 
 from __future__ import annotations
 
+import struct
+
 import numpy as np
+
+
+# ---------------------------------------------------------------------------
+# EXIF thumbnail embed/extract
+# ---------------------------------------------------------------------------
+#
+# JPEG metadata sidecar that's NOT a sidecar: a small pre-encoded JPEG
+# thumbnail lives inside an APP1 segment of the main file, indexed via
+# the TIFF/EXIF "1st IFD" structure. Every photo app on every OS
+# already knows how to read these — they're how phone galleries get
+# instant previews of multi-megapixel JPEGs.
+#
+# Wire format we emit:
+#
+#   APP1 marker (FFE1)
+#   segment length (2 bytes, big-endian, includes itself)
+#   "Exif\0\0"               6 bytes  signature
+#   TIFF header              8 bytes  "II*\0" little-endian, ifd0_offset=8
+#   IFD-0                            empty marker IFD, points at IFD-1
+#     entry count (2 bytes) = 0
+#     ifd1 offset (4 bytes) = current position
+#   IFD-1                            describes the thumbnail
+#     entry count = 3
+#     tag 0x0103 (Compression)         SHORT, value=6 (JPEG)
+#     tag 0x0201 (JPEGInterchangeFormat)        LONG, value=thumb_offset
+#     tag 0x0202 (JPEGInterchangeFormatLength)  LONG, value=thumb_size
+#     next-IFD offset (4 bytes) = 0
+#   <thumbnail JPEG bytes>
+#
+# All offsets in the TIFF block are relative to the start of the TIFF
+# header (the "II*\0" byte after the "Exif\0\0" signature).
+
+_EXIF_SIG = b"Exif\x00\x00"
+_TIFF_HEADER_LE = b"II*\x00" + struct.pack("<I", 8)  # IFD-0 at offset 8
+
+
+def _build_exif_thumbnail_segment(thumb_jpeg: bytes) -> bytes:
+    """Wrap a pre-encoded thumbnail JPEG in an EXIF/TIFF APP1 segment.
+
+    Returns the segment bytes including the FFE1 marker + length
+    header — ready to splice into the main JPEG bytestream right
+    after the SOI.
+    """
+    # IFD-0: 0 entries, but its trailing "next-IFD" field points at IFD-1.
+    # 2 (count) + 4 (next-IFD offset) = 6 bytes.
+    # IFD-1: 3 entries + 4-byte next-IFD-zero terminator.
+    # Each IFD entry is 12 bytes: tag(2) + type(2) + count(4) + value(4).
+    ifd0 = struct.pack("<HI", 0, 8 + 6)  # IFD-1 starts at offset 14
+    ifd1_offset = 8 + 6                  # after TIFF header (8) + IFD-0 (6)
+    ifd1_size = 2 + 3 * 12 + 4           # count + 3 entries + next-IFD
+    thumb_offset = ifd1_offset + ifd1_size  # thumbnail bytes follow IFD-1
+    ifd1 = struct.pack(
+        "<H"                          # entry count
+        "HHII"                        # Compression: SHORT, count=1, value=6
+        "HHII"                        # JPEGInterchangeFormat: LONG, count=1
+        "HHII"                        # JPEGInterchangeFormatLength: LONG, count=1
+        "I",                          # next-IFD offset (0 = none)
+        3,
+        0x0103, 3, 1, 6,              # Compression = JPEG
+        0x0201, 4, 1, thumb_offset,   # offset of thumbnail JPEG within TIFF
+        0x0202, 4, 1, len(thumb_jpeg),
+        0,
+    )
+    payload = _EXIF_SIG + _TIFF_HEADER_LE + ifd0 + ifd1 + thumb_jpeg
+    # APP1 segment length includes itself (2 bytes) but not the FFE1
+    # marker (also 2 bytes). Cap at 65533 — JPEG segment max is 65535
+    # minus the length field. Thumbnail at 256² q80 is typically
+    # ~10-25 KB so we have plenty of headroom; abort cleanly otherwise.
+    seg_len = len(payload) + 2
+    if seg_len > 0xFFFF:
+        raise ValueError(
+            f"thumbnail JPEG too large for a single APP1 segment "
+            f"({seg_len} bytes, max 65535); use a smaller thumbnail_size")
+    return b"\xff\xe1" + struct.pack(">H", seg_len) + payload
+
+
+def _inject_app1_after_soi(jpeg_bytes: bytes, segment: bytes) -> bytes:
+    """Splice a single APP1 segment in immediately after the SOI marker.
+
+    Most JPEGs have an APP0 (JFIF) or APP1 segment right after SOI;
+    we insert ours BEFORE those so existing parsers find the
+    thumbnail's EXIF first. Decoders that walk APP1 markers in order
+    return the first match.
+    """
+    if len(jpeg_bytes) < 2 or jpeg_bytes[:2] != b"\xff\xd8":
+        raise ValueError(
+            "injection target doesn't start with SOI (FFD8) marker; "
+            "is this really a JPEG?")
+    return b"\xff\xd8" + segment + jpeg_bytes[2:]
+
+
+def _find_app1_exif_payload(jpeg_bytes: bytes) -> tuple[bytes, int] | None:
+    """Locate the first APP1 segment whose payload starts with the EXIF
+    signature. Returns (segment_payload_starting_at_TIFF_header,
+    file_offset_of_TIFF_header) or None.
+    """
+    i = 0
+    n = len(jpeg_bytes)
+    if n < 2 or jpeg_bytes[0:2] != b"\xff\xd8":
+        return None
+    i = 2
+    while i < n - 4:
+        if jpeg_bytes[i] != 0xFF:
+            return None  # malformed; bail
+        marker = jpeg_bytes[i + 1]
+        if marker == 0xD8 or marker == 0x01:
+            i += 2; continue
+        if marker == 0xD9 or marker == 0xDA:
+            # EOI / SOS — past metadata zone, no thumbnail
+            return None
+        # Variable-length segment: bytes [i+2, i+4) is length-incl-itself
+        seg_len = (jpeg_bytes[i + 2] << 8) | jpeg_bytes[i + 3]
+        start = i + 4
+        end = i + 2 + seg_len
+        if marker == 0xE1 and jpeg_bytes[start:start + 6] == _EXIF_SIG:
+            return jpeg_bytes[start + 6:end], start + 6
+        i = end
+
+
+def _extract_exif_thumbnail_bytes(jpeg_bytes: bytes) -> bytes | None:
+    """Return the embedded EXIF thumbnail as raw JPEG bytes, or None
+    if the file has no thumbnail.
+    """
+    found = _find_app1_exif_payload(jpeg_bytes)
+    if found is None:
+        return None
+    tiff, _ = found
+    if len(tiff) < 8:
+        return None
+    byte_order = tiff[:2]
+    if byte_order == b"II":
+        endian = "<"
+    elif byte_order == b"MM":
+        endian = ">"
+    else:
+        return None
+    magic = struct.unpack(endian + "H", tiff[2:4])[0]
+    if magic != 0x002A:
+        return None
+    ifd0_offset = struct.unpack(endian + "I", tiff[4:8])[0]
+    if ifd0_offset + 2 > len(tiff):
+        return None
+    n0 = struct.unpack(endian + "H", tiff[ifd0_offset:ifd0_offset + 2])[0]
+    ifd1_off_pos = ifd0_offset + 2 + n0 * 12
+    if ifd1_off_pos + 4 > len(tiff):
+        return None
+    ifd1_offset = struct.unpack(
+        endian + "I", tiff[ifd1_off_pos:ifd1_off_pos + 4])[0]
+    if ifd1_offset == 0 or ifd1_offset + 2 > len(tiff):
+        return None  # no IFD-1 (no thumbnail)
+    n1 = struct.unpack(endian + "H", tiff[ifd1_offset:ifd1_offset + 2])[0]
+    thumb_off = thumb_len = None
+    for k in range(n1):
+        entry = tiff[ifd1_offset + 2 + k * 12 : ifd1_offset + 2 + (k + 1) * 12]
+        tag, typ, count, value = struct.unpack(endian + "HHII", entry)
+        if tag == 0x0201:
+            thumb_off = value
+        elif tag == 0x0202:
+            thumb_len = value
+    if thumb_off is None or thumb_len is None:
+        return None
+    if thumb_off + thumb_len > len(tiff):
+        return None
+    return bytes(tiff[thumb_off:thumb_off + thumb_len])
 
 # Backend is optional: opencodecs still imports when libuhdr / the Cython
 # extension isn't available; calling any uhdr function then raises a
@@ -91,6 +257,8 @@ __all__ = [
     "decode_native",
     "is_uhdr",
     "probe",
+    "read_thumbnail",
+    "read_thumbnail_bytes",
     "libuhdr_version",
     "UhdrError",
     "read",
@@ -102,6 +270,7 @@ def encode_native(hdr, sdr=None, *,
                    gamut='display-p3', sdr_white_nits=1600.0,
                    quality=95, gain_quality=None, gain_scale=1,
                    sdr_subsampling=None, lossless=False,
+                   thumbnail_size=None, thumbnail_quality=80,
                    max_content_boost=None,
                    min_content_boost=1.0, gamma=1.0, parallel=True,
                    out=None):
@@ -189,6 +358,19 @@ def encode_native(hdr, sdr=None, *,
         Run the SDR JPEG encode, gain-map compute, and gain-map JPEG
         encode in parallel threads. Saves ~30-40% wall-clock on
         2-core+ machines.
+    thumbnail_size : int, optional
+        If set, embed a square thumbnail of at most ``thumbnail_size``
+        px on each side inside the file's APP1 EXIF segment. The
+        thumbnail is a separately-encoded JPEG of the (peak-
+        normalised) SDR base raster, decimated by integer stride.
+        Adds ~2-10 KB to the file and ~5 ms to the encode. Reads
+        via :func:`read_thumbnail` (~1 ms regardless of source
+        resolution) — useful for archive browsers, HTTP-range
+        thumbnail fetches, file managers that auto-extract EXIF
+        thumbnails. ``None`` (default) embeds nothing.
+    thumbnail_quality : int
+        JPEG quality (1-100) for the thumbnail layer. Default 80;
+        the thumbnail is a preview, not the primary product.
     out : file-like, optional
         If given (anything with ``write(buf)``: open file,
         ``io.BytesIO``, HTTP upload sink), the assembled container
@@ -302,13 +484,44 @@ def encode_native(hdr, sdr=None, *,
         gainmap_jpeg = imagecodecs.jpeg_encode(
             gain_u8, gain_quality, subsampling='440')
 
-    return encode_assembled(
+    if thumbnail_size is not None and thumbnail_size > 0:
+        # Build the thumbnail from the SDR base raster (post-OETF, so
+        # exactly the SDR-display visual). Integer stride-decimate to
+        # the requested max dimension, then JPEG-encode small.
+        max_dim = max(sdr_arr.shape[0], sdr_arr.shape[1])
+        if max_dim > thumbnail_size:
+            stride = (max_dim + thumbnail_size - 1) // thumbnail_size
+            thumb_raster = np.ascontiguousarray(sdr_arr[::stride, ::stride])
+        else:
+            thumb_raster = sdr_arr
+        thumb_jpeg = imagecodecs.jpeg_encode(
+            thumb_raster, int(thumbnail_quality))
+        exif_seg = _build_exif_thumbnail_segment(thumb_jpeg)
+    else:
+        exif_seg = None
+
+    if exif_seg is None:
+        return encode_assembled(
+            base_jpeg=base_jpeg,
+            gainmap_jpeg=gainmap_jpeg,
+            metadata=metadata,
+            gamut=gamut,
+            out=out,
+        )
+
+    # Thumbnail path: assemble to bytes (we need to splice the EXIF
+    # segment into the bytestream), then either return or stream-write.
+    blob = encode_assembled(
         base_jpeg=base_jpeg,
         gainmap_jpeg=gainmap_jpeg,
         metadata=metadata,
         gamut=gamut,
-        out=out,
     )
+    blob = _inject_app1_after_soi(blob, exif_seg)
+    if out is None:
+        return blob
+    out.write(blob)
+    return None
 
 
 def decode_native(data, *, parallel=True, dtype=None,
@@ -442,6 +655,36 @@ def encode_to(fp, hdr, **kwargs) -> None:
     peak memory on large encodes.
     """
     encode_native(hdr, out=fp, **kwargs)
+
+
+def read_thumbnail_bytes(data) -> bytes | None:
+    """Return the encoded JPEG thumbnail embedded in the file's APP1
+    EXIF block, or ``None`` if no thumbnail is present.
+
+    Only the APP1 segment is parsed — the main SDR base + gain-map
+    JPEGs are not touched. Sub-millisecond on local files, can be
+    served from the first ~5-10 KB of an HTTP-ranged read for remote
+    archives.
+
+    Embeds via :func:`encode_native` ``thumbnail_size=`` kwarg.
+    """
+    if isinstance(data, (bytes, bytearray, memoryview)):
+        buf = bytes(data)
+    else:
+        buf = bytes(data)
+    return _extract_exif_thumbnail_bytes(buf)
+
+
+def read_thumbnail(data):
+    """Return the embedded EXIF thumbnail as a decoded numpy array, or
+    ``None`` if no thumbnail is present. Convenience wrapper around
+    :func:`read_thumbnail_bytes` + ``imagecodecs.jpeg_decode``.
+    """
+    raw = read_thumbnail_bytes(data)
+    if raw is None:
+        return None
+    import imagecodecs
+    return imagecodecs.jpeg_decode(raw)
 
 
 def read(path, **kwargs) -> dict:

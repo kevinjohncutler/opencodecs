@@ -40,6 +40,8 @@ from opencodecs.uhdr import (
     decode_native,
     encode_to,
     probe,
+    read_thumbnail,
+    read_thumbnail_bytes,
 )
 
 
@@ -523,6 +525,71 @@ def test_encode_native_sdr_subsampling_controls_base_layer_size():
     for blob in (blob_420, blob_444):
         info = decode_native(blob, dtype=np.float32)
         assert info["hdr"].shape[:2] == hdr.shape[:2]
+
+
+def test_encode_native_no_thumbnail_by_default():
+    """encode_native with no thumbnail_size produces a file with no
+    embedded thumbnail; read_thumbnail returns None."""
+    hdr = _synthetic_hdr_rgb(64, 64)
+    data = encode_native(hdr, quality=95)
+    assert read_thumbnail_bytes(data) is None
+    assert read_thumbnail(data) is None
+
+
+def test_encode_native_embeds_exif_thumbnail():
+    """thumbnail_size=N embeds an EXIF APP1 thumbnail readable by
+    read_thumbnail; the thumbnail JPEG decodes to ≤ N px per side."""
+    hdr = _synthetic_hdr_rgb(96, 96)
+    data = encode_native(hdr, quality=95, thumbnail_size=32)
+    raw = read_thumbnail_bytes(data)
+    assert raw is not None
+    assert raw.startswith(b"\xff\xd8")  # SOI marker — it's a JPEG
+    decoded = read_thumbnail(data)
+    assert decoded.dtype == np.uint8
+    assert decoded.shape[2] == 3
+    assert max(decoded.shape[:2]) <= 32, (
+        f"thumbnail larger than requested: {decoded.shape}")
+
+
+def test_thumbnail_doesnt_break_uhdr_or_decode():
+    """Embedding a thumbnail must leave the file a conforming Ultra-
+    HDR JPEG: is_uhdr, probe, libuhdr's decode, and our decode_native
+    must all succeed unchanged."""
+    hdr = _synthetic_hdr_rgb(96, 96)
+    plain = encode_native(hdr, quality=95)
+    with_thumb = encode_native(hdr, quality=95, thumbnail_size=32)
+
+    assert is_uhdr(with_thumb) is True
+    p = probe(with_thumb)
+    assert p["width"] == probe(plain)["width"]
+    assert p["height"] == probe(plain)["height"]
+    # libuhdr's wrapped decode shouldn't get confused by the extra
+    # APP1 segment in front of the main image
+    info_lib = decode(with_thumb, want_hdr=True)
+    assert info_lib["hdr_fp16"].shape[:2] == (96, 96)
+    # Our decode_native too
+    info_native = decode_native(with_thumb, dtype=np.float32, display_boost=1.0)
+    assert info_native["hdr"].shape[:2] == (96, 96)
+
+
+def test_thumbnail_size_caps_largest_axis():
+    """For a non-square image, thumbnail_size bounds the *larger* axis;
+    the other shrinks by the same integer stride."""
+    rng = np.random.default_rng(0)
+    hdr = rng.random((48, 96, 3), dtype=np.float32) * 4.0
+    data = encode_native(hdr, quality=95, thumbnail_size=24)
+    t = read_thumbnail(data)
+    # stride = ceil(96/24) = 4; so dims become 96//4=24, 48//4=12
+    assert t.shape == (12, 24, 3), f"got {t.shape}"
+
+
+def test_thumbnail_smaller_than_source_no_upscale():
+    """If the source SDR is already smaller than thumbnail_size, the
+    thumbnail is the source's own size — never upscaled."""
+    hdr = _synthetic_hdr_rgb(32, 32)
+    data = encode_native(hdr, quality=95, thumbnail_size=256)
+    t = read_thumbnail(data)
+    assert t.shape == (32, 32, 3)
 
 
 def test_probe_returns_dimensions_and_metadata():

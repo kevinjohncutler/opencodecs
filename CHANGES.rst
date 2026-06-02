@@ -10,6 +10,56 @@ Versions follow the same ``YYYY.M.D`` cadence as upstream when we
 publish; the entries below cluster work by date rather than by
 release because most of it has shipped continuously to ``main``.
 
+0.1.11 (2026-06-02)
+-------------------
+
+**Embedded EXIF thumbnail on Ultra-HDR (opt-in)**
+
+``encode_native`` and ``encode_to`` gained two kwargs:
+
+* ``thumbnail_size`` — if set, embeds a square thumbnail of up to
+  ``thumbnail_size`` px on each side inside an APP1 EXIF segment of
+  the same file (no sidecar). ``None`` (default) embeds nothing.
+* ``thumbnail_quality`` — JPEG quality for the thumbnail layer
+  (default 80).
+
+Read side:
+
+* ``opencodecs.uhdr.read_thumbnail_bytes(data)`` returns the
+  embedded thumbnail as raw JPEG bytes (or ``None``). Sub-millisecond
+  — parses only the APP1 segment, never touches the SDR base or
+  gain-map JPEGs.
+* ``opencodecs.uhdr.read_thumbnail(data)`` decodes the same to a
+  ``(h, w, 3) uint8`` ndarray.
+
+The thumbnail is built from the (peak-normalised) SDR base raster
+via integer stride decimation, then encoded as a small independent
+JPEG and stuffed into a standard EXIF "1st IFD" / APP1 marker
+prepended to the main file. Every existing photo viewer that
+honours EXIF thumbnails (file managers, Finder, phone galleries,
+OS thumbnail caches) picks it up automatically — no opencodecs
+required on the read side.
+
+Bench on a 2k² Ultra-HDR file (M-series Mac):
+
+* ``read_thumbnail_bytes`` (just the byte-slice):  ~4 μs
+* ``read_thumbnail`` (slice + decode 250×250):    ~0.2 ms
+* ``decode_native(scale=1/8)`` (full entropy decode at 1/8 IDCT): ~25 ms
+* ``decode_native`` (full):                       ~54 ms
+
+That's a **~250× speedup over full decode** for archive-browsing
+workflows. The win compounds on cloud-stored archives: an HTTP
+range request for the first ~64 KB of a file gets you the
+thumbnail without transferring the full multi-MB payload.
+
+File-size overhead at default settings (``thumbnail_size=256``,
+``thumbnail_quality=80``): ~15-25 KB per file.
+
+Preserves Ultra-HDR conformance: ``is_uhdr``, ``probe``, libuhdr's
+own ``decode``, and our ``decode_native`` all unchanged on the
+thumbnail-augmented file. The APP1 EXIF segment is standard JPEG
+metadata; it doesn't interact with the MPF / XMP gain-map blocks.
+
 0.1.10 (2026-06-02)
 -------------------
 
