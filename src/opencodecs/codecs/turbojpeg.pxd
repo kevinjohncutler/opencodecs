@@ -73,3 +73,23 @@ cdef extern from 'turbojpeg.h' nogil:
     int tj3GetICCProfile(
         tjhandle handle, unsigned char** iccBuf, size_t* iccSize,
     )
+
+    # DCT-domain decode-time scaling. tj3SetScalingFactor told the
+    # decompressor to output the image at ``num/denom`` of the source
+    # dimensions by skipping the inverse-DCT work for high-frequency
+    # coefficients. Supported factors are a fixed set: see
+    # ``tj3GetScalingFactors`` (typically 1/8, 1/4, 3/8, 1/2, 5/8,
+    # 3/4, 7/8, 1/1, 9/8, 5/4, 11/8, 3/2, 13/8, 7/4, 15/8, 2/1).
+    # Roughly N²× faster + N²× less memory than a full decode +
+    # post-resize for N/8 downsamples — useful for thumbnail/preview
+    # pipelines off a stored JPEG (or the SDR base of an Ultra-HDR).
+    ctypedef struct tjscalingfactor:
+        int num
+        int denom
+
+    int tj3SetScalingFactor(tjhandle handle, tjscalingfactor factor)
+    tjscalingfactor* tj3GetScalingFactors(int* numFactors)
+    # Macro in C; libjpeg-turbo provides TJSCALED(dim, factor) =
+    # (dim * factor.num + factor.denom - 1) / factor.denom. We
+    # compute it ourselves in Cython since macros aren't directly
+    # callable from cimport.

@@ -23,6 +23,7 @@ from turbojpeg cimport (
     tj3Set, tj3Get, tj3Free,
     tj3Compress8, tj3DecompressHeader, tj3Decompress8,
     tj3SetICCProfile, tj3GetICCProfile,
+    tj3SetScalingFactor, tj3GetScalingFactors, tjscalingfactor,
     TJINIT_COMPRESS, TJINIT_DECOMPRESS,
     TJPF_GRAY, TJPF_RGB,
     TJSAMP_GRAY, TJSAMP_444, TJSAMP_422, TJSAMP_420, TJSAMP_440, TJSAMP_411,
@@ -157,12 +158,98 @@ def encode(data, *, level: int | None = None,
         tj3Destroy(handle)
 
 
-def decode(data, *, out=None) -> np.ndarray:
+def supported_scaling_factors() -> list[tuple[int, int]]:
+    """Return libjpeg-turbo's allowed decode-time scaling factors as
+    ``(num, denom)`` pairs. Pass any of these to ``decode(..., scale=...)``
+    or ``scale_num=/scale_denom=`` to decode the image at ``num/denom``
+    of its stored size via the DCT-domain shortcut (skips most of the
+    inverse-DCT work for high-frequency coefficients).
+
+    Typical contents on libjpeg-turbo 3.x::
+
+        [(2,1), (15,8), (7,4), (13,8), (3,2), (11,8), (5,4), (9,8),
+         (1,1), (7,8), (3,4), (5,8), (1,2), (3,8), (1,4), (1,8)]
+    """
+    cdef int n = 0
+    cdef tjscalingfactor* arr = tj3GetScalingFactors(&n)
+    if arr == NULL or n <= 0:
+        return []
+    return [(int(arr[i].num), int(arr[i].denom)) for i in range(n)]
+
+
+def _resolve_scale(scale, scale_num, scale_denom):
+    """Coerce caller-supplied scale into a (num, denom) pair within
+    libjpeg-turbo's supported set. Accepts:
+
+    * ``None`` + ``scale_num=N, scale_denom=D`` — explicit ratio.
+    * a single int ``N``: maps to ``(1, N)`` (the user thinks of
+      "decode at 1/N size"; this is the common case).
+    * a float in (0, 2]: snapped to the closest supported factor.
+    * a tuple/list ``(num, denom)``: explicit ratio.
+
+    Returns ``(num, denom)`` or ``(1, 1)`` if no downscale requested.
+    Raises ``ValueError`` when the requested ratio isn't supported.
+    """
+    if scale is None:
+        if scale_num is None and scale_denom is None:
+            return (1, 1)
+        if scale_num is None:
+            scale_num = 1
+        if scale_denom is None:
+            scale_denom = 1
+        return (int(scale_num), int(scale_denom))
+
+    if isinstance(scale, (tuple, list)):
+        if len(scale) != 2:
+            raise ValueError(
+                f"jpeg decode: scale tuple must be (num, denom); "
+                f"got {scale!r}")
+        return (int(scale[0]), int(scale[1]))
+
+    if isinstance(scale, int) and not isinstance(scale, bool):
+        if scale < 1:
+            raise ValueError(
+                f"jpeg decode: scale int must be ≥ 1 (means '1/N'); "
+                f"got {scale!r}")
+        return (1, int(scale))
+
+    # Float: snap to the closest supported factor.
+    f = float(scale)
+    if f <= 0:
+        raise ValueError(f"jpeg decode: scale must be > 0; got {scale!r}")
+    factors = supported_scaling_factors()
+    if not factors:
+        return (1, 1)
+    best = min(factors, key=lambda nd: abs(nd[0] / nd[1] - f))
+    return best
+
+
+def decode(data, *, out=None, scale=None,
+           scale_num=None, scale_denom=None) -> np.ndarray:
     """Decode JPEG bytes into a uint8 array.
 
-    ``out=`` is a preallocated ndarray. libjpeg-turbo's tj3Decompress8
-    writes directly into the caller's buffer — true zero-alloc.
-    See ``_png.decode`` for the full contract.
+    Parameters
+    ----------
+    data : bytes-like
+        Encoded JPEG payload.
+    out : ndarray, optional
+        Preallocated output buffer. libjpeg-turbo's tj3Decompress8
+        writes directly into the caller's buffer — true zero-alloc.
+        Must match the post-scale output shape exactly. See
+        ``_png.decode`` for the full contract.
+    scale : int / float / (num, denom), optional
+        Decode-time scaling factor via libjpeg-turbo's DCT-domain
+        shortcut. Pass an integer ``N`` (interpreted as ``1/N``), a
+        float (snapped to the closest supported factor), or an explicit
+        ``(num, denom)`` pair. ``None`` (default) keeps the full
+        resolution. ~N²× faster + memory than full-decode + post-resize.
+    scale_num, scale_denom : int, optional
+        Lower-level explicit ratio; takes precedence over ``scale``
+        when ``scale`` is ``None``. Useful when threading a
+        :func:`supported_scaling_factors` pick through code.
+
+    Output shape is ``(TJSCALED(H, factor), TJSCALED(W, factor)[, 3])``
+    where ``TJSCALED(d, (n, m)) = (d * n + m - 1) // m``.
     """
     cdef:
         const uint8_t[::1] src
@@ -176,6 +263,8 @@ def decode(data, *, out=None) -> np.ndarray:
         cnp.npy_intp shape[3]
         int ndim
         tuple expected_shape
+        tjscalingfactor factor
+        int s_num, s_den
 
     if isinstance(data, (bytes, bytearray)):
         src = data
@@ -185,6 +274,8 @@ def decode(data, *, out=None) -> np.ndarray:
     if srcsize < 3:
         raise JpegError('input too short to be JPEG')
 
+    s_num, s_den = _resolve_scale(scale, scale_num, scale_denom)
+
     handle = tj3Init(TJINIT_DECOMPRESS)
     if handle == NULL:
         raise JpegError('tj3Init(DECOMPRESS) failed')
@@ -193,8 +284,24 @@ def decode(data, *, out=None) -> np.ndarray:
         if rc < 0:
             raise JpegError(
                 f'tj3DecompressHeader: {tj3GetErrorStr(handle).decode()}')
-        width = tj3Get(handle, TJPARAM_JPEGWIDTH)
-        height = tj3Get(handle, TJPARAM_JPEGHEIGHT)
+        # Apply DCT-domain decode scaling if the caller asked for it.
+        # tj3SetScalingFactor rejects unsupported ratios; the error
+        # surfaces with libjpeg-turbo's own diagnostic. Skip the call
+        # at 1/1 (default) so we don't pay the per-decode round-trip
+        # for full-resolution decodes.
+        if (s_num, s_den) != (1, 1):
+            factor.num = s_num
+            factor.denom = s_den
+            if tj3SetScalingFactor(handle, factor) < 0:
+                raise JpegError(
+                    f'tj3SetScalingFactor({s_num}/{s_den}): '
+                    f'{tj3GetErrorStr(handle).decode()}. '
+                    f'Supported factors: {supported_scaling_factors()}')
+        # libjpeg-turbo reports the scaled output dimensions through
+        # the same JPEGWIDTH/JPEGHEIGHT params after SetScalingFactor.
+        # TJSCALED(d, factor) = (d * num + denom - 1) // denom.
+        width = (tj3Get(handle, TJPARAM_JPEGWIDTH) * s_num + s_den - 1) // s_den
+        height = (tj3Get(handle, TJPARAM_JPEGHEIGHT) * s_num + s_den - 1) // s_den
         # TJSAMP_GRAY indicates a single-component (grayscale) JPEG;
         # everything else we coerce to RGB.
         if tj3Get(handle, TJPARAM_SUBSAMP) == TJSAMP_GRAY:

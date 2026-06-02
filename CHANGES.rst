@@ -10,6 +10,41 @@ Versions follow the same ``YYYY.M.D`` cadence as upstream when we
 publish; the entries below cluster work by date rather than by
 release because most of it has shipped continuously to ``main``.
 
+0.1.8 (2026-06-02)
+------------------
+
+**DCT-domain decode-time scale on JPEG + decode_native**
+
+``opencodecs.codecs._jpeg.decode`` now exposes libjpeg-turbo's
+``tj3SetScalingFactor`` knob via a new ``scale=`` kwarg (plus
+explicit ``scale_num`` / ``scale_denom`` for advanced callers). The
+decoder skips the inverse-DCT work for high-frequency coefficients
+when the caller requests a downsampled output, so a 1/8 decode runs
+~2× faster than a full decode and produces a 64× smaller raster.
+
+Supported factors are libjpeg-turbo's full set of 16 ratios N/8 for
+N ∈ {1, 2, …, 16} — i.e. anywhere between 1/8 and 2/1. The new
+``opencodecs.codecs._jpeg.supported_scaling_factors()`` returns them
+as ``(num, denom)`` pairs. ``scale=`` accepts:
+
+* an integer N (interpreted as ``1/N``)
+* a float (snapped to the closest supported ratio)
+* a tuple ``(num, denom)`` verbatim
+
+``opencodecs.uhdr.decode_native(..., scale=...)`` threads the same
+knob through both the SDR base and the gain-map JPEG decodes. The
+gain-application kernel runs on the smaller rasters, so the whole
+pipeline scales — a 2k² Ultra-HDR decode at ``scale=8`` returns a
+``(250, 250, 3)`` fp16 raster in ~25 ms vs ~53 ms for the full
+decode. Useful for thumbnail / preview pipelines that want real
+HDR pixels off cloud-stored Ultra-HDR without paying the megapixel
+JPEG decode cost. Lossless source not required — the JPEG file is
+unchanged on disk; the savings come from skipping IDCT work.
+
+(libuhdr lossless support is unchanged: ISO 21496-1's SDR base layer
+is required to be baseline DCT JPEG, so lossless-mode JPEG would
+not be a conforming Ultra-HDR file.)
+
 0.1.7 (2026-06-02)
 ------------------
 

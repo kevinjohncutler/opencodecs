@@ -249,7 +249,7 @@ def encode_native(hdr, sdr=None, *,
 
 
 def decode_native(data, *, parallel=True, dtype=None,
-                  display_boost=None) -> dict:
+                  display_boost=None, scale=None) -> dict:
     """Fused-Cython fast-path Ultra-HDR decoder.
 
     Uses libuhdr to extract the compressed SDR base + gain-map JPEGs +
@@ -275,6 +275,17 @@ def decode_native(data, *, parallel=True, dtype=None,
         Target display headroom. ``None`` (default) requests the
         encoded raster's full HDR (``hdr_capacity_max``). Pass 1.0 to
         match libuhdr's default decode — the SDR-equivalent.
+    scale : int / float / (num, denom), optional
+        DCT-domain decode-time downsample factor passed to both the
+        SDR base and gain-map JPEG decoders (via libjpeg-turbo's
+        ``tj3SetScalingFactor``). The supported set is the 16
+        rationals N/8 for N ∈ {1, 2, …, 16}. Integer ``N`` is
+        interpreted as ``1/N``; floats snap to the closest supported
+        ratio; ``(num, denom)`` is taken verbatim. ``None`` (default)
+        decodes at full resolution. Useful for thumbnail / preview
+        pipelines that want HDR pixels but not the megapixel base.
+        See :func:`opencodecs.codecs._jpeg.supported_scaling_factors`
+        for the full set.
 
     Returns
     -------
@@ -285,7 +296,6 @@ def decode_native(data, *, parallel=True, dtype=None,
     """
     if not _HAVE_BACKEND:
         _missing()
-    import imagecodecs
     import concurrent.futures as _cf
 
     info = _cython_extract_layers(data)
@@ -293,18 +303,33 @@ def decode_native(data, *, parallel=True, dtype=None,
     gainmap_jpeg = info["gainmap_jpeg"]
     metadata = info["gainmap_metadata"]
 
+    # Use opencodecs' own _jpeg decoder when a DCT-domain scale is
+    # requested — imagecodecs.jpeg_decode doesn't expose libjpeg-
+    # turbo's tj3SetScalingFactor knob. At scale=None we keep using
+    # imagecodecs.jpeg_decode to avoid changing the v0.1.7 baseline
+    # (slightly different output-shape conventions for grayscale
+    # input — both ultimately produce the same RGB raster).
+    if scale is not None:
+        from .codecs._jpeg import decode as _jpeg_decode
+        def _decode(b):
+            return _jpeg_decode(b, scale=scale)
+    else:
+        import imagecodecs as _ic
+        def _decode(b):
+            return _ic.jpeg_decode(b)
+
     if parallel:
         ex = _cf.ThreadPoolExecutor(max_workers=2)
         try:
-            sdr_fut = ex.submit(imagecodecs.jpeg_decode, base_jpeg)
-            gain_fut = ex.submit(imagecodecs.jpeg_decode, gainmap_jpeg)
+            sdr_fut = ex.submit(_decode, base_jpeg)
+            gain_fut = ex.submit(_decode, gainmap_jpeg)
             sdr_u8 = sdr_fut.result()
             gain_u8 = gain_fut.result()
         finally:
             ex.shutdown(wait=False)
     else:
-        sdr_u8 = imagecodecs.jpeg_decode(base_jpeg)
-        gain_u8 = imagecodecs.jpeg_decode(gainmap_jpeg)
+        sdr_u8 = _decode(base_jpeg)
+        gain_u8 = _decode(gainmap_jpeg)
 
     # imagecodecs returns (H, W) grayscale or (H, W, 3) RGB. Normalise
     # to a 3-D array with the channel axis last; the kernel expects

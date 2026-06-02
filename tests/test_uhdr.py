@@ -417,6 +417,46 @@ def test_encode_native_gain_quality_and_scale_round_trip():
     assert full_info["gainmap_width"] == 64
 
 
+def test_decode_native_dct_scale_int():
+    """decode_native(scale=N) routes through opencodecs._jpeg with
+    libjpeg-turbo's DCT-domain scale knob. Output shape is the source
+    dimensions divided by N (with TJSCALED rounding)."""
+    hdr = _synthetic_hdr_rgb(64, 96)
+    data = encode_native(hdr, quality=95)
+    for scale in (2, 4, 8):
+        info = decode_native(data, scale=scale)
+        H, W = info["hdr"].shape[:2]
+        # TJSCALED(d, (1, scale)) = (d + scale - 1) // scale.
+        assert H == (64 + scale - 1) // scale, (
+            f"scale={scale}: expected H={(64 + scale - 1) // scale}, got {H}")
+        assert W == (96 + scale - 1) // scale
+
+
+def test_decode_native_dct_scale_fraction():
+    """Pass an arbitrary supported (num, denom) ratio."""
+    hdr = _synthetic_hdr_rgb(80, 80)
+    data = encode_native(hdr, quality=95)
+    info = decode_native(data, scale=(3, 8))
+    H, W = info["hdr"].shape[:2]
+    # TJSCALED(80, (3, 8)) = (80*3 + 8 - 1) // 8 = 30
+    assert H == 30 and W == 30
+
+
+def test_decode_native_dct_scale_preserves_hdr_signal():
+    """A scaled-down decode should still recover roughly the same
+    HDR mean (within the box-average-equivalent tolerance)."""
+    hdr = _synthetic_hdr_rgb(96, 96)
+    data = encode_native(hdr, quality=95)
+    full = decode_native(data, dtype=np.float32, display_boost=1.0)["hdr"]
+    half = decode_native(data, dtype=np.float32, display_boost=1.0, scale=2)["hdr"]
+    # Half-res mean should track the full-res mean within ~15%.
+    fm = full.mean(axis=(0, 1))
+    hm = half.mean(axis=(0, 1))
+    ratio = hm / np.maximum(fm, 1e-6)
+    assert (ratio > 0.85).all() and (ratio < 1.15).all(), (
+        f"scaled mean differs too far: full={fm}, half={hm}")
+
+
 def test_probe_returns_dimensions_and_metadata():
     """probe(data) parses just the MPF metadata without any pixel
     decode, ~100× faster than decode() for indexing workloads."""
