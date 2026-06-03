@@ -60,7 +60,14 @@ _EXTENSIONS = (
     "_rcomp",        # cfitsio ricecomp (vendored) — replaces _rcomp_codec.py
     "_rgbe",         # Radiance HDR (.hdr) image format (vendored, no deps)
     "_hcomp",        # H-compress FITS tile decode (vendored cfitsio source)
-    "_ultrahdr",     # Ultra HDR (ISO 21496 gainmap JPEG) via libultrahdr
+    "_ultrahdr",     # legacy name — kept only for the UltraHdrCodec registry
+                     # entry (see _registry.py); loads a stale build/ artifact
+                     # if present. The active extension is "_uhdr" below.
+    "_uhdr",         # Ultra HDR (ISO 21496 gainmap JPEG) via libultrahdr.
+                     # Must be shadow-loaded here so opencodecs.uhdr's
+                     # `from .codecs._uhdr import ...` finds the cache-copied
+                     # module in sys.modules — a direct import of the NAS .so
+                     # is blocked by macOS Sequoia's dyld signature policy.
     "_isal",         # Intel ISA-L deflate (x86_64-only; fastest deflate)
     "_bmp",          # Cython BMP encoder — replaces the pure-Python encode path
     "_tiff",
