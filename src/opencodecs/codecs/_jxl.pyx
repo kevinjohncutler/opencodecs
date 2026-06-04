@@ -1465,6 +1465,11 @@ cdef class JxlWriter:
         bint _progressive
         object _color_spec  # ColorSpec or None
         float _intensity_target  # nits; 0.0 = leave libjxl default
+        float _min_nits  # nits; 0.0 = leave libjxl default
+        int _relative_to_max_display  # -1=leave default, 0=false, 1=true
+        float _linear_below  # 0.0 = leave libjxl default
+        int _color_transform  # -1=auto, 0=XYB, 1=None(RGB), 2=YCbCr
+        int _modular  # -1=auto, 0=force VarDCT, 1=force modular
         bytes _icc_profile  # ICC profile bytes; if set, used instead of enum
 
         # first-frame validation cache
@@ -1501,6 +1506,11 @@ cdef class JxlWriter:
         self._progressive = False
         self._color_spec = None
         self._intensity_target = 0.0
+        self._min_nits = 0.0
+        self._relative_to_max_display = -1
+        self._linear_below = 0.0
+        self._color_transform = -1
+        self._modular = -1
         self._icc_profile = None
         self._first_dtype = None
         self._first_xsize = 0
@@ -1520,7 +1530,10 @@ cdef class JxlWriter:
                  quality=None, distance=None, effort=5, decoding_speed=0,
                  numthreads=None, animation=False, container=False,
                  intensity_target=None, icc_profile=None,
-                 progressive=False):
+                 progressive=False,
+                 min_nits=None, relative_to_max_display=None,
+                 linear_below=None,
+                 color_transform=None, modular=None):
         from opencodecs.core.color import parse_color, ColorSpec, JXL_TF_GAMMA
 
         # Resolve destination. dest=None means we hold the encoded bytes
@@ -1602,6 +1615,56 @@ cdef class JxlWriter:
             self._intensity_target = float(intensity_target)
             if self._intensity_target < 0.0:
                 raise ValueError('intensity_target must be >= 0')
+
+        if min_nits is None:
+            self._min_nits = 0.0
+        else:
+            self._min_nits = float(min_nits)
+            if self._min_nits < 0.0:
+                raise ValueError('min_nits must be >= 0')
+
+        if relative_to_max_display is None:
+            self._relative_to_max_display = -1
+        else:
+            self._relative_to_max_display = 1 if relative_to_max_display else 0
+
+        if linear_below is None:
+            self._linear_below = 0.0
+        else:
+            self._linear_below = float(linear_below)
+            if self._linear_below < 0.0:
+                raise ValueError('linear_below must be >= 0')
+
+        # color_transform: None=auto, 'xyb'/0=XYB (default), 'none'/'rgb'/1=RGB,
+        # 'ycbcr'/2=YCbCr. RGB preserves chroma fidelity better than the
+        # default XYB for content with sharp color transitions (e.g.
+        # fluorescence microscopy magenta/green) at the cost of file size.
+        if color_transform is None:
+            self._color_transform = -1
+        elif isinstance(color_transform, str):
+            ct = color_transform.lower()
+            if ct == 'xyb':
+                self._color_transform = 0
+            elif ct in ('none', 'rgb'):
+                self._color_transform = 1
+            elif ct == 'ycbcr':
+                self._color_transform = 2
+            else:
+                raise ValueError(
+                    f"color_transform must be 'xyb', 'none'/'rgb', "
+                    f"'ycbcr', or int 0/1/2; got {color_transform!r}")
+        else:
+            self._color_transform = int(color_transform)
+            if self._color_transform not in (0, 1, 2):
+                raise ValueError('color_transform int must be 0, 1, or 2')
+
+        # modular: None=auto, False/0=force VarDCT, True/1=force modular.
+        # Modular is RGB delta-coded; lossless or near-lossless preserves
+        # exact chroma. VarDCT is XYB-based DCT.
+        if modular is None:
+            self._modular = -1
+        else:
+            self._modular = 1 if modular else 0
 
         if icc_profile is None:
             self._icc_profile = None
@@ -1721,6 +1784,20 @@ cdef class JxlWriter:
         if self._intensity_target > 0.0:
             self._basic_info.intensity_target = self._intensity_target
 
+        # Optional HDR signaling fields. Browsers (Chrome `<img>`) and
+        # OS renderers may use these to size the EDR headroom they
+        # engage. relative_to_max_display=true reinterprets
+        # intensity_target as a fraction of display peak instead of an
+        # absolute nit value — useful for "use the full headroom my
+        # display can do" semantics.
+        if self._min_nits > 0.0:
+            self._basic_info.min_nits = self._min_nits
+        if self._relative_to_max_display >= 0:
+            self._basic_info.relative_to_max_display = (
+                JXL_TRUE if self._relative_to_max_display else JXL_FALSE)
+        if self._linear_below > 0.0:
+            self._basic_info.linear_below = self._linear_below
+
         # pixel format
         self._pixel_format.num_channels = <uint32_t> samples
         self._pixel_format.endianness = JXL_NATIVE_ENDIAN
@@ -1835,6 +1912,31 @@ cdef class JxlWriter:
                 _raise_enc(
                     'JxlEncoderFrameSettingsSetOption DECODING_SPEED', status,
                     JxlEncoderGetError(self._encoder))
+
+        # Force color transform / modular mode when requested. Useful for
+        # content where XYB chroma quantization or VarDCT block striping
+        # is visible (fluorescence microscopy with sharp magenta/green
+        # transitions hits both).
+        if self._color_transform >= 0:
+            status = JxlEncoderFrameSettingsSetOption(
+                self._frame_settings,
+                JXL_ENC_FRAME_SETTING_COLOR_TRANSFORM,
+                <int64_t> self._color_transform,
+            )
+            if status != JXL_ENC_SUCCESS:
+                _raise_enc(
+                    'JxlEncoderFrameSettingsSetOption COLOR_TRANSFORM',
+                    status, JxlEncoderGetError(self._encoder))
+        if self._modular >= 0:
+            status = JxlEncoderFrameSettingsSetOption(
+                self._frame_settings,
+                JXL_ENC_FRAME_SETTING_MODULAR,
+                <int64_t> self._modular,
+            )
+            if status != JXL_ENC_SUCCESS:
+                _raise_enc(
+                    'JxlEncoderFrameSettingsSetOption MODULAR',
+                    status, JxlEncoderGetError(self._encoder))
 
         if self._progressive:
             # RESPONSIVE turns on the Squeeze transform for modular
@@ -2145,7 +2247,9 @@ cdef class JxlWriter:
 def encode(arr, *, color=None, lossless=None, quality=None, distance=None,
            effort=5, decoding_speed=0, numthreads=None, animation=False,
            container=False, intensity_target=None, icc_profile=None,
-           progressive=False, dest=None):
+           progressive=False, dest=None,
+           min_nits=None, relative_to_max_display=None, linear_below=None,
+           color_transform=None, modular=None):
     """Encode a single ndarray (or animation stack) to JPEG XL bytes.
 
     For a single still image, pass a 2D / 3D array. For an animation stack
@@ -2178,6 +2282,11 @@ def encode(arr, *, color=None, lossless=None, quality=None, distance=None,
             intensity_target=intensity_target,
             icc_profile=icc_profile,
             progressive=progressive,
+            min_nits=min_nits,
+            relative_to_max_display=relative_to_max_display,
+            linear_below=linear_below,
+            color_transform=color_transform,
+            modular=modular,
         ) as w:
             for i in range(a.shape[0]):
                 w.write_frame(
@@ -2191,7 +2300,13 @@ def encode(arr, *, color=None, lossless=None, quality=None, distance=None,
         distance=distance, effort=effort, decoding_speed=decoding_speed,
         numthreads=numthreads, animation=False, container=container,
         intensity_target=intensity_target,
+        icc_profile=icc_profile,
         progressive=progressive,
+        min_nits=min_nits,
+        relative_to_max_display=relative_to_max_display,
+        linear_below=linear_below,
+        color_transform=color_transform,
+        modular=modular,
     ) as w:
         w.write_frame(a, is_last=True)
         return w.close()
