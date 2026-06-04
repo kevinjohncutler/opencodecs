@@ -10,6 +10,92 @@ Versions follow the same ``YYYY.M.D`` cadence as upstream when we
 publish; the entries below cluster work by date rather than by
 release because most of it has shipped continuously to ``main``.
 
+0.1.13 (2026-06-04)
+-------------------
+
+**UHDR fast path: parallel kernels + Chrome rendering fix**
+
+Four Cython kernels in ``opencodecs.codecs._uhdr`` now dispatch
+pixel chunks across a ``ThreadPoolExecutor`` and call their existing
+``nogil`` kernel implementations in parallel:
+
+* ``compute_gain_map_u8`` — gain-map encode kernel (~12× at 16 threads)
+* ``apply_gainmap_fp32`` — gain-map decode/apply kernel (~9×)
+* ``compute_sdr_base_u8`` — HDR → SDR uint8 conversion (~5×)
+* ``upscale_gainmap`` — new public function, nearest-neighbor upscale
+  for ``gain_scale > 1`` decode paths (~8× faster than ``np.repeat``)
+
+Combined wall-clock for a 2000×2000 fp32 input on a 20-core machine:
+
+* ``encode_native``: 151 ms → 43 ms (3.5× over libuhdr direct,
+  matches JXL HLG end-to-end at ~128 ms when the JXL OETF
+  preprocessing cost is included)
+* ``decode_native``: 87 ms → 29 ms
+* Output: 5.02 MB → 4.24 MB (single-channel gain map; the libuhdr
+  direct encoder emits a multi-channel gain by default)
+
+The load-bearing implementation detail: each worker function is a
+regular ``def`` that opens a ``with nogil:`` block internally before
+calling the ``cdef`` kernel. A ``cpdef ... noexcept nogil`` worker
+holds the GIL on Python entry for argument parsing and yields 0×
+speedup. Fixing that pattern unlocked the entire kernel-parallelism
+win.
+
+**Chrome UHDR compact-metadata-form auto-fix**
+
+libuhdr's gain-map metadata serializer emits a 37-byte "compact"
+form with the ``useCommonDenominator`` flag set whenever all
+per-channel rationals share the same denominator (the common case
+when ``max_content_boost`` is a power of 2 and all other fields are
+0 or 1). The form is ISO 21496-1 spec-legal but Chrome's UHDR
+parser doesn't handle it — files render as plain SDR JPEGs in
+Chrome with no HDR boost.
+
+``encode_native`` now auto-detects when ``log2(max_content_boost)``
+lands on a clean integer (within 1e-9) and nudges the value by 1
+part in 10^7 before passing to libuhdr. libuhdr's float → rational
+continued-fraction converter then produces a non-trivial
+denominator; the common-denominator detection fails; the canonical
+61-byte long form gets emitted — same byte structure as libuhdr's
+own direct ``encode`` output. Numerically invisible; existing
+callers don't need to change anything.
+
+The auto-detect runs in both the auto-mcb path (``max_content_boost
+=None``) and the explicit-mcb path, so any caller that historically
+passed a clean integer (``mcb=8.0``, ``mcb=4.0``) is now
+automatically Chrome-safe.
+
+**``gain_scale`` caveat for sharp + noisy content**
+
+Stride decimation of the gain map (``gain_scale > 1``) can produce
+visible block patches at decode for content with high-spatial-
+frequency variation in dim regions (background noise + sharp
+HDR-bright detail nearby): adjacent decimation chunks pick
+different noise samples for the gain value, and the nearest-
+neighbor upscale at decode time amplifies the discontinuity into
+visible blocks. For natural / photographic content libuhdr's CLI
+default ``gain_scale=4`` remains fine; for content with sharp
+bright detail on noisy backgrounds, ``gain_scale=1`` is required.
+
+**JxlWriter: expose previously-hidden libjxl knobs**
+
+Pass-through plumbing for five fields that the Cython binding wasn't
+forwarding to libjxl's ``JxlEncoderFrameSettingId`` /
+``JxlBasicInfo``:
+
+* ``color_transform`` — ``'xyb'`` (default), ``'none'`` /
+  ``'rgb'``, ``'ycbcr'``, or integer 0/1/2
+* ``modular`` — force VarDCT (``False``) or modular (``True``);
+  default is libjxl's automatic decision
+* ``min_nits`` — black-point luminance hint in the basic info
+* ``relative_to_max_display`` — reinterpret ``intensity_target`` as
+  a fraction of display peak rather than absolute nits
+* ``linear_below`` — signal value below which the encoded transfer
+  is linear
+
+All accept ``None`` to mean "leave libjxl default", so existing
+callers see no behavior change.
+
 0.1.12 (2026-06-02)
 -------------------
 

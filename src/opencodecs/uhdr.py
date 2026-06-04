@@ -435,6 +435,21 @@ def encode_native(hdr, sdr=None, *,
                 f"{tuple(hdr_arr.shape)}")
         mcb = max_content_boost
 
+    # Chrome compatibility nudge: when log2(mcb) lands on a clean integer
+    # (mcb is a power of 2, e.g. 8.0), libuhdr's metadata serializer
+    # detects "all per-channel denominators = 1" and emits its compact
+    # 37-byte form (useCommonDenominator flag set). Chrome's UHDR parser
+    # does NOT handle that compact form — files render as plain SDR.
+    # A 1-part-in-10^7 perturbation pushes log2(mcb) off the integer
+    # boundary, libuhdr's float→rational continued-fraction algorithm
+    # then produces non-trivial denominators, and the canonical 61-byte
+    # long form gets emitted instead. Numerically invisible.
+    import math as _math
+    if mcb > 0:
+        log2mcb = _math.log2(mcb)
+        if abs(log2mcb - round(log2mcb)) < 1e-9:
+            mcb = mcb * (1.0 + 1e-7)
+
     def _maybe_downscale_gain(gain_u8):
         # Stride decimation by an integer factor. Gain maps are heavily
         # band-limited by construction (smooth ratio of low-frequency
@@ -686,9 +701,11 @@ def decode_native(data, *, parallel=True, dtype=None,
     sH, sW = int(sdr_u8.shape[0]), int(sdr_u8.shape[1])
     gH, gW = int(gain_u8.shape[0]), int(gain_u8.shape[1])
     if (gH, gW) != (sH, sW):
-        ys = (np.arange(sH) * gH // sH).astype(np.int64)
-        xs = (np.arange(sW) * gW // sW).astype(np.int64)
-        gain_u8 = gain_u8[ys[:, None], xs[None, :]]
+        # Parallel Cython nearest-neighbor upscale (~3 ms for 500→2000 at
+        # 16 threads). Replaced np.repeat (~14 ms) and fancy-index (~40 ms).
+        # At gain_scale>1 this was the dominant decode cost.
+        from .codecs._uhdr import upscale_gainmap
+        gain_u8 = upscale_gainmap(gain_u8, sH, sW)
 
     hdr_f32 = _cython_apply_gainmap(
         sdr_u8, gain_u8, metadata, display_boost=display_boost,

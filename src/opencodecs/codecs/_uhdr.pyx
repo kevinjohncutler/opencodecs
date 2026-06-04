@@ -469,14 +469,23 @@ cdef void _gain_map_kernel(const float* hdr_lin,   # (N*3,) HDR linear, 1.0=peak
         sdr_lin = _SRGB_EOTF_LUT[sdr_u8[i]]
         sdr_nits = sdr_lin * kSdrWhiteNits
         hdr_nits = hdr_lin[i] * hdr_scale
-        # Branchless divide with clip-handles-overflow.
+        # SDR-zero case: at decode time, hdr_decoded = sdr × pow(gain,...);
+        # if sdr is 0 then hdr_decoded is 0 regardless of gain. So the
+        # gain value at these pixels is mathematically arbitrary —
+        # encoding as max_boost is the historical default but produces
+        # a "flat max-boost" gain map that's visually meaningless and
+        # misleads viewers using the gain map for display adaptation.
+        # Encode as gain=1.0 (no boost) instead — the neutral point in
+        # the ISO 21496-1 log-ratio remap, value ~170/255 on this
+        # remap. Decoded HDR is unchanged (0 × anything = 0).
         if sdr_nits < 1e-12:
-            sdr_nits = 1e-12
-        gain = hdr_nits / sdr_nits
-        if gain < min_boost:
-            gain = min_boost
-        elif gain > max_boost:
-            gain = max_boost
+            gain = 1.0
+        else:
+            gain = hdr_nits / sdr_nits
+            if gain < min_boost:
+                gain = min_boost
+            elif gain > max_boost:
+                gain = max_boost
         # log2f from libc.math — historically used a polynomial
         # approximation here (_fast_log2), but its coefficients had
         # a ~−1.15 RMSE in mid-octave, which encoded the gain map at
@@ -493,13 +502,139 @@ cdef void _gain_map_kernel(const float* hdr_lin,   # (N*3,) HDR linear, 1.0=peak
         gain_out[i] = <uint8_t>(norm * 255.0 + 0.5)
 
 
+cdef void _upscale_gainmap_kernel(const uint8_t* src, uint8_t* dst,
+                                    Py_ssize_t row_start, Py_ssize_t row_end,
+                                    Py_ssize_t sH, Py_ssize_t sW,
+                                    Py_ssize_t gH, Py_ssize_t gW,
+                                    int channels) noexcept nogil:
+    """Integer-factor nearest-neighbor upscale (row-strip parallel chunk).
+
+    Operates on rows [row_start, row_end) of the destination, reading from
+    the smaller source via integer division. For sH/gH = sW/gW = N (the
+    common power-of-2 case), this is a tight memory-copy loop.
+    """
+    cdef Py_ssize_t y, x, c, src_y, src_x
+    cdef Py_ssize_t src_row_stride = gW * channels
+    cdef Py_ssize_t dst_row_stride = sW * channels
+    for y in range(row_start, row_end):
+        src_y = (y * gH) // sH
+        for x in range(sW):
+            src_x = (x * gW) // sW
+            for c in range(channels):
+                dst[y * dst_row_stride + x * channels + c] = \
+                    src[src_y * src_row_stride + src_x * channels + c]
+
+
+def _upscale_chunk(size_t sp_int, size_t dp_int,
+                    Py_ssize_t row_start, Py_ssize_t row_end,
+                    Py_ssize_t sH, Py_ssize_t sW,
+                    Py_ssize_t gH, Py_ssize_t gW, int channels):
+    """ThreadPool worker for parallel nearest-neighbor upscale."""
+    cdef const uint8_t* sp = <const uint8_t*>sp_int
+    cdef uint8_t* dp = <uint8_t*>dp_int
+    with nogil:
+        _upscale_gainmap_kernel(sp, dp, row_start, row_end,
+                                  sH, sW, gH, gW, channels)
+
+
+def upscale_gainmap(gain_u8, target_h, target_w, *, numthreads=None):
+    """Parallel nearest-neighbor upscale of a (gH, gW, C) uint8 raster
+    to (target_h, target_w, C).
+    Used to expand gain maps emitted with ``gain_scale > 1`` back to the
+    base resolution before applying. ~3 ms for 500x500 -> 2000x2000 at
+    16 threads (vs ~14 ms for np.repeat, ~40 ms for fancy-index gather).
+    """
+    cdef cnp.ndarray src_arr = np.ascontiguousarray(gain_u8, dtype=np.uint8)
+    if src_arr.ndim != 3:
+        raise ValueError("gain_u8 must be 3-D")
+    cdef Py_ssize_t gH = src_arr.shape[0]
+    cdef Py_ssize_t gW = src_arr.shape[1]
+    cdef int channels = <int> src_arr.shape[2]
+    cdef Py_ssize_t sH = int(target_h)
+    cdef Py_ssize_t sW = int(target_w)
+    cdef cnp.ndarray[cnp.uint8_t, ndim=3, mode='c'] dst = np.empty(
+        (sH, sW, channels), dtype=np.uint8)
+    cdef const uint8_t* sp = <const uint8_t*>cnp.PyArray_DATA(src_arr)
+    cdef uint8_t* dp = <uint8_t*>cnp.PyArray_DATA(dst)
+
+    if numthreads is None:
+        numthreads = os.cpu_count() or 1
+    if numthreads <= 1 or sH < 64:
+        with nogil:
+            _upscale_gainmap_kernel(sp, dp, 0, sH, sH, sW, gH, gW, channels)
+        return dst
+
+    import concurrent.futures as _cf
+    n_workers = int(numthreads)
+    rows_per = (sH + n_workers - 1) // n_workers
+    ranges = []
+    r = 0
+    while r < sH:
+        ranges.append((r, min(r + rows_per, sH)))
+        r += rows_per
+    sp_int = <size_t>sp
+    dp_int = <size_t>dp
+    def _py_worker(rs):
+        _upscale_chunk(sp_int, dp_int, rs[0], rs[1], sH, sW, gH, gW, channels)
+    with _cf.ThreadPoolExecutor(max_workers=n_workers) as ex:
+        list(ex.map(_py_worker, ranges))
+    return dst
+
+
+def _gain_map_chunk(size_t hp_int, size_t sp_int, size_t gp_int,
+                     Py_ssize_t wstart, Py_ssize_t wlen,
+                     float hdr_scale, float min_b, float max_b,
+                     float log2_min, float log2_max, float gamma_f):
+    """Worker invoked from a ThreadPoolExecutor — operates on a pixel slice.
+
+    The `with nogil:` block is load-bearing: without it the workers
+    serialize on the GIL and threading gives 0× speedup.
+    """
+    cdef const float* hp = <const float*>hp_int
+    cdef const uint8_t* sp = <const uint8_t*>sp_int
+    cdef uint8_t* gp = <uint8_t*>gp_int
+    with nogil:
+        _gain_map_kernel(hp + wstart * 3, sp + wstart * 3, gp + wstart * 3,
+                          wlen, hdr_scale, min_b, max_b,
+                          log2_min, log2_max, gamma_f)
+
+
+def _apply_gainmap_chunk(
+        size_t sp_int, int sdr_ch,
+        size_t gp_int, int gain_ch,
+        size_t op_int,
+        Py_ssize_t wstart, Py_ssize_t wlen,
+        size_t lmin_int, size_t lmax_int, size_t gamma_int,
+        size_t osdr_int, size_t ohdr_int,
+        float display_weight, int multi_channel):
+    """Decode-side analogue of _gain_map_chunk. Same `with nogil:` rule —
+    the ThreadPool gives 0× speedup without it.
+    """
+    cdef const uint8_t* sp = <const uint8_t*>sp_int
+    cdef const uint8_t* gp = <const uint8_t*>gp_int
+    cdef float* op = <float*>op_int
+    cdef const float* lmin = <const float*>lmin_int
+    cdef const float* lmax = <const float*>lmax_int
+    cdef const float* gam = <const float*>gamma_int
+    cdef const float* osdr = <const float*>osdr_int
+    cdef const float* ohdr = <const float*>ohdr_int
+    with nogil:
+        _apply_gainmap_kernel(
+            sp + wstart * sdr_ch, sdr_ch,
+            gp + wstart * gain_ch, gain_ch,
+            op + wstart * 3, wlen,
+            lmin, lmax, gam, osdr, ohdr,
+            display_weight, multi_channel)
+
+
 @cython.boundscheck(False)
 @cython.wraparound(False)
 def compute_gain_map_u8(hdr_lin_p3, sdr_u8, *,
                           sdr_white_nits=1600.0,
                           max_content_boost=None,
                           min_content_boost=1.0,
-                          gamma=1.0):
+                          gamma=1.0,
+                          numthreads=None):
     """Compute the gain map matching libuhdr's multi-channel formula,
     via a fused Cython kernel. Returns ``(gain_u8, metadata_dict)``.
 
@@ -507,6 +642,12 @@ def compute_gain_map_u8(hdr_lin_p3, sdr_u8, *,
     metadata to :func:`encode_assembled` to skip libuhdr's internal
     encoder pipeline. ~5-10x faster than computing the gain map in
     numpy.
+
+    The kernel is the dominant cost of UHDR encode on multi-megapixel
+    HDR content (~120ms of a 150ms total libuhdr encode on a 4Mpix fp32
+    image). Mac clang has no OpenMP, so we dispatch ``numthreads``
+    chunks to a ``ThreadPoolExecutor`` and rely on the kernel's ``nogil``
+    to give real parallelism. Defaults to all cores.
     """
     hdr_arr = np.ascontiguousarray(hdr_lin_p3, dtype=np.float32)
     sdr_arr = np.ascontiguousarray(sdr_u8, dtype=np.uint8)
@@ -524,6 +665,7 @@ def compute_gain_map_u8(hdr_lin_p3, sdr_u8, *,
     cdef Py_ssize_t H = hdr_carr.shape[0]
     cdef Py_ssize_t W = hdr_carr.shape[1]
     cdef Py_ssize_t n_pixels = H * W
+    cdef Py_ssize_t s, length
 
     # Auto-pick max_content_boost from data peak if unset.
     cdef float hdr_scale = <float>float(sdr_white_nits)
@@ -544,11 +686,45 @@ def compute_gain_map_u8(hdr_lin_p3, sdr_u8, *,
     cdef const uint8_t* sdr_ptr = <const uint8_t*>cnp.PyArray_DATA(sdr_carr)
     cdef uint8_t* gain_ptr = <uint8_t*>cnp.PyArray_DATA(gain_out)
 
+    # Init LUT once before threading
     with nogil:
         _init_srgb_eotf_lut()
-        _gain_map_kernel(hdr_ptr, sdr_ptr, gain_ptr, n_pixels,
-                          hdr_scale, min_b, max_b, log2_min, log2_max,
-                          gamma_f)
+
+    if numthreads is None:
+        numthreads = os.cpu_count() or 1
+    if numthreads <= 1 or n_pixels < 32768:
+        # Small enough to skip threading overhead.
+        with nogil:
+            _gain_map_kernel(hdr_ptr, sdr_ptr, gain_ptr, n_pixels,
+                              hdr_scale, min_b, max_b, log2_min, log2_max,
+                              gamma_f)
+    else:
+        # Split pixels across N worker threads. The kernel is nogil so
+        # actual parallel execution. Each chunk gets the same kernel
+        # invocation, pointing at the slice's start.
+        import concurrent.futures as _cf
+        n_workers = int(numthreads)
+        chunk = (n_pixels + n_workers - 1) // n_workers
+        # Pre-bundle (start, len) per worker so each only does C work.
+        ranges = []
+        s = 0
+        while s < n_pixels:
+            length = min(chunk, n_pixels - s)
+            ranges.append((s, length))
+            s += chunk
+        # Pointer addresses as ints so the closure can carry them.
+        h_ptr_int = <size_t>hdr_ptr
+        s_ptr_int = <size_t>sdr_ptr
+        g_ptr_int = <size_t>gain_ptr
+        hs, mb, xb, l2n, l2x, gm = (
+            hdr_scale, min_b, max_b, log2_min, log2_max, gamma_f)
+
+        def _py_worker(start_length):
+            _gain_map_chunk(h_ptr_int, s_ptr_int, g_ptr_int,
+                             start_length[0], start_length[1],
+                             hs, mb, xb, l2n, l2x, gm)
+        with _cf.ThreadPoolExecutor(max_workers=n_workers) as ex:
+            list(ex.map(_py_worker, ranges))
 
     metadata = {
         'max_content_boost': float(max_b),
@@ -563,9 +739,19 @@ def compute_gain_map_u8(hdr_lin_p3, sdr_u8, *,
     return gain_out, metadata
 
 
+def _sdr_chunk(size_t hp_int, size_t sp_int,
+                Py_ssize_t wstart, Py_ssize_t wlen,
+                float inv_peak):
+    """ThreadPool worker for parallel _sdr_from_hdr_kernel."""
+    cdef const float* hp = <const float*>hp_int
+    cdef uint8_t* sp = <uint8_t*>sp_int
+    with nogil:
+        _sdr_from_hdr_kernel(hp + wstart, sp + wstart, wlen, inv_peak)
+
+
 @cython.boundscheck(False)
 @cython.wraparound(False)
-def compute_sdr_base_u8(hdr_lin_p3, peak=None):
+def compute_sdr_base_u8(hdr_lin_p3, peak=None, *, numthreads=None):
     """Peak-normalize a linear-light HDR raster and apply the sRGB OETF →
     uint8 SDR base. Cython-fused: one memory pass via _sdr_from_hdr_kernel.
 
@@ -613,7 +799,33 @@ def compute_sdr_base_u8(hdr_lin_p3, peak=None):
 
     with nogil:
         _init_srgb_oetf_u8_lut()
-        _sdr_from_hdr_kernel(hdr_ptr, sdr_ptr, total, inv_peak)
+
+    if numthreads is None:
+        numthreads = os.cpu_count() or 1
+    if numthreads <= 1 or total < 32768:
+        with nogil:
+            _sdr_from_hdr_kernel(hdr_ptr, sdr_ptr, total, inv_peak)
+        return sdr_out
+
+    import concurrent.futures as _cf
+    n_workers = int(numthreads)
+    chunk = (total + n_workers - 1) // n_workers
+    # Snap chunks to channel boundaries (3 floats per pixel) so we don't
+    # split the per-pixel triplet across workers — shouldn't matter for
+    # this kernel (per-element operation) but cheap correctness.
+    chunk = ((chunk + 2) // 3) * 3
+    ranges = []
+    s2 = 0
+    while s2 < total:
+        ranges.append((s2, min(chunk, total - s2)))
+        s2 += chunk
+    hp_int = <size_t>hdr_ptr
+    sp_int = <size_t>sdr_ptr
+    ip = float(inv_peak)
+    def _py_worker(start_length):
+        _sdr_chunk(hp_int, sp_int, start_length[0], start_length[1], ip)
+    with _cf.ThreadPoolExecutor(max_workers=n_workers) as ex:
+        list(ex.map(_py_worker, ranges))
     return sdr_out
 
 
@@ -692,7 +904,8 @@ cdef void _apply_gainmap_kernel(
 
 @cython.boundscheck(False)
 @cython.wraparound(False)
-def apply_gainmap_fp32(sdr_u8, gain_u8, metadata, *, display_boost=None):
+def apply_gainmap_fp32(sdr_u8, gain_u8, metadata, *, display_boost=None,
+                       numthreads=None):
     """Apply an ISO 21496-1 gain map to a decoded SDR base.
 
     Returns a ``(H, W, 3)`` ``float32`` linear-light HDR raster
@@ -821,11 +1034,53 @@ def apply_gainmap_fp32(sdr_u8, gain_u8, metadata, *, display_boost=None):
 
     with nogil:
         _init_srgb_eotf_lut()
-        _apply_gainmap_kernel(
-            sdr_ptr, sdr_ch, gain_ptr, gain_ch, out_ptr, n_pixels,
-            log2_min, log2_max, g, osdr, ohdr,
-            display_weight, multi_channel,
-        )
+
+    if numthreads is None:
+        numthreads = os.cpu_count() or 1
+    if numthreads <= 1 or n_pixels < 32768:
+        with nogil:
+            _apply_gainmap_kernel(
+                sdr_ptr, sdr_ch, gain_ptr, gain_ch, out_ptr, n_pixels,
+                log2_min, log2_max, g, osdr, ohdr,
+                display_weight, multi_channel,
+            )
+    else:
+        import concurrent.futures as _cf
+        n_workers = int(numthreads)
+        chunk = (n_pixels + n_workers - 1) // n_workers
+        ranges = []
+        ss = 0
+        clen = 0
+        while ss < n_pixels:
+            clen = min(chunk, n_pixels - ss)
+            ranges.append((ss, clen))
+            ss += chunk
+        # Pointer addresses as ints — cdef-local C arrays' addresses are
+        # valid for the duration of this function call (we block on
+        # ex.map below so all workers complete before return).
+        sp_int = <size_t>sdr_ptr
+        gp_int = <size_t>gain_ptr
+        op_int = <size_t>out_ptr
+        lmin_int = <size_t>&log2_min[0]
+        lmax_int = <size_t>&log2_max[0]
+        gamma_int = <size_t>&g[0]
+        osdr_int = <size_t>&osdr[0]
+        ohdr_int = <size_t>&ohdr[0]
+        # Locals captured by the closure (Python objects).
+        _sdr_ch = int(sdr_ch); _gain_ch = int(gain_ch)
+        _dw = float(display_weight); _mc = int(multi_channel)
+
+        def _py_worker(start_length):
+            _apply_gainmap_chunk(
+                sp_int, _sdr_ch,
+                gp_int, _gain_ch,
+                op_int,
+                start_length[0], start_length[1],
+                lmin_int, lmax_int, gamma_int, osdr_int, ohdr_int,
+                _dw, _mc)
+
+        with _cf.ThreadPoolExecutor(max_workers=n_workers) as ex:
+            list(ex.map(_py_worker, ranges))
     return out
 
 
