@@ -78,14 +78,29 @@ cdef extern from 'avif/avif.h' nogil:
     avifResult avifImageRGBToYUV(avifImage* image, const avifRGBImage* rgb)
     avifResult avifImageYUVToRGB(const avifImage* image, avifRGBImage* rgb)
 
+    ctypedef enum avifCodecChoice:
+        AVIF_CODEC_CHOICE_AUTO   = 0
+        AVIF_CODEC_CHOICE_AOM    = 1
+        AVIF_CODEC_CHOICE_DAV1D  = 2
+        AVIF_CODEC_CHOICE_LIBGAV1 = 3
+        AVIF_CODEC_CHOICE_RAV1E  = 4
+        AVIF_CODEC_CHOICE_SVT    = 5
+        AVIF_CODEC_CHOICE_AVM    = 6
+
     ctypedef struct avifEncoder:
+        avifCodecChoice codecChoice
         int maxThreads
         int speed
         int quality
         int qualityAlpha
+        int tileRowsLog2
+        int tileColsLog2
+        int autoTiling
 
     avifEncoder* avifEncoderCreate()
     void avifEncoderDestroy(avifEncoder* encoder)
+    avifResult avifEncoderSetCodecSpecificOption(
+        avifEncoder* encoder, const char* key, const char* value)
     avifResult avifEncoderWrite(
         avifEncoder* encoder, const avifImage* image, avifRWData* output)
 

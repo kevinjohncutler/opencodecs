@@ -190,3 +190,127 @@ def test_avif_color_lossy_round_trip(color):
     # decode parity, not perfect compression fidelity.
     diff = int(np.abs(back.astype(int) - arr.astype(int)).max())
     assert diff < 20, f"color={color}: max abs diff = {diff}"
+
+
+# ---------------------------------------------------------------------------
+# AVIF: tiling, chroma layout, encoder backend, codec-specific options
+# ---------------------------------------------------------------------------
+
+
+def _natural(h=1280, w=1280, c=3, seed=0):
+    """Smooth gradients + block edges + light noise, like a photo."""
+    rng = np.random.default_rng(seed)
+    yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+    base = np.sin(xx / 61.0) * np.cos(yy / 47.0) * 0.5 + 0.5
+    base += 0.25 * (((xx // 128) + (yy // 128)) % 2)
+    img = np.stack(
+        [base * (0.7 + 0.15 * k) + 0.01 * rng.standard_normal((h, w))
+         for k in range(c)], axis=-1)
+    return np.clip(img * 255, 0, 255).astype(np.uint8)
+
+
+def _psnr(a, b):
+    mse = np.mean((a.astype(np.float64) - b.astype(np.float64)) ** 2)
+    return float("inf") if mse == 0 else 10 * np.log10(255.0 ** 2 / mse)
+
+
+@pytest.mark.parametrize("yuv_format", ["420", "422", "444"])
+def test_avif_yuv_format_round_trip(yuv_format):
+    _need("avif")
+    from opencodecs.codecs import _avif
+    img = _natural(256, 256)
+    dec = _avif.decode(_avif.encode(img, level=85, yuv_format=yuv_format))
+    assert dec.shape == img.shape
+    assert _psnr(img, dec) > 30
+
+
+def test_avif_yuv444_preserves_chroma_better_than_420():
+    """4:2:0 halves chroma resolution; on alternating red/blue columns
+    that is catastrophic, and 4:4:4 must be visibly better."""
+    _need("avif")
+    from opencodecs.codecs import _avif
+    img = np.zeros((256, 256, 3), np.uint8)
+    img[:, ::2] = (255, 0, 0)
+    img[:, 1::2] = (0, 0, 255)
+    p420 = _psnr(img, _avif.decode(_avif.encode(img, level=90, yuv_format="420")))
+    p444 = _psnr(img, _avif.decode(_avif.encode(img, level=90, yuv_format="444")))
+    assert p444 > p420 + 10
+
+
+def test_avif_invalid_yuv_format_raises():
+    _need("avif")
+    from opencodecs.codecs import _avif
+    with pytest.raises(Exception, match="yuv_format"):
+        _avif.encode(_natural(64, 64), level=80, yuv_format="411")
+
+
+def test_avif_tiling_round_trips_and_preserves_quality():
+    """Tiled and untiled encodes must decode to materially the same image."""
+    _need("avif")
+    from opencodecs.codecs import _avif
+    img = _natural(1280, 1280)
+    untiled = _avif.decode(
+        _avif.encode(img, level=80, tile_cols_log2=0, tile_rows_log2=0))
+    tiled = _avif.decode(
+        _avif.encode(img, level=80, tile_cols_log2=2, tile_rows_log2=2))
+    assert _psnr(img, tiled) > 30
+    assert abs(_psnr(img, tiled) - _psnr(img, untiled)) < 1.5
+
+
+def test_avif_tiling_default_is_size_dependent():
+    """Auto tiling kicks in at >= 1024 px on the long axis. Both sides of
+    the threshold must encode and decode cleanly."""
+    _need("avif")
+    from opencodecs.codecs import _avif
+    for size in (512, 1280):
+        img = _natural(size, size)
+        dec = _avif.decode(_avif.encode(img, level=80))
+        assert dec.shape == img.shape
+        assert _psnr(img, dec) > 30
+
+
+def test_avif_auto_tiling_round_trip():
+    _need("avif")
+    from opencodecs.codecs import _avif
+    img = _natural(1280, 1280)
+    dec = _avif.decode(_avif.encode(img, level=80, auto_tiling=True))
+    assert _psnr(img, dec) > 30
+
+
+@pytest.mark.parametrize("codec", ["aom", "auto", None])
+def test_avif_codec_choice_round_trip(codec):
+    """'svt' is deliberately excluded: it depends on whether libavif was
+    built with AVIF_CODEC_SVT, which varies by wheel and dev machine."""
+    _need("avif")
+    from opencodecs.codecs import _avif
+    img = _natural(256, 256)
+    dec = _avif.decode(_avif.encode(img, level=80, codec=codec))
+    assert _psnr(img, dec) > 30
+
+
+def test_avif_unknown_codec_raises():
+    _need("avif")
+    from opencodecs.codecs import _avif
+    with pytest.raises(Exception, match="codec"):
+        _avif.encode(_natural(64, 64), level=80, codec="x265")
+
+
+def test_avif_codec_options_pass_through():
+    """Valid libaom option names are accepted; note the toggle is
+    'enable-cdef', not 'cdef'."""
+    _need("avif")
+    from opencodecs.codecs import _avif
+    img = _natural(256, 256)
+    dec = _avif.decode(_avif.encode(
+        img, level=80, codec="aom",
+        codec_options={"enable-cdef": "0", "enable-restoration": "0",
+                       "row-mt": "1"}))
+    assert _psnr(img, dec) > 30
+
+
+def test_avif_unknown_codec_option_raises():
+    _need("avif")
+    from opencodecs.codecs import _avif
+    with pytest.raises(Exception):
+        _avif.encode(_natural(64, 64), level=80, codec="aom",
+                     codec_options={"definitely-not-an-option": "1"})

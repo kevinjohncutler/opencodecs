@@ -10,6 +10,22 @@ Versions follow the same ``YYYY.M.D`` cadence as upstream when we
 publish; the entries below cluster work by date rather than by
 release because most of it has shipped continuously to ``main``.
 
+Unreleased
+----------
+
+**AVIF: tile-parallel encoding, chroma layout, encoder backend**
+
+``_avif.encode`` gains ``tile_cols_log2`` / ``tile_rows_log2`` /
+``auto_tiling``, ``yuv_format``, ``codec`` and ``codec_options``.
+Tiling now defaults to 4x4 once the long axis reaches 1024 px, which
+measured ~2x faster encode for +4.4% bytes at unchanged PSNR on a
+2048x2048 RGB frame. ``bench/build_codec_libs.sh`` builds SVT-AV1 and
+wires it into libavif, so ``codec='svt'`` is selectable, though libaom
+remains the default and the faster one for stills. See
+``docs/avif_backends_and_tiling.md`` for the measurements, the reason
+SVT loses, and the Homebrew link-order wart that makes ``codec='svt'``
+fail with "No codec available" on a dev machine.
+
 0.1.13 (2026-06-04)
 -------------------
 

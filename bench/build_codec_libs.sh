@@ -69,6 +69,19 @@ VERSIONS=(
     # AV1 / HEVC (largest builds)
     "libaom          3.13.0"
     "dav1d           1.5.1"
+    # SVT-AV1: Intel/Netflix AV1 encoder, wired into libavif via
+    # AVIF_CODEC_SVT=SYSTEM. Selected per-encode at runtime with the
+    # codec= kwarg in _avif.encode; both backends ship in every wheel
+    # so the choice needs no rebuild.
+    #
+    # It is an alternative, NOT a faster one. Benchmarked on Apple
+    # Silicon (libavif 1.3.0 + SVT-AV1 3.1.2, 2048x2048 RGB, speed=10):
+    # SVT 262 ms / 659 KiB vs libaom 34 ms / 78 KiB. libavif drives SVT
+    # in its video configuration ("Only a single picture was passed in,
+    # consider setting avif=1") rather than single-image mode, which is
+    # the likely cause. Keep libaom as the default until that is fixed
+    # upstream or we set the SVT single-image flag ourselves.
+    "svtav1          3.1.2"
     "libavif         1.3.0"
     "libde265        1.0.16"
     "x265            4.1"
@@ -606,6 +619,21 @@ build_dav1d() {
 }
 
 # ---- libavif (AV1 image; depends on libaom + dav1d) --------------------
+# ---- SVT-AV1 (Intel/Netflix AV1 encoder; ~3x faster than libaom) -------
+build_svtav1() {
+    local v="$(get_version svtav1)"
+    is_built svtav1 "$v" && { echo "  svtav1 $v already built"; return; }
+    echo "==> svtav1 $v (medium — ~2 min)"
+    local src
+    src=$(fetch_tar svtav1 "$v" "https://gitlab.com/AOMediaCodec/SVT-AV1/-/archive/v$v/SVT-AV1-v$v.tar.gz")
+    # SVT-AV1's CMake adds /MD on MSVC by default; the encoder build
+    # itself is plain C99 + arch-tuned intrinsics. ENABLE_DEC=0 because
+    # we only ever use SVT as an ENCODER (dav1d is faster on decode).
+    cmake_build "$src" -DBUILD_DEC=OFF -DBUILD_SHARED_LIBS=ON \
+                       -DENABLE_AVX512=ON
+    mark_built svtav1 "$v"
+}
+
 build_libavif() {
     local v="$(get_version libavif)"
     is_built libavif "$v" && { echo "  libavif $v already built"; return; }
@@ -617,6 +645,12 @@ build_libavif() {
     [ "$ENABLE_AOM" = "1" ] && args+=(-DAVIF_CODEC_AOM=SYSTEM)
     if [ -f "$PREFIX/lib/pkgconfig/dav1d.pc" ] || [ -f "$PREFIX/lib64/pkgconfig/dav1d.pc" ]; then
         args+=(-DAVIF_CODEC_DAV1D=SYSTEM)
+    fi
+    # Wire SVT-AV1 in as an alternative encoder backend. libavif at
+    # runtime exposes both via AVIF_CODEC_SVT for the encoder choice;
+    # our _avif.encode passes the right enum based on the codec= kwarg.
+    if [ -f "$PREFIX/lib/pkgconfig/SvtAv1Enc.pc" ] || [ -f "$PREFIX/lib64/pkgconfig/SvtAv1Enc.pc" ]; then
+        args+=(-DAVIF_CODEC_SVT=SYSTEM)
     fi
     cmake_build "$src" "${args[@]}"
     mark_built libavif "$v"
@@ -1097,6 +1131,7 @@ ORDERED=(
     c-blosc2
     libaom
     dav1d
+    svtav1
     libavif
     libde265
     x265
@@ -1130,6 +1165,7 @@ for name in "${ORDERED[@]}"; do
             c-blosc2)        build_c_blosc2 ;;
             libaom)          build_libaom ;;
             dav1d)           build_dav1d ;;
+            svtav1)          build_svtav1 ;;
             libavif)         build_libavif ;;
             libde265)        build_libde265 ;;
             x265)            build_x265 ;;

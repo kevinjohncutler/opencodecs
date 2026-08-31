@@ -36,3 +36,10 @@ __pycache__/
 
 # Bench output
 bench_data/
+
+# Local benchmark scratch that reads private datasets off the NAS.
+# These reference absolute lab-data paths and a private sibling package,
+# so they must never land in this public repo. The reusable conclusions
+# live in docs/avif_backends_and_tiling.md instead.
+bench/avif_speedup/
+bench/jxl_gainmap_experiment/
