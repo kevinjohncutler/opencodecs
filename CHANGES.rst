@@ -26,6 +26,20 @@ remains the default and the faster one for stills. See
 SVT loses, and the Homebrew link-order wart that makes ``codec='svt'``
 fail with "No codec available" on a dev machine.
 
+**Fix: _plio bypassed the shadow-copy loader and hung the test suite**
+
+``_plio`` was missing from ``_EXTENSIONS`` in
+``opencodecs/codecs/__init__.py``, so it was imported straight off the
+network mount instead of the local cache copy. On macOS that parks
+inside dyld indefinitely with no error:
+``tests/test_fits.py::test_compressed_fits_plio_1_roundtrip`` hung
+forever rather than failing. Listing it takes ``tests/test_fits.py``
+from a hang to 31 passed in 3 s. Also dropped the stale ``_ultrahdr``
+entry left over from the ``_uhdr`` rename. New
+``tests/test_codec_registry.py`` asserts that ``_EXTENSIONS`` and the
+set of ``.pyx`` sources agree in both directions, so the next
+occurrence is a failing test rather than a hang.
+
 0.1.13 (2026-06-04)
 -------------------
 

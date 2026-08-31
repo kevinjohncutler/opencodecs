@@ -60,9 +60,11 @@ _EXTENSIONS = (
     "_rcomp",        # cfitsio ricecomp (vendored) — replaces _rcomp_codec.py
     "_rgbe",         # Radiance HDR (.hdr) image format (vendored, no deps)
     "_hcomp",        # H-compress FITS tile decode (vendored cfitsio source)
-    "_ultrahdr",     # legacy name — kept only for the UltraHdrCodec registry
-                     # entry (see _registry.py); loads a stale build/ artifact
-                     # if present. The active extension is "_uhdr" below.
+    "_plio",         # PLIO_1 FITS tile decode (vendored cfitsio pliocomp.c).
+                     # Was missing here, so it dlopen'd straight off the NAS
+                     # and wedged tests/test_fits.py's PLIO round-trip inside
+                     # dyld. Every compiled ext must be listed; see the
+                     # consistency check in tests/test_codec_registry.py.
     "_uhdr",         # Ultra HDR (ISO 21496 gainmap JPEG) via libultrahdr.
                      # Must be shadow-loaded here so opencodecs.uhdr's
                      # `from .codecs._uhdr import ...` finds the cache-copied
