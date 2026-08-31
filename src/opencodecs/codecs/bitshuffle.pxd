@@ -1,6 +1,11 @@
 # cython: language_level = 3
 """Cython header for the vendored bitshuffle C library."""
 
+# These declarations transcribe upstream 'bitshuffle_core.h' and therefore overlap
+# substantially with imagecodecs/bitshuffle.pxd (BSD-3-Clause, Copyright (c)
+# 2008-2026 Christoph Gohlke), which transcribes the same header.
+# Credited here out of caution; see THIRD-PARTY.md.
+
 from libc.stdint cimport int64_t
 
 

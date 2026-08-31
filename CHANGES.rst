@@ -40,6 +40,34 @@ entry left over from the ``_uhdr`` rename. New
 set of ``.pyx`` sources agree in both directions, so the next
 occurrence is a failing test rather than a hang.
 
+**Licensing: restore attribution for imagecodecs-derived files (#1)**
+
+Christoph Gohlke reported (#1) that Cython sources derived from
+``imagecodecs`` carried no copyright notice, in breach of clause 1 of
+its BSD-3-Clause license. Audited the tree against imagecodecs
+2026.6.6 and corrected it:
+
+* ``codecs/libjxl.pxd`` and ``codecs/libultrahdr.pxd`` were taken from
+  imagecodecs (the latter byte for byte, the former with one added
+  declaration). Both now carry the full BSD-3-Clause notice and a
+  statement of what was changed.
+* Fourteen further ``.pxd`` files declare the same upstream C APIs that
+  imagecodecs also declares and overlap with its counterparts as a
+  result. Each now credits the corresponding imagecodecs file.
+* Added a root ``LICENSE``. ``pyproject.toml`` declared BSD-3-Clause
+  and ``MANIFEST.in`` referenced a ``LICENSE`` that did not exist, so
+  no license text was shipped in the sdist or the wheels at all.
+* Added ``THIRD-PARTY.md``: full inventory of vendored source, the
+  imagecodecs-derived declarations, and the codec libraries bundled
+  into the binary wheels. Wired both files plus every
+  ``3rdparty/*/LICENSE`` into ``license-files`` (PEP 639, so the build
+  now needs setuptools >= 77) and ``MANIFEST.in``.
+
+The ``.pyx`` implementations, the pure-Python package and the test
+suite were checked and are not derived: the longest shared run of
+non-comment lines between any ``.pyx`` file and its imagecodecs
+namesake is six lines of ``opj_*`` call boilerplate in ``_jpeg2k.pyx``.
+
 0.1.13 (2026-06-04)
 -------------------
 

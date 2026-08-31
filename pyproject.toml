@@ -1,5 +1,8 @@
 [build-system]
-requires = ["setuptools>=64", "wheel", "Cython>=3.0", "numpy>=1.25"]
+# setuptools >= 77 for PEP 639 (`license` as an SPDX string plus
+# `license-files`), which is how LICENSE and THIRD-PARTY.md get into
+# the wheel metadata.
+requires = ["setuptools>=77", "wheel", "Cython>=3.0", "numpy>=1.25"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -8,7 +11,11 @@ version = "0.1.13"
 description = "Streaming, network-aware image codecs for scientific imaging (prototype: JPEG XL)"
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "BSD-3-Clause" }
+license = "BSD-3-Clause"
+# Ship the project license and the third-party inventory in both the
+# sdist and the wheel. THIRD-PARTY.md matters for the wheel in
+# particular: the bundled codec libraries carry their own terms.
+license-files = ["LICENSE", "THIRD-PARTY.md", "3rdparty/*/LICENSE", "3rdparty/*/License.txt"]
 authors = [{ name = "Kevin Cutler" }]
 dependencies = ["numpy>=1.25", "platformdirs>=4"]
 

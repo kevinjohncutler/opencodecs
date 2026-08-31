@@ -485,5 +485,10 @@ Deferred work (see [`docs/TODO_DEFERRED.md`](docs/TODO_DEFERRED.md)):
 
 ## License
 
-BSD-3-Clause. Vendored components retain their original licenses (see
-3rdparty/).
+BSD-3-Clause; see [LICENSE](LICENSE).
+
+Vendored source, the Cython declaration files derived from
+[imagecodecs](https://github.com/cgohlke/imagecodecs) (BSD-3-Clause,
+Copyright (c) 2008-2026 Christoph Gohlke), and the codec libraries
+bundled into the binary wheels each retain their own license. The full
+inventory is in [THIRD-PARTY.md](THIRD-PARTY.md).

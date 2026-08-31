@@ -16,6 +16,8 @@ include setup.py
 include README.md
 include CHANGES.rst
 include LICENSE
+include THIRD-PARTY.md
+recursive-include 3rdparty LICENSE License.txt
 
 # Don't ship macOS AppleDouble sidecars or test data.
 global-exclude ._*

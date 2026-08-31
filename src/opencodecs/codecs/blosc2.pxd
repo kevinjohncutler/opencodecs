@@ -1,5 +1,10 @@
 # Minimal Cython declarations for c-blosc2.
 
+# These declarations transcribe upstream 'blosc2.h' and therefore overlap
+# substantially with imagecodecs/blosc2.pxd (BSD-3-Clause, Copyright (c)
+# 2008-2026 Christoph Gohlke), which transcribes the same header.
+# Credited here out of caution; see THIRD-PARTY.md.
+
 from libc.stdint cimport int32_t
 
 cdef extern from 'blosc2.h' nogil:
