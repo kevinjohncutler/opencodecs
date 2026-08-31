@@ -272,12 +272,16 @@ def _bench_parallel_batch(n_files: int, h: int, w: int, dest_dir: Path,
 def _default_paths() -> tuple[Path, Path]:
     """Return (local_dir, nas_dir) appropriate for this OS."""
     home = Path.home()
-    if sys.platform == "darwin":
-        return Path("/tmp/opencodecs_bench"), Path("</NAS>/imagecodecs/opencodecs/bench_data")
-    if sys.platform.startswith("linux"):
-        return Path("/tmp/opencodecs_bench"), home / "HiprDrive/imagecodecs/opencodecs/bench_data"
+    # The "nas" leg measures decode straight off a network mount. Point
+    # OPENCODECS_BENCH_NAS_DIR at one; without it the benchmark runs
+    # entirely on local disk and the two legs simply measure the same
+    # storage. No site-specific mount points are hardcoded here.
+    env_nas = os.environ.get("OPENCODECS_BENCH_NAS_DIR", "").strip()
     if sys.platform == "win32":
-        return home / "AppData/Local/Temp/opencodecs_bench", Path("Z:/imagecodecs/opencodecs/bench_data")
+        local = home / "AppData/Local/Temp/opencodecs_bench"
+    else:
+        local = Path("/tmp/opencodecs_bench")
+    return local, (Path(env_nas) if env_nas else local)
     return Path("/tmp/opencodecs_bench"), home / "bench_data"
 
 

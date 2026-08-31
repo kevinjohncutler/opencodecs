@@ -3,7 +3,7 @@
   "git_rev": "261a5be",
   "tier": "fast",
   "system": {
-    "hostname": "the linux x86_64 host",
+    "label": "linux",
     "platform": "Linux-6.14.0-37-generic-x86_64-with-glibc2.41",
     "machine": "x86_64",
     "processor": "x86_64",

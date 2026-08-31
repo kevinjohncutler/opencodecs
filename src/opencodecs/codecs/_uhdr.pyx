@@ -283,7 +283,7 @@ import cython
 # ---------------------------------------------------------------------------
 #
 # Replaces libuhdr's internal pipeline with a tight Cython loop so callers
-# (notably a downstream imaging pipeline's make_rgb tilescan) get a 3-4x wall-clock win on a 2k²
+# (notably tile-scan RGB compositing) get a 3-4x wall-clock win on a 2k²
 # float HDR encode. Key wins over numpy / libuhdr-internal:
 #   - sRGB EOTF via a 256-entry LUT (no per-element pow(2.4))
 #   - sRGB OETF via a 4097-bin LUT (auto-vectorisable gather on NEON/AVX2)
@@ -1449,7 +1449,7 @@ def encode(hdr,
         Brightness in nits that the caller's input ``1.0`` represents.
         libuhdr's internal convention is ``1.0 == 203 nits``
         (BT.2100 reference SDR-white); pipelines that use a different
-        scale (a downstream imaging pipeline uses ``1.0 == 1600 nits`` = Apple XDR HDR peak)
+        scale (e.g. ``1.0 == 1600 nits`` = Apple XDR HDR peak)
         must set this so the encoder sees the correct HDR headroom.
         Encoding silently rescales the input by
         ``sdr_white_nits / 203`` before handing it off to libuhdr.
@@ -1489,7 +1489,7 @@ def encode(hdr,
     # Rescale to libuhdr's "1.0 == 203 nits" convention before
     # casting to fp16. This is the single most impactful knob:
     # without it, content authored to a larger SDR-white reference
-    # (e.g. a downstream imaging pipeline's 1.0 == 1600 nits) collapses into libuhdr's
+    # (e.g. 1.0 == 1600 nits) collapses into libuhdr's
     # SDR range and the gain map encodes "no HDR headroom in use"
     # -- on display you get an SDR-looking image even on HDR
     # monitors. Default 203 means no rescale (matches libuhdr's

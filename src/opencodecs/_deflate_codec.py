@@ -17,7 +17,7 @@ _zlib_encode, _zlib_decode, _zlib_check_signature, _HAVE_BACKEND = import_or_stu
 )
 
 # Optional ISA-L backend — x86_64-only. Measured against libdeflate on
-# 1 MB natural-image bytes (Kodak photo, AMD the linux x86_64 host):
+# 1 MB natural-image bytes (Kodak photo, AMD Threadripper-class x86_64):
 #
 #   encode: 4.10x FASTER  (ISA-L 3.55 ms vs libdeflate 14.56 ms)
 #   decode: 0.83x slower  (ISA-L 2.98 ms vs libdeflate 2.48 ms)

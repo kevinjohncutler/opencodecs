@@ -3,7 +3,7 @@
   "git_rev": "unknown",
   "tier": "fast",
   "system": {
-    "hostname": "WIN11-LTSC",
+    "label": "windows",
     "platform": "Windows-10-10.0.26100-SP0",
     "machine": "AMD64",
     "processor": "AMD64 Family 23 Model 49 Stepping 0, AuthenticAMD",

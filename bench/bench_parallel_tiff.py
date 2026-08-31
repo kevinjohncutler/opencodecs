@@ -79,9 +79,13 @@ def main() -> None:
     os.close(fd)
     make_tiled_tiff(local_path, arr, tile=256)
 
-    # NAS path (HiprDrive). Copy the local file there.
-    nas_dir = Path("</NAS>/_oc_bench_tmp")
-    nas_dir.mkdir(exist_ok=True)
+    # Network-mount leg. Set OPENCODECS_BENCH_NAS_DIR to a directory on
+    # a network share to measure the cold-mount path; without it this
+    # falls back to a local temp dir and the leg measures local disk.
+    # No site-specific mount points are hardcoded here.
+    nas_dir = Path(os.environ.get("OPENCODECS_BENCH_NAS_DIR")
+                   or tempfile.mkdtemp(prefix="oc_bench_"))
+    nas_dir.mkdir(parents=True, exist_ok=True)
     nas_path = str(nas_dir / "bench.tif")
     shutil.copyfile(local_path, nas_path)
 

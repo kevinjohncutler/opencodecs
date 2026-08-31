@@ -889,7 +889,7 @@ build_SPERR() {
             # Match the indented line: `    set_property(TARGET SPERR
             # PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)`. Earlier
             # exact-match sed missed the 4-space indent. Use a lenient
-            # any-content pattern; verified on the Windows VM (MSVC 14.44 — same
+            # any-content pattern; verified on a Windows VM (MSVC 14.44 — same
             # version as CI): after patch, no IPO line remains and
             # ninja produces both SPERR.dll + SPERR.lib cleanly.
             sed -i \
@@ -954,7 +954,7 @@ build_brunsli() {
     # have zero exports (the headers don't use __declspec(dllexport))
     # and no .lib materializes, leaving every downstream consumer
     # unable to link. No-op on Linux/macOS (Unix ELF/Mach-O export
-    # all symbols by default). Locally validated on the Windows host
+    # all symbols by default). Locally validated on a Windows host
     # (MSVC 14.41, Ninja, vcvars-sourced): produces brunsli{dec,enc}-c.lib
     # in artifacts/ alongside the .dlls.
     #
@@ -962,7 +962,7 @@ build_brunsli() {
     # link.exe crashes with STATUS_ACCESS_VIOLATION (exit code
     # 3221225477) when combining /LTCG with /DEF (from
     # WINDOWS_EXPORT_ALL_SYMBOLS) on brunsli's SHARED target. Local
-    # the Windows host builds with MSVC 14.41 succeed because we didn't
+    # local builds with MSVC 14.41 succeed because we didn't
     # enable LTO there; the failure is specific to the LTO+def+SHARED
     # combination in the newer MSVC's link. Override the script's
     # global USE_LTO=1 default for this one target.

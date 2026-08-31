@@ -1,4 +1,4 @@
-# opencodecs bench — the linux x86_64 host (x86_64)
+# opencodecs bench — linux (x86_64)
 
 - Run at: `20260511T085600Z`
 - opencodecs: `0.2.0.dev0` (git: `dbbcb2e`)

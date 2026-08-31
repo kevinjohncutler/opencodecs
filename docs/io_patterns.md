@@ -64,7 +64,7 @@ Pipeline benchmark (8 CZIs back-to-back from NAS, 795 MB total):
 The 4% gap to aicspylibczi at this point is noise. Both readers are
 bottlenecked on the NAS link at ~4 GB/s.
 
-Linux x86_64 (Threadripper, 64 cores) on a single 195 MB CZI shows the
+Linux x86_64 (Threadripper-class, 64 cores) on a single 195 MB CZI shows the
 parallel-decode advantage scaling out:
 
 | Reader          |   Time |

@@ -7,7 +7,7 @@ Three tiers selected via --fast / --medium / --slow:
   --medium ~30 min. Realistic small-lab sizes (1-2 GB synthetic).
            Run before releases.
   --slow   1+ hour. Large-file workloads (10-50 GB). Run on the
-           the linux x86_64 host or any beefy machine when investigating
+           $OPENCODECS_BENCH_HOST or any beefy machine when investigating
            perf claims.
 
 Noise robustness:
@@ -20,7 +20,7 @@ Noise robustness:
     median when n >= 5 (Hampel filter).
 
 Output:
-  bench/results/<hostname>_<arch>/
+  bench/results/<label>_<arch>/
       <timestamp>.json     full run, machine-readable
       history.jsonl        append-only one-line-per-bench history
       latest.md            most recent run's summary table
@@ -47,7 +47,6 @@ import json
 import os
 import platform
 import shutil
-import socket
 import statistics
 import struct
 import subprocess
@@ -1335,7 +1334,7 @@ def bench_ndtiff_write_1gb():
 
 @workload("ndtiff_write_10gb", tier="slow", group="ndtiff")
 def bench_ndtiff_write_10gb():
-    """Write 800 frames × 1024×4000 u16 ≈ 6.5 GB. For the linux x86_64 host/SSD."""
+    """Write 800 frames × 1024×4000 u16 ≈ 6.5 GB. For a large-core host + SSD."""
     from opencodecs._ndtiff_writer import NDTiffWriter
 
     H, W, N = 1024, 4000, 800
@@ -1364,9 +1363,25 @@ def bench_ndtiff_write_10gb():
 # ---------------------------------------------------------------------------
 
 
+def _bench_label() -> str:
+    """Stable, non-identifying name for the machine class of this run.
+
+    Deliberately NOT socket.gethostname(): the label is committed into
+    bench/results/<label>_<arch>/ and into every result JSON, and this
+    is a public repository, so a real hostname would be published on
+    every bench run. Set OPENCODECS_BENCH_LABEL to distinguish several
+    machines of the same class; otherwise the OS name is enough.
+    """
+    override = os.environ.get("OPENCODECS_BENCH_LABEL", "").strip()
+    if override:
+        return override
+    return {"Darwin": "macos", "Linux": "linux", "Windows": "windows"}.get(
+        platform.system(), platform.system().lower() or "unknown")
+
+
 def _system_info() -> dict:
     info = {
-        "hostname": socket.gethostname(),
+        "label": _bench_label(),
         "platform": platform.platform(),
         "machine": platform.machine(),
         "processor": platform.processor() or "(unknown)",
@@ -1426,9 +1441,9 @@ def _system_info() -> dict:
 # ---------------------------------------------------------------------------
 
 
-def _results_dir(host: str, machine: str) -> Path:
+def _results_dir(label: str, machine: str) -> Path:
     base = Path(__file__).parent / "results"
-    d = base / f"{host}_{machine}"
+    d = base / f"{label}_{machine}"
     d.mkdir(parents=True, exist_ok=True)
     return d
 
@@ -1436,7 +1451,7 @@ def _results_dir(host: str, machine: str) -> Path:
 def _format_markdown(results: dict, sysinfo: dict) -> str:
     """Build a Markdown summary for this run."""
     lines = []
-    lines.append(f"# opencodecs bench — {sysinfo['hostname']} ({sysinfo['machine']})")
+    lines.append(f"# opencodecs bench — {sysinfo['label']} ({sysinfo['machine']})")
     lines.append("")
     lines.append(f"- Run at: `{results['timestamp']}`")
     lines.append(f"- opencodecs: `{sysinfo.get('opencodecs_version', '?')}` "
@@ -1624,9 +1639,9 @@ def main():
         tiers = {"fast"}
 
     sysinfo = _system_info()
-    host_dir = _results_dir(sysinfo["hostname"], sysinfo["machine"])
+    host_dir = _results_dir(sysinfo["label"], sysinfo["machine"])
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    print(f"opencodecs bench — host={sysinfo['hostname']} "
+    print(f"opencodecs bench — label={sysinfo['label']} "
           f"machine={sysinfo['machine']} tiers={sorted(tiers)}")
     print(f"opencodecs={sysinfo.get('opencodecs_version','?')} "
           f"git={sysinfo.get('git_rev','?')}")

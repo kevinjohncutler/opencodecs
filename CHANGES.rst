@@ -619,8 +619,8 @@ streaming write-out without changing their code.
   new candidate paths on Linux (``~/.cache/opencodecs/mozjpeg``),
   Windows (``$CONDA_PREFIX/Library/mozjpeg``), and the Windows
   fallback (no ``nm``: trust the keg-style directory name).
-* Locally validated on the Windows VM (MSVC 14.44 — same as CI) and
-  the Linux x86_64 host (Linux x86_64): ``bash bench/build_codec_libs.sh
+* Locally validated on a Windows VM (MSVC 14.44 — same as CI) and
+  a Linux x86_64 host: ``bash bench/build_codec_libs.sh
   --only=mozjpeg`` followed by ``setup.py build_ext --inplace``
   produces ``_mozjpeg.{pyd,so}`` cleanly. Per the new lesson in
   CLAUDE.md, this iteration was validated end-to-end through the

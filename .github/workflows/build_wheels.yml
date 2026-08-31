@@ -191,7 +191,7 @@ jobs:
           # 3. Print env diagnostics so the next failure (if any) shows
           #    exactly which mechanism is still injecting the bad flags.
           #
-          # Locally validated on the Windows host with the full ocbuild
+          # Locally validated on a Windows host with the full ocbuild
           # conda env: brunsli builds clean under the system cmake path.
           export PATH="/c/Program Files/CMake/bin:$PATH"
           unset LDFLAGS CFLAGS CXXFLAGS CPPFLAGS
