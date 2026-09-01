@@ -40,6 +40,35 @@ entry left over from the ``_uhdr`` rename. New
 set of ``.pyx`` sources agree in both directions, so the next
 occurrence is a failing test rather than a hang.
 
+**Security: vendored cfitsio was missing two upstream bounds checks**
+
+Auditing what remained of imagecodecs-derived code turned up a broader
+problem: the vendored ``3rdparty/cfitsio/`` sources predate fixes that
+upstream has since shipped.
+
+* ``pliocomp.c`` had no bounds checking at all. cfitsio added a
+  ``srclen`` argument to ``pl_l2pi`` plus two range checks on 2026-07-21
+  ("Added checks for group key overflow and for plio compression"). Our
+  copy predated it, so a crafted or truncated PLIO line list read past
+  the payload. Against the pre-fix decoder a 4000-case fuzz corpus
+  killed the interpreter with SIGBUS; with the upstream file and the
+  length passed through, all 4000 are handled cleanly. Reachable from
+  any FITS file, since ``_fits_compressed.py`` hands heap bytes straight
+  to the decoder.
+* ``ricecomp.c`` was missing the guard upstream added on 2025-03-03
+  ("Added a buffer size check to fits_rdecomp"). The first pixel of a
+  Rice stream is stored unencoded, so a payload shorter than one pixel
+  was read past. Applied to all three decoders, not just the 4-byte one
+  upstream guards. Not reachable through ``rcomp_decode``, whose framing
+  header rejects short blobs first, but ``decode_raw`` is public.
+
+``fits_hcompress.c`` is byte-identical to upstream 4.7.0 and
+``fits_hdecompress.c`` differs only in comments, so those needed nothing.
+
+The lesson is recorded in THIRD-PARTY.md: a vendored copy is a snapshot,
+and pinning to someone else's fork of upstream can mean inheriting their
+snapshot date rather than upstream's current state.
+
 **EER decoder is now ours, and 1.7x faster**
 
 Replaces the vendored excerpt of imagecodecs' ``imcd.c`` with an

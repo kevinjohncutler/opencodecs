@@ -227,3 +227,59 @@ def test_compressed_fits_plio_1_roundtrip(tmp_path):
     theirs = astropy_fits.open(p)[1].data
     np.testing.assert_array_equal(ours, theirs)
     np.testing.assert_array_equal(ours, img)
+
+
+def test_plio_rejects_malformed_payloads_without_crashing():
+    """PLIO line lists must be bounds-checked against the payload length.
+
+    cfitsio before 4.7.0 decoded PLIO without validating that a line-list
+    opcode stays inside the source buffer, so a crafted or truncated
+    payload walks off the end. Upstream added the ``srclen`` argument and
+    the two range checks in ``pl_l2pi`` on 2026-07-21 ("Added checks for
+    group key overflow and for plio compression"); we vendored the fix
+    and pass the length through.
+
+    Against the pre-fix decoder this corpus killed the interpreter with
+    SIGBUS, so a plain "it returned" assertion is a real regression
+    guard. Reachable from any FITS file: _fits_compressed.py hands heap
+    bytes straight to the decoder.
+    """
+    plio = pytest.importorskip("opencodecs.codecs._plio")
+    rng = np.random.default_rng(0)
+    decoded = rejected = 0
+    for _ in range(500):
+        n = int(rng.integers(1, 40))
+        payload = rng.integers(0, 65536, n, dtype=np.uint16).astype(">u2").tobytes()
+        try:
+            plio.decode_raw(payload, nelements=int(rng.integers(1, 4000)))
+            decoded += 1
+        except plio.PlioError:
+            rejected += 1
+    assert decoded + rejected == 500
+    assert rejected > 0, "expected some malformed payloads to be rejected"
+
+
+@pytest.mark.parametrize("dtype,bytes_per_pixel", [(np.int32, 4), (np.int16, 2),
+                                                   (np.int8, 1)])
+def test_rice_decode_rejects_truncated_payload(dtype, bytes_per_pixel):
+    """The first pixel of a Rice stream is stored unencoded, so a payload
+    shorter than one pixel must be rejected rather than read past.
+
+    Upstream cfitsio added the 4-byte form of this guard to fits_rdecomp
+    on 2025-03-03 ("Added a buffer size check to fits_rdecomp"); our
+    vendored copy predated it. The short and byte decoders read 2 and 1
+    bytes the same way, so they are guarded too.
+
+    Not reachable through opencodecs.rcomp_decode, whose 12-byte framing
+    header rejects short blobs first, but decode_raw is public and the
+    FITS tile path calls into the same C.
+    """
+    rcomp = pytest.importorskip("opencodecs.codecs._rcomp")
+    arr = np.arange(64, dtype=dtype)
+    blob = rcomp.encode(arr)
+    assert np.array_equal(rcomp.decode(blob).astype(dtype), arr)
+    payload = blob[12:]
+    for clen in range(bytes_per_pixel):
+        with pytest.raises(rcomp.RcompError):
+            rcomp.decode_raw(payload[:clen], nelements=64, blocksize=32,
+                             bytes_per_pixel=bytes_per_pixel)

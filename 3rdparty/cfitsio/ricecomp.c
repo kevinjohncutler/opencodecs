@@ -959,6 +959,13 @@ rdecomp_int(
     /* first 4 bytes of input buffer contain the value of the first */
     /* 4 byte integer value, without any encoding */
 
+    /* The first pixel is stored unencoded, so the input must hold
+       at least 4 bytes. Without this a truncated tile reads
+       past the buffer; upstream cfitsio added the 4-byte form of
+       this check to fits_rdecomp on 2025-03-03. */
+    if (clen < 4) {
+        return RCOMP_ERROR_EOB;
+    }
     lastpix = 0;
     bytevalue = c[0];
     lastpix = lastpix | (bytevalue << 24);
@@ -1131,6 +1138,13 @@ rdecomp_short(
     /* first 2 bytes of input buffer contain the value of the first */
     /* 2 byte integer value, without any encoding */
 
+    /* The first pixel is stored unencoded, so the input must hold
+       at least 2 bytes. Without this a truncated tile reads
+       past the buffer; upstream cfitsio added the 4-byte form of
+       this check to fits_rdecomp on 2025-03-03. */
+    if (clen < 2) {
+        return RCOMP_ERROR_EOB;
+    }
     lastpix = 0;
     bytevalue = c[0];
     lastpix = lastpix | (bytevalue << 8);
@@ -1300,6 +1314,13 @@ rdecomp_byte(
     /* first byte of input buffer contain the value of the first */
     /* byte integer value, without any encoding */
 
+    /* The first pixel is stored unencoded, so the input must hold at
+       least 1 byte. Without this a truncated tile reads past the
+       buffer; upstream cfitsio added the 4-byte form of this check
+       to fits_rdecomp on 2025-03-03. */
+    if (clen < 1) {
+        return RCOMP_ERROR_EOB;
+    }
     lastpix = c[0];
     c += 1;
     cend = c + clen - 1;

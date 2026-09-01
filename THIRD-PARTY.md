@@ -17,6 +17,17 @@ alongside the source.
 | bcdec | `3rdparty/bcdec/` | Sergii Kudlai | MIT or public domain, dual (`LICENSE`) |
 | bitshuffle | `3rdparty/bitshuffle/` | Kiyoshi Masui | MIT (`LICENSE`) |
 | cfitsio (rice, hcompress, plio) | `3rdparty/cfitsio/` | NASA / HEASARC | Permissive NASA notice (`License.txt`) |
+
+The `cfitsio` files track upstream **cfitsio-4.7.0**. `fits_hcompress.c`
+is byte-identical to it and `fits_hdecompress.c` differs only in
+comments. `pliocomp.c` is taken verbatim from that release, which added
+the `srclen` bounds checks. `ricecomp.c` keeps the error-code return
+convention an earlier vendoring introduced, since our binding depends
+on it, with upstream's buffer-size guard applied on top.
+
+Re-check these against upstream periodically rather than assuming a
+vendored copy is current: both fixes above landed upstream after the
+version originally vendored here, and one of them was a crash.
 | libspng | `3rdparty/libspng/` | Randy | BSD-2-Clause (`LICENSE`) |
 | qoi | `3rdparty/qoi/` | Dominic Szablewski | MIT (`LICENSE`) |
 | rgbe | `3rdparty/rgbe/` | Bruce Walter, after Greg Ward | No formal license statement; see the disclaimer at the top of `rgbe.c` and the notes in `rgbe.txt` |

@@ -31,10 +31,14 @@ cnp.import_array()
 
 cdef extern from *:
     """
-    /* Forward-declare cfitsio's pl_l2pi so we don't need a header. */
-    int pl_l2pi(short *ll_src, int xs, int *px_dst, int npix);
+    /* Forward-declare cfitsio's pl_l2pi so we don't need a header.
+       cfitsio 4.7.0 added the srclen argument together with the bounds
+       checks that stop a crafted line list reading past the payload;
+       see the "Added checks for ... plio compression" commit. */
+    int pl_l2pi(short *ll_src, size_t srclen, int xs, int *px_dst, int npix);
     """
-    int pl_l2pi(short* ll_src, int xs, int* px_dst, int npix) nogil
+    int pl_l2pi(short* ll_src, size_t srclen, int xs,
+                int* px_dst, int npix) nogil
 
 
 class PlioError(RuntimeError):
@@ -98,7 +102,7 @@ def decode_raw(data, *, int nelements):
     with nogil:
         # xs=1: pl_l2pi treats ll_src as 1-indexed (it does --ll_src
         # internally). Start at the first opcode.
-        written = pl_l2pi(ll_src, 1, px_dst, npix)
+        written = pl_l2pi(ll_src, <size_t> n_opcodes, 1, px_dst, npix)
 
     if written != npix:
         raise PlioError(
