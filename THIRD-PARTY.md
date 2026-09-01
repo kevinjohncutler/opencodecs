@@ -47,13 +47,26 @@ code that originally came from ... Bruce Walter ... modified very
 heavily"), and three.js's RGBELoader is adapted from the same file.
 
 Checked against OpenImageIO, which is the most actively maintained C++
-version, rather than assuming: its RLE validation is check-for-check the
+version, rather than assuming. Its RLE validation is check-for-check the
 same as ours (scanline width bounds, magic bytes, width match, and
 `count == 0 || count > ptr_end - ptr` on both the run and literal
-paths). Its one advantage was converting the exponent through a
-compile-time table instead of a per-pixel `ldexp`, which we have now
-adopted, with entry 0 set to zero so the nonzero-pixel branch folds away
-too.
+paths). It had two things we lacked, both since addressed:
+
+* Converting the exponent through a compile-time table instead of a
+  per-pixel `ldexp`. Adopted, with entry 0 set to zero so the
+  nonzero-pixel branch folds away too, which OpenImageIO still pays for.
+  The same reasoning applies to the encoder, where OpenImageIO still
+  calls `frexpf`.
+* Accepting resolution lines other than `-Y H +X W`. Implemented
+  independently from the Radiance format rather than ported, so this
+  file stays free of OpenImageIO's Apache-2.0 terms. We accept five
+  forms to their four, the extra being `+Y H -X W`.
+
+Apache-2.0 is compatible with BSD-3-Clause, so importing their code was
+an option; it was not taken because there was nothing to import that we
+could not write in twenty lines from the format description, and mixing
+would have put a NOTICE requirement and a patent clause on a file that
+carries neither.
 
 | oc_giflzw | `3rdparty/oc_giflzw/` | opencodecs authors | MIT (`LICENSE`) |
 | oc_tifflzw | `3rdparty/oc_tifflzw/` | opencodecs authors | MIT (`LICENSE`) |

@@ -40,6 +40,30 @@ entry left over from the ``_uhdr`` rename. New
 set of ``.pyx`` sources agree in both directions, so the next
 occurrence is a failing test rather than a hang.
 
+**RGBE: accept every Radiance resolution-line orientation**
+
+A reader that matches only ``-Y H +X W`` rejects legal files. The signs
+select the direction of each axis and putting the X token first stores
+the image column-major, so the resolution line is now parsed generically
+and the decoder flips or transposes to suit. Five forms are accepted,
+one more than OpenImageIO, the extra being ``+Y H -X W``.
+
+Implemented from the Radiance format rather than ported from
+OpenImageIO. Their reader is welded to OIIO's own I/O abstraction, so
+there was nothing to lift, and importing Apache-2.0 code would have put
+a NOTICE requirement and a patent clause on a file that carries neither.
+
+Fair before-and-after for the exponent tables, both builds warmed and
+measured over 20 runs, since the first numbers reported for this work
+were taken cold and understated it:
+
+.. code-block:: text
+
+    decode 1 MP    2.57 ms -> 1.36 ms    408 -> 774 MP/s   1.89x
+    decode 4 MP   10.51 ms -> 5.75 ms    399 -> 730 MP/s   1.83x
+    encode 1 MP    5.72 ms -> 5.03 ms    183 -> 208 MP/s   1.14x
+    encode 4 MP   22.99 ms -> 20.42 ms   183 -> 205 MP/s   1.13x
+
 **Audited every vendored source against upstream; RGBE decode 1.7x faster**
 
 Generalizing the cfitsio finding, each third-party source under

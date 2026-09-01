@@ -254,11 +254,12 @@ RGBE_WriteHeader(
 
 /* minimal header reading.  modify if you want to parse more information */
 int
-RGBE_ReadHeader(
+RGBE_ReadHeaderOriented(
     rgbe_stream_t *fp,
     int *width,
     int *height,
-    rgbe_header_info *info)
+    rgbe_header_info *info,
+    int *orientation)
 {
     char buf[RGBE_HEADER_LINE_LENGTH];
     int found_format;
@@ -319,9 +320,57 @@ RGBE_ReadHeader(
         return RGBE_FORMAT_ERROR;
     if (rgbe_stream_gets(buf, sizeof(buf) / sizeof(buf[0]), fp) == 0)
         return RGBE_READ_ERROR;
-    if (sscanf(buf, "-Y %d +X %d", height, width) < 2)
-        return RGBE_FORMAT_ERROR; /* missing image size specifier */
+    {
+        /* Parse both axis tokens generically instead of matching only
+           "-Y %d +X %d". The signs select the direction of each axis and
+           the token order selects row- or column-major storage; see the
+           RGBE_ORIENT_* notes in rgbe.h. */
+        char sign1, axis1, sign2, axis2;
+        int count1, count2;
+        int orient = RGBE_ORIENT_NONE;
+
+        if (sscanf(buf, " %c%c %d %c%c %d",
+                   &sign1, &axis1, &count1,
+                   &sign2, &axis2, &count2) != 6)
+            return RGBE_FORMAT_ERROR; /* missing image size specifier */
+        if ((sign1 != '+' && sign1 != '-') || (sign2 != '+' && sign2 != '-'))
+            return RGBE_FORMAT_ERROR;
+        if (axis1 == 'Y' && axis2 == 'X') {
+            *height = count1;
+            *width = count2;
+            if (sign1 == '+') orient |= RGBE_ORIENT_FLIP_Y;
+            if (sign2 == '-') orient |= RGBE_ORIENT_FLIP_X;
+        }
+        else if (axis1 == 'X' && axis2 == 'Y') {
+            *width = count1;
+            *height = count2;
+            orient |= RGBE_ORIENT_TRANSPOSE;
+            if (sign1 == '-') orient |= RGBE_ORIENT_FLIP_X;
+            if (sign2 == '+') orient |= RGBE_ORIENT_FLIP_Y;
+        }
+        else {
+            return RGBE_FORMAT_ERROR;
+        }
+        if (*width <= 0 || *height <= 0)
+            return RGBE_FORMAT_ERROR;
+        if (orientation != NULL)
+            *orientation = orient;
+        else if (orient != RGBE_ORIENT_NONE)
+            return RGBE_FORMAT_ERROR;  /* caller wants the standard form */
+    }
     return RGBE_RETURN_SUCCESS;
+}
+
+/* Standard-orientation reader, for callers that cannot handle a flipped
+   or transposed image: anything but "-Y H +X W" is a format error. */
+int
+RGBE_ReadHeader(
+    rgbe_stream_t *fp,
+    int *width,
+    int *height,
+    rgbe_header_info *info)
+{
+    return RGBE_ReadHeaderOriented(fp, width, height, info, NULL);
 }
 
 /* simple write routine that does not use run-length encoding */

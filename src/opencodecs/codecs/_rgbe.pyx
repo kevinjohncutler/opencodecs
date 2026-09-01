@@ -31,10 +31,12 @@ cimport numpy as cnp
 from rgbe cimport (
     rgbe_stream_t, rgbe_stream_new, rgbe_stream_del,
     rgbe_header_info,
-    RGBE_WriteHeader, RGBE_ReadHeader,
+    RGBE_WriteHeader, RGBE_ReadHeader, RGBE_ReadHeaderOriented,
     RGBE_WritePixels, RGBE_ReadPixels,
     RGBE_WritePixels_RLE, RGBE_ReadPixels_RLE,
     RGBE_RETURN_SUCCESS,
+    RGBE_ORIENT_NONE, RGBE_ORIENT_FLIP_X,
+    RGBE_ORIENT_FLIP_Y, RGBE_ORIENT_TRANSPOSE,
 )
 
 
@@ -129,7 +131,12 @@ def decode(data, *, out=None):
         int rc
         int width = 0
         int height = 0
+        int orientation = 0
+        int transposed = 0
+        int scan_w = 0
+        int scan_n = 0
         cnp.ndarray out_arr
+        cnp.ndarray raw_arr
 
     try:
         src = data
@@ -145,7 +152,9 @@ def decode(data, *, out=None):
 
     try:
         with nogil:
-            rc = RGBE_ReadHeader(stream, &width, &height, NULL)
+            rc = RGBE_ReadHeaderOriented(
+                stream, &width, &height, NULL, &orientation
+            )
         if rc != RGBE_RETURN_SUCCESS:
             raise RgbeError(f"RGBE_ReadHeader returned {rc}")
         if width <= 0 or height <= 0:
@@ -153,7 +162,16 @@ def decode(data, *, out=None):
                 f"rgbe decode: bad dimensions {height}x{width}"
             )
 
+        # Radiance stores the image in the order the resolution line
+        # describes. Row-major is the usual case; an X-major file stores
+        # height-long scanlines, width of them, and is transposed after
+        # decoding. Flips are applied afterwards too, because reversing a
+        # decoded array is cheaper and clearer than decoding backwards.
+        transposed = (orientation & RGBE_ORIENT_TRANSPOSE) != 0
+        scan_w = height if transposed else width
+        scan_n = width if transposed else height
         shape = (height, width, 3)
+        raw_shape = (scan_n, scan_w, 3)
         if out is not None:
             if not isinstance(out, np.ndarray):
                 raise TypeError(
@@ -174,14 +192,35 @@ def decode(data, *, out=None):
         else:
             out_arr = np.empty(shape, dtype=np.float32)
 
+        # Decode into a buffer shaped the way the file stores it. For the
+        # common orientation that is out_arr itself, so nothing is copied.
+        if orientation == RGBE_ORIENT_NONE:
+            raw_arr = out_arr
+        else:
+            raw_arr = np.empty(raw_shape, dtype=np.float32)
+
         with nogil:
             rc = RGBE_ReadPixels_RLE(
                 stream,
-                <float*> out_arr.data,
-                width, height,
+                <float*> raw_arr.data,
+                scan_w, scan_n,
             )
         if rc != RGBE_RETURN_SUCCESS:
             raise RgbeError(f"RGBE_ReadPixels_RLE returned {rc}")
+
+        if orientation != RGBE_ORIENT_NONE:
+            view = raw_arr
+            if transposed:
+                view = view.transpose(1, 0, 2)
+            if orientation & RGBE_ORIENT_FLIP_Y:
+                view = view[::-1]
+            if orientation & RGBE_ORIENT_FLIP_X:
+                view = view[:, ::-1]
+            if view.shape != shape:
+                raise RgbeError(
+                    f"rgbe decode: oriented shape {view.shape} != {shape}"
+                )
+            out_arr[...] = view
     finally:
         rgbe_stream_del(stream)
     return out_arr

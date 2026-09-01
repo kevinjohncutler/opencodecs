@@ -57,6 +57,29 @@ typedef struct {
 extern "C" {
 #endif
 
+/* Resolution-line orientation, per the Radiance file format.
+ *
+ * The line is two axis tokens, e.g. "-Y 512 +X 768". "-Y" means Y
+ * decreases going down, which is ordinary raster order, and "+X" means X
+ * increases going right. The opposite signs mirror the corresponding
+ * axis, and putting the X token first stores the image column-major.
+ * Nearly every file in the wild is "-Y H +X W"; the rest are rare but
+ * legal, and a reader that only accepts the common form rejects them.
+ */
+#define RGBE_ORIENT_NONE      0
+#define RGBE_ORIENT_FLIP_X    1  /* "-X": columns run right to left  */
+#define RGBE_ORIENT_FLIP_Y    2  /* "+Y": rows run bottom to top     */
+#define RGBE_ORIENT_TRANSPOSE 4  /* X token first: stored column-major */
+
+/* As RGBE_ReadHeader, but also reports the orientation. width and height
+ * describe the FINAL image; when RGBE_ORIENT_TRANSPOSE is set the stored
+ * scanlines run along Y, so the caller decodes height-wide scanlines,
+ * width of them, and transposes. Pass orientation as NULL to reject
+ * anything but the standard form. */
+int RGBE_ReadHeaderOriented(
+    rgbe_stream_t *fp, int *width, int *height, rgbe_header_info *info,
+    int *orientation);
+
 /* read or write headers */
 /* you may set rgbe_header_info to null if you want to */
 int

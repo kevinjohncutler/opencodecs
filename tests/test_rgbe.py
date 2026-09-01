@@ -168,3 +168,59 @@ def test_rgbe_encoder_matches_the_frexp_formula_exactly():
     for y in range(h):
         for x in range(w):
             assert tuple(int(v) for v in got[y, x]) == reference(*img[y, x])
+
+
+def _reorient(encoded, resline, reorder):
+    """Rebuild an encoded file with a different resolution line and the
+    payload permuted to match, so it describes the same image."""
+    hdr_end = encoded.index(b"-Y")
+    res_end = encoded.index(b"\n", hdr_end)
+    head = encoded[:hdr_end]
+    return head + resline + b"\n" + reorder.tobytes()
+
+
+@pytest.mark.parametrize("form", ["-Y +X", "-Y -X", "+Y +X", "+Y -X", "+X -Y"])
+def test_rgbe_accepts_every_resolution_line_orientation(form):
+    """Radiance's resolution line encodes scanline direction and order.
+
+    "-Y H +X W" is what essentially every writer emits, but the signs may
+    be flipped to mirror an axis and putting the X token first stores the
+    image column-major. A reader that only matches the common form
+    rejects the rest as corrupt. OpenImageIO accepts four of these; the
+    fifth, "+Y H -X W", is the same idea applied to both axes.
+
+    Each case below is the same image with the payload permuted to match
+    its resolution line, so all five must decode identically.
+    """
+    rng = np.random.default_rng(0)
+    h, w = 13, 4                    # w < 8 keeps the payload flat
+    img = np.abs(rng.standard_normal((h, w, 3)).astype(np.float32))
+    base = bytes(encode(img))
+    reference = decode(base)
+
+    res_end = base.index(b"\n", base.index(b"-Y"))
+    body = np.frombuffer(base[res_end + 1:], np.uint8).reshape(h, w, 4)
+
+    line, reorder = {
+        "-Y +X": (f"-Y {h} +X {w}".encode(), body),
+        "-Y -X": (f"-Y {h} -X {w}".encode(), body[:, ::-1]),
+        "+Y +X": (f"+Y {h} +X {w}".encode(), body[::-1]),
+        "+Y -X": (f"+Y {h} -X {w}".encode(), body[::-1, ::-1]),
+        "+X -Y": (f"+X {w} -Y {h}".encode(), body.transpose(1, 0, 2)),
+    }[form]
+
+    rebuilt = _reorient(base, line, np.ascontiguousarray(reorder))
+    got = decode(rebuilt)
+    assert got.shape == reference.shape
+    np.testing.assert_array_equal(got, reference)
+
+
+def test_rgbe_rejects_a_malformed_resolution_line():
+    rng = np.random.default_rng(1)
+    img = np.abs(rng.standard_normal((8, 4, 3)).astype(np.float32))
+    base = bytes(encode(img))
+    res_end = base.index(b"\n", base.index(b"-Y"))
+    body = np.frombuffer(base[res_end + 1:], np.uint8).reshape(8, 4, 4)
+    for bad in (b"-Z 8 +X 4", b"-Y 8 +Y 4", b"-Y 0 +X 4", b"nonsense"):
+        with pytest.raises(RgbeError):
+            decode(_reorient(base, bad, body))

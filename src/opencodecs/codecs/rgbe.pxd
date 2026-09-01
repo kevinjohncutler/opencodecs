@@ -35,6 +35,16 @@ cdef extern from "rgbe.h" nogil:
         rgbe_stream_t* fp, int width, int height,
         const rgbe_header_info* info
     )
+    int RGBE_ORIENT_NONE
+    int RGBE_ORIENT_FLIP_X
+    int RGBE_ORIENT_FLIP_Y
+    int RGBE_ORIENT_TRANSPOSE
+
+    int RGBE_ReadHeaderOriented(
+        rgbe_stream_t* fp, int* width, int* height,
+        rgbe_header_info* info, int* orientation,
+    ) nogil
+
     int RGBE_ReadHeader(
         rgbe_stream_t* fp, int* width, int* height,
         rgbe_header_info* info
