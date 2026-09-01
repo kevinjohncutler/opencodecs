@@ -127,3 +127,44 @@ def test_rgbe_exponent_table_matches_ldexp_bit_exactly():
         np.testing.assert_array_equal(
             decode(encoded),
             np.asarray(imagecodecs.rgbe_decode(encoded), dtype=np.float32))
+
+
+def test_rgbe_encoder_matches_the_frexp_formula_exactly():
+    """The encoder derives its scale from the float's exponent bits and a
+    table instead of calling frexp() per pixel.
+
+    frexp(v,&e)*256/v is 2**(8-e), and for a positive normal float e is
+    the biased exponent minus 126, so the scale is a lookup on the
+    exponent byte. This must reproduce the original formula bit for bit,
+    including the e+128 exponent byte. Width 4 keeps the payload flat so
+    the quadruples can be read directly rather than through the RLE.
+
+    OpenImageIO still calls frexpf here, so this one is not shared with
+    the reference implementation and gets its own check.
+    """
+    import math
+
+    def reference(r, g, b):
+        v = max(r, g, b)
+        if v < 1e-32:
+            return (0, 0, 0, 0)
+        m, e = math.frexp(v)
+        s = np.float32(np.float32(m) * np.float32(256.0) / np.float32(v))
+        return (int(np.float32(r) * s) & 0xFF, int(np.float32(g) * s) & 0xFF,
+                int(np.float32(b) * s) & 0xFF, (e + 128) & 0xFF)
+
+    rng = np.random.default_rng(0)
+    h, w = 200, 4
+    img = np.abs(rng.standard_normal((h, w, 3)).astype(np.float32)) * np.float32(1e-3)
+    for i in range(0, h, 7):                      # span the exponent range
+        img[i] *= np.float32(10.0) ** int(rng.integers(-15, 15))
+    img[rng.random((h, w)) < 0.15] = 0.0          # and the v < 1e-32 path
+
+    encoded = bytes(encode(img))
+    body = encoded[encoded.index(b"-Y"):]
+    body = body[body.index(b"\n") + 1:]
+    assert len(body) == h * w * 4
+    got = np.frombuffer(body, np.uint8).reshape(h, w, 4)
+    for y in range(h):
+        for x in range(w):
+            assert tuple(int(v) for v in got[y, x]) == reference(*img[y, x])
