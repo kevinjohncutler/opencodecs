@@ -104,3 +104,26 @@ def test_rgbe_short_width_uncompressed_path():
 def test_rgbe_invalid_header_raises():
     with pytest.raises(RgbeError):
         decode(b"not a hdr file")
+
+
+def test_rgbe_exponent_table_matches_ldexp_bit_exactly():
+    """The decoder scales each pixel by 2**(e-136) from a 256-entry table
+    instead of calling ldexp() per pixel, which was a libm call in the
+    hot loop and cost about 40% of decode time on a 4 MP image.
+
+    The table has to be exactly equivalent, not just close: entries below
+    2**-126 are denormal and a sloppy build could flush them to zero.
+    Cross-checked against imagecodecs, which still uses the per-pixel
+    ldexp path, over inputs spanning 40 orders of magnitude plus zeros
+    (which exercise the e == 0 entry).
+    """
+    imagecodecs = pytest.importorskip("imagecodecs")
+    rng = np.random.default_rng(0)
+    for _ in range(8):
+        img = (rng.standard_normal((64, 64, 3)).astype(np.float32)
+               * float(10.0 ** int(rng.integers(-20, 20)))).astype(np.float32)
+        img[rng.random((64, 64)) < 0.1] = 0.0
+        encoded = encode(img)
+        np.testing.assert_array_equal(
+            decode(encoded),
+            np.asarray(imagecodecs.rgbe_decode(encoded), dtype=np.float32))

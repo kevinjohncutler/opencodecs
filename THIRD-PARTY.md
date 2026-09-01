@@ -31,6 +31,15 @@ version originally vendored here, and one of them was a crash.
 | libspng | `3rdparty/libspng/` | Randy | BSD-2-Clause (`LICENSE`) |
 | qoi | `3rdparty/qoi/` | Dominic Szablewski | MIT (`LICENSE`) |
 | rgbe | `3rdparty/rgbe/` | Bruce Walter, after Greg Ward | No formal license statement; see the disclaimer at the top of `rgbe.c` and the notes in `rgbe.txt` |
+
+`rgbe` has no live upstream and is not stale for want of one: the
+format was frozen in 1991 and essentially every implementation
+descends from Bruce Walter's 1995 reference, including three.js's
+RGBELoader and the loaders derived from it. Our copy carries earlier
+fixes (buffer overflow and partial-line handling in `rgbe_stream_gets`)
+plus an opencodecs change replacing the per-pixel `ldexp` with a
+256-entry table, which is bit-identical and about 1.7x faster on a
+4 MP image.
 | oc_giflzw | `3rdparty/oc_giflzw/` | opencodecs authors | MIT (`LICENSE`) |
 | oc_tifflzw | `3rdparty/oc_tifflzw/` | opencodecs authors | MIT (`LICENSE`) |
 

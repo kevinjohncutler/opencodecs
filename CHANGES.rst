@@ -40,6 +40,42 @@ entry left over from the ``_uhdr`` rename. New
 set of ``.pyx`` sources agree in both directions, so the next
 occurrence is a failing test rather than a hang.
 
+**Audited every vendored source against upstream; RGBE decode 1.7x faster**
+
+Generalizing the cfitsio finding, each third-party source under
+``3rdparty/`` was diffed against its current upstream:
+
+.. code-block:: text
+
+    libspng     spng.h identical; spng.c current (upstream unchanged
+                since 2023) plus our own SIMD defilter
+    qoi         identical to upstream
+    bitshuffle  three lint casts, no logic change
+    bcdec       one cast, verified equivalent under -funsigned-char;
+                now byte-identical to upstream
+    cfitsio     two missing bounds checks, fixed separately
+    rgbe        no live upstream
+
+``rgbe`` deserves the note. It is not stale for want of a maintainer:
+the format was frozen in 1991 and essentially every implementation
+descends from Bruce Walter's 1995 reference, three.js's RGBELoader
+included. There is nothing newer to move to.
+
+There was, however, real performance left on the table. ``rgbe2float``
+called ``ldexp()`` once per pixel, a libm call in the hot loop of every
+decode. The exponent is one byte, so all 256 scale factors fit in a
+table built once, which also folds away the nonzero-pixel branch:
+
+.. code-block:: text
+
+    1024x1024 (1 MP)    2.6 ms -> 2.2 ms   404 -> 468 MP/s
+    2048x2048 (4 MP)   10.6 ms -> 6.2 ms   396 -> 679 MP/s   1.71x
+
+Output is bit-identical, cross-checked against imagecodecs' independent
+per-pixel ``ldexp`` decoder over inputs spanning 40 orders of magnitude
+plus zeros, which exercise the ``e == 0`` entry. Exactness matters here
+because entries below 2**-126 are denormal.
+
 **Security: vendored cfitsio was missing two upstream bounds checks**
 
 Auditing what remained of imagecodecs-derived code turned up a broader

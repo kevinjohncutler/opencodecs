@@ -290,10 +290,16 @@ static void bcdec__bc4_block(const void* compressedBlock, void* decompressedBloc
 
     indices = block >> 16;
     if (isSigned) {
-        sblock = (char*)decompressedBlock;
+        /* Kept identical to upstream. This is the BC4/BC5 SNORM path,
+           values -127..127, and an earlier vendoring had a plain char
+           cast here. That turns out to be equivalent, because sblock is
+           signed char* so the value round-trips on both signed-char and
+           unsigned-char targets (verified with -funsigned-char), but
+           matching upstream byte for byte keeps future diffs honest. */
+        sblock = (signed char*)decompressedBlock;
         for (i = 0; i < 4; ++i) {
             for (j = 0; j < 4; ++j) {
-                sblock[j * pixelSize] = (char)alpha[indices & 0x07];
+                sblock[j * pixelSize] = (signed char)alpha[indices & 0x07];
                 indices >>= 3;
             }
             sblock += destinationPitch;

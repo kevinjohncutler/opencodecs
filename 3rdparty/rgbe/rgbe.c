@@ -90,6 +90,27 @@ float2rgbe(
 /* standard conversion from rgbe to float pixels */
 /* note: Ward uses ldexp(col+0.5,exp-(128+8)).  However we wanted pixels */
 /*       in the range [0,1] to map back into the range [0,1].            */
+/* opencodecs: the original called ldexp() once per pixel, which is a libm
+   call in the hot loop of every decode. The exponent is a single byte, so
+   all 256 possible scale factors fit in a table built once. Entry 0 is
+   0.0f, which also folds away the nonzero-pixel branch. */
+static float oc_rgbe_exp_scale[256];
+static int oc_rgbe_exp_scale_ready = 0;
+
+static void
+oc_rgbe_init_exp_scale(void)
+{
+    int e;
+    if (oc_rgbe_exp_scale_ready) {
+        return;
+    }
+    oc_rgbe_exp_scale[0] = 0.0f;
+    for (e = 1; e < 256; e++) {
+        oc_rgbe_exp_scale[e] = (float)ldexp(1.0, e - (int)(128 + 8));
+    }
+    oc_rgbe_exp_scale_ready = 1;
+}
+
 static INLINE void
 rgbe2float(
     float *red,
@@ -97,16 +118,10 @@ rgbe2float(
     float *blue,
     unsigned char rgbe[4])
 {
-    float f;
-
-    if (rgbe[3]) { /*nonzero pixel*/
-        f = (float)ldexp(1.0, rgbe[3] - (int)(128 + 8));
-        *red = rgbe[0] * f;
-        *green = rgbe[1] * f;
-        *blue = rgbe[2] * f;
-    }
-    else
-        *red = *green = *blue = 0.0;
+    const float f = oc_rgbe_exp_scale[rgbe[3]];
+    *red = rgbe[0] * f;
+    *green = rgbe[1] * f;
+    *blue = rgbe[2] * f;
 }
 
 /* default minimal header. modify if you want more information in header */
@@ -243,6 +258,7 @@ RGBE_ReadPixels(
     float *data,
     int numpixels)
 {
+    oc_rgbe_init_exp_scale();
     unsigned char rgbe[4];
 
     while (numpixels-- > 0) {
@@ -395,6 +411,7 @@ RGBE_ReadPixels_RLE(
     int scanline_width,
     int num_scanlines)
 {
+    oc_rgbe_init_exp_scale();
     unsigned char rgbe[4], *scanline_buffer, *ptr, *ptr_end;
     int i, count;
     unsigned char buf[2];
