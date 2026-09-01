@@ -27,6 +27,8 @@
   ".test_data/ome_zarr/idr_sample.zarr/2/1/200/0/0": "102f80e37e50772afd384aa0df9468ea35b8eb7644dfee5473ef471ecbdaff56",
   ".test_data/ome_zarr/idr_sample.zarr/2/1/235/0/0": "b858bdae77025b8831e745f49b35263ac5629c3d31d80f09051fff593620926c",
   ".test_data/png/PngSuite-2017jul19.tgz": "0294b244c95a8342c01b00010cf34abdcabc7c6a34fd0fe1bd963917537bfdc8",
+  ".test_data/sdrbench/SDRBENCH-EXAALT-2869440.tar.gz": "d2b15fa48b854066d768efc412e00f5101b5f60837b2267bb2036761cd30e630",
+  ".test_data/sdrbench/SDRBENCH-EXAFEL-10x32x185x388.tar.gz": "b6a2a65b5134313ebacb53ea6effc6c8b049ad2f2d60027340b8d213805a7164",
   ".test_data/tiff/cog/image_2000px.tif": "3aa57b6e63eadddc3ab6112eef6e8952c8ef19543af304d1eb98cf72df47c667",
   ".test_data/tiff/cog/image_colormap.tif": "d4cb40eaf1cd3e468133e24425f7526e9475a224ac2ddf864c33388f2852b29a",
   ".test_data/tiff/cog/image_float.tif": "9fe52e30355e73b3225cd3bb1d0e0adc3b0e01afbebabb48d54c4c207178c05e",

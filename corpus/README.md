@@ -11,7 +11,7 @@ while still letting anyone reproduce the exact corpus.
 
 ```
 python corpus/corpus.py list        what is in the manifest, and what is on disk
-python corpus/corpus.py coverage    which codecs have real data behind them
+python corpus/corpus.py coverage    which codecs have a native-format fixture
 python corpus/corpus.py fetch       download everything (or: fetch <id> ...)
 python corpus/corpus.py verify      re-hash what is on disk against checksums.json
 python corpus/corpus.py freeze      record checksums for newly fetched files
@@ -28,10 +28,10 @@ cannot:
 - **Licenses.** Written down per dataset, so if we ever do want to
   mirror something the answer is already recorded. `unverified` means
   nobody has confirmed the terms yet; it is a TODO, not a claim.
-- **Codec mapping.** `coverage` answers "which codec has no real data
-  behind it" directly. That was previously an ad-hoc grep, and the
-  ad-hoc grep was wrong: it counted any codec mentioned in a corpus
-  test, which over-reported.
+- **Codec mapping.** `coverage` answers "which codec has no file in its
+  own format, written by somebody else" directly. That was previously an
+  ad-hoc grep, and the grep was wrong twice over: it counted any codec
+  mentioned in a corpus test, and it conflated two different things.
 
 The two will drift if left alone, so `tests/test_corpus_manifest.py`
 asserts every URL the script fetches is in the manifest. The intended
@@ -58,8 +58,42 @@ Not everything belongs in CI. Roughly:
 - **light**: small real files, a few MB. `download_test_corpus.sh
   --light`.
 - **full**: the whole corpus, hundreds of MB, run locally or nightly.
-- **opt-in**: large single files, like the 220 MB EER micrograph.
-  `download_test_corpus.sh --eer`.
+- **opt-in**: large or specialized sets fetched on request.
+  `--eer` for the 220 MB Falcon 4 micrograph, `--sdrbench` for the
+  scientific arrays.
 
 Tests that need corpus files skip cleanly when the file is absent, so a
 fresh clone with no downloads still runs a full green suite.
+
+## Native fixtures versus round-trips
+
+These are not the same thing and the distinction matters.
+
+`tests/test_corpus_codec_decode.py` already round-trips most codecs
+against real Kodak photographs: encode with ours, decode with ours and
+with imagecodecs, assert bit-equality for lossless and bounded PSNR for
+lossy. That is real data and it catches encoder and decoder disagreeing.
+
+What it cannot catch is somebody else's writer. Every format has habits
+that only show up in files produced in the wild, and both of the decoder
+bugs found recently were of exactly that kind: a real EER frame ends by
+landing on its last cell and then carries a footer, and real Radiance
+files use resolution-line orientations we rejected. No amount of
+round-tripping our own output would have surfaced either.
+
+So `coverage` reports the narrower thing: codecs with no native-format
+fixture. Six today:
+
+| codec | what it would need |
+|---|---|
+| `bmp` | a conformance set; bmpsuite generates its BMPs rather than shipping them, and is GPL-3.0 |
+| `qoi` | covered by the opt-in benchmark suite, but that is 1.1 GB; a smaller set would be better |
+| `rgbe` | a Radiance HDR image, e.g. a CC0 environment map |
+| `uhdr` | an Ultra HDR JPEG with a real gain map |
+| `openjph` | an HTJ2K conformance codestream |
+| `bcdec` | a DDS texture using BC1 through BC7 |
+| `bytetools` | arguably not applicable; it is a byte-shuffle helper rather than a format |
+
+None of these are hard, they just need a source whose terms are clear.
+Prefer conformance sets over pretty pictures: the point is to exercise
+the awkward corners of a format, not to have a nice image.

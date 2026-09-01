@@ -18,6 +18,7 @@ set -eu
 
 LIGHT=0
 EER_ONLY=0
+SDR_ONLY=0
 case "${1:-}" in
     --light)
         LIGHT=1
@@ -26,6 +27,10 @@ case "${1:-}" in
     --eer)
         EER_ONLY=1
         echo "[eer mode] fetching only the Falcon 4 EER micrograph (~220 MB)"
+        ;;
+    --sdrbench)
+        SDR_ONLY=1
+        echo "[sdrbench mode] fetching the scientific-array datasets (~140 MB)"
         ;;
 esac
 
@@ -39,7 +44,7 @@ mkdir -p \
     .test_data/tiff/libtiff_pics .test_data/tiff/cog \
     .test_data/tiff/geotiff .test_data/tiff/wsi \
     .test_data/ndtiff .test_data/nd2 .test_data/lif .test_data/oib \
-    .test_data/oir .test_data/vsi .test_data/eer
+    .test_data/oir .test_data/vsi .test_data/eer .test_data/sdrbench
 
 # Download helper that skips if the file already exists with non-zero size.
 fetch() {
@@ -67,6 +72,26 @@ if [ "$EER_ONLY" = "1" ]; then
         "https://ftp.ebi.ac.uk/empiar/world_availability/10568/data/Images-Disc1/GridSquare_8824187/Data/FoilHole_8851341_Data_8849615_8849617_20200709_154330.eer" \
         ".test_data/eer/empiar10568_falcon4.eer"
     echo "[eer mode] done"
+    exit 0
+fi
+
+# ----- SDRBench: reference scientific arrays (~140 MB) -----
+# The byte- and float-oriented compressors cannot be judged on images or
+# on random bytes. EXAFEL is raw uint16 LCLS detector frames; EXAALT is
+# float32 molecular-dynamics fields. On random bytes zstd and brotli both
+# report 1.00x on this workload; on the real frames they report 1.60x and
+# 1.58x. Opt-in: pass --sdrbench.
+#   https://sdrbench.github.io/
+if [ "$SDR_ONLY" = "1" ]; then
+    SDR="https://g-d0cd3f.fd635.8443.data.globus.org/raw-data"
+    fetch "$SDR/EXAFEL/SDRBENCH-EXAFEL-10x32x185x388.tar.gz" \
+        ".test_data/sdrbench/SDRBENCH-EXAFEL-10x32x185x388.tar.gz"
+    fetch "$SDR/EXAALT/SDRBENCH-EXAALT-2869440.tar.gz" \
+        ".test_data/sdrbench/SDRBENCH-EXAALT-2869440.tar.gz"
+    for t in .test_data/sdrbench/*.tar.gz; do
+        tar -xzf "$t" -C .test_data/sdrbench
+    done
+    echo "[sdrbench mode] done"
     exit 0
 fi
 

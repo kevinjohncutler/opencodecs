@@ -310,3 +310,38 @@ homepage = "https://commons.wikimedia.org/"
   url = "https://upload.wikimedia.org/wikipedia/commons/2/2c/Rotating_earth_%28large%29.gif"
   path = ".test_data/gif/rotating_earth.gif"
 
+[[dataset]]
+id = "sdrbench_exafel"
+name = "SDRBench EXAFEL: LCLS X-ray detector frames (~79 MB)"
+license = "unverified"
+codecs = ["zstd", "lz4", "brotli", "snappy", "bitshuffle", "blosc2", "b2nd", "isal", "aec"]
+homepage = "https://sdrbench.github.io/"
+notes = "Raw uint16 frames from an LCLS free-electron laser detector, 10x32x185x388. Byte-oriented compressors have to be measured on data like this: on random bytes zstd and brotli both report 1.00x, and on these frames they report 1.60x and 1.58x. Also the counterexample that bitshuffle is not free: bitshuffle then zstd gives 1.37x here, worse than zstd alone, inverting the usual microscopy idiom."
+
+  [[dataset.file]]
+  url = "https://g-d0cd3f.fd635.8443.data.globus.org/raw-data/EXAFEL/SDRBENCH-EXAFEL-10x32x185x388.tar.gz"
+  path = ".test_data/sdrbench/SDRBENCH-EXAFEL-10x32x185x388.tar.gz"
+
+[[dataset]]
+id = "sdrbench_exaalt"
+name = "SDRBench EXAALT: molecular dynamics trajectories (~60 MB)"
+license = "LANL unlimited release LA-UR-18-25670"
+codecs = ["zfp", "sz3", "sperr", "pcodec"]
+homepage = "https://sdrbench.github.io/"
+notes = "float32 particle coordinates and velocities, 2869440 elements per field. The float-oriented error-bounded compressors are built for exactly this and cannot be judged on synthetic noise, which is incompressible by construction."
+
+  [[dataset.file]]
+  url = "https://g-d0cd3f.fd635.8443.data.globus.org/raw-data/EXAALT/SDRBENCH-EXAALT-2869440.tar.gz"
+  path = ".test_data/sdrbench/SDRBENCH-EXAALT-2869440.tar.gz"
+
+[[dataset]]
+id = "qoi_benchmark"
+name = "QOI benchmark suite (~1.1 GB, opt-in)"
+license = "unverified"
+codecs = ["qoi", "png"]
+homepage = "https://qoiformat.org/benchmark/"
+notes = "The reference QOI benchmark set. Large enough to be opt-in rather than part of a default fetch; it is the corpus every QOI speed and ratio claim is quoted against."
+
+  [[dataset.file]]
+  url = "https://qoiformat.org/benchmark/qoi_benchmark_suite.tar"
+  path = ".test_data/qoi/qoi_benchmark_suite.tar"

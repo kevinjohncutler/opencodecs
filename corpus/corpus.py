@@ -79,13 +79,19 @@ def cmd_coverage(args) -> int:
             covered.setdefault(c, []).append(ds["id"])
     have = sorted(c for c in compiled if c in covered)
     missing = sorted(compiled - set(covered))
-    print(f"{len(have)} of {len(compiled)} compiled codecs have real data\n")
-    print("covered:")
+    print(f"{len(have)} of {len(compiled)} compiled codecs have a native-format\n"
+          f"fixture, meaning a file in that format produced by somebody else.\n")
+    print("native fixture:")
     for c in have:
         print(f"  {c:<14} {', '.join(covered[c])}")
-    print("\nNO real-data coverage:")
+    print("\nno native fixture:")
     for c in missing:
         print(f"  {c}")
+    print("\nNote this is not the same as untested. tests/test_corpus_codec_decode.py\n"
+          "round-trips most of these against real Kodak photographs as the source\n"
+          "image, which catches encoder and decoder disagreement. What a native\n"
+          "fixture adds is the quirks of somebody else's writer, which is where\n"
+          "the EER frame footer and the TIFF orientations both came from.")
     # entries naming a codec we do not ship are a manifest typo
     stray = sorted(set(covered) - compiled)
     if stray:
