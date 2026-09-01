@@ -1638,12 +1638,10 @@ extensions = [
         name="opencodecs.codecs._tiff",
         sources=[
             "src/opencodecs/codecs/_tiff.pyx",
-            "3rdparty/imcd_lzw/lzw.c",         # LZW encoder
-            "3rdparty/oc_tifflzw/oc_tifflzw.c",  # LZW decoder (ours)
+            "3rdparty/oc_tifflzw/oc_tifflzw.c",  # LZW codec (ours)
         ],
         include_dirs=[
             str(PKG_CODECS),
-            "3rdparty/imcd_lzw",
             "3rdparty/oc_tifflzw",
         ],
         language="c",

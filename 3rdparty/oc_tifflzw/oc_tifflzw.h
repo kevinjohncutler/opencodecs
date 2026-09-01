@@ -51,6 +51,34 @@ ptrdiff_t oc_tifflzw_decode(
     const uint8_t *input, size_t input_len,
     uint8_t *output, size_t output_len);
 
+/* Worst-case encoded size for input_len bytes. LZW can expand: the
+ * pathological input emits one 12-bit code per byte, so 1.5x plus the
+ * clear/EOI codes and the final partial byte. Rounded up generously so
+ * a buffer of this size never overruns during encode.
+ */
+size_t oc_tifflzw_encode_bound(size_t input_len);
+
+/* Encode input_len bytes as a TIFF LZW strip / tile.
+ *
+ * Emits the MSB-first, early-code-width variant that TIFF 6.0 section
+ * 13 specifies and that oc_tifflzw_decode reads back: CLEAR=256,
+ * EOI=257, first free code 258, width 9 growing to 12. The encoder
+ * widens when its next free code reaches 1 << width; the decoder's
+ * table lags by one entry, so its own trigger of (1 << width) - 1
+ * lands on the same code boundary.
+ * A CLEAR is emitted and the table reset when it fills at 4094, which
+ * keeps the decoder's one-entry lag from ever seeing an undefined code.
+ *
+ * An empty input still produces a valid CLEAR + EOI stream.
+ *
+ * Returns bytes written, or a negative error:
+ *  -1 invalid argument (NULL output, or NULL input with input_len > 0).
+ *  -2 output buffer too small.
+ */
+ptrdiff_t oc_tifflzw_encode(
+    const uint8_t *input, size_t input_len,
+    uint8_t *output, size_t output_len);
+
 #ifdef __cplusplus
 }
 #endif

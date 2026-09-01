@@ -39,22 +39,18 @@ from libc.string cimport memcpy
 import struct as _struct
 
 
-# Vendored TIFF LZW encoder (imagecodecs imcd, BSD-3) — see
-# ``3rdparty/imcd_lzw/lzw.c``. Decoder is implemented in pure Cython
-# below; encoder is C because the bit-stream + dictionary management
-# is far easier to read and audit in the original form.
+# TIFF LZW, both directions, in ``3rdparty/oc_tifflzw/``. Both are
+# opencodecs' own code (MIT); the bit-stream and dictionary handling
+# live in C because that is where the hot loop belongs.
 cdef extern from "oc_tifflzw.h" nogil:
     Py_ssize_t oc_tifflzw_decode(
         const uint8_t* input, size_t input_len,
         uint8_t* output, size_t output_len,
     )
-
-
-cdef extern from "lzw.h" nogil:
-    ssize_t opencodecs_lzw_encode_size(ssize_t srcsize)
-    ssize_t opencodecs_lzw_encode(
-        const uint8_t* src, ssize_t srcsize,
-        uint8_t* dst, ssize_t dstsize,
+    size_t oc_tifflzw_encode_bound(size_t input_len)
+    Py_ssize_t oc_tifflzw_encode(
+        const uint8_t* input, size_t input_len,
+        uint8_t* output, size_t output_len,
     )
 
 
@@ -705,10 +701,10 @@ def lzw_encode(data) -> bytes:
     """Encode bytes as a TIFF-flavor LZW strip / tile.
 
     Variable-width (9..12 bit) MSB-first codes with CLEAR / EOI
-    markers — compatible with libtiff, tifffile, and any TIFF reader
-    that handles ``Compression = 5``. The implementation is the
-    vendored imagecodecs ``imcd_lzw_encode`` (BSD-3); the matching
-    decoder lives in ``lzw_decode`` below.
+    markers, compatible with libtiff, tifffile, and any TIFF reader
+    that handles ``Compression = 5``. Implemented in
+    ``3rdparty/oc_tifflzw/`` alongside the matching decoder; both are
+    opencodecs' own code.
     """
     cdef:
         const uint8_t[::1] src
@@ -723,7 +719,7 @@ def lzw_encode(data) -> bytes:
     except (TypeError, ValueError, BufferError):
         src = bytes(data)
     srcsize = src.shape[0]
-    dstsize = opencodecs_lzw_encode_size(srcsize)
+    dstsize = <Py_ssize_t> oc_tifflzw_encode_bound(<size_t> srcsize)
     # encode_size can return very small values for zero-byte input;
     # bottom-out at 3 to keep the LZW_WRITE_DST sanity check happy
     # (needs at least CLEAR + EOI).
@@ -734,13 +730,14 @@ def lzw_encode(data) -> bytes:
 
     if srcsize == 0:
         with nogil:
-            written = opencodecs_lzw_encode(NULL, 0, dst, dstsize)
+            written = oc_tifflzw_encode(NULL, 0, dst, <size_t> dstsize)
     else:
         with nogil:
-            written = opencodecs_lzw_encode(&src[0], srcsize, dst, dstsize)
+            written = oc_tifflzw_encode(&src[0], <size_t> srcsize,
+                                        dst, <size_t> dstsize)
     if written < 0:
         raise RuntimeError(
-            f"lzw_encode: vendored encoder returned error {written}"
+            f"lzw_encode: encoder returned error {written}"
         )
     return out[:written]
 

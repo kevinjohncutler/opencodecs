@@ -40,6 +40,41 @@ entry left over from the ``_uhdr`` rename. New
 set of ``.pyx`` sources agree in both directions, so the next
 occurrence is a failing test rather than a hang.
 
+**TIFF LZW encoder is now ours, and 1.4x faster**
+
+Replaces the vendored excerpt of imagecodecs' ``imcd.c`` with an
+implementation written against TIFF 6.0 section 13, living beside our
+existing decoder in ``3rdparty/oc_tifflzw/``. ``3rdparty/imcd_lzw/`` is
+deleted.
+
+The dictionary lookup is an open-addressed hash table over the 20-bit
+(prefix, suffix) key, sized at 8192 so the load factor stays at 0.5 and
+the index is a mask rather than a modulo. Each slot packs the epoch it
+was written in alongside the key, so CLEAR is an increment instead of a
+32 KiB memset, and a stale slot reads as both "absent" and "reusable"
+in the comparison the lookup already performs.
+
+Measured against ``imagecodecs.lzw_encode`` on 4 MB inputs (Apple
+Silicon), with output within 0.03% of its size in every case:
+
+.. code-block:: text
+
+    all zeros            22.8 ms vs 22.6 ms   0.99x
+    photo-like           25.2 ms vs 36.7 ms   1.45x
+    long runs            15.2 ms vs 30.1 ms   1.98x
+    incompressible       25.3 ms vs 29.2 ms   1.15x
+    16-bit image         17.9 ms vs 34.5 ms   1.93x
+    total               106.3 ms vs 152.9 ms  1.44x  (188 vs 131 MB/s)
+
+Epoch tagging is what makes the incompressible case work: it resets the
+table every ~3836 codes, and with a memset-per-CLEAR that path measured
+0.82x, slower than the code it replaced.
+
+20 new tests in ``tests/test_tiff_codec_encode.py`` cover the empty
+input, every code-width boundary, table overflow and the expansion
+bound, and check each stream decodes correctly through
+``imagecodecs.lzw_decode`` as an independent reader.
+
 **Licensing: no imagecodecs-derived Cython source remains (#1)**
 
 Follow-up to the attribution commit. Rather than keep the two copied

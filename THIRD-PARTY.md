@@ -14,7 +14,6 @@ alongside the source.
 | Component | Path | Upstream | License |
 |---|---|---|---|
 | imcd (EER decoder excerpt) | `3rdparty/imcd_eer/` | imagecodecs, Christoph Gohlke | BSD-3-Clause (`LICENSE`) |
-| imcd (TIFF LZW encoder excerpt) | `3rdparty/imcd_lzw/` | imagecodecs, Christoph Gohlke | BSD-3-Clause (`LICENSE`) |
 | bcdec | `3rdparty/bcdec/` | Sergii Kudlai | MIT or public domain, dual (`LICENSE`) |
 | bitshuffle | `3rdparty/bitshuffle/` | Kiyoshi Masui | MIT (`LICENSE`) |
 | cfitsio (rice, hcompress, plio) | `3rdparty/cfitsio/` | NASA / HEASARC | Permissive NASA notice (`License.txt`) |
@@ -25,7 +24,9 @@ alongside the source.
 | oc_tifflzw | `3rdparty/oc_tifflzw/` | opencodecs authors | MIT (`LICENSE`) |
 
 `oc_giflzw` and `oc_tifflzw` are original opencodecs work, not derived
-from any of the above.
+from any of the above. `oc_tifflzw` holds both directions of TIFF LZW;
+the encoder replaced a vendored excerpt of imagecodecs' `imcd.c` and is
+written against TIFF 6.0 section 13.
 
 The `rgbe` files carry no explicit license grant upstream. They are
 distributed here in the form they have been circulated in since 1997.
