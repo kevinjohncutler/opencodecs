@@ -43,3 +43,9 @@ bench_data/
 # live in docs/avif_backends_and_tiling.md instead.
 bench/avif_speedup/
 bench/jxl_gainmap_experiment/
+
+# macOS SMB tombstones. The client renames a file to .smbdeleteXXXX when
+# it is unlinked while another process still has it open, which happens
+# on every in-place rebuild that replaces a loaded .so. They are inert
+# and vanish once the handle closes.
+.smbdelete*
