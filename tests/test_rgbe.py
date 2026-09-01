@@ -10,6 +10,8 @@ Validates against:
 
 from __future__ import annotations
 
+import pathlib
+
 import numpy as np
 import pytest
 
@@ -224,3 +226,37 @@ def test_rgbe_rejects_a_malformed_resolution_line():
     for bad in (b"-Z 8 +X 4", b"-Y 8 +Y 4", b"-Y 0 +X 4", b"nonsense"):
         with pytest.raises(RgbeError):
             decode(_reorient(base, bad, body))
+
+
+_REAL_HDR = (pathlib.Path(__file__).parent.parent / ".test_data" / "hdr"
+             / "polyhaven_abandoned_bakery_1k.hdr")
+
+
+@pytest.mark.skipif(not _REAL_HDR.is_file(),
+                    reason="run tests/download_test_corpus.sh")
+def test_rgbe_decodes_a_real_radiance_file():
+    """A Radiance file written by somebody else, not by us.
+
+    Round-tripping our own encoder cannot catch what another writer does
+    differently, which is exactly how the resolution-line orientations
+    were missed. This one is CC0 from Poly Haven and carries genuine HDR
+    content, values up to ~3800 with a percent or so above 1.0, so the
+    exponent path is exercised rather than sitting in the SDR range.
+    """
+    blob = _REAL_HDR.read_bytes()
+    img = decode(blob)
+    assert img.shape == (512, 1024, 3)
+    assert img.dtype == np.float32
+    assert img.max() > 100.0, "expected real HDR values, not an SDR-range image"
+    assert (img > 1.0).any()
+    # and it must survive our own encoder
+    np.testing.assert_array_equal(decode(encode(img)), img)
+
+
+@pytest.mark.skipif(not _REAL_HDR.is_file(),
+                    reason="run tests/download_test_corpus.sh")
+def test_rgbe_real_file_matches_imagecodecs():
+    imagecodecs = pytest.importorskip("imagecodecs")
+    blob = _REAL_HDR.read_bytes()
+    np.testing.assert_array_equal(
+        decode(blob), np.asarray(imagecodecs.rgbe_decode(blob), dtype=np.float32))

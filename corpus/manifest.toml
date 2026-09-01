@@ -345,3 +345,15 @@ notes = "The reference QOI benchmark set. Large enough to be opt-in rather than 
   [[dataset.file]]
   url = "https://qoiformat.org/benchmark/qoi_benchmark_suite.tar"
   path = ".test_data/qoi/qoi_benchmark_suite.tar"
+
+[[dataset]]
+id = "hdr_polyhaven"
+name = "Poly Haven HDRI: Radiance RGBE environment map (~1.7 MB)"
+license = "CC0-1.0"
+codecs = ["rgbe"]
+homepage = "https://polyhaven.com/hdris"
+notes = "A real Radiance file written by somebody else, which is the point: our own encoder cannot produce the header quirks a real writer does. Genuine HDR content, values to 3808 with 1.4% above 1.0, so the exponent path is actually exercised rather than sitting in the SDR range."
+
+  [[dataset.file]]
+  url = "https://dl.polyhaven.org/file/ph-assets/HDRIs/hdr/1k/abandoned_bakery_1k.hdr"
+  path = ".test_data/hdr/polyhaven_abandoned_bakery_1k.hdr"

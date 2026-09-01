@@ -44,7 +44,8 @@ mkdir -p \
     .test_data/tiff/libtiff_pics .test_data/tiff/cog \
     .test_data/tiff/geotiff .test_data/tiff/wsi \
     .test_data/ndtiff .test_data/nd2 .test_data/lif .test_data/oib \
-    .test_data/oir .test_data/vsi .test_data/eer .test_data/sdrbench
+    .test_data/oir .test_data/vsi .test_data/eer .test_data/sdrbench \
+    .test_data/hdr
 
 # Download helper that skips if the file already exists with non-zero size.
 fetch() {
@@ -74,6 +75,15 @@ if [ "$EER_ONLY" = "1" ]; then
     echo "[eer mode] done"
     exit 0
 fi
+
+# ----- Radiance HDR: Poly Haven environment map, CC0 (~1.7 MB) -----
+# A real .hdr written by somebody else. Our own encoder cannot produce
+# the header quirks a real writer does, and this is the file that
+# exercises the exponent path with genuine HDR values rather than an
+# SDR-range synthetic.
+fetch \
+    "https://dl.polyhaven.org/file/ph-assets/HDRIs/hdr/1k/abandoned_bakery_1k.hdr" \
+    ".test_data/hdr/polyhaven_abandoned_bakery_1k.hdr" || true
 
 # ----- SDRBench: reference scientific arrays (~140 MB) -----
 # The byte- and float-oriented compressors cannot be judged on images or
