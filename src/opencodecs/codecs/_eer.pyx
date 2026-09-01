@@ -33,9 +33,10 @@ binary uint8 count clipped to [0, 255].
 Implementation
 ==============
 
-The decoder is a self-contained excerpt from imagecodecs' BSD-3
-licensed ``imcd.c`` (Christoph Gohlke), vendored under
-``3rdparty/imcd_eer/``. No runtime dependency on imagecodecs.
+The decoder lives in ``3rdparty/oc_eer/`` and is opencodecs' own
+code, written against the bitstream layout that RELION's
+``renderEER.cpp`` documents and validated against genuine Falcon 4
+output from EMPIAR-10568.
 """
 
 from libc.stdint cimport uint8_t, uint16_t, uint32_t
@@ -44,8 +45,8 @@ import numpy as np
 cimport numpy as cnp
 
 from eer cimport (
-    opencodecs_eer_decode_u1,
-    opencodecs_eer_decode_u2,
+    oc_eer_decode_u8,
+    oc_eer_decode_u16,
 )
 
 cnp.import_array()
@@ -151,16 +152,18 @@ def decode(
 
     with nogil:
         if use_u2:
-            ret = opencodecs_eer_decode_u2(
-                &src[0], srcsize, p16, height, width,
-                <uint32_t> skipbits, <uint32_t> horzbits,
-                <uint32_t> vertbits, <uint32_t> superres,
+            ret = oc_eer_decode_u16(
+                &src[0], <size_t> srcsize, p16,
+                <size_t> height, <size_t> width,
+                <unsigned> skipbits, <unsigned> horzbits,
+                <unsigned> vertbits, <unsigned> superres,
             )
         else:
-            ret = opencodecs_eer_decode_u1(
-                &src[0], srcsize, p8, height, width,
-                <uint32_t> skipbits, <uint32_t> horzbits,
-                <uint32_t> vertbits, <uint32_t> superres,
+            ret = oc_eer_decode_u8(
+                &src[0], <size_t> srcsize, p8,
+                <size_t> height, <size_t> width,
+                <unsigned> skipbits, <unsigned> horzbits,
+                <unsigned> vertbits, <unsigned> superres,
             )
 
     if ret < 0:

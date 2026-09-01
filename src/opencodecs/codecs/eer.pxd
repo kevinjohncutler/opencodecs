@@ -1,24 +1,22 @@
-# Cython declarations for the vendored EER decoder shim.
+# opencodecs/codecs/eer.pxd
+# cython: language_level = 3
+"""Cython declarations for opencodecs' EER decoder (3rdparty/oc_eer)."""
 
-from libc.stdint cimport uint8_t, uint16_t, uint32_t
+from libc.stdint cimport uint8_t, uint16_t
 
 
-cdef extern from "eer.h" nogil:
-    int EER_OK
-    int EER_VALUE_ERROR
-    int EER_INPUT_CORRUPT
-    int EER_OUTPUT_TOO_SMALL
+cdef extern from "oc_eer.h" nogil:
 
-    ssize_t opencodecs_eer_decode_u1(
-        const uint8_t* src, ssize_t srcsize,
-        uint8_t* dst, ssize_t height, ssize_t width,
-        uint32_t skipbits, uint32_t horzbits, uint32_t vertbits,
-        uint32_t superres,
+    ptrdiff_t oc_eer_decode_u8(
+        const uint8_t* src, size_t srcsize,
+        uint8_t* dst, size_t height, size_t width,
+        unsigned skipbits, unsigned horzbits, unsigned vertbits,
+        unsigned superres,
     )
 
-    ssize_t opencodecs_eer_decode_u2(
-        const uint8_t* src, ssize_t srcsize,
-        uint16_t* dst, ssize_t height, ssize_t width,
-        uint32_t skipbits, uint32_t horzbits, uint32_t vertbits,
-        uint32_t superres,
+    ptrdiff_t oc_eer_decode_u16(
+        const uint8_t* src, size_t srcsize,
+        uint16_t* dst, size_t height, size_t width,
+        unsigned skipbits, unsigned horzbits, unsigned vertbits,
+        unsigned superres,
     )

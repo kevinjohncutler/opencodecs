@@ -40,6 +40,45 @@ entry left over from the ``_uhdr`` rename. New
 set of ``.pyx`` sources agree in both directions, so the next
 occurrence is a failing test rather than a hang.
 
+**EER decoder is now ours, and 1.7x faster**
+
+Replaces the vendored excerpt of imagecodecs' ``imcd.c`` with an
+implementation in ``3rdparty/oc_eer/``, written against the bitstream
+layout documented by RELION's ``renderEER.cpp`` and validated on genuine
+Falcon 4 output. ``3rdparty/imcd_eer/`` is deleted. No imagecodecs code
+remains in the repository.
+
+Two format details were established from the reference implementation
+rather than guessed:
+
+* **Sub-pixel inversion is width-independent.** RELION XORs the packed
+  symbol with ``0x0A`` for 2+2 bit fields and ``0x03`` for 1+1, and both
+  constants flip exactly the MSB of each field. imagecodecs applies that
+  inversion at widths 1 and 2 but not 3 and 4. Falcon hardware only ever
+  emits 1 or 2, so real data is unaffected, but we apply the rule
+  uniformly and pin the divergence in a test.
+* **A frame ends by landing exactly on its last cell.** All 12
+  EMPIAR-10568 frames checked terminate with position exactly equal to
+  the frame size and 1 to 120 bits of footer left over, so leftover bits
+  cannot indicate a bad shape. Overshooting the frame does.
+
+Measured against ``imagecodecs.eer_decode`` on a real 4096x4096 frame:
+
+.. code-block:: text
+
+    superres=0  ->  4096x4096     1.15 ms vs 2.02 ms   1.76x
+    superres=1  ->  8192x8192     2.55 ms vs 4.27 ms   1.67x
+    superres=2  -> 16384x16384    5.73 ms vs 9.55 ms   1.67x
+
+Output is byte-identical to imagecodecs on all 12 real frames at every
+super-resolution level.
+
+``tests/download_test_corpus.sh --eer`` fetches the EMPIAR-10568
+micrograph (CC0, ~220 MB) into the gitignored ``.test_data/``. The real
+-data tests skip cleanly without it, so CI is unaffected; the synthetic
+frame generator in ``tests/test_eer.py`` covers the same paths without a
+download.
+
 **TIFF LZW encoder is now ours, and 1.4x faster**
 
 Replaces the vendored excerpt of imagecodecs' ``imcd.c`` with an

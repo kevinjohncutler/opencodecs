@@ -17,10 +17,17 @@
 set -eu
 
 LIGHT=0
-if [ "${1:-}" = "--light" ]; then
-    LIGHT=1
-    echo "[light mode] skipping large microscopy fixtures (CZI + OME-TIFF)"
-fi
+EER_ONLY=0
+case "${1:-}" in
+    --light)
+        LIGHT=1
+        echo "[light mode] skipping large microscopy fixtures (CZI + OME-TIFF)"
+        ;;
+    --eer)
+        EER_ONLY=1
+        echo "[eer mode] fetching only the Falcon 4 EER micrograph (~220 MB)"
+        ;;
+esac
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT"
@@ -32,7 +39,7 @@ mkdir -p \
     .test_data/tiff/libtiff_pics .test_data/tiff/cog \
     .test_data/tiff/geotiff .test_data/tiff/wsi \
     .test_data/ndtiff .test_data/nd2 .test_data/lif .test_data/oib \
-    .test_data/oir .test_data/vsi
+    .test_data/oir .test_data/vsi .test_data/eer
 
 # Download helper that skips if the file already exists with non-zero size.
 fetch() {
@@ -46,6 +53,22 @@ fetch() {
     curl -L --fail --max-time 600 -o "$dest.tmp" "$url"
     mv "$dest.tmp" "$dest"
 }
+
+# ----- EER: Falcon 4 micrograph from EMPIAR-10568 (~220 MB) -----
+# Genuine Thermo Fisher Falcon 4 output: 4096x4096, 721 frames,
+# compression 65001 (7-bit RLE, 2+2 sub-pixel bits), CC0.
+#   https://empiar.pdbj.org/en/entry/10568/
+# Synthetic bitstreams cannot stand in for this. A real frame terminates
+# by walking its position exactly onto the last cell and then carries a
+# trailing footer, and that is the behavior the decoder's termination
+# rule is built around. Opt-in because of the size: pass --eer.
+if [ "$EER_ONLY" = "1" ]; then
+    fetch \
+        "https://ftp.ebi.ac.uk/empiar/world_availability/10568/data/Images-Disc1/GridSquare_8824187/Data/FoilHole_8851341_Data_8849615_8849617_20200709_154330.eer" \
+        ".test_data/eer/empiar10568_falcon4.eer"
+    echo "[eer mode] done"
+    exit 0
+fi
 
 # ----- CZI: pyramid CZI from OME public mirror -----
 if [ "$LIGHT" = "0" ]; then

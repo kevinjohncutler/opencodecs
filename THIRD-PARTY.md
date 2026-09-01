@@ -13,7 +13,7 @@ alongside the source.
 
 | Component | Path | Upstream | License |
 |---|---|---|---|
-| imcd (EER decoder excerpt) | `3rdparty/imcd_eer/` | imagecodecs, Christoph Gohlke | BSD-3-Clause (`LICENSE`) |
+| oc_eer | `3rdparty/oc_eer/` | opencodecs authors | MIT (`LICENSE`) |
 | bcdec | `3rdparty/bcdec/` | Sergii Kudlai | MIT or public domain, dual (`LICENSE`) |
 | bitshuffle | `3rdparty/bitshuffle/` | Kiyoshi Masui | MIT (`LICENSE`) |
 | cfitsio (rice, hcompress, plio) | `3rdparty/cfitsio/` | NASA / HEASARC | Permissive NASA notice (`License.txt`) |
@@ -23,8 +23,8 @@ alongside the source.
 | oc_giflzw | `3rdparty/oc_giflzw/` | opencodecs authors | MIT (`LICENSE`) |
 | oc_tifflzw | `3rdparty/oc_tifflzw/` | opencodecs authors | MIT (`LICENSE`) |
 
-`oc_giflzw` and `oc_tifflzw` are original opencodecs work, not derived
-from any of the above. `oc_tifflzw` holds both directions of TIFF LZW;
+`oc_giflzw`, `oc_tifflzw` and `oc_eer` are original opencodecs work, not
+derived from any of the above. `oc_tifflzw` holds both directions of TIFF LZW;
 the encoder replaced a vendored excerpt of imagecodecs' `imcd.c` and is
 written against TIFF 6.0 section 13.
 
@@ -36,10 +36,11 @@ Anyone with better provenance information is invited to open an issue.
 
 [imagecodecs](https://github.com/cgohlke/imagecodecs) is BSD-3-Clause,
 Copyright (c) 2008-2026 Christoph Gohlke. opencodecs began as a fork of
-it, and two vendored C components under `3rdparty/` are still excerpts
-of its `imcd.c` (see section 1).
+it. No code from it remains: the two vendored `imcd.c` excerpts, the
+TIFF LZW encoder and the EER decoder, have both been replaced by our
+own implementations.
 
-No Cython source in this repository is derived from it. Two `.pxd`
+Nothing in this repository is derived from it. Two `.pxd`
 files had been copied from imagecodecs; `libjxl.pxd` has been rewritten
 from the libjxl 0.11.2 public headers and now declares only the subset
 opencodecs calls, and `libultrahdr.pxd` was unused and has been

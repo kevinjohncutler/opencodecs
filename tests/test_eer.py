@@ -11,6 +11,8 @@ present) covers parameter combinations on random bitstreams.
 
 from __future__ import annotations
 
+import pathlib
+
 import numpy as np
 import pytest
 
@@ -84,64 +86,116 @@ def test_eer_rejects_invalid_params():
         decode(SPEC_ENCODED, (16, 16), 7, 0, 1)
 
 
-def test_eer_imagecodecs_cross_validate():
-    """Random bitstreams must decode identically to imagecodecs.
+def _encode_frame(events, ncells, sb, hb, vb):
+    """Build a well-formed EER frame: the events, then a final skip that
+    lands exactly on the last cell, then ones padding to a byte edge.
 
-    EER's "skip" field can advance past the end of small canvases on
-    random input — we use a 1024x1024 canvas so most parameter combos
-    decode cleanly. When *either* implementation errors we just
-    cross-check that *both* implementations error on the same input.
+    Random bytes are NOT a valid frame -- they have no terminator, so two
+    decoders can legitimately disagree about whether the last few bits of
+    padding form one more event. Generating real frames tests decoding
+    instead of tail-handling trivia.
+    """
+    bits = []
+
+    def put(value, n):
+        for i in range(n):
+            bits.append((value >> i) & 1)
+
+    maxskip = (1 << sb) - 1
+    prev = 0
+    for pos, horz, vert in events:
+        gap = pos - prev
+        while gap >= maxskip:            # continuations for long gaps
+            put(maxskip, sb)
+            gap -= maxskip
+        put(gap, sb)
+        put(horz, hb)
+        put(vert, vb)
+        prev = pos + 1
+    gap = ncells - prev                  # terminate by exact fill
+    while gap >= maxskip:
+        put(maxskip, sb)
+        gap -= maxskip
+    put(gap, sb)
+    while len(bits) % 8:
+        bits.append(1)
+    return bytes(sum(b << j for j, b in enumerate(bits[i:i + 8]))
+                 for i in range(0, len(bits), 8))
+
+
+def test_eer_decodes_generated_frames():
+    """Round-trip well-formed frames we build ourselves. No imagecodecs."""
+    rng = np.random.default_rng(7)
+    for sb in (7, 8):
+        for hb in (1, 2):
+            for vb in (1, 2):
+                shape = (64, 64)
+                ncells = shape[0] * shape[1]
+                pos = sorted(rng.choice(ncells - 1, size=40, replace=False).tolist())
+                events = [(int(p), int(rng.integers(0, 1 << hb)),
+                           int(rng.integers(0, 1 << vb))) for p in pos]
+                data = _encode_frame(events, ncells, sb, hb, vb)
+                im = decode(data, shape, sb, hb, vb, superres=0)
+                got = sorted(int(r) * shape[1] + int(c)
+                             for r, c in zip(*np.nonzero(im)))
+                assert got == [p for p, _, _ in events], (
+                    f"sb={sb} hb={hb} vb={vb}")
+
+
+# Real Falcon 4 data. Downloaded by tests/download_test_corpus.sh into the
+# gitignored .test_data/, so this skips cleanly in CI and on a fresh clone.
+# EMPIAR-10568, Krios G4 apoferritin, 4096x4096, 721 frames, compression
+# 65001 (7-bit RLE with 2+2 sub-pixel bits), CC0.
+_REAL_EER = (pathlib.Path(__file__).parent.parent
+             / ".test_data" / "eer" / "empiar10568_falcon4.eer")
+
+
+@pytest.mark.skipif(not _REAL_EER.is_file(),
+                    reason="run tests/download_test_corpus.sh --eer")
+@pytest.mark.parametrize("superres", [0, 1, 2])
+def test_eer_real_falcon4_matches_imagecodecs(superres):
+    """Cross-validate on genuine camera output, not synthetic bitstreams.
+
+    Random bytes are not a valid EER frame: they carry no terminator, so
+    two decoders can legitimately disagree about whether trailing padding
+    forms one more event. Real frames end by walking the position exactly
+    onto the last cell, which is unambiguous.
     """
     imagecodecs = pytest.importorskip("imagecodecs")
+    tifffile = pytest.importorskip("tifffile")
     if not getattr(imagecodecs, "EER", None) or not imagecodecs.EER.available:
         pytest.skip("imagecodecs EER backend unavailable")
 
-    rng = np.random.default_rng(42)
-    data = rng.bytes(4096)
-    matched = 0
-    skipped_disagreed_on_error = 0
-    for sb in (7, 8, 10):
-        for hb in (2, 3):
-            for vb in (2, 3):
-                if not (8 < sb + hb + vb < 17):
-                    continue
-                for sr in (0, 1, 2):
-                    shape = (1024, 1024)
-                    ours_err = None
-                    theirs_err = None
-                    try:
-                        ours = decode(data, shape, sb, hb, vb, superres=sr)
-                    except EerError as e:
-                        ours_err = e
-                    try:
-                        theirs = imagecodecs.eer_decode(
-                            data, shape, sb, hb, vb, superres=sr
-                        )
-                    except Exception as e:
-                        theirs_err = e
-                    # imagecodecs 2026.5+ tightened its output-buffer
-                    # sizing for EER and now raises IMCD_OUTPUT_TOO_SMALL
-                    # on synthetic-random bitstreams that our looser
-                    # decoder accepts. Skip the combos where the two
-                    # implementations no longer agree on whether the
-                    # input is decodable — the per-bit unit tests
-                    # already cover the encoding-level correctness.
-                    if (ours_err is None) != (theirs_err is None):
-                        skipped_disagreed_on_error += 1
-                        continue
-                    if ours_err is not None:
-                        continue
-                    np.testing.assert_array_equal(
-                        ours, theirs,
-                        err_msg=(
-                            f"divergence at sb={sb} hb={hb} vb={vb} sr={sr}"
-                        ),
-                    )
-                    matched += 1
-    assert matched > 0, (
-        f"no parameter combo decoded cleanly in both implementations "
-        f"(skipped {skipped_disagreed_on_error} due to error-disagreement)"
-    )
+    factor = 1 << superres
+    shape = (4096 * factor, 4096 * factor)
+    with tifffile.TiffFile(_REAL_EER) as tif:
+        fh = tif.filehandle
+        for index in range(4):
+            page = tif.pages[index]
+            fh.seek(page.dataoffsets[0])
+            raw = fh.read(page.databytecounts[0])
+            ours = decode(raw, shape, 7, 2, 2, superres=superres)
+            theirs = imagecodecs.eer_decode(raw, shape, 7, 2, 2,
+                                            superres=superres)
+            np.testing.assert_array_equal(
+                ours, theirs, err_msg=f"frame {index}, superres={superres}")
+
+
+@pytest.mark.skipif(not _REAL_EER.is_file(),
+                    reason="run tests/download_test_corpus.sh --eer")
+def test_eer_real_falcon4_frame_is_exactly_filled():
+    """Every real frame terminates by landing exactly on the last cell,
+    which is why exact fill is normal termination and overshoot is not."""
+    tifffile = pytest.importorskip("tifffile")
+    with tifffile.TiffFile(_REAL_EER) as tif:
+        fh = tif.filehandle
+        for index in range(4):
+            page = tif.pages[index]
+            fh.seek(page.dataoffsets[0])
+            raw = fh.read(page.databytecounts[0])
+            im = decode(raw, (4096, 4096), 7, 2, 2, superres=0)
+            # ~197k electrons per 3 ms frame at this dose rate
+            assert 150_000 < int(im.sum()) < 250_000
 
 
 def test_eer_in_tiff_dispatch_via_tiffstream():
@@ -396,3 +450,64 @@ def test_eer_codec_encode_raises():
     import opencodecs as oc
     with pytest.raises(NotImplementedError):
         oc.get_codec("eer").encode(np.zeros((4, 4), dtype=np.uint8))
+
+
+# ---------------------------------------------------------------------------
+# Sub-pixel inversion, and where imagecodecs gets it wrong
+# ---------------------------------------------------------------------------
+
+
+def _one_event(field, nbits, skipbits=7, vertbits=1):
+    """A one-event stream at base position 0 with horz=field, vert=0."""
+    bits = []
+
+    def put(value, n):
+        for i in range(n):
+            bits.append((value >> i) & 1)
+
+    put(0, skipbits)
+    put(field, nbits)
+    put(0, vertbits)
+    while len(bits) % 8:          # EER frames are byte aligned; pad with ones
+        bits.append(1)
+    return bytes(sum(b << j for j, b in enumerate(bits[i:i + 8]))
+                 for i in range(0, len(bits), 8))
+
+
+@pytest.mark.parametrize("horzbits", [1, 2, 3, 4])
+def test_eer_subpixel_inversion_is_width_independent(horzbits):
+    """The top bit of each sub-pixel field is inverted, at every width.
+
+    Ground truth is RELION's renderEER.cpp, which XORs the packed symbol:
+
+        s = ((chunk >> 7) & 15) ^ 0x0A;   // 2 horz + 2 vert bits
+        s = ((chunk >> 7) &  3) ^ 3;      // 1 horz + 1 vert bits
+
+    0x0A is 0b1010 and 0x03 is 0b11. Both flip exactly the MSB of each
+    field and leave the low bits alone, so the rule does not depend on
+    the field width and we apply it uniformly.
+
+    imagecodecs applies the inversion at widths 1 and 2 but not 3 and 4.
+    Real Falcon hardware only emits 1 or 2, so that does not affect real
+    data, but it does mean this test is deliberately NOT cross-validated
+    against imagecodecs.
+    """
+    cols = []
+    for field in range(1 << horzbits):
+        im = decode(_one_event(field, horzbits), (8, 16), 7, horzbits, 1,
+                    superres=1)
+        cols.append(int(np.nonzero(im)[1][0]))
+    assert cols == [1 - (f >> (horzbits - 1)) for f in range(1 << horzbits)]
+
+
+def test_eer_frame_terminates_on_exact_fill_not_overshoot():
+    """A frame ends when its final skip lands exactly on the last cell.
+
+    Real frames always end that way and carry a trailing footer, so
+    "bits remain" cannot mean the shape was wrong. Overshooting the
+    frame is what indicates an undersized output.
+    """
+    # 20x16 holds the spec vector's four events, the last at 311
+    assert int(decode(SPEC_ENCODED, (20, 16), 7, 1, 1).sum()) == 4
+    with pytest.raises(EerError):
+        decode(SPEC_ENCODED, (19, 15), 7, 1, 1)     # 285 cells, overshoots

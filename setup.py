@@ -1516,12 +1516,12 @@ extensions = [
         name="opencodecs.codecs._eer",
         sources=[
             "src/opencodecs/codecs/_eer.pyx",
-            "3rdparty/imcd_eer/eer.c",
+            "3rdparty/oc_eer/oc_eer.c",
         ],
         include_dirs=[
             str(PKG_CODECS),
             numpy.get_include(),
-            "3rdparty/imcd_eer",
+            "3rdparty/oc_eer",
         ],
         define_macros=[
             ("NPY_NO_DEPRECATED_API", "NPY_1_7_API_VERSION"),
