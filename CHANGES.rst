@@ -57,19 +57,26 @@ Generalizing the cfitsio finding, each third-party source under
     rgbe        no live upstream
 
 ``rgbe`` deserves the note. It is not stale for want of a maintainer:
-the format was frozen in 1991 and essentially every implementation
-descends from Bruce Walter's 1995 reference, three.js's RGBELoader
-included. There is nothing newer to move to.
+the format was frozen in 1991 and the maintained implementations all
+descend from Bruce Walter's 1995 reference. OpenImageIO's
+``hdrinput.cpp`` says so in its own header, and three.js's RGBELoader is
+adapted from the same file. There is nothing newer to move to.
 
-There was, however, real performance left on the table. ``rgbe2float``
-called ``ldexp()`` once per pixel, a libm call in the hot loop of every
-decode. The exponent is one byte, so all 256 scale factors fit in a
-table built once, which also folds away the nonzero-pixel branch:
+Compared against OpenImageIO rather than assumed, since it is the most
+actively maintained C++ version. Its RLE validation turns out to be
+check-for-check identical to ours, so the fixes this copy already
+carried had brought it to par. It did have one thing we lacked.
+
+``rgbe2float`` called ``ldexp()`` once per pixel, a libm call in the hot
+loop of every decode. The exponent is one byte, so all 256 scale factors
+fit in a compile-time table, which OpenImageIO already does. Entry 0 is
+set to zero rather than ``2**-136`` so the nonzero-pixel branch folds
+away as well, which OpenImageIO still pays for:
 
 .. code-block:: text
 
-    1024x1024 (1 MP)    2.6 ms -> 2.2 ms   404 -> 468 MP/s
-    2048x2048 (4 MP)   10.6 ms -> 6.2 ms   396 -> 679 MP/s   1.71x
+    1024x1024 (1 MP)    2.6 ms -> 2.2 ms   404 -> 486 MP/s
+    2048x2048 (4 MP)   10.6 ms -> 6.0 ms   396 -> 695 MP/s   1.77x
 
 Output is bit-identical, cross-checked against imagecodecs' independent
 per-pixel ``ldexp`` decoder over inputs spanning 40 orders of magnitude
