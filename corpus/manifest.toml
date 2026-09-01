@@ -1,0 +1,312 @@
+# opencodecs reference corpus.
+#
+# Fetch-from-origin: nothing here is redistributed. Each entry records
+# where a file lives upstream, what it is licensed under, and which
+# codecs it exercises, so "which codec has no real data behind it" is a
+# query rather than a guess.
+#
+# license = "unverified" means the terms were not confirmed from the
+# source page. That is a TODO, not a claim, and it only becomes load-
+# bearing if we ever mirror instead of linking.
+
+schema = 1
+
+[[dataset]]
+id = "eer_empiar10568"
+name = "EER: Falcon 4 micrograph from EMPIAR-10568 (~220 MB)"
+license = "CC0-1.0"
+codecs = ["eer"]
+homepage = "https://empiar.pdbj.org/en/entry/10568/"
+notes = "Genuine Thermo Fisher Falcon 4 output: 4096x4096, 721 frames, compression 65001 (7-bit RLE, 2+2 sub-pixel bits), CC0. https://empiar.pdbj.org/en/entry/10568/ Synthetic bitstreams cannot stand in for\nthis. A real frame terminates by walking its position exactly onto the last cell and then carries a trailing footer, and that is the behavior the decoder's termination rule is built around. Opt-in\nbecause of the size: pass --eer."
+  [[dataset.file]]
+  url = "https://ftp.ebi.ac.uk/empiar/world_availability/10568/data/Images-Disc1/GridSquare_8824187/Data/FoilHole_8851341_Data_8849615_8849617_20200709_154330.eer"
+  path = ".test_data/eer/empiar10568_falcon4.eer"
+
+[[dataset]]
+id = "czi_zeiss_pyramid"
+name = "CZI: pyramid CZI from OME public mirror"
+license = "CC-BY-4.0"
+codecs = ["czi", "zstd"]
+homepage = "https://downloads.openmicroscopy.org/images/Zeiss-CZI/"
+  [[dataset.file]]
+  url = "https://downloads.openmicroscopy.org/images/Zeiss-CZI/zenodo-10577186/2023_11_30__RecognizedCode-27.czi"
+  path = ".test_data/czi/ome_axioscan_pyramid.czi"
+
+[[dataset]]
+id = "ometiff_retina"
+name = "OME-TIFF: sub-resolution pyramid (bioformats output)"
+license = "CC-BY-4.0"
+codecs = ["tiff", "deflate"]
+homepage = "https://downloads.openmicroscopy.org/images/OME-TIFF/"
+  [[dataset.file]]
+  url = "https://downloads.openmicroscopy.org/images/OME-TIFF/2016-06/sub-resolutions/Z-stack/retina_large.ome.tiff"
+  path = ".test_data/ome_tiff/retina_pyramid.ome.tiff"
+
+[[dataset]]
+id = "omezarr_idr0062"
+name = "OME-Zarr: subset of an IDR dataset (NGFF v0.4)"
+license = "CC-BY-4.0"
+codecs = ["blosc2", "zstd"]
+homepage = "https://idr.openmicroscopy.org/"
+  [[dataset.file]]
+  url = "https://uk1s3.embassy.ebi.ac.uk/idr/zarr/v0.4/idr0062A/6001240.zarr/.zattrs"
+  path = ".test_data/ome_zarr/idr_sample.zarr/.zattrs"
+  [[dataset.file]]
+  url = "https://uk1s3.embassy.ebi.ac.uk/idr/zarr/v0.4/idr0062A/6001240.zarr/.zgroup"
+  path = ".test_data/ome_zarr/idr_sample.zarr/.zgroup"
+  [[dataset.file]]
+  url = "https://uk1s3.embassy.ebi.ac.uk/idr/zarr/v0.4/idr0062A/6001240.zarr/2/.zarray"
+  path = ".test_data/ome_zarr/idr_sample.zarr/2/.zarray"
+  [[dataset.file]]
+  url = "https://uk1s3.embassy.ebi.ac.uk/idr/zarr/v0.4/idr0062A/6001240.zarr/2/0/0/0/0"
+  path = ".test_data/ome_zarr/idr_sample.zarr/2/0/0/0/0"
+  [[dataset.file]]
+  url = "https://uk1s3.embassy.ebi.ac.uk/idr/zarr/v0.4/idr0062A/6001240.zarr/2/0/100/0/0"
+  path = ".test_data/ome_zarr/idr_sample.zarr/2/0/100/0/0"
+  [[dataset.file]]
+  url = "https://uk1s3.embassy.ebi.ac.uk/idr/zarr/v0.4/idr0062A/6001240.zarr/2/0/200/0/0"
+  path = ".test_data/ome_zarr/idr_sample.zarr/2/0/200/0/0"
+  [[dataset.file]]
+  url = "https://uk1s3.embassy.ebi.ac.uk/idr/zarr/v0.4/idr0062A/6001240.zarr/2/0/235/0/0"
+  path = ".test_data/ome_zarr/idr_sample.zarr/2/0/235/0/0"
+  [[dataset.file]]
+  url = "https://uk1s3.embassy.ebi.ac.uk/idr/zarr/v0.4/idr0062A/6001240.zarr/2/1/0/0/0"
+  path = ".test_data/ome_zarr/idr_sample.zarr/2/1/0/0/0"
+  [[dataset.file]]
+  url = "https://uk1s3.embassy.ebi.ac.uk/idr/zarr/v0.4/idr0062A/6001240.zarr/2/1/100/0/0"
+  path = ".test_data/ome_zarr/idr_sample.zarr/2/1/100/0/0"
+  [[dataset.file]]
+  url = "https://uk1s3.embassy.ebi.ac.uk/idr/zarr/v0.4/idr0062A/6001240.zarr/2/1/200/0/0"
+  path = ".test_data/ome_zarr/idr_sample.zarr/2/1/200/0/0"
+  [[dataset.file]]
+  url = "https://uk1s3.embassy.ebi.ac.uk/idr/zarr/v0.4/idr0062A/6001240.zarr/2/1/235/0/0"
+  path = ".test_data/ome_zarr/idr_sample.zarr/2/1/235/0/0"
+
+[[dataset]]
+id = "png_pngsuite"
+name = "PngSuite: canonical PNG variant test set (~70 KB tarball)"
+license = "unverified"
+codecs = ["png", "deflate"]
+homepage = "http://www.schaik.com/pngsuite/"
+notes = "Covers every PNG bit depth, color type, filter, gamma, transparency, ICC, and interlacing case. Single source of truth for PNG decoder correctness across the spec surface."
+  [[dataset.file]]
+  url = "http://www.schaik.com/pngsuite/PngSuite-2017jul19.tgz"
+  path = ".test_data/png/PngSuite-2017jul19.tgz"
+
+[[dataset]]
+id = "kodak24"
+name = "Kodak24: 24-image photographic codec benchmark set (~10 MB)"
+license = "unverified"
+codecs = ["png", "jpeg", "jxl", "avif", "webp", "heif", "mozjpeg", "brunsli"]
+homepage = "https://r0k.us/graphics/kodak/"
+notes = "THE standard image-codec quality bench set. Same images used in every JPEG / WebP / AVIF / JXL paper for the last 30 years. Lets us measure lossy-codec quality + speed on real photos, not random data."
+  [[dataset.file]]
+  url = "https://r0k.us/graphics/kodak/kodak/kodim${i}.png"
+  path = ".test_data/png/kodak24/kodim${i}.png"
+
+[[dataset]]
+id = "dicom_emri_small"
+name = "DICOM: pydicom-data emri_small (functional MRI volume, ~85 KB)"
+license = "MIT"
+codecs = ["charls", "jpeg2k"]
+homepage = "https://github.com/pydicom/pydicom-data"
+notes = "Public-domain DICOM sample. Exercises our _dicomweb path on real bytes from a different toolchain than ours."
+  [[dataset.file]]
+  url = "https://raw.githubusercontent.com/pydicom/pydicom-data/master/data_store/data/emri_small.dcm"
+  path = ".test_data/dicom/emri_small.dcm"
+
+[[dataset]]
+id = "fits_horsehead"
+name = "FITS: HorseHead nebula (~1.6 MB)"
+license = "BSD-3-Clause"
+codecs = ["rcomp", "hcomp", "plio"]
+homepage = "https://www.astropy.org/"
+notes = "Astropy tutorials sample. Real Hubble exposure as int16 \u2014 exercises our _fits reader on data from a non-microscopy scientific domain."
+  [[dataset.file]]
+  url = "https://www.astropy.org/astropy-data/tutorials/FITS-images/HorseHead.fits"
+  path = ".test_data/fits/HorseHead.fits"
+
+[[dataset]]
+id = "heif_nokia_c001"
+name = "HEIF: Nokia conformance file C001 (~870 KB)"
+license = "unverified"
+codecs = ["heif"]
+homepage = "https://github.com/nokiatech/heif"
+notes = "Reference HEIC from the HEIF conformance suite. Real Apple/Nokia HEIC layout (single still). License: BSD-3 (Nokia conformance repo)."
+  [[dataset.file]]
+  url = "https://raw.githubusercontent.com/nokiatech/heif_conformance/master/conformance_files/C001.heic"
+  path = ".test_data/heif/C001.heic"
+
+[[dataset]]
+id = "tiff_libtiff_pics"
+name = "libtiff pics-3.8.0: canonical TIFF compatibility corpus (~3.5 MB)"
+license = "libtiff"
+codecs = ["tiff", "jpeg", "jpeg2k"]
+homepage = "https://download.osgeo.org/libtiff/"
+notes = "Covers compression variants (NONE, PACKBITS, LZW, DEFLATE, CCITT, OLD-JPEG), bit depths (1/4/8), color types (gray, RGB, palette), strip vs tile layout, and multi-page. The de-facto reference set for\nany TIFF reader."
+  [[dataset.file]]
+  url = "https://download.osgeo.org/libtiff/pics-3.8.0.tar.gz"
+  path = ".test_data/tiff/pics-3.8.0.tar.gz"
+
+[[dataset]]
+id = "tiff_cog"
+name = "COG: real Cloud-Optimized GeoTIFFs from rio-cogeo's test corpus"
+license = "unverified"
+codecs = ["tiff", "deflate"]
+homepage = "https://github.com/cogeotiff/rio-cogeo"
+notes = "These are byte-exact COG layouts (overviews-first then header+IFD, tiled, sized to be tile-aligned). The 2000px file has full pyramid; image_float and image_colormap exercise the dtype + colormap\npaths."
+  [[dataset.file]]
+  url = "https://raw.githubusercontent.com/cogeotiff/rio-cogeo/master/tests/fixtures/image_2000px.tif"
+  path = ".test_data/tiff/cog/image_2000px.tif"
+  [[dataset.file]]
+  url = "https://raw.githubusercontent.com/cogeotiff/rio-cogeo/master/tests/fixtures/image_float.tif"
+  path = ".test_data/tiff/cog/image_float.tif"
+  [[dataset.file]]
+  url = "https://raw.githubusercontent.com/cogeotiff/rio-cogeo/master/tests/fixtures/image_colormap.tif"
+  path = ".test_data/tiff/cog/image_colormap.tif"
+
+[[dataset]]
+id = "tiff_geotiff"
+name = "GeoTIFF: ECW Cylindrical Equal-Area + USGS DEM (~5.5 MB)"
+license = "unverified"
+codecs = ["tiff", "deflate"]
+homepage = "https://download.osgeo.org/geotiff/"
+notes = "cea.tif is tile-based with full GeoKeys; i30dem.tif is a strip-based elevation model. Together they exercise both layout types as emitted by GDAL."
+  [[dataset.file]]
+  url = "https://download.osgeo.org/geotiff/samples/gdal_eg/cea.tif"
+  path = ".test_data/tiff/geotiff/cea.tif"
+  [[dataset.file]]
+  url = "https://download.osgeo.org/geotiff/samples/usgs/i30dem.tif"
+  path = ".test_data/tiff/geotiff/i30dem.tif"
+
+[[dataset]]
+id = "wsi_aperio_cmu1"
+name = "Aperio WSI: CMU-1-Small-Region.svs (~1.9 MB)"
+license = "unverified"
+codecs = ["tiff", "jpeg"]
+homepage = "https://openslide.cs.cmu.edu/download/openslide-testdata/"
+notes = "Real pathology whole-slide image (SVS = TIFF with Aperio extensions). Multi-page pyramid + JPEG-compressed tiles. The smallest public Aperio sample."
+  [[dataset.file]]
+  url = "https://openslide.cs.cmu.edu/download/openslide-testdata/Aperio/CMU-1-Small-Region.svs"
+  path = ".test_data/tiff/wsi/CMU-1-Small-Region.svs"
+
+[[dataset]]
+id = "czi_idr0011"
+name = "Small CZI: idr0011 plate well (~43 MB)"
+license = "CC-BY-4.0"
+codecs = ["czi", "zstd"]
+homepage = "https://idr.openmicroscopy.org/"
+notes = "Different ZEN version + much smaller content than the 505 MB Axioscan pyramid. Useful for fast CI runs that just need to exercise the CZI parser on real bytes."
+  [[dataset.file]]
+  url = "https://downloads.openmicroscopy.org/images/Zeiss-CZI/idr0011/Plate1-Blue-A_TS-Stinger/Plate1-Blue-A-02-Scene-1-P2-E1-01.czi"
+  path = ".test_data/czi/idr0011_plate1_scene1.czi"
+
+[[dataset]]
+id = "ndtiff_v3"
+name = "NDTiff v3: Micro-Manager test sample (~1.5 MB)"
+license = "BSD-3-Clause"
+codecs = ["ndtiff", "tiff"]
+homepage = "https://github.com/micro-manager/NDTiffStorage"
+notes = "Populates the previously-empty .test_data/ndtiff/ subdir. Real Micro-Manager 2 NDTiff layout: index file + multi-position TIFF stack. Exercises our _ndtiff reader."
+  [[dataset.file]]
+  url = "https://raw.githubusercontent.com/micro-manager/NDStorage/main/test_data/v3/ndtiff3.2_monochrome/NDTiff.index"
+  path = ".test_data/ndtiff/NDTiff.index"
+  [[dataset.file]]
+  url = "https://raw.githubusercontent.com/micro-manager/NDStorage/main/test_data/v3/ndtiff3.2_monochrome/NDTiff3.2_monochrome_NDTiffStack.tif"
+  path = ".test_data/ndtiff/NDTiff3.2_monochrome_NDTiffStack.tif"
+
+[[dataset]]
+id = "nd2_nikon"
+name = "ND2 sample: Nikon NIS-Elements (~13 MB)"
+license = "unverified"
+codecs = []
+homepage = "https://github.com/tlambert03/nd2"
+notes = "Smallest ND2 in the OME mirror. Exercises our (future) ND2 reader via the nd2 Python package. For now: format-detection sentinel."
+  [[dataset.file]]
+  url = "https://downloads.openmicroscopy.org/images/ND2/aryeh/MeOh_high_fluo_007.nd2"
+  path = ".test_data/nd2/MeOh_high_fluo_007.nd2"
+
+[[dataset]]
+id = "lif_leica"
+name = "LIF sample: Leica LAS-X (~230 KB)"
+license = "unverified"
+codecs = []
+homepage = "https://downloads.openmicroscopy.org/images/"
+notes = "Tiny, multi-image Leica LIF from the OME mirror. The smallest real LIF I could find. Exercises our (future) LIF reader."
+  [[dataset.file]]
+  url = "https://downloads.openmicroscopy.org/images/Leica-LIF/michael/PR2729_frameOrderCombinedScanTypes.lif"
+  path = ".test_data/lif/PR2729_frameOrderCombinedScanTypes.lif"
+
+[[dataset]]
+id = "oib_olympus"
+name = "OIB sample: Olympus FluoView (~25 MB)"
+license = "unverified"
+codecs = []
+homepage = "https://downloads.openmicroscopy.org/images/"
+notes = "Real Olympus FluoView OIB. Exercises our (future) OIB reader."
+  [[dataset.file]]
+  url = "https://downloads.openmicroscopy.org/images/Olympus-FluoView/imagesc-71616/20220824_4492_cord_dapi__iba568_60x.oib"
+  path = ".test_data/oib/imagesc_71616_60x.oib"
+
+[[dataset]]
+id = "vsi_olympus"
+name = "VSI: Olympus CellSens virtual-slide index (~110 KB)"
+license = "unverified"
+codecs = []
+homepage = "https://downloads.openmicroscopy.org/images/"
+notes = "Real Olympus VSI from the OME mirror. The top-level .vsi file is a TIFF (II*\\0 magic) containing the thumbnail + metadata; full-res pixel data lives in a sibling \".../_NAME_/stackN/frame_t_N.ets\"\ntree. We fetch the index AND the .ets companion so the VSI tests can exercise the SIS/ETS partial parser too."
+  [[dataset.file]]
+  url = "https://downloads.openmicroscopy.org/images/CellSens/zenodo-17590655/metadataTest_01.vsi"
+  path = ".test_data/vsi/metadataTest_01.vsi"
+  [[dataset.file]]
+  url = "https://downloads.openmicroscopy.org/images/CellSens/zenodo-17590655/_metadataTest_01_/stack1/frame_t_0.ets"
+  path = ".test_data/vsi/_metadataTest_01_/stack1/frame_t_0.ets"
+
+[[dataset]]
+id = "oir_olympus"
+name = "OIR sample: Olympus FluoView newer format (~25 MB)"
+license = "unverified"
+codecs = []
+homepage = "https://downloads.openmicroscopy.org/images/"
+notes = "Real Olympus OIR from the OME mirror. OIR uses an undocumented OLYMPUSRAWFORMAT binary container; we don't have a native parser yet, but the corpus file lets us add format-detection tests and\neventually build one."
+  [[dataset.file]]
+  url = "https://downloads.openmicroscopy.org/images/Olympus-OIR/etienne/amy%20slice%20z%20stack_0001.oir"
+  path = ".test_data/oir/amy_slice_z_stack.oir"
+
+[[dataset]]
+id = "lerc_esri"
+name = "LERC: ESRI's reference test data (~230 KB total)"
+license = "Apache-2.0"
+codecs = ["lerc"]
+homepage = "https://github.com/Esri/lerc"
+notes = "Two files from the LERC repo: a float32 raster (DEM elevation) and a byte RGB raster (satellite image). Cross-validates our _lerc against the canonical encoder."
+  [[dataset.file]]
+  url = "https://raw.githubusercontent.com/Esri/lerc/master/testData/california_400_400_1_float.lerc2"
+  path = ".test_data/lerc/california_float.lerc2"
+  [[dataset.file]]
+  url = "https://raw.githubusercontent.com/Esri/lerc/master/testData/bluemarble_256_256_3_byte.lerc2"
+  path = ".test_data/lerc/bluemarble_byte.lerc2"
+
+[[dataset]]
+id = "webp_google"
+name = "WebP: Google's libwebp gallery"
+license = "BSD-3-Clause"
+codecs = ["webp"]
+homepage = "https://developers.google.com/speed/webp/gallery"
+  [[dataset.file]]
+  url = "https://www.gstatic.com/webp/gallery/1.webp"
+  path = ".test_data/webp/lossy_1.webp"
+  [[dataset.file]]
+  url = "https://www.gstatic.com/webp/gallery3/1.webp"
+  path = ".test_data/webp/lossy_alpha_1.webp"
+
+[[dataset]]
+id = "gif_wikipedia"
+name = "GIF: public-domain animated GIF (Wikipedia rotating earth)"
+license = "public-domain"
+codecs = ["gif"]
+homepage = "https://commons.wikimedia.org/"
+  [[dataset.file]]
+  url = "https://upload.wikimedia.org/wikipedia/commons/2/2c/Rotating_earth_%28large%29.gif"
+  path = ".test_data/gif/rotating_earth.gif"
+

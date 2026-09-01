@@ -1,0 +1,85 @@
+"""The corpus manifest must stay in step with the download script.
+
+Two sources of truth for the same URLs will drift, and the failure mode
+is quiet: a dataset gets added to one and the coverage report silently
+under-reports, or the fetcher silently skips it. Until the shell script
+becomes a thin wrapper over the manifest, this test is what keeps them
+honest.
+"""
+
+from __future__ import annotations
+
+import re
+from pathlib import Path
+
+import pytest
+
+ROOT = Path(__file__).resolve().parent.parent
+MANIFEST = ROOT / "corpus" / "manifest.toml"
+SCRIPT = ROOT / "tests" / "download_test_corpus.sh"
+
+SHELL_VARS = {
+    "$ZARR_URL": "https://uk1s3.embassy.ebi.ac.uk/idr/zarr/v0.4/idr0062A/6001240.zarr",
+}
+
+
+def _load():
+    try:
+        import tomllib
+    except ModuleNotFoundError:
+        tomllib = pytest.importorskip("tomli")
+    with MANIFEST.open("rb") as fh:
+        return tomllib.load(fh)
+
+
+def _expand(url: str) -> str:
+    for k, v in SHELL_VARS.items():
+        url = url.replace(k, v)
+    return url
+
+
+def test_manifest_parses_and_has_required_fields():
+    doc = _load()
+    assert doc.get("schema") == 1
+    datasets = doc["dataset"]
+    assert datasets, "manifest has no datasets"
+    seen = set()
+    for ds in datasets:
+        for field in ("id", "name", "license", "codecs", "file"):
+            assert field in ds, f"{ds.get('id', '?')} missing {field}"
+        assert ds["id"] not in seen, f"duplicate id {ds['id']}"
+        seen.add(ds["id"])
+        assert ds["file"], f"{ds['id']} lists no files"
+        for f in ds["file"]:
+            assert f["url"].startswith(("http://", "https://")), f["url"]
+            assert f["path"].startswith(".test_data/"), f["path"]
+
+
+def test_every_download_script_url_is_in_the_manifest():
+    script = SCRIPT.read_text()
+    urls = set()
+    for line in script.splitlines():
+        if re.match(r"\s*[A-Z_]+=", line):
+            continue                      # a variable definition, not a fetch
+        for m in re.finditer(r'"(https?://[^"]+)"', line):
+            urls.add(_expand(m.group(1)))
+    listed = {_expand(f["url"]) for ds in _load()["dataset"] for f in ds["file"]}
+    # the script builds some URLs in loops, so compare on the stem
+    missing = {u for u in urls
+               if u not in listed and not any(u.split("${")[0] in l for l in listed)}
+    assert not missing, (
+        "these URLs are fetched by the script but absent from "
+        f"corpus/manifest.toml: {sorted(missing)}")
+
+
+def test_manifest_codecs_name_real_extensions():
+    """A codec listed in the manifest that we do not build is a typo, with
+    the exception of container formats handled in pure Python."""
+    CONTAINERS = {"czi", "nd2", "lif", "oib", "oir", "vsi", "omezarr", "fits"}
+    built = {p.name[1:-4] for p in (ROOT / "src" / "opencodecs" / "codecs").glob("_*.pyx")
+             if not p.name.startswith("._")}
+    for ds in _load()["dataset"]:
+        for c in ds["codecs"]:
+            assert c in built or c in CONTAINERS, (
+                f"{ds['id']} lists codec {c!r}, which is neither a compiled "
+                f"extension nor a known container format")
