@@ -1,10 +1,9 @@
 # cython: language_level = 3
 """Cython header for libaec (CCSDS 121.0-B-2 adaptive entropy coding)."""
 
-# These declarations transcribe upstream 'libaec.h' and therefore overlap
-# substantially with imagecodecs/libaec.pxd (BSD-3-Clause, Copyright (c)
-# 2008-2026 Christoph Gohlke), which transcribes the same header.
-# Credited here out of caution; see THIRD-PARTY.md.
+# Transcribed from upstream 'libaec.h'. imagecodecs declares the same C
+# API in its own libaec.pxd; the two overlap because the header fixes the
+# names and signatures, not because either was copied from the other.
 
 from libc.stddef cimport size_t
 

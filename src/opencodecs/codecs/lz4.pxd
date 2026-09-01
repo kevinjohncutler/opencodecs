@@ -1,9 +1,8 @@
 # Minimal Cython declarations for liblz4 — LZ4 frame format.
 
-# These declarations transcribe upstream 'lz4frame.h' and therefore overlap
-# substantially with imagecodecs/lz4.pxd (BSD-3-Clause, Copyright (c)
-# 2008-2026 Christoph Gohlke), which transcribes the same header.
-# Credited here out of caution; see THIRD-PARTY.md.
+# Transcribed from upstream 'lz4frame.h'. imagecodecs declares the same C
+# API in its own lz4.pxd; the two overlap because the header fixes the
+# names and signatures, not because either was copied from the other.
 
 cdef extern from 'lz4frame.h' nogil:
     int LZ4F_VERSION

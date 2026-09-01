@@ -1,10 +1,9 @@
 # cython: language_level = 3
 """Cython header for the SPERR C API (libSPERR)."""
 
-# These declarations transcribe upstream 'SPERR_C_API.h' and therefore overlap
-# substantially with imagecodecs/sperr.pxd (BSD-3-Clause, Copyright (c)
-# 2008-2026 Christoph Gohlke), which transcribes the same header.
-# Credited here out of caution; see THIRD-PARTY.md.
+# Transcribed from upstream 'SPERR_C_API.h'. imagecodecs declares the same C
+# API in its own sperr.pxd; the two overlap because the header fixes the
+# names and signatures, not because either was copied from the other.
 
 from libc.stddef cimport size_t
 

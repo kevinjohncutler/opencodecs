@@ -7,10 +7,9 @@ BigTable. Reference implementation is C++; we use the C-API wrapper
 ``snappy-c.h``.
 """
 
-# These declarations transcribe upstream 'snappy-c.h' and therefore overlap
-# substantially with imagecodecs/snappy.pxd (BSD-3-Clause, Copyright (c)
-# 2008-2026 Christoph Gohlke), which transcribes the same header.
-# Credited here out of caution; see THIRD-PARTY.md.
+# Transcribed from upstream 'snappy-c.h'. imagecodecs declares the same C
+# API in its own snappy.pxd; the two overlap because the header fixes the
+# names and signatures, not because either was copied from the other.
 
 from libc.stddef cimport size_t
 

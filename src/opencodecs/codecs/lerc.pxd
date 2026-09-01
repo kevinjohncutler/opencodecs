@@ -1,10 +1,9 @@
 # cython: language_level = 3
 """Cython header for the LERC C API (Esri Limited Error Raster Compression)."""
 
-# These declarations transcribe upstream 'Lerc_c_api.h' and therefore overlap
-# substantially with imagecodecs/lerc.pxd (BSD-3-Clause, Copyright (c)
-# 2008-2026 Christoph Gohlke), which transcribes the same header.
-# Credited here out of caution; see THIRD-PARTY.md.
+# Transcribed from upstream 'Lerc_c_api.h'. imagecodecs declares the same C
+# API in its own lerc.pxd; the two overlap because the header fixes the
+# names and signatures, not because either was copied from the other.
 
 
 cdef extern from "Lerc_c_api.h" nogil:

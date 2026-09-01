@@ -1,10 +1,9 @@
 # Minimal Cython declarations for libzstd (Facebook's Zstandard).
 # Only the basic compress/decompress + introspection we need.
 
-# These declarations transcribe upstream 'zstd.h' and therefore overlap
-# substantially with imagecodecs/zstd.pxd (BSD-3-Clause, Copyright (c)
-# 2008-2026 Christoph Gohlke), which transcribes the same header.
-# Credited here out of caution; see THIRD-PARTY.md.
+# Transcribed from upstream 'zstd.h'. imagecodecs declares the same C
+# API in its own zstd.pxd; the two overlap because the header fixes the
+# names and signatures, not because either was copied from the other.
 
 cdef extern from 'zstd.h' nogil:
     int ZSTD_VERSION_MAJOR

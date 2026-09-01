@@ -31,33 +31,26 @@ The `rgbe` files carry no explicit license grant upstream. They are
 distributed here in the form they have been circulated in since 1997.
 Anyone with better provenance information is invited to open an issue.
 
-## 2. Cython declaration files derived from imagecodecs
+## 2. Relationship to imagecodecs
 
 [imagecodecs](https://github.com/cgohlke/imagecodecs) is BSD-3-Clause,
-Copyright (c) 2008-2026 Christoph Gohlke.
+Copyright (c) 2008-2026 Christoph Gohlke. opencodecs began as a fork of
+it, and two vendored C components under `3rdparty/` are still excerpts
+of its `imcd.c` (see section 1).
 
-Two `.pxd` files were taken from imagecodecs. They now carry the full
-BSD-3-Clause notice in the file itself:
+No Cython source in this repository is derived from it. Two `.pxd`
+files had been copied from imagecodecs; `libjxl.pxd` has been rewritten
+from the libjxl 0.11.2 public headers and now declares only the subset
+opencodecs calls, and `libultrahdr.pxd` was unused and has been
+deleted. Several `.pxd` files still resemble their imagecodecs
+counterparts, because both declare the same upstream C APIs and the
+headers fix the names, signatures and enum orderings. Each such file
+says so in its own header comment.
 
-| File | Relationship |
-|---|---|
-| `src/opencodecs/codecs/libjxl.pxd` | Copied from `imagecodecs/libjxl.pxd`, plus one added declaration (`JxlDecoderGetIntendedDownsamplingRatio`) |
-| `src/opencodecs/codecs/libultrahdr.pxd` | Copied from `imagecodecs/libultrahdr.pxd`, unmodified |
-
-A further set of `.pxd` files declares the same upstream C APIs that
-imagecodecs also declares, and overlaps with its counterparts as a
-result. Each of these carries a pointer to the imagecodecs file and
-this notice:
-
-`qoi.pxd`, `lerc.pxd`, `sz3c.pxd`, `lz4.pxd`, `bitshuffle.pxd`,
-`rgbe.pxd`, `libaec.pxd`, `sperr.pxd`, `giflib.pxd`, `blosc2.pxd`,
-`brunsli.pxd`, `zstd.pxd`, `snappy.pxd`, `pcodec.pxd`
-
-The `.pyx` implementations, the pure-Python package under
-`src/opencodecs/`, and the test suite are original opencodecs work.
-Where a comment in a `.pyx` file says a default or a call sequence
+The `.pyx` implementations, the pure-Python package and the test suite
+are original work. Where a comment says a default or a call sequence
 "matches imagecodecs", it documents deliberate behavioral parity so
-that output is interchangeable, not shared source.
+output is interchangeable, not shared source.
 
 ## 3. Codec libraries linked into the binary wheels
 

@@ -3,10 +3,9 @@
 # 3rdparty/qoi/qoi.h and compiled into our extension via
 # QOI_IMPLEMENTATION.
 
-# These declarations transcribe upstream 'qoi.h' and therefore overlap
-# substantially with imagecodecs/qoi.pxd (BSD-3-Clause, Copyright (c)
-# 2008-2026 Christoph Gohlke), which transcribes the same header.
-# Credited here out of caution; see THIRD-PARTY.md.
+# Transcribed from upstream 'qoi.h'. imagecodecs declares the same C
+# API in its own qoi.pxd; the two overlap because the header fixes the
+# names and signatures, not because either was copied from the other.
 
 cdef extern from 'qoi.h' nogil:
     int QOI_SRGB

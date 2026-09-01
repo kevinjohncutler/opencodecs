@@ -6,10 +6,9 @@ spew the whole file in one shot, plus enough of the structure types to
 walk frames and color maps.
 """
 
-# These declarations transcribe upstream 'gif_lib.h' and therefore overlap
-# substantially with imagecodecs/giflib.pxd (BSD-3-Clause, Copyright (c)
-# 2008-2026 Christoph Gohlke), which transcribes the same header.
-# Credited here out of caution; see THIRD-PARTY.md.
+# Transcribed from upstream 'gif_lib.h'. imagecodecs declares the same C
+# API in its own giflib.pxd; the two overlap because the header fixes the
+# names and signatures, not because either was copied from the other.
 
 from libc.stdint cimport uint8_t
 

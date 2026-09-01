@@ -40,6 +40,31 @@ entry left over from the ``_uhdr`` rename. New
 set of ``.pyx`` sources agree in both directions, so the next
 occurrence is a failing test rather than a hang.
 
+**Licensing: no imagecodecs-derived Cython source remains (#1)**
+
+Follow-up to the attribution commit. Rather than keep the two copied
+``.pxd`` files under a BSD-3-Clause notice, they are gone:
+
+* ``codecs/libjxl.pxd`` rewritten from the libjxl 0.11.2 public headers
+  (``jxl/types.h``, ``color_encoding.h``, ``codestream_header.h``,
+  ``decode.h``, ``encode.h``, ``parallel_runner.h``,
+  ``thread_parallel_runner.h``). It declares only the surface
+  ``_jxl.pyx`` actually calls, 113 of the 332 symbols the old file
+  carried, and structs list only the fields we touch. 1191 lines down
+  to 346. What still matches imagecodecs' version is enum member lists,
+  which the C headers fix and which cannot be renamed or reordered.
+* ``codecs/libultrahdr.pxd`` deleted. Nothing imported it. ``_uhdr.pyx``
+  uses ``libuhdr.pxd``, which is our own; the copied file was left
+  behind by the ``_ultrahdr`` to ``_uhdr`` rename, the same rename that
+  left the stale ``_EXTENSIONS`` entry fixed earlier.
+
+The fourteen other ``.pxd`` files keep a note pointing at their
+imagecodecs counterpart, but the note no longer carries a copyright
+line or implies the file is derived. They transcribe the same upstream
+C headers, which is why they resemble each other.
+
+Full suite unchanged at 1696 passed, 37 skipped, 5 xfailed.
+
 **Licensing: restore attribution for imagecodecs-derived files (#1)**
 
 Christoph Gohlke reported (#1) that Cython sources derived from

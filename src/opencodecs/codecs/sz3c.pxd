@@ -1,10 +1,9 @@
 # cython: language_level = 3
 """Cython header for the SZ3 C API (sz3c)."""
 
-# These declarations transcribe upstream 'SZ3c/sz3c.h' and therefore overlap
-# substantially with imagecodecs/sz3c.pxd (BSD-3-Clause, Copyright (c)
-# 2008-2026 Christoph Gohlke), which transcribes the same header.
-# Credited here out of caution; see THIRD-PARTY.md.
+# Transcribed from upstream 'SZ3c/sz3c.h'. imagecodecs declares the same C
+# API in its own sz3c.pxd; the two overlap because the header fixes the
+# names and signatures, not because either was copied from the other.
 
 from libc.stddef cimport size_t
 

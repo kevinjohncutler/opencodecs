@@ -1,10 +1,9 @@
 # Cython declarations for the vendored Bruce Walter / Greg Ward RGBE C
 # library (``3rdparty/rgbe/rgbe.{c,h}``).
 
-# These declarations transcribe upstream 'rgbe.h' and therefore overlap
-# substantially with imagecodecs/rgbe.pxd (BSD-3-Clause, Copyright (c)
-# 2008-2026 Christoph Gohlke), which transcribes the same header.
-# Credited here out of caution; see THIRD-PARTY.md.
+# Transcribed from upstream 'rgbe.h'. imagecodecs declares the same C
+# API in its own rgbe.pxd; the two overlap because the header fixes the
+# names and signatures, not because either was copied from the other.
 
 from libc.stddef cimport size_t
 

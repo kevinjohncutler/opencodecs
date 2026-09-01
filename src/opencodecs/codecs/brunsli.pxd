@@ -1,10 +1,9 @@
 # cython: language_level = 3
 """Cython header for the Brunsli C API (libbrunslienc-c / libbrunslidec-c)."""
 
-# These declarations transcribe upstream 'brunsli/decode.h' and therefore overlap
-# substantially with imagecodecs/brunsli.pxd (BSD-3-Clause, Copyright (c)
-# 2008-2026 Christoph Gohlke), which transcribes the same header.
-# Credited here out of caution; see THIRD-PARTY.md.
+# Transcribed from upstream 'brunsli/decode.h'. imagecodecs declares the same C
+# API in its own brunsli.pxd; the two overlap because the header fixes the
+# names and signatures, not because either was copied from the other.
 
 from libc.stdint cimport uint8_t
 
