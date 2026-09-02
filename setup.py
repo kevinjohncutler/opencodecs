@@ -1481,7 +1481,11 @@ extensions = [
     # HTJ2K (high-throughput JPEG-2000) via OpenJPH. Optional — built
     # only when libopenjph is on the system.
     *_maybe_build_openjph_ext(),
-    # Intel ISA-L deflate (x86_64-only; igzip is the fastest deflate
+    # Intel ISA-L deflate. Not x86-only despite the name: upstream ships
+    # 20 hand-written AArch64 assembly files and configure.ac recognizes
+    # both "aarch64" and macOS's "arm64". Measured on Apple Silicon it is
+    # 1.64x encode and 1.35x decode over the default backend on uint16
+    # detector data at the same ratio. (igzip is the fastest deflate
     # engine — ~1.5-3x faster than libdeflate at compatible quality).
     # Auto-skipped on hosts without libisal-dev. Built directly (rather
     # than via _maybe_build_ext_simple) because we vendor a small C

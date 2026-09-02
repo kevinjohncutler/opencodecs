@@ -102,11 +102,13 @@ def _builtin_codecs() -> dict:
         "brotli":    {"kind": "bytes", "params": lvl(1, 3, 9)},
         "snappy":    {"kind": "bytes", "params": [{}]},
         "deflate":   {"kind": "bytes", "params": lvl(1, 6, 9)},
+        # ISA-L is not a codec of its own, it is a deflate backend.
+        "deflate-isal": {"kind": "bytes", "codec": "deflate",
+                         "params": [{"backend": "isal"}]},
         "lzma":      {"kind": "bytes", "params": [{}]},
         "bz2":       {"kind": "bytes", "params": [{}]},
         "bitshuffle":{"kind": "bytes", "params": [{}]},
         "blosc2":    {"kind": "bytes", "params": [{}]},
-        "isal":      {"kind": "bytes", "params": [{}]},
         # image
         "png":       {"kind": "image", "params": [{}]},
         "qoi":       {"kind": "image", "params": [{}]},
@@ -173,14 +175,14 @@ def sweep(names, payloads, compare: bool, quick: bool) -> list[dict]:
     for name, spec in _builtin_codecs().items():
         if names and name not in names:
             continue
-        if not oc.has_codec(name):
+        if not oc.has_codec(spec.get("codec", name)):
             rows.append({"codec": name, "status": "not built"})
             continue
         payload = payloads.get(spec["kind"])
         if payload is None:
             rows.append({"codec": name, "status": f"no {spec['kind']} payload"})
             continue
-        codec = oc.get_codec(name)
+        codec = oc.get_codec(spec.get("codec", name))
         params = spec["params"][:1] if quick else spec["params"]
         for p in params:
             row = {"codec": name, "kind": spec["kind"], "params": p}

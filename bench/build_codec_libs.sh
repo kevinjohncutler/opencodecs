@@ -49,6 +49,11 @@ VERSIONS=(
     "brotli          1.1.0"
     "giflib          5.2.2"
     "libdeflate      1.23"
+    # ISA-L: Intel's igzip, the fastest DEFLATE implementation on
+    # both x86_64 and aarch64. Despite the name it is not x86-only:
+    # upstream ships 20 hand-written AArch64 assembly files and
+    # configure.ac recognizes both "aarch64" and macOS's "arm64".
+    "isal            2.32.1"
 
     # Image (small to medium)
     "libpng          1.6.50"
@@ -213,6 +218,9 @@ CMAKE_COMMON=(
 # consume from cibuildwheel later. The Visual Studio generator
 # self-discovers MSVC without vcvars but trips SZ3's multi-config
 # install bug; Ninja-with-vcvars is the working combination.
+# macOS ships bash 3.2, where "${EMPTY_ARRAY[@]}" under set -u aborts with
+# "unbound variable". Every CMAKE_GEN expansion below uses the
+# ${A[@]+"${A[@]}"} form for that reason; do not simplify it back.
 if command -v ninja >/dev/null 2>&1; then
     CMAKE_GEN=(-G Ninja)
     BUILD_TOOL=(ninja -j"$JOBS")
@@ -334,7 +342,7 @@ cmake_build() {
     local build="$src/_build"
     rm -rf "$build"
     mkdir -p "$build"
-    ( cd "$build" && cmake "${CMAKE_GEN[@]}" "${CMAKE_COMMON[@]}" "$@" "$src" \
+    ( cd "$build" && cmake ${CMAKE_GEN[@]+"${CMAKE_GEN[@]}"} "${CMAKE_COMMON[@]}" "$@" "$src" \
       && "${BUILD_TOOL[@]}" && "${INSTALL_TOOL[@]}" )
 }
 
@@ -455,7 +463,7 @@ build_brotli() {
     local build="$src/_build"
     rm -rf "$build"
     mkdir -p "$build"
-    ( cd "$build" && cmake "${CMAKE_GEN[@]}" \
+    ( cd "$build" && cmake ${CMAKE_GEN[@]+"${CMAKE_GEN[@]}"} \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_C_FLAGS_RELEASE="$cflags" \
         -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON \
@@ -465,6 +473,22 @@ build_brotli() {
         "$src" \
       && "${BUILD_TOOL[@]}" && "${INSTALL_TOOL[@]}" )
     mark_built brotli "$v" "$brotli_prefix"
+}
+
+# ---- ISA-L (Intel igzip; fastest DEFLATE on x86_64 AND aarch64) --------
+build_isal() {
+    local v="$(get_version isal)"
+    is_built isal "$v" && { echo "  isal $v already built"; return; }
+    echo "==> isal $v"
+    local src
+    src=$(fetch_tar isal "$v" "https://github.com/intel/isa-l/archive/refs/tags/v$v.tar.gz")
+    # x86_64 assembles with nasm; aarch64 uses gas and needs none.
+    if [ "$(uname -m)" = "x86_64" ] && ! command -v nasm >/dev/null 2>&1; then
+        echo "  isal: nasm not found, skipping (x86_64 needs it)"
+        return
+    fi
+    cmake_build "$src" -DBUILD_SHARED_LIBS=ON
+    mark_built isal "$v"
 }
 
 # ---- libdeflate ---------------------------------------------------------
@@ -507,7 +531,7 @@ build_mozjpeg() {
     rm -rf "$build"
     mkdir -p "$build"
     ( cd "$build" \
-      && cmake "${CMAKE_GEN[@]}" "${CMAKE_COMMON[@]}" \
+      && cmake ${CMAKE_GEN[@]+"${CMAKE_GEN[@]}"} "${CMAKE_COMMON[@]}" \
           -DCMAKE_INSTALL_PREFIX="$mozjpeg_prefix" \
           -DENABLE_STATIC=OFF -DENABLE_SHARED=ON \
           -DWITH_TURBOJPEG=ON -DWITH_JPEG8=ON \
@@ -718,7 +742,7 @@ build_libultrahdr() {
             local build="$src/_build"
             rm -rf "$build"
             mkdir -p "$build"
-            ( cd "$build" && cmake "${CMAKE_GEN[@]}" "${CMAKE_COMMON[@]}" \
+            ( cd "$build" && cmake ${CMAKE_GEN[@]+"${CMAKE_GEN[@]}"} "${CMAKE_COMMON[@]}" \
                 -DUHDR_BUILD_DEPS=OFF \
                 -DUHDR_BUILD_EXAMPLES=OFF \
                 -DUHDR_BUILD_TESTS=OFF \
@@ -809,7 +833,7 @@ build_lerc() {
     local build="$src/_build"
     rm -rf "$build"
     mkdir -p "$build"
-    ( cd "$build" && cmake "${CMAKE_GEN[@]}" \
+    ( cd "$build" && cmake ${CMAKE_GEN[@]+"${CMAKE_GEN[@]}"} \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_C_FLAGS_RELEASE="-O3 -DNDEBUG" \
         -DCMAKE_CXX_FLAGS_RELEASE="-O3 -DNDEBUG" \
@@ -1122,6 +1146,7 @@ ORDERED=(
     lz4
     brotli
     libdeflate
+    isal
     giflib
     libpng
     libjpeg-turbo
@@ -1156,6 +1181,7 @@ for name in "${ORDERED[@]}"; do
             lz4)             build_lz4 ;;
             brotli)          build_brotli ;;
             libdeflate)      build_libdeflate ;;
+            isal)            build_isal ;;
             giflib)          build_giflib ;;
             libpng)          build_libpng ;;
             libjpeg-turbo)   build_libjpeg_turbo ;;
