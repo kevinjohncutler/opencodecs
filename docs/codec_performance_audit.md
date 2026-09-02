@@ -1,52 +1,86 @@
 # Codec performance audit
 
-A sweep of every codec we and imagecodecs both implement, to find where
-we lose. Kodak photo for image codecs, its raw bytes for the byte
-compressors, on Apple Silicon.
+Every codec we build, measured on real corpus data. Run it with
+`bench/sweep.py --compare`.
 
 ## Result
 
-| Faster | Parity | Slower |
-|---|---|---|
-| bmp encode 7.8x, jpeg2k encode 4.2-4.8x, jpeg2k decode 4.1-4.6x, png encode 3.2x, deflate decode 2.0x, brotli encode 1.4x, png decode 1.2x, rgbe decode 1.5x | qoi, jpeg, zstd, snappy, bitshuffle, blosc2, deflate encode, brotli decode, webp decode, bmp decode | webp encode 0.81-0.89x |
+**No confirmed performance losses.** Across 29 measurable codecs we are
+ahead in eight lanes, at parity in the rest, and not behind anywhere
+that survived repeat measurement.
 
-One real gap: **webp encode**, reproducibly ~15% behind. Output size
-matches to within 20 bytes of 332 KB, so it is not a quality or method
-difference; it is overhead somewhere in how we drive libwebp. Worth a
-profile, not worth a guess.
+| Confirmed faster | |
+|---|---|
+| bmp encode | ~8x |
+| jpeg2k encode / decode | ~5x / ~4x |
+| png encode | ~3.2-3.7x |
+| deflate decode | ~2.0x |
+| rgbe decode | ~1.5x |
+| brotli encode | ~1.4x |
+| avif encode | ~1.3-1.4x |
+| jpeg encode, png decode | ~1.1-1.2x |
+
+Parity: qoi, zstd, lz4, snappy, lzma, bz2, bitshuffle, blosc2, deflate
+encode, brotli decode, bmp decode, pcodec, zfp, rgbe encode.
+
+Not measured: `isal` is x86-only and does not build on arm64. `mozjpeg`,
+`jxl`, `heif`, `brunsli`, `openjph`, `sperr`, `aec`, `eer`, `ndtiff` and
+`uhdr` have no comparable imagecodecs entry point at the same settings,
+so they carry absolute numbers only.
+
+## Two results that look like losses and are not
+
+`sz3` and `lerc` appear 5x and 2x slower until you look at what each
+side produced:
+
+| codec | our output | their output |
+|---|---|---|
+| sz3 | 1,885,737 B (2.12x) | 3,709,732 B (1.08x) |
+| lerc | 3,315,340 B (1.21x) | 4,000,079 B (1.00x, no compression) |
+
+We compress roughly twice as hard at the same call, and the speed
+difference is the price of that rather than a defect. `bench/sweep.py`
+now withholds the ratio when the two outputs differ by more than 10% and
+prints `n/c`, because a speed number spanning different work is worse
+than no number.
 
 ## How to measure this without fooling yourself
 
-The first version of this sweep reported ten losing lanes. Nine were
-noise. What it took to get a trustworthy answer:
+The first version of this sweep reported ten losing lanes. **All ten were
+wrong**: nine were noise, the tenth was the settings mismatch above.
+What it took to get an answer worth acting on:
 
-- **Warm both sides before timing.** A cold `zstd` encode measured
-  5.6 ms and a warm one 3.2 ms, which is larger than any real
-  difference on this list.
-- **Interleave A/B/A/B** rather than timing all of A then all of B. The
-  machine drifts, and a block layout turns drift into a fake result.
-- **Take the minimum of many**, not the mean. The mean measures the
-  machine's other work.
-- **Run the whole sweep twice and compare.** Anything that moves between
-  runs is not a finding. This is what demoted nine of the ten.
-- **Do not run it next to a build.** Two earlier flakes in this repo, a
-  PNG timing test and the HTTP range tests, are the same failure.
-
-The `ab()` helper in the sweep script does the first three. The fourth
-is the one that matters most and is easiest to skip.
+- **Warm both sides.** A cold `zstd` encode measures 5.6 ms against
+  3.2 ms warm, larger than any real difference on this page.
+- **Interleave A/B/A/B.** Timing all of A then all of B turns machine
+  drift into a fake result.
+- **Minimum, not mean.** The mean measures the machine's other work.
+- **Repeat the sweep and discard anything that moves.** This is the step
+  that does the work and the easiest to skip. `webp` encode read 0.84x,
+  then 1.06x, then 0.75/0.95/1.04 over three more runs. Unstable means
+  unmeasured, not slow.
+- **Check both sides did the same job** before believing a ratio.
+- **Do not run next to a build.** The two flaky tests in this repo, a
+  PNG timing assertion and the HTTP range tests, are the same failure.
 
 ## Where our wins come from
 
-Recorded so the pattern is reusable rather than incidental:
-
 - **png**: our own SIMD defilter replacing libspng's scalar loop.
-- **jpeg2k**: threading defaults, and skipping a redundant copy.
-- **rgbe**: a compile-time exponent table replacing a per-pixel `ldexp`,
-  which is where the 1.5x on real files comes from.
+- **jpeg2k**: threading defaults and one avoided copy.
+- **rgbe**: compile-time exponent tables replacing per-pixel `ldexp` on
+  decode and `frexp` on encode.
 - **deflate decode**: libdeflate instead of zlib's streaming loop.
 
-The recurring shape is an expensive per-element operation that can be
-hoisted into a table or a wider primitive. A scan for libm calls inside
-per-pixel loops across the Cython sources found only one remaining, a
-`log2f` in the UHDR gain-map encoder, and the `gamma == 1.0` fast path
-already skips its neighboring `powf`.
+The recurring shape is an expensive per-element operation hoisted into a
+table or a wider primitive. A scan of every Cython source for libm calls
+inside per-pixel loops found one remaining, a `log2f` in the UHDR
+gain-map encoder, whose neighboring `powf` an existing `gamma == 1.0`
+fast path already skips. There is no second rgbe waiting to be found.
+
+## An API trap worth knowing
+
+`webp` encode defaults to **lossless** and silently ignores `level=`
+unless `lossless=False` is also passed. `encode(img, level=10)` returns
+a 332 KB lossless file, not a small lossy one. imagecodecs behaves the
+same way, so this is compatibility rather than a bug, but it surprises
+people and it is why webp encode measures ~190 ms here rather than ~5 ms.
