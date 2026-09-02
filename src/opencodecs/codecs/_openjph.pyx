@@ -39,6 +39,8 @@ from openjph cimport (
     opencodecs_htj2k_decode_info,
     opencodecs_htj2k_free,
     opencodecs_htj2k_last_error,
+    opencodecs_htj2k_last_warnings,
+    opencodecs_htj2k_clear_warnings,
 )
 
 cnp.import_array()
@@ -48,8 +50,54 @@ class OpenJphError(RuntimeError):
     """Raised on OpenJPH (HTJ2K) encode/decode failures."""
 
 
+class OpenJphUnsupportedFeature(OpenJphError):
+    """The codestream uses a marker segment OpenJPH does not implement.
+
+    OpenJPH warns about these and keeps decoding, which means the pixels
+    it returns come from a codestream it did not fully read. Measured
+    against the JPEG committee's reference images, such a decode can be
+    far off: one conformance file with an unread QCD-in-tile marker
+    differed from the reference by 954 levels. Returning that quietly
+    would be worse than failing, so it is raised instead.
+
+    Pass ``ignore_unsupported=True`` to get the image anyway.
+    """
+
+
+def last_warnings() -> str:
+    """Warnings OpenJPH raised during the most recent call."""
+    return opencodecs_htj2k_last_warnings().decode("utf-8", errors="replace")
+
+
+cdef _check_warnings(bint ignore_unsupported):
+    """Turn 'not supported yet' warnings into an exception.
+
+    Collecting the warnings at all also stops OpenJPH printing them to
+    the process's stdout, where they corrupt whatever the caller was
+    writing.
+    """
+    warned = opencodecs_htj2k_last_warnings().decode("utf-8", errors="replace")
+    if not warned:
+        return
+    unsupported = [ln for ln in warned.split("\n") if "not supported" in ln]
+    if unsupported and not ignore_unsupported:
+        seen = sorted(set(unsupported))
+        raise OpenJphUnsupportedFeature(
+            "OpenJPH could not read part of this codestream, so the decoded "
+            "image would not match the encoder's: "
+            + "; ".join(seen)
+            + ". Pass ignore_unsupported=True to decode anyway.")
+    import warnings as _w
+    for line in sorted(set(warned.split("\n"))):
+        if line and line not in unsupported:
+            _w.warn(f"OpenJPH: {line}", RuntimeWarning, stacklevel=3)
+
+
 cdef _raise(int rc, str where):
     msg = opencodecs_htj2k_last_error().decode("utf-8", errors="replace")
+    # The shim already prefixes with the failing call; don't say it twice.
+    if msg.startswith(where + ":"):
+        msg = msg[len(where) + 1:].strip()
     raise OpenJphError(f"{where}: {msg} (rc={rc})")
 
 
@@ -176,6 +224,8 @@ def decode_info(data) -> dict:
         int bit_depth = 0, is_signed_out = 0
         int rc
 
+    opencodecs_htj2k_clear_warnings()
+
     if isinstance(data, (bytes, bytearray)):
         src = data
     else:
@@ -197,8 +247,13 @@ def decode_info(data) -> dict:
     }
 
 
-def decode(data) -> np.ndarray:
-    """Decode an HTJ2K codestream to an ndarray."""
+def decode(data, *, bint ignore_unsupported=False) -> np.ndarray:
+    """Decode an HTJ2K codestream to an ndarray.
+
+    Raises :class:`OpenJphUnsupportedFeature` when OpenJPH reports that
+    it skipped a marker segment it does not implement; pass
+    ``ignore_unsupported=True`` to accept the image regardless.
+    """
     cdef:
         const uint8_t[::1] src
         size_t srcsize
@@ -208,6 +263,8 @@ def decode(data) -> np.ndarray:
         cnp.ndarray planar
         cnp.npy_intp shape[3]
         int ndim
+
+    opencodecs_htj2k_clear_warnings()
 
     if isinstance(data, (bytes, bytearray)):
         src = data
@@ -253,6 +310,8 @@ def decode(data) -> np.ndarray:
     )
     if rc != 0:
         _raise(rc, "decode")
+
+    _check_warnings(ignore_unsupported)
 
     if components == 1:
         return planar

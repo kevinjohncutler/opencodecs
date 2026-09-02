@@ -37,7 +37,7 @@ from opencodecs import get_codec
 CORPUS = Path(__file__).resolve().parent.parent / ".test_data"
 BMP_DIR = CORPUS / "bmp"
 DDS_DIR = CORPUS / "dds"
-HTJ2K_DIR = CORPUS / "htj2k"
+HTJ2K_DIR = CORPUS / "htj2k" / "conformance"
 UHDR_DIR = CORPUS / "uhdr"
 
 

@@ -85,6 +85,17 @@ void opencodecs_htj2k_free(void* buf);
 
 const char* opencodecs_htj2k_last_error(void);
 
+/* Warnings OpenJPH raised during the most recent call, newline-separated
+ * and empty when there were none. Call clear_warnings() before a decode
+ * to start a fresh collection; it also installs the collector, which
+ * keeps OpenJPH from printing to the process's stdout.
+ *
+ * These matter because OpenJPH treats several unimplemented marker
+ * segments as warnings and keeps decoding, so a caller can otherwise be
+ * handed an image the decoder knows it did not fully read. */
+const char* opencodecs_htj2k_last_warnings(void);
+void opencodecs_htj2k_clear_warnings(void);
+
 #ifdef __cplusplus
 }
 #endif

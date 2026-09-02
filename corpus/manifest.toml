@@ -446,17 +446,137 @@ notes = "Written by a different encoder than ours (we only decode), covering BC1
 
 [[dataset]]
 id = "htj2k_wg1_conformance"
-name = "HTJ2K: codestreams from the JPEG committee conformance set"
+name = "HTJ2K: the JPEG committee's conformance codestreams (all 42)"
 license = "unverified"
 codecs = ["openjph"]
 homepage = "https://gitlab.com/wg1/htj2k-codestreams"
-notes = "The ITU-T T.803 / ISO-IEC 15444-4 conformance codestreams, published by JPEG WG1 itself. Not produced by OpenJPH, so it tests our decoder against the standard rather than against the encoder that shares its source tree. License terms on the conformance data are not stated in the repository, so this stays fetch-only and is never mirrored."
-  [[dataset.file]]
-  url = "https://gitlab.com/wg1/htj2k-codestreams/-/raw/master/htj2k_bsets_profile1/p1_01_bset/ds1_ht_01_b11.j2k"
-  path = ".test_data/htj2k/ds1_ht_01_b11.j2k"
+notes = "The ITU-T T.803 / ISO-IEC 15444-4 conformance bitstream sets, published by JPEG WG1 itself, so the decoder is measured against the standard rather than against the encoder that shares its source tree. The whole set is here on purpose: two files told us nothing, and running all 42 is what showed that most of what we cannot read comes down to a single unimplemented feature. License terms are not stated in the repository, so this stays fetch-only and is never mirrored. See docs/htj2k_conformance.md for the current score and what fails."
   [[dataset.file]]
   url = "https://gitlab.com/wg1/htj2k-codestreams/-/raw/master/codestreams_hifi/hifi_ht1_02.j2k"
-  path = ".test_data/htj2k/hifi_ht1_02.j2k"
+  path = ".test_data/htj2k/conformance/hifi_ht1_02.j2k"
+  [[dataset.file]]
+  url = "https://gitlab.com/wg1/htj2k-codestreams/-/raw/master/codestreams_hifi/hifi_p1_02.j2k"
+  path = ".test_data/htj2k/conformance/hifi_p1_02.j2k"
+  [[dataset.file]]
+  url = "https://gitlab.com/wg1/htj2k-codestreams/-/raw/master/htj2k_bsets_profile0/p0_01_bset/ds0_ht_01_b11.j2k"
+  path = ".test_data/htj2k/conformance/ds0_ht_01_b11.j2k"
+  [[dataset.file]]
+  url = "https://gitlab.com/wg1/htj2k-codestreams/-/raw/master/htj2k_bsets_profile0/p0_02_bset/ds0_ht_02_b11.j2k"
+  path = ".test_data/htj2k/conformance/ds0_ht_02_b11.j2k"
+  [[dataset.file]]
+  url = "https://gitlab.com/wg1/htj2k-codestreams/-/raw/master/htj2k_bsets_profile0/p0_02_bset/ds0_ht_02_b12.j2k"
+  path = ".test_data/htj2k/conformance/ds0_ht_02_b12.j2k"
+  [[dataset.file]]
+  url = "https://gitlab.com/wg1/htj2k-codestreams/-/raw/master/htj2k_bsets_profile0/p0_03_bset/ds0_ht_03_b11.j2k"
+  path = ".test_data/htj2k/conformance/ds0_ht_03_b11.j2k"
+  [[dataset.file]]
+  url = "https://gitlab.com/wg1/htj2k-codestreams/-/raw/master/htj2k_bsets_profile0/p0_03_bset/ds0_ht_03_b14.j2k"
+  path = ".test_data/htj2k/conformance/ds0_ht_03_b14.j2k"
+  [[dataset.file]]
+  url = "https://gitlab.com/wg1/htj2k-codestreams/-/raw/master/htj2k_bsets_profile0/p0_04_bset/ds0_ht_04_b11.j2k"
+  path = ".test_data/htj2k/conformance/ds0_ht_04_b11.j2k"
+  [[dataset.file]]
+  url = "https://gitlab.com/wg1/htj2k-codestreams/-/raw/master/htj2k_bsets_profile0/p0_04_bset/ds0_ht_04_b12.j2k"
+  path = ".test_data/htj2k/conformance/ds0_ht_04_b12.j2k"
+  [[dataset.file]]
+  url = "https://gitlab.com/wg1/htj2k-codestreams/-/raw/master/htj2k_bsets_profile0/p0_05_bset/ds0_ht_05_b11.j2k"
+  path = ".test_data/htj2k/conformance/ds0_ht_05_b11.j2k"
+  [[dataset.file]]
+  url = "https://gitlab.com/wg1/htj2k-codestreams/-/raw/master/htj2k_bsets_profile0/p0_05_bset/ds0_ht_05_b12.j2k"
+  path = ".test_data/htj2k/conformance/ds0_ht_05_b12.j2k"
+  [[dataset.file]]
+  url = "https://gitlab.com/wg1/htj2k-codestreams/-/raw/master/htj2k_bsets_profile0/p0_06_bset/ds0_hm_06_b11.j2k"
+  path = ".test_data/htj2k/conformance/ds0_hm_06_b11.j2k"
+  [[dataset.file]]
+  url = "https://gitlab.com/wg1/htj2k-codestreams/-/raw/master/htj2k_bsets_profile0/p0_06_bset/ds0_hm_06_b18.j2k"
+  path = ".test_data/htj2k/conformance/ds0_hm_06_b18.j2k"
+  [[dataset.file]]
+  url = "https://gitlab.com/wg1/htj2k-codestreams/-/raw/master/htj2k_bsets_profile0/p0_06_bset/ds0_ht_06_b11.j2k"
+  path = ".test_data/htj2k/conformance/ds0_ht_06_b11.j2k"
+  [[dataset.file]]
+  url = "https://gitlab.com/wg1/htj2k-codestreams/-/raw/master/htj2k_bsets_profile0/p0_06_bset/ds0_ht_06_b15.j2k"
+  path = ".test_data/htj2k/conformance/ds0_ht_06_b15.j2k"
+  [[dataset.file]]
+  url = "https://gitlab.com/wg1/htj2k-codestreams/-/raw/master/htj2k_bsets_profile0/p0_06_bset/ds0_ht_06_b18.j2k"
+  path = ".test_data/htj2k/conformance/ds0_ht_06_b18.j2k"
+  [[dataset.file]]
+  url = "https://gitlab.com/wg1/htj2k-codestreams/-/raw/master/htj2k_bsets_profile0/p0_07_bset/ds0_ht_07_b11.j2k"
+  path = ".test_data/htj2k/conformance/ds0_ht_07_b11.j2k"
+  [[dataset.file]]
+  url = "https://gitlab.com/wg1/htj2k-codestreams/-/raw/master/htj2k_bsets_profile0/p0_07_bset/ds0_ht_07_b15.j2k"
+  path = ".test_data/htj2k/conformance/ds0_ht_07_b15.j2k"
+  [[dataset.file]]
+  url = "https://gitlab.com/wg1/htj2k-codestreams/-/raw/master/htj2k_bsets_profile0/p0_07_bset/ds0_ht_07_b16.j2k"
+  path = ".test_data/htj2k/conformance/ds0_ht_07_b16.j2k"
+  [[dataset.file]]
+  url = "https://gitlab.com/wg1/htj2k-codestreams/-/raw/master/htj2k_bsets_profile0/p0_08_bset/ds0_ht_08_b11.j2k"
+  path = ".test_data/htj2k/conformance/ds0_ht_08_b11.j2k"
+  [[dataset.file]]
+  url = "https://gitlab.com/wg1/htj2k-codestreams/-/raw/master/htj2k_bsets_profile0/p0_08_bset/ds0_ht_08_b15.j2k"
+  path = ".test_data/htj2k/conformance/ds0_ht_08_b15.j2k"
+  [[dataset.file]]
+  url = "https://gitlab.com/wg1/htj2k-codestreams/-/raw/master/htj2k_bsets_profile0/p0_08_bset/ds0_ht_08_b16.j2k"
+  path = ".test_data/htj2k/conformance/ds0_ht_08_b16.j2k"
+  [[dataset.file]]
+  url = "https://gitlab.com/wg1/htj2k-codestreams/-/raw/master/htj2k_bsets_profile0/p0_09_bset/ds0_ht_09_b11.j2k"
+  path = ".test_data/htj2k/conformance/ds0_ht_09_b11.j2k"
+  [[dataset.file]]
+  url = "https://gitlab.com/wg1/htj2k-codestreams/-/raw/master/htj2k_bsets_profile0/p0_10_bset/ds0_ht_10_b11.j2k"
+  path = ".test_data/htj2k/conformance/ds0_ht_10_b11.j2k"
+  [[dataset.file]]
+  url = "https://gitlab.com/wg1/htj2k-codestreams/-/raw/master/htj2k_bsets_profile0/p0_11_bset/ds0_ht_11_b10.j2k"
+  path = ".test_data/htj2k/conformance/ds0_ht_11_b10.j2k"
+  [[dataset.file]]
+  url = "https://gitlab.com/wg1/htj2k-codestreams/-/raw/master/htj2k_bsets_profile0/p0_12_bset/ds0_ht_12_b11.j2k"
+  path = ".test_data/htj2k/conformance/ds0_ht_12_b11.j2k"
+  [[dataset.file]]
+  url = "https://gitlab.com/wg1/htj2k-codestreams/-/raw/master/htj2k_bsets_profile0/p0_13_bset/ds0_ht_13_b11.j2k"
+  path = ".test_data/htj2k/conformance/ds0_ht_13_b11.j2k"
+  [[dataset.file]]
+  url = "https://gitlab.com/wg1/htj2k-codestreams/-/raw/master/htj2k_bsets_profile0/p0_14_bset/ds0_ht_14_b11.j2k"
+  path = ".test_data/htj2k/conformance/ds0_ht_14_b11.j2k"
+  [[dataset.file]]
+  url = "https://gitlab.com/wg1/htj2k-codestreams/-/raw/master/htj2k_bsets_profile0/p0_15_bset/ds0_hm_15_b8.j2k"
+  path = ".test_data/htj2k/conformance/ds0_hm_15_b8.j2k"
+  [[dataset.file]]
+  url = "https://gitlab.com/wg1/htj2k-codestreams/-/raw/master/htj2k_bsets_profile0/p0_15_bset/ds0_ht_15_b11.j2k"
+  path = ".test_data/htj2k/conformance/ds0_ht_15_b11.j2k"
+  [[dataset.file]]
+  url = "https://gitlab.com/wg1/htj2k-codestreams/-/raw/master/htj2k_bsets_profile0/p0_15_bset/ds0_ht_15_b14.j2k"
+  path = ".test_data/htj2k/conformance/ds0_ht_15_b14.j2k"
+  [[dataset.file]]
+  url = "https://gitlab.com/wg1/htj2k-codestreams/-/raw/master/htj2k_bsets_profile0/p0_16_bset/ds0_ht_16_b11.j2k"
+  path = ".test_data/htj2k/conformance/ds0_ht_16_b11.j2k"
+  [[dataset.file]]
+  url = "https://gitlab.com/wg1/htj2k-codestreams/-/raw/master/htj2k_bsets_profile1/p1_01_bset/ds1_ht_01_b11.j2k"
+  path = ".test_data/htj2k/conformance/ds1_ht_01_b11.j2k"
+  [[dataset.file]]
+  url = "https://gitlab.com/wg1/htj2k-codestreams/-/raw/master/htj2k_bsets_profile1/p1_01_bset/ds1_ht_01_b12.j2k"
+  path = ".test_data/htj2k/conformance/ds1_ht_01_b12.j2k"
+  [[dataset.file]]
+  url = "https://gitlab.com/wg1/htj2k-codestreams/-/raw/master/htj2k_bsets_profile1/p1_02_bset/ds1_ht_02_b11.j2k"
+  path = ".test_data/htj2k/conformance/ds1_ht_02_b11.j2k"
+  [[dataset.file]]
+  url = "https://gitlab.com/wg1/htj2k-codestreams/-/raw/master/htj2k_bsets_profile1/p1_02_bset/ds1_ht_02_b12.j2k"
+  path = ".test_data/htj2k/conformance/ds1_ht_02_b12.j2k"
+  [[dataset.file]]
+  url = "https://gitlab.com/wg1/htj2k-codestreams/-/raw/master/htj2k_bsets_profile1/p1_03_bset/ds1_ht_03_b11.j2k"
+  path = ".test_data/htj2k/conformance/ds1_ht_03_b11.j2k"
+  [[dataset.file]]
+  url = "https://gitlab.com/wg1/htj2k-codestreams/-/raw/master/htj2k_bsets_profile1/p1_03_bset/ds1_ht_03_b12.j2k"
+  path = ".test_data/htj2k/conformance/ds1_ht_03_b12.j2k"
+  [[dataset.file]]
+  url = "https://gitlab.com/wg1/htj2k-codestreams/-/raw/master/htj2k_bsets_profile1/p1_04_bset/ds1_ht_04_b9.j2k"
+  path = ".test_data/htj2k/conformance/ds1_ht_04_b9.j2k"
+  [[dataset.file]]
+  url = "https://gitlab.com/wg1/htj2k-codestreams/-/raw/master/htj2k_bsets_profile1/p1_05_bset/ds1_ht_05_b11.j2k"
+  path = ".test_data/htj2k/conformance/ds1_ht_05_b11.j2k"
+  [[dataset.file]]
+  url = "https://gitlab.com/wg1/htj2k-codestreams/-/raw/master/htj2k_bsets_profile1/p1_06_bset/ds1_ht_06_b11.j2k"
+  path = ".test_data/htj2k/conformance/ds1_ht_06_b11.j2k"
+  [[dataset.file]]
+  url = "https://gitlab.com/wg1/htj2k-codestreams/-/raw/master/htj2k_bsets_profile1/p1_07_bset/ds1_ht_07_b11.j2k"
+  path = ".test_data/htj2k/conformance/ds1_ht_07_b11.j2k"
 
 [[dataset]]
 id = "ultrahdr_pixel6"

@@ -11,6 +11,8 @@
 #include <openjph/ojph_params.h>
 #include <openjph/ojph_message.h>
 
+#include <cstdarg>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <stdexcept>
@@ -22,13 +24,75 @@ namespace {
 // sufficient: opencodecs Cython modules release the GIL only inside
 // `nogil` blocks we don't enter here.
 thread_local std::string g_last_error;
+thread_local std::string g_error_detail;
 
 void set_error(const char* where, const std::exception& e) {
-    g_last_error = std::string(where) + ": " + e.what();
+    // Prefer the text OpenJPH formatted; e.what() is generic.
+    const std::string& detail = g_error_detail.empty()
+        ? std::string(e.what()) : g_error_detail;
+    g_last_error = std::string(where) + ": " + detail;
 }
 
 void set_error(const char* msg) {
     g_last_error = msg;
+}
+
+// Warnings OpenJPH raised during the current call.
+//
+// Two reasons to intercept these rather than let the library have its
+// way with them. First, the default handler prints to stdout, and a
+// library writing to a process's stdout corrupts whatever that process
+// was writing there. Second, and worse: several of those warnings say a
+// marker segment "is not supported yet" and then decoding continues, so
+// the caller is handed an image built from a codestream the decoder
+// admits it did not fully read. Silent wrong pixels are the one failure
+// mode worse than an exception, so we collect the text and let the
+// Python layer decide.
+thread_local std::string g_warnings;
+
+class warning_collector : public ojph::message_warning {
+public:
+    void operator()(int, const char*, int, const char* fmt, ...) override {
+        char buf[1024];
+        va_list args;
+        va_start(args, fmt);
+        int n = vsnprintf(buf, sizeof(buf), fmt, args);
+        va_end(args);
+        if (n > 0) {
+            if (!g_warnings.empty()) g_warnings += "\n";
+            g_warnings += buf;
+        }
+    }
+};
+
+// OpenJPH's default error handler prints the reason and then throws a
+// generic exception, so catching it yields "ojph error" with the useful
+// half left on stdout. Collecting the text here is what lets a caller
+// see "this codestream has 5 quality layers" instead of "rc=2".
+
+class error_collector : public ojph::message_error {
+public:
+    void operator()(int, const char*, int, const char* fmt, ...) override {
+        char buf[1024];
+        va_list args;
+        va_start(args, fmt);
+        int n = vsnprintf(buf, sizeof(buf), fmt, args);
+        va_end(args);
+        g_error_detail = (n > 0) ? buf : "";
+        throw std::runtime_error(g_error_detail);
+    }
+};
+
+warning_collector g_warning_collector;
+error_collector g_error_collector;
+bool g_handlers_installed = false;
+
+void install_warning_collector() {
+    if (!g_handlers_installed) {
+        ojph::configure_warning(&g_warning_collector);
+        ojph::configure_error(&g_error_collector);
+        g_handlers_installed = true;
+    }
 }
 
 // Encode: load one component row into line_buf->i32 as raw values.
@@ -75,6 +139,15 @@ const char* opencodecs_htj2k_last_error(void) {
     return g_last_error.c_str();
 }
 
+const char* opencodecs_htj2k_last_warnings(void) {
+    return g_warnings.c_str();
+}
+
+void opencodecs_htj2k_clear_warnings(void) {
+    g_warnings.clear();
+    install_warning_collector();
+}
+
 void opencodecs_htj2k_free(void* buf) {
     std::free(buf);
 }
@@ -93,6 +166,7 @@ int opencodecs_htj2k_encode(
     void** out_buf,
     size_t* out_size
 ) {
+    install_warning_collector();
     if (!src || !out_buf || !out_size) {
         set_error("null arg");
         return 1;
@@ -207,6 +281,7 @@ int opencodecs_htj2k_decode_info(
     int* bit_depth,
     int* is_signed_out
 ) {
+    install_warning_collector();
     if (!src || srcsize == 0 || !width || !height || !components ||
         !bit_depth || !is_signed_out) {
         set_error("null arg");
@@ -243,6 +318,7 @@ int opencodecs_htj2k_decode(
     size_t dst_size,
     int bytes_per_sample
 ) {
+    install_warning_collector();
     if (!src || srcsize == 0 || !dst) {
         set_error("null arg");
         return 1;

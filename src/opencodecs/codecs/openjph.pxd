@@ -39,3 +39,5 @@ cdef extern from "openjph_shim.h" nogil:
 
     void opencodecs_htj2k_free(void* buf)
     const char* opencodecs_htj2k_last_error()
+    const char* opencodecs_htj2k_last_warnings()
+    void opencodecs_htj2k_clear_warnings()
