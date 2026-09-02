@@ -2,7 +2,7 @@
   "3rdparty/bcdec/bcdec.h": "95b7ef39ea500738070d114a13c7d2c588cf6e39ba1559a23ad5d01e2f6323d7",
   "3rdparty/bitshuffle/bitshuffle.c": "133e9723eb6f672616fb6b0066c4d83dc07af3b7e65e672901f94841180f51f8",
   "3rdparty/bitshuffle/bitshuffle.h": "05622e61888903afd540ca7140600886cf2280ae74ce93a6e779e374bd68a713",
-  "3rdparty/bitshuffle/bitshuffle_core.c": "1445603d451c5f765f2e785b82ad41ed9da5aee924d0e8f086ea36deca883ab0",
+  "3rdparty/bitshuffle/bitshuffle_core.c": "83380ccc4bcf29abfa6610532b45d6c0a98069232fd68427d0a6b65241e3ae96",
   "3rdparty/bitshuffle/bitshuffle_core.h": "c19990814aef47fe02096c25be1b89ec2c6865e933162b883fe62acac02d95d3",
   "3rdparty/bitshuffle/bitshuffle_internals.h": "43b485812f9b118d50c1e46d5367b724467730eb09365f87af8224319d6e4879",
   "3rdparty/bitshuffle/iochain.c": "7115af0b2c435d10086faf7198403e9eb5e7df9f85abf8fde9a7fac3ecf024ba",

@@ -60,21 +60,31 @@ name = "bitshuffle"
 repo = "kiyo-masui/bitshuffle"
 ref = "0.5.2"
 license = "MIT"
+note = """The two core files track upstream master rather than the 0.5.2 \
+tag, because 0.5.2 predates Masui's rewritten NEON bit transpose \
+(neonmovemask_bulk) and the MSVC may_alias typedef. Those are upstream \
+work, not ours and not a third party's; an earlier reading of this file \
+said otherwise and was wrong. The other five files are pristine 0.5.2."""
   [[component.file]]
   local = "3rdparty/bitshuffle/bitshuffle_core.c"
   upstream = "src/bitshuffle_core.c"
+  ref = "526440a16baf"
   modified = true
-  note = """NOT pristine upstream. Carries portability edits (an MSVC \
-may_alias typedef, explicit uint8_t casts) that came in with the \
-original vendoring rather than from Masui. Matches no upstream tag. \
-Needs review: either re-derive from 0.5.2 and re-apply whatever MSVC \
-actually requires, or record where these came from. The other five \
-bitshuffle files are pristine 0.5.2."""
+  note = """Upstream master at 526440a16baf plus exactly three \
+(uint8_t) narrowing casts, at the two bit-transpose stores and the \
+uint64 branch of bshuf_write_uint64_BE. They silence MSVC C4244; the \
+truncation is intended in all three, the value is masked to a byte \
+already. Re-derived from upstream in 2026-09 so this delta is three \
+lines that can be read, rather than a file nobody could account for. \
+Worth sending upstream."""
   [[component.file]]
   local = "3rdparty/bitshuffle/bitshuffle_core.h"
   upstream = "src/bitshuffle_core.h"
+  ref = "526440a16baf"
   modified = true
-  note = "Same provenance question as bitshuffle_core.c."
+  note = """Upstream master, except the BSHUF_VERSION macros, which \
+upstream left at 0.4.0 on master; ours say 0.5.2 to match the released \
+version the rest of this directory tracks."""
   [[component.file]]
   local = "3rdparty/bitshuffle/iochain.c"
   upstream = "src/iochain.c"

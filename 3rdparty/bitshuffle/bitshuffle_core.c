@@ -50,9 +50,9 @@ typedef size_t omp_size_t;
 #endif
 
 #if defined(_MSC_VER)
-typedef uint16_t alias_uint16_t;
+  typedef uint16_t alias_uint16_t;
 #else
-typedef uint16_t alias_uint16_t __attribute__((may_alias));
+  typedef uint16_t alias_uint16_t __attribute__((may_alias));
 #endif
 
 // Macros.
