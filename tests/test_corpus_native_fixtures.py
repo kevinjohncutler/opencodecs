@@ -200,6 +200,17 @@ def test_bcdec_bc6h_signed_hdr():
 # htj2k: JPEG committee conformance codestreams
 # --------------------------------------------------------------------
 
+try:
+    from opencodecs._htj2k_codec import _HAVE_BACKEND as _HAVE_OPENJPH
+except Exception:                                     # noqa: BLE001
+    _HAVE_OPENJPH = False
+
+_needs_openjph = pytest.mark.skipif(
+    not _HAVE_OPENJPH,
+    reason="OpenJPH backend not built (system libopenjph not found)")
+
+
+@_needs_openjph
 def test_htj2k_conformance_codestream():
     arr = get_codec("htj2k").decode(_need(HTJ2K_DIR / "hifi_ht1_02.j2k"))
     assert arr.ndim == 3 and arr.shape[2] == 3
@@ -207,6 +218,7 @@ def test_htj2k_conformance_codestream():
     assert int(arr.max()) > int(arr.min())
 
 
+@_needs_openjph
 def test_htj2k_multiple_quality_layers_is_a_known_limitation():
     """OpenJPH decodes one quality layer only, and says so.
 

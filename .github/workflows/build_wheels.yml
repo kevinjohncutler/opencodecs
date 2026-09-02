@@ -120,7 +120,7 @@ jobs:
           # probes that prefix and delocate bundles the resulting dylibs
           # into the wheel. brunsli vendors brotli internally so no
           # brew-brotli link dependency.
-          bash bench/build_codec_libs.sh --only=SZ3,pcodec,SPERR,brunsli,mozjpeg,libultrahdr
+          bash bench/build_codec_libs.sh --only=SZ3,pcodec,SPERR,brunsli,mozjpeg,libultrahdr,openjph
 
       - name: Miniconda + codec libs (Windows)
         if: runner.os == 'Windows'
@@ -198,7 +198,7 @@ jobs:
           export OPENCODECS_LIBS_PREFIX="${CONDA_PREFIX}/Library"
           echo "=== cmake in PATH ==="; which cmake; cmake --version | head -1
           echo "=== relevant env ==="; env | grep -iE 'LDFLAGS|CFLAGS|CXXFLAGS|CPPFLAGS|CMAKE_ARGS|CONDA_TOOLCHAIN|CONDA_BACKUP' || true
-          bash bench/build_codec_libs.sh --only=SZ3,pcodec,SPERR,brunsli,mozjpeg,libultrahdr
+          bash bench/build_codec_libs.sh --only=SZ3,pcodec,SPERR,brunsli,mozjpeg,libultrahdr,openjph
 
       # ---------- cibuildwheel ----------
       - name: Build wheels

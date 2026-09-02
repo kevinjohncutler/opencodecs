@@ -22,6 +22,19 @@ import pytest
 
 from opencodecs import get_codec
 
+# OpenJPH is discovered at build time from the system, not vendored or
+# built from source, so the extension is simply absent wherever the
+# library is not installed (CI included, as of this writing). Every test
+# here needs a real backend, not the stub the codec registers with.
+try:
+    from opencodecs._htj2k_codec import _HAVE_BACKEND as _HAVE_OPENJPH
+except Exception:                                     # noqa: BLE001
+    _HAVE_OPENJPH = False
+
+pytestmark = pytest.mark.skipif(
+    not _HAVE_OPENJPH,
+    reason="OpenJPH backend not built (system libopenjph not found)")
+
 CONFORMANCE = (Path(__file__).resolve().parent.parent
                / ".test_data" / "htj2k" / "conformance")
 

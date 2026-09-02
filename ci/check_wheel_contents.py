@@ -66,6 +66,21 @@ MUST_SHIP_ALL_PLATFORMS = {
 }
 
 
+# Codecs promised only on the platforms where the build was actually
+# validated on a matching host, rather than assumed from CI.
+#
+# _openjph is built from source by bench/build_codec_libs.sh. That build
+# was run end to end on macOS arm64 and Linux x86_64 before this was
+# committed; Windows and Linux aarch64 were not reachable at the time, so
+# they are not promised here. If those cells do produce the extension it
+# shows up in the script's "extras" line, which is the signal to promote
+# them into this table.
+MUST_SHIP_BY_PLATFORM = {
+    "macosx_arm64": {"_openjph"},
+    "linux_x86_64": {"_openjph"},
+}
+
+
 def platform_from_wheel_name(wheel_name: str) -> str:
     """Return one of: linux_x86_64, linux_aarch64, macosx_arm64, win_amd64."""
     name = wheel_name.lower()
@@ -108,7 +123,8 @@ def main(argv: list[str]) -> int:
         return 2
 
     platform = platform_from_wheel_name(wheel.name)
-    required = MUST_SHIP_ALL_PLATFORMS
+    required = (MUST_SHIP_ALL_PLATFORMS
+                | MUST_SHIP_BY_PLATFORM.get(platform, set()))
 
     present = codec_extensions_in_wheel(wheel)
     missing = required - present

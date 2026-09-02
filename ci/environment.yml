@@ -14,6 +14,10 @@ dependencies:
   - libpng
   - libjpeg-turbo
   - openjpeg
+  # HTJ2K. Without this the _openjph extension is not built and
+  # the htj2k codec silently registers as a stub, so none of its
+  # tests run. conda-forge has it for every platform we target.
+  - openjph
   - zlib
   - libdeflate
   - brotli

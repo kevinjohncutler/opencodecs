@@ -60,6 +60,7 @@ VERSIONS=(
     "libjpeg-turbo   3.1.2"
     "libwebp         1.6.0"
     "openjpeg        2.5.5"
+    "openjph         0.31.0"
     "mozjpeg         4.1.5"
 
     # Container / multi-codec (medium)
@@ -589,6 +590,36 @@ build_openjpeg() {
     src=$(fetch_tar openjpeg "$v" "https://github.com/uclouvain/openjpeg/archive/refs/tags/v$v.tar.gz")
     cmake_build "$src" -DBUILD_TESTING=OFF -DBUILD_CODEC=OFF
     mark_built openjpeg "$v"
+}
+
+# ---- openjph (htj2k) ----------------------------------------------------
+# Built from source rather than taken from the system so that htj2k
+# actually ships in the wheels (it previously did not: setup.py only
+# looked for an installed libopenjph, which CI does not have), and so
+# that patches/openjph/*.patch has something to apply to.
+build_openjph() {
+    local v="$(get_version openjph)"
+    is_built openjph "$v" && { echo "  openjph $v already built"; return; }
+    echo "==> openjph $v"
+    local src
+    src=$(fetch_tar openjph "$v" "https://github.com/aous72/OpenJPH/archive/refs/tags/$v.tar.gz")
+
+    # patches/openjph/*.patch is applied in lexicographic order, same
+    # convention as libultrahdr and libjxl.
+    local patch_dir="$REPO/patches/openjph"
+    if [ -d "$patch_dir" ]; then
+        local p
+        for p in "$patch_dir"/*.patch; do
+            [ -e "$p" ] || continue
+            echo "    applying $(basename "$p")"
+            patch -p1 -d "$src" < "$p"
+        done
+    fi
+
+    # OJPH_ENABLE_TIFF_SUPPORT pulls in libtiff for their CLI tools,
+    # which we do not build; the library itself does not need it.
+    cmake_build "$src" -DOJPH_ENABLE_TIFF_SUPPORT=OFF -DBUILD_TESTING=OFF
+    mark_built openjph "$v"
 }
 
 # ---- c-blosc2 (depends on zstd, lz4) -----------------------------------
@@ -1152,6 +1183,7 @@ ORDERED=(
     libjpeg-turbo
     libwebp
     openjpeg
+    openjph
     mozjpeg
     c-blosc2
     libaom
@@ -1188,6 +1220,7 @@ for name in "${ORDERED[@]}"; do
             mozjpeg)         build_mozjpeg ;;
             libwebp)         build_libwebp ;;
             openjpeg)        build_openjpeg ;;
+            openjph)         build_openjph ;;
             c-blosc2)        build_c_blosc2 ;;
             libaom)          build_libaom ;;
             dav1d)           build_dav1d ;;

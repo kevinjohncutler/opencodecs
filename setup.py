@@ -878,7 +878,13 @@ def _maybe_build_openjph_ext() -> list[Extension]:
     its C++ ``ojph::codestream`` API through a small shim in
     ``src/opencodecs/codecs/openjph_shim.cpp``.
     """
-    candidates = [
+    # _PROBE_PREFIXES first: that is where bench/build_codec_libs.sh
+    # installs the version we build ourselves, and it must win over a
+    # system copy so wheels ship a known OpenJPH rather than whatever
+    # the build box happened to have. Before this, htj2k silently did
+    # not ship at all, because only the system paths below were checked
+    # and CI has no libopenjph installed.
+    candidates = list(_PROBE_PREFIXES) + [
         Path("/opt/homebrew/opt/openjph"),
         Path("/usr/local/opt/openjph"),
         Path(os.environ.get("CONDA_PREFIX", "/dev/null")),
