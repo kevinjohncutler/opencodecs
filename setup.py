@@ -892,18 +892,35 @@ def _maybe_build_openjph_ext() -> list[Extension]:
         Path("/usr"),
     ]
     prefix = None
+    lib_subdir = None
+    lib_stem = None                       # basename without extension
     for c in candidates:
         if not str(c) or not c.is_dir():
             continue
-        if (c / "include" / "openjph" / "ojph_codestream.h").exists():
-            for ext in ("dylib", "so", "so.0"):
-                if (c / "lib" / f"libopenjph.{ext}").exists():
-                    prefix = c
-                    break
-                if (c / "lib" / "x86_64-linux-gnu"
-                        / f"libopenjph.{ext}").exists():
-                    prefix = c
-                    break
+        # conda-forge on Windows puts the whole prefix under Library/.
+        if (c / "Library" / "include" / "openjph" / "ojph_codestream.h").is_file():
+            c = c / "Library"
+        if not (c / "include" / "openjph" / "ojph_codestream.h").is_file():
+            continue
+        for subdir in ("lib", "lib64", "lib/x86_64-linux-gnu"):
+            d = c / subdir
+            if not d.is_dir():
+                continue
+            # Windows names the import library openjph.<major>.<minor>.lib,
+            # so the version is in the filename and a fixed candidate list
+            # would go stale on every bump. Glob instead. Everything else
+            # uses the usual libopenjph.{dylib,so,so.N}.
+            if sys.platform == "win32":
+                hits = sorted(d.glob("openjph*.lib"))
+            else:
+                hits = sorted(
+                    p for p in d.iterdir()
+                    if p.name.startswith("libopenjph.")
+                    and (".dylib" in p.name or ".so" in p.name)
+                )
+            if hits:
+                prefix, lib_subdir, lib_stem = c, subdir, hits[0].stem
+                break
         if prefix is not None:
             break
     if prefix is None:
@@ -911,12 +928,19 @@ def _maybe_build_openjph_ext() -> list[Extension]:
 
     # Match the absolute-dylib pattern used for MozJPEG / CharLS on
     # macOS so the linker doesn't bind to an SDK stub.
+    libdir = prefix / lib_subdir
     if sys.platform == "darwin":
-        dylib = prefix / "lib" / "libopenjph.dylib"
-        extra_link_args = [str(dylib)]
+        extra_link_args = [str(libdir / "libopenjph.dylib"),
+                           f"-Wl,-rpath,{libdir}"]
         libs: list[str] = []
-    else:
+    elif sys.platform == "win32":
+        # Link against the versioned import library by its stem; MSVC
+        # appends the .lib itself. The matching DLL lives in bin/ and is
+        # bundled into the wheel by delvewheel.
         extra_link_args = []
+        libs = [lib_stem]
+    else:
+        extra_link_args = [f"-Wl,-rpath,{libdir}"]
         libs = ["openjph"]
 
     return [Extension(
@@ -930,7 +954,7 @@ def _maybe_build_openjph_ext() -> list[Extension]:
             numpy.get_include(),
             str(prefix / "include"),
         ],
-        library_dirs=[str(prefix / "lib")],
+        library_dirs=[str(libdir)],
         libraries=libs,
         extra_link_args=extra_link_args,
         define_macros=[("NPY_NO_DEPRECATED_API", "NPY_1_7_API_VERSION")],
