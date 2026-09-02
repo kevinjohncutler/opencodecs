@@ -134,6 +134,46 @@ Bytes / file-like inputs go through `Codec.open()`'s pre-amble (spill
 to temp file, then hand to the native reader). Don't push that branch
 into the native reader.
 
+## Lossless by default, everywhere it is possible
+
+Any codec that can round-trip exactly does so with no arguments:
+
+    decode(encode(x)) == x
+
+That holds for `png`, `qoi`, `jpeg2k`, `webp`, `avif`, `heif`, `jxl`,
+`lerc` and every byte compressor. A caller who wants a small file asks
+for one with `lossless=False, level=N`. `jpeg` and `mozjpeg` are the
+only exceptions, because the format has no lossless mode to default to.
+
+This is the convention `imagecodecs` follows too, and it is worth
+stating plainly because it looks wrong from the outside. Pillow,
+`cwebp` and sharp all default WebP to *lossy*, and libwebp's own
+`WebPConfig.lossless` is 0. Those are image-saving tools, where "make me
+a smaller file" is the job. A codec library has a different job, and
+silently discarding data on a bare `encode()` is the wrong side of that
+line.
+
+`heif` violated this until 2026-09 and defaulted to lossy. Nothing
+recorded why, lossless HEVC worked fine when tried, and it was simply an
+oversight. Fixed. If you are adding a codec, check this list.
+
+### What it means for benchmarks
+
+Comparing against another library only means something if both sides are
+in the same mode. Two ways that goes wrong, both seen in practice:
+
+* **Different modes.** A lossless encode against somebody's lossy one
+  reports us as many times slower and many times larger, and neither
+  number means anything.
+* **Different effort at the same nominal setting.** At its default `sz3`
+  emits 1.9 MB where `imagecodecs` emits 3.7 MB, and `lerc` emits 3.3 MB
+  where `imagecodecs` emits 4.0 MB, which is no compression at all. We
+  are twice as thorough, so of course we take longer.
+
+`bench/sweep.py` guards the second case: it compares output sizes first
+and prints `n/c` rather than a speed ratio when they differ by more than
+10%. Check the first case yourself before quoting a number.
+
 ## Default settings: Pareto-better than the reference, no cheating
 
 For every codec we ship that has an equivalent in ``imagecodecs``

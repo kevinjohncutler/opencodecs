@@ -213,6 +213,28 @@ def sweep(names, payloads, compare: bool, quick: bool) -> list[dict]:
                             # "we compress twice as hard". Report the sizes
                             # and withhold the ratio rather than mislead.
                             row["their_bytes"] = len(theirs)
+                            # Mode first: a lossless encode raced against
+                            # somebody's lossy one is meaningless in both
+                            # dimensions. opencodecs and imagecodecs both
+                            # default to lossless (see
+                            # docs/codec_api_conventions.md), but a third
+                            # party plugged in via --plugin may not.
+                            idec = getattr(imagecodecs, f"{name}_decode", None)
+                            if idec is not None and isinstance(payload, np.ndarray):
+                                try:
+                                    their_exact = np.array_equal(
+                                        np.asarray(idec(theirs)), payload)
+                                    ours_exact = bool(row.get("fidelity", {}).get("exact"))
+                                    if their_exact != ours_exact:
+                                        row["vs_imagecodecs_note"] = (
+                                            "not comparable: "
+                                            f"ours is {'lossless' if ours_exact else 'lossy'}, "
+                                            f"theirs is {'lossless' if their_exact else 'lossy'}")
+                                        raise StopIteration
+                                except StopIteration:
+                                    raise
+                                except Exception:             # noqa: BLE001
+                                    pass
                             spread = (abs(len(theirs) - len(blob))
                                       / max(len(theirs), len(blob), 1))
                             if spread > 0.10:
@@ -224,6 +246,8 @@ def sweep(names, payloads, compare: bool, quick: bool) -> list[dict]:
                                     lambda: codec.encode(payload, **p),
                                     lambda: ie(payload, **p))
                                 row["vs_imagecodecs_encode"] = round(tb / ta, 3)
+                        except StopIteration:
+                            pass       # mode mismatch, note already set
                         except Exception:                     # noqa: BLE001
                             pass
                 row["status"] = "ok"

@@ -139,7 +139,7 @@ Quick guidance:
 | `htj2k` | ✓ | ✓ | gray / RGB / RGBA, 8/16-bit, lossless + lossy | system OpenJPH | `.j2c` |
 | `jpegls` | ✓ | ✓ | gray / RGB / RGBA, 2-16 bit, lossless + near-lossless | system CharLS | `.jls` |
 | `avif` | ✓ | ✓ | RGB / RGBA, lossy + lossless (YUV444+identity) | libavif | `.avif` |
-| `heif` | ✓ | ✓ | RGB / RGBA, lossy (HEVC) | libheif (+ aomenc) | `.heif`, `.heic` |
+| `heif` | ✓ | ✓ | RGB / RGBA, lossless + lossy (HEVC) | libheif (+ aomenc) | `.heif`, `.heic` |
 | `jxl` | ✓ | ✓ | gray / RGB / RGBA, P3, HDR, multi-frame | vendored libjxl 0.11.2 | `.jxl` |
 | `bcdec` | — | ✓ | BC1-7 / DXT / BPTC GPU textures | vendored bcdec.h | `.dds` |
 | `rgbe` | ✓ | ✓ | float32 RGB HDR (Radiance) | vendored rgbe.c | `.hdr` |

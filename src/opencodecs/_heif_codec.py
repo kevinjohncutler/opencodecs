@@ -42,12 +42,19 @@ class HeifCodec(Codec):
         return _heif_check_signature(head)
 
     def encode(self, data: Any, *, dest=None, level: int | None = None,
-               lossless: bool = False, color=None,
+               lossless: bool = True, color=None,
                bit_depth: int | None = None,
                numthreads: int | None = None,
                iccprofile: bytes | None = None,
                **opts) -> bytes | None:
         """Encode an array as HEIF/HEIC.
+
+        ``lossless`` defaults to True, matching every other lossy-capable
+        codec here (avif, webp, jpeg2k) and the round-trip invariant in
+        docs/codec_api_conventions.md. HEIF was the sole exception until
+        it was noticed; lossless HEVC is unusual in the wild but it works,
+        and a silent exception to the invariant is worse than an unusual
+        default. Pass ``lossless=False, level=N`` for a small lossy file.
 
         ``iccprofile`` embeds an ICC color profile in the file's
         ``colr`` box (type ``prof``).
