@@ -9,6 +9,27 @@
 include bench/build_libjxl.sh
 recursive-include patches *.diff *.md
 
+# Every Cython and C/C++ build input must be listed here explicitly.
+# setuptools' automatic collection is a trap for this project: it adds
+# ext_modules *sources*, but setup.py has already run cythonize() by
+# then (so it sees generated _foo.c, never _foo.pyx), and extensions
+# whose libraries are missing on the sdist-build host never enter
+# ext_modules at all, so their files vanish from the sdist entirely.
+# The 0.1.13 sdist shipped with zero .pyx files this way and failed
+# every from-source install. ci/check_sdist_contents.py guards this.
+recursive-include src/opencodecs *.pyx *.pxd *.h *.hpp
+include src/opencodecs/codecs/b2nd_helpers.c
+include src/opencodecs/codecs/isal_shim.c
+include src/opencodecs/codecs/webp_shim.c
+include src/opencodecs/codecs/openjph_shim.cpp
+recursive-include 3rdparty *.c *.h *.hpp *.md *.rst *.txt *.toml *.json
+
+# Drop the cythonize() output that setuptools picked up from
+# ext_modules: building the sdist regenerates it in the source tree,
+# and a stale generated file shadowing its .pyx is worse than none.
+# (Handwritten sources in codecs/ never start with an underscore.)
+recursive-exclude src/opencodecs/codecs _*.c _*.cpp
+
 # Build helpers / configs that aren't Python packages but ship in the
 # sdist for reproducibility.
 include pyproject.toml

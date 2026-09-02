@@ -304,6 +304,22 @@ jobs:
           python -m pip install --upgrade pip build
           python -m build --sdist
 
+      # The 0.1.13 sdist shipped without any .pyx files (setuptools
+      # collects ext sources post-cythonize, and only for extensions
+      # enabled on this host), so every from-source install failed.
+      # Guard 1: every git-tracked build input is in the tarball.
+      # Guard 2: egg_info from the extracted tarball, which runs
+      # cythonize() over all .pyx — the exact step users hit first.
+      - name: Verify sdist contents
+        run: python ci/check_sdist_contents.py dist/*.tar.gz
+
+      - name: Smoke-build metadata from the sdist
+        run: |
+          python -m pip install "Cython>=3.0" "numpy>=1.25" "setuptools>=77"
+          mkdir sdist_smoke && tar -xzf dist/*.tar.gz -C sdist_smoke
+          cd sdist_smoke/*/
+          python setup.py egg_info
+
       - uses: actions/upload-artifact@v4
         with:
           name: sdist
