@@ -43,6 +43,32 @@ Append a `[[dataset]]` block with an `id`, a `name`, the `license`, the
 `codecs` it exercises, and one `[[dataset.file]]` per file. Then
 `corpus.py fetch <id>` and `corpus.py freeze` to record its checksum.
 
+A file may instead be pulled out of an archive by adding `member` next
+to the `url`, which names a path inside a zip. That exists so an
+upstream that only publishes a release archive can still be cited
+directly: bmpsuite generates its images from a C program and ships
+them only in the release zip, so linking loose files would mean linking
+somebody's mirror. The archive is downloaded once and shared by every
+member drawn from it.
+
+## What this has caught
+
+Not a hypothetical exercise. Real files from other people's encoders
+have found, so far:
+
+- **BI_RLE8 and BI_RLE4 were unimplemented.** Written off in the module
+  docstring as "rare and not worth the parser surface", which was wrong:
+  they are ordinary output for paletted BMPs, and bmpsuite has them.
+  Both decode now, pixel-exact against the suite's own renderings.
+- **Malformed BMPs raised a numpy `ValueError`** about reshaping,
+  from deep inside the parser, instead of a `BmpError`. A caller could
+  not tell a bad file from a bug in us.
+- **A real EER frame terminates on its last cell and then carries a
+  footer**, which is what the decoder's termination rule is built
+  around. A synthetic bitstream never does that.
+- **PLIO's decoder crashed with SIGBUS** on malformed input before the
+  bounds checks came in from upstream cfitsio.
+
 Prefer files that stress a decoder rather than merely exercise it: the
 EER entry is there because a real Falcon 4 frame terminates by landing
 exactly on its last cell and then carries a footer, and a synthetic

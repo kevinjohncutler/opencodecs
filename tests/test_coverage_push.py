@@ -130,11 +130,25 @@ def test_bmp_decode_unsupported_dib_size_raises():
 
 
 def test_bmp_decode_unsupported_compression_raises():
-    """Compression types other than BI_RGB / BI_BITFIELDS raise."""
+    """Compression types we do not implement raise.
+
+    BI_RLE8 and BI_RLE4 used to be in this list and now decode, so the
+    check uses BI_JPEG, where the pixel data is a whole embedded JPEG
+    rather than a BMP layout.
+    """
     from opencodecs._bmp_codec import BmpError
     pix = b"\x00" * 4
-    bmp = _build_bmp(1, 1, 24, pix, compression=1)  # BI_RLE8
+    bmp = _build_bmp(1, 1, 24, pix, compression=4)  # BI_JPEG
     with pytest.raises(BmpError, match="compression"):
+        oc.read(bmp, format="bmp")
+
+
+def test_bmp_decode_rle_with_wrong_depth_raises():
+    """RLE8 is defined for 8 bpp only; anything else is a malformed file."""
+    from opencodecs._bmp_codec import BmpError
+    pix = b"\x00" * 4
+    bmp = _build_bmp(1, 1, 24, pix, compression=1)  # BI_RLE8 at 24 bpp
+    with pytest.raises(BmpError, match="requires 8 bpp"):
         oc.read(bmp, format="bmp")
 
 

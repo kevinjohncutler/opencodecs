@@ -357,3 +357,117 @@ notes = "A real Radiance file written by somebody else, which is the point: our 
   [[dataset.file]]
   url = "https://dl.polyhaven.org/file/ph-assets/HDRIs/hdr/1k/abandoned_bakery_1k.hdr"
   path = ".test_data/hdr/polyhaven_abandoned_bakery_1k.hdr"
+
+[[dataset]]
+id = "bmpsuite"
+name = "BMP: the bmpsuite conformance set (valid, questionable and malformed)"
+license = "public-domain"
+codecs = ["bmp"]
+homepage = "https://entropymine.com/jason/bmpsuite/"
+notes = "Jason Summers' BMP suite, the reference conformance set for the format. The generator program is GPL but the images it produces are explicitly public domain, and only the release archive carries them, so this is fetched as a zip and members are extracted by name (pointing at loose URLs would mean pointing at a mirror rather than the origin). The g/ files are well-formed and must decode; the b/ files are deliberately malformed and must be rejected without crashing, which is the half a round-trip test cannot reach."
+  [[dataset.file]]
+  url = "https://entropymine.com/jason/bmpsuite/releases/bmpsuite-2.8.zip"
+  member = "bmpsuite-2.8/g/pal8.bmp"
+  path = ".test_data/bmp/g_pal8.bmp"
+  [[dataset.file]]
+  url = "https://entropymine.com/jason/bmpsuite/releases/bmpsuite-2.8.zip"
+  member = "bmpsuite-2.8/g/pal4rle.bmp"
+  path = ".test_data/bmp/g_pal4rle.bmp"
+  [[dataset.file]]
+  url = "https://entropymine.com/jason/bmpsuite/releases/bmpsuite-2.8.zip"
+  member = "bmpsuite-2.8/g/pal8rle.bmp"
+  path = ".test_data/bmp/g_pal8rle.bmp"
+  [[dataset.file]]
+  url = "https://entropymine.com/jason/bmpsuite/releases/bmpsuite-2.8.zip"
+  member = "bmpsuite-2.8/g/rgb16.bmp"
+  path = ".test_data/bmp/g_rgb16.bmp"
+  [[dataset.file]]
+  url = "https://entropymine.com/jason/bmpsuite/releases/bmpsuite-2.8.zip"
+  member = "bmpsuite-2.8/g/rgb24.bmp"
+  path = ".test_data/bmp/g_rgb24.bmp"
+  [[dataset.file]]
+  url = "https://entropymine.com/jason/bmpsuite/releases/bmpsuite-2.8.zip"
+  member = "bmpsuite-2.8/g/rgb32.bmp"
+  path = ".test_data/bmp/g_rgb32.bmp"
+  [[dataset.file]]
+  url = "https://entropymine.com/jason/bmpsuite/releases/bmpsuite-2.8.zip"
+  member = "bmpsuite-2.8/b/badbitcount.bmp"
+  path = ".test_data/bmp/b_badbitcount.bmp"
+  [[dataset.file]]
+  url = "https://entropymine.com/jason/bmpsuite/releases/bmpsuite-2.8.zip"
+  member = "bmpsuite-2.8/b/badbitssize.bmp"
+  path = ".test_data/bmp/b_badbitssize.bmp"
+  [[dataset.file]]
+  url = "https://entropymine.com/jason/bmpsuite/releases/bmpsuite-2.8.zip"
+  member = "bmpsuite-2.8/b/reallybig.bmp"
+  path = ".test_data/bmp/b_reallybig.bmp"
+  [[dataset.file]]
+  url = "https://entropymine.com/jason/bmpsuite/releases/bmpsuite-2.8.zip"
+  member = "bmpsuite-2.8/b/rletopdown.bmp"
+  path = ".test_data/bmp/b_rletopdown.bmp"
+
+  [[dataset.file]]
+  url = "https://entropymine.com/jason/bmpsuite/releases/bmpsuite-2.8.zip"
+  member = "bmpsuite-2.8/html/pal4.png"
+  path = ".test_data/bmp/ref_pal4.png"
+  [[dataset.file]]
+  url = "https://entropymine.com/jason/bmpsuite/releases/bmpsuite-2.8.zip"
+  member = "bmpsuite-2.8/html/pal8.png"
+  path = ".test_data/bmp/ref_pal8.png"
+
+[[dataset]]
+id = "bcdec_test_images"
+name = "DDS: BC1-BC7 textures from the bcdec reference implementation"
+license = "MIT"
+codecs = ["bcdec"]
+homepage = "https://github.com/iOrange/bcdec"
+notes = "Written by a different encoder than ours (we only decode), covering BC1 through BC7 including signed BC6H, which is the case a naive implementation gets wrong because the sign extension only shows up on HDR content."
+  [[dataset.file]]
+  url = "https://raw.githubusercontent.com/iOrange/bcdec/main/test_images/kodim23_bc1.dds"
+  path = ".test_data/dds/kodim23_bc1.dds"
+  [[dataset.file]]
+  url = "https://raw.githubusercontent.com/iOrange/bcdec/main/test_images/testcard_bc2.dds"
+  path = ".test_data/dds/testcard_bc2.dds"
+  [[dataset.file]]
+  url = "https://raw.githubusercontent.com/iOrange/bcdec/main/test_images/dice_bc3.dds"
+  path = ".test_data/dds/dice_bc3.dds"
+  [[dataset.file]]
+  url = "https://raw.githubusercontent.com/iOrange/bcdec/main/test_images/dice_bc4.dds"
+  path = ".test_data/dds/dice_bc4.dds"
+  [[dataset.file]]
+  url = "https://raw.githubusercontent.com/iOrange/bcdec/main/test_images/dice_bc5.dds"
+  path = ".test_data/dds/dice_bc5.dds"
+  [[dataset.file]]
+  url = "https://raw.githubusercontent.com/iOrange/bcdec/main/test_images/lythwood_room_1k_bc6h_signed.dds"
+  path = ".test_data/dds/lythwood_room_bc6h_signed.dds"
+  [[dataset.file]]
+  url = "https://raw.githubusercontent.com/iOrange/bcdec/main/test_images/dice_bc7.dds"
+  path = ".test_data/dds/dice_bc7.dds"
+
+[[dataset]]
+id = "htj2k_wg1_conformance"
+name = "HTJ2K: codestreams from the JPEG committee conformance set"
+license = "unverified"
+codecs = ["openjph"]
+homepage = "https://gitlab.com/wg1/htj2k-codestreams"
+notes = "The ITU-T T.803 / ISO-IEC 15444-4 conformance codestreams, published by JPEG WG1 itself. Not produced by OpenJPH, so it tests our decoder against the standard rather than against the encoder that shares its source tree. License terms on the conformance data are not stated in the repository, so this stays fetch-only and is never mirrored."
+  [[dataset.file]]
+  url = "https://gitlab.com/wg1/htj2k-codestreams/-/raw/master/htj2k_bsets_profile1/p1_01_bset/ds1_ht_01_b11.j2k"
+  path = ".test_data/htj2k/ds1_ht_01_b11.j2k"
+  [[dataset.file]]
+  url = "https://gitlab.com/wg1/htj2k-codestreams/-/raw/master/codestreams_hifi/hifi_ht1_02.j2k"
+  path = ".test_data/htj2k/hifi_ht1_02.j2k"
+
+[[dataset]]
+id = "ultrahdr_pixel6"
+name = "Ultra HDR: gain-map JPEGs captured on a Pixel 6 Pro"
+license = "CC-BY-4.0"
+codecs = ["uhdr"]
+homepage = "https://github.com/MishaalRahmanGH/Ultra_HDR_Samples"
+notes = "Camera output rather than anything we or libultrahdr produced: Google Camera 9.1 on Android 14. A real capture is the only way to test that we read somebody else's MPF layout and gain-map metadata, including the compact metadata form that Chrome is strict about."
+  [[dataset.file]]
+  url = "https://raw.githubusercontent.com/MishaalRahmanGH/Ultra_HDR_Samples/main/Originals/Ultra_HDR_Samples_Originals_05.jpg"
+  path = ".test_data/uhdr/pixel6_original_05.jpg"
+  [[dataset.file]]
+  url = "https://raw.githubusercontent.com/MishaalRahmanGH/Ultra_HDR_Samples/main/Originals/Ultra_HDR_Samples_Originals_01.jpg"
+  path = ".test_data/uhdr/pixel6_original_01.jpg"

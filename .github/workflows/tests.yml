@@ -97,6 +97,18 @@ jobs:
           assert 'jxl' in names, 'libjxl extension MUST register on every platform'
           "
 
+      # Small native-format fixtures (~8 MB) so the corpus decode tests
+      # actually run rather than skipping. Best-effort on purpose: these
+      # come from third-party hosts, and an upstream being briefly down
+      # is not a reason to fail a build. The tests skip when the files
+      # are absent, so the worst case is the coverage we had before.
+      - name: Fetch native-format corpus fixtures (best effort)
+        continue-on-error: true
+        run: |
+          python corpus/corpus.py fetch bmpsuite bcdec_test_images \
+            htj2k_wg1_conformance ultrahdr_pixel6
+          python corpus/corpus.py coverage
+
       - name: Run tests
         run: pytest -q --cov=src/opencodecs --cov-report=xml --junitxml=junit.xml
 

@@ -17,8 +17,13 @@ Decode supports the formats we actually encounter in the wild:
   - 16-bit RGB555/RGB565 (BI_RGB / BI_BITFIELDS)
   - bottom-up (positive height) and top-down (negative height) layouts
 
-Not supported: BI_RLE4/BI_RLE8, BI_JPEG/BI_PNG, OS/2 BA/CI/CP variants,
-1- and 4-bit paletted. These are rare and not worth the parser surface.
+Also decodes BI_RLE8 and BI_RLE4. Those were skipped as "rare" until
+the bmpsuite conformance files went into the corpus and turned out to
+contain them: they are ordinary output for paletted images, and a
+decoder that rejects them is not a BMP decoder.
+
+Not supported: BI_JPEG/BI_PNG, OS/2 BA/CI/CP variants, and uncompressed
+1- and 4-bit paletted (RLE4 carries 4-bit indices and is supported).
 """
 
 from __future__ import annotations
@@ -49,6 +54,8 @@ class BmpError(RuntimeError):
 
 
 _BI_RGB = 0
+_BI_RLE8 = 1
+_BI_RLE4 = 2
 _BI_BITFIELDS = 3
 
 
@@ -175,6 +182,91 @@ def _encode_bgra32(arr: np.ndarray) -> bytes:
     return bytes(out)
 
 
+def _apply_palette(idx: np.ndarray, palette: np.ndarray) -> np.ndarray:
+    """Map palette indices to RGB, or return 2D when the palette is gray.
+
+    Shared by the uncompressed and RLE paths so both agree on when a
+    paletted file is really a grayscale one.
+    """
+    bgr = palette[:, :3]
+    is_gray = (
+        np.array_equal(bgr[:, 0], np.arange(len(bgr), dtype=np.uint8))
+        and np.array_equal(bgr[:, 1], bgr[:, 0])
+        and np.array_equal(bgr[:, 2], bgr[:, 0])
+    )
+    if is_gray:
+        return np.ascontiguousarray(idx)
+    rgb = np.empty(idx.shape + (3,), dtype=np.uint8)
+    rgb[..., 0] = palette[idx, 2]           # R lives in the palette's B slot
+    rgb[..., 1] = palette[idx, 1]
+    rgb[..., 2] = palette[idx, 0]
+    return rgb
+
+
+def _decode_rle(data, start, stop, width, height, four_bit):
+    """Expand BI_RLE8 / BI_RLE4 pixel data to a (height, width) index raster.
+
+    Both compressions are the same small state machine. A byte pair is
+    either a run (first byte non-zero) or, when the first byte is zero,
+    an escape: 0 ends the line, 1 ends the bitmap, 2 introduces a
+    two-byte delta, and >= 3 starts an absolute run of that many indices
+    padded to a 16-bit boundary.
+
+    Pixels the stream never writes keep index 0. An encoder stopping
+    early is legal here rather than a truncation, which is why short
+    runs are filled rather than rejected.
+    """
+    out = np.zeros((height, width), dtype=np.uint8)
+    x = y = 0
+    i = start
+    while i + 1 < stop:
+        count = data[i]
+        val = data[i + 1]
+        i += 2
+        if count:
+            if y >= height:
+                break
+            n = min(count, width - x)
+            if n > 0:
+                if four_bit:
+                    hi, lo = val >> 4, val & 0x0F
+                    row = out[y]
+                    for k in range(n):
+                        row[x + k] = hi if k % 2 == 0 else lo
+                else:
+                    out[y, x:x + n] = val
+            x += count
+            continue
+        if val == 0:                        # end of line
+            x, y = 0, y + 1
+        elif val == 1:                      # end of bitmap
+            break
+        elif val == 2:                      # delta
+            if i + 1 >= stop:
+                raise BmpError('truncated BMP RLE delta')
+            x += data[i]
+            y += data[i + 1]
+            i += 2
+        else:                               # absolute run
+            n = val
+            nbytes = (n + 1) // 2 if four_bit else n
+            if i + nbytes > stop:
+                raise BmpError('truncated BMP RLE absolute run')
+            if y < height:
+                row = out[y]
+                for k in range(n):
+                    if x + k >= width:
+                        break
+                    if four_bit:
+                        b = data[i + (k >> 1)]
+                        row[x + k] = (b >> 4) if k % 2 == 0 else (b & 0x0F)
+                    else:
+                        row[x + k] = data[i + k]
+            x += n
+            i += nbytes + (nbytes & 1)      # absolute runs pad to a word
+    return out[::-1]                        # RLE bitmaps are always bottom-up
+
+
 def _decode(data: bytes) -> np.ndarray:
     if len(data) < 14 or data[:2] != b'BM':
         raise BmpError('not a BMP file (missing BM magic)')
@@ -194,10 +286,25 @@ def _decode(data: bytes) -> np.ndarray:
     ) = struct.unpack('<IiiHHIIiiII', data[14:54])
     del _info_size, planes, _xppm, _yppm, _clr_important
 
-    if compression not in (_BI_RGB, _BI_BITFIELDS):
+    if compression not in (_BI_RGB, _BI_RLE8, _BI_RLE4, _BI_BITFIELDS):
         raise BmpError(f'unsupported BMP compression {compression}')
+    if bpp not in (1, 2, 4, 8, 16, 24, 32):
+        # Validate before anything derives a stride from it. A bogus
+        # depth otherwise reaches the reshape and surfaces as a numpy
+        # ValueError about impossible dimensions, which tells the caller
+        # nothing about the actual problem.
+        raise BmpError(f'invalid BMP bpp={bpp}')
+    if compression == _BI_RLE8 and bpp != 8:
+        raise BmpError(f'BI_RLE8 requires 8 bpp, got {bpp}')
+    if compression == _BI_RLE4 and bpp != 4:
+        raise BmpError(f'BI_RLE4 requires 4 bpp, got {bpp}')
 
     top_down = height < 0
+    if top_down and compression in (_BI_RLE8, _BI_RLE4):
+        # The spec forbids it: an RLE bitmap is bottom-up by definition,
+        # so a negative height here is a malformed file rather than an
+        # orientation we could honor.
+        raise BmpError('top-down bitmap cannot be RLE compressed')
     height = abs(height)
     if width <= 0 or height <= 0:
         raise BmpError(f'invalid BMP dimensions {width}x{height}')
@@ -229,6 +336,12 @@ def _decode(data: bytes) -> np.ndarray:
             data, dtype=np.uint8, count=n_colors * 4, offset=pal_off,
         ).reshape(n_colors, 4)
 
+    if compression in (_BI_RLE8, _BI_RLE4):
+        end = pix_offset + size_image if size_image else len(data)
+        idx = _decode_rle(memoryview(data), pix_offset, min(end, len(data)),
+                          width, height, compression == _BI_RLE4)
+        return _apply_palette(idx, palette)
+
     stride = _row_stride(width, bpp)
     # Use a memoryview slice (zero-copy view) instead of a bytes
     # slice (full memcpy). Saves ~1 MB of memcpy on a Kodak-sized
@@ -250,20 +363,7 @@ def _decode(data: bytes) -> np.ndarray:
         # Flip vertically unless top-down.
         if not top_down:
             idx = idx[::-1]
-        # If palette is identity-grayscale (B==G==R==i), return 2D.
-        bgr = palette[:, :3]
-        is_gray = (
-            np.array_equal(bgr[:, 0], np.arange(len(bgr), dtype=np.uint8))
-            and np.array_equal(bgr[:, 1], bgr[:, 0])
-            and np.array_equal(bgr[:, 2], bgr[:, 0])
-        )
-        if is_gray:
-            return np.ascontiguousarray(idx)
-        rgb = np.empty((height, width, 3), dtype=np.uint8)
-        rgb[..., 0] = palette[idx, 2]  # R from palette[B-channel]
-        rgb[..., 1] = palette[idx, 1]
-        rgb[..., 2] = palette[idx, 0]
-        return rgb
+        return _apply_palette(idx, palette)
 
     if bpp == 24:
         # Cython fast path — beats pure-Python+numpy ~14x on a Kodak
