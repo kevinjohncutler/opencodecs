@@ -152,23 +152,38 @@ def test_kodak_oc_matches_imagecodecs(path):
 def test_kodak_decode_is_competitive_with_imagecodecs():
     """Aggregate decode time across all 24 Kodak photos: oc should be
     no slower than 1.05x imagecodecs. Sentinel against a regression
-    in the libspng defilter patch."""
+    in the libspng defilter patch.
+
+    Measured the way docs/codec_api_conventions.md says to: warm both
+    sides, interleave the two so a drifting machine hits them equally,
+    and compare minimums rather than a single sample. One unrepeated
+    timing with a 5% margin flakes on any loaded machine, which it did
+    here while a dependency was being compiled alongside it, and a CI
+    runner is noisier than that.
+    """
     import time
     ic = pytest.importorskip("imagecodecs")
     files = _kodak_files()
     payloads = [p.read_bytes() for p in files]
-    # warmup
-    for d in payloads:
-        oc.read(d, format="png"); ic.png_decode(d)
 
-    t0 = time.perf_counter_ns()
-    for d in payloads: oc.read(d, format="png")
-    t_oc = (time.perf_counter_ns() - t0) / 1e6
-    t0 = time.perf_counter_ns()
-    for d in payloads: ic.png_decode(d)
-    t_ic = (time.perf_counter_ns() - t0) / 1e6
-    # Allow up to 5% slowdown — we expect to be at parity or faster
-    # on RGB u8 (NEON path) and at parity on gray (libspng patch).
-    assert t_oc < t_ic * 1.05, (
-        f"oc Kodak24 decode {t_oc:.0f} ms > 1.05 * ic {t_ic:.0f} ms"
+    def _oc():
+        for d in payloads:
+            oc.read(d, format="png")
+
+    def _ic():
+        for d in payloads:
+            ic.png_decode(d)
+
+    _oc(); _ic()                                  # warm
+
+    best_oc = best_ic = float("inf")
+    for _ in range(5):                            # interleaved A/B/A/B
+        t0 = time.perf_counter_ns(); _oc()
+        best_oc = min(best_oc, (time.perf_counter_ns() - t0) / 1e6)
+        t0 = time.perf_counter_ns(); _ic()
+        best_ic = min(best_ic, (time.perf_counter_ns() - t0) / 1e6)
+
+    assert best_oc < best_ic * 1.05, (
+        f"oc Kodak24 decode {best_oc:.0f} ms > 1.05 * ic {best_ic:.0f} ms "
+        f"(best of 5 interleaved runs each)"
     )
