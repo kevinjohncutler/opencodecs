@@ -161,4 +161,10 @@ def range_http_server(
     try:
         yield f"http://127.0.0.1:{port}", tracker
     finally:
+        # shutdown() stops serve_forever but leaves the listening socket
+        # open. Without server_close() every test that spins a server
+        # leaks a file descriptor for the life of the session, and this
+        # helper is used by a whole file of tests.
         httpd.shutdown()
+        httpd.server_close()
+        thr.join(timeout=5)

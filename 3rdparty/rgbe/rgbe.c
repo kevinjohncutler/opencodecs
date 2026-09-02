@@ -38,6 +38,15 @@ Modifications by Christoph Gohlke:
 - Add const qualifiers to write functions.
 - Use standard __cplusplus macro.
 
+Modifications by the opencodecs authors:
+
+- Convert the exponent through compile-time tables (oc_rgbe_exp_scale,
+  oc_rgbe_enc_scale) instead of calling ldexp per pixel on decode and
+  frexpf per pixel on encode. Entry 0 of the decode table is zero, so
+  the nonzero-pixel branch folds away with it.
+- Accept resolution lines in orientations other than "-Y H +X W", via
+  RGBE_ReadHeaderOriented, and orient the scanlines accordingly.
+
 http://www.graphics.cornell.edu/online/formats/rgbe/
 
 */

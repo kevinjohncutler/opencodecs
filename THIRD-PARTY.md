@@ -6,6 +6,38 @@ files from another project, and links against a set of codec libraries
 that are bundled into the binary wheels. Each of those retains its own
 license. This file is the inventory.
 
+## 0. How this inventory is kept honest
+
+Two checks, because an inventory nobody verifies is just a claim:
+
+    python ci/check_vendor_drift.py check     is our copy still current?
+    python ci/check_attribution.py            is any file we ship
+                                              actually somebody else's?
+
+The second compares every source file in the repository against another
+project's, byte-for-byte first and then by real content similarity, and
+cross-checks the Cython `.pxd` and `.pyx` files by content regardless of
+filename, since a file renamed between two projects is exactly what a
+name-keyed comparison misses.
+
+Run against `cgohlke/imagecodecs` on 2026-09-02, the result was eight
+byte-identical files, every one of them a file both projects vendor from
+a common upstream (bitshuffle, libspng's `spng.h`, `qoi.h`) and recorded
+as such in `3rdparty/VENDOR.toml`. Nothing unexplained. Two earlier
+findings had already been dealt with: `3rdparty/cfitsio/ricecomp.h`,
+which was byte-identical and is not upstream cfitsio's file, was
+rewritten, and `3rdparty/bcdec/bcdec_dds.h`, which was not from bcdec
+upstream and was referenced by nothing, was deleted.
+
+The `.pxd` files that prompted the original question resemble their
+counterparts at 0.64 to 0.76 similarity, and that is expected and fine:
+a `.pxd` transcribes a C header's declarations, so two independent
+transcriptions of the same header share the identifiers and their order
+because the header fixes both. Verified rather than assumed for
+`libuhdr.pxd`, whose enum ordering follows Google's `ultrahdr_api.h`
+while declaring a subset of it. `snappy.pxd` and `sz3c.pxd` each carry a
+note in the file saying the same thing.
+
 ## 1. Source vendored in this repository
 
 Each directory under `3rdparty/` contains the upstream license text
