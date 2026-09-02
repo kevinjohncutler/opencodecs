@@ -1,0 +1,20 @@
+{
+  "3rdparty/bcdec/bcdec.h": "95b7ef39ea500738070d114a13c7d2c588cf6e39ba1559a23ad5d01e2f6323d7",
+  "3rdparty/bitshuffle/bitshuffle.c": "133e9723eb6f672616fb6b0066c4d83dc07af3b7e65e672901f94841180f51f8",
+  "3rdparty/bitshuffle/bitshuffle.h": "05622e61888903afd540ca7140600886cf2280ae74ce93a6e779e374bd68a713",
+  "3rdparty/bitshuffle/bitshuffle_core.c": "1445603d451c5f765f2e785b82ad41ed9da5aee924d0e8f086ea36deca883ab0",
+  "3rdparty/bitshuffle/bitshuffle_core.h": "c19990814aef47fe02096c25be1b89ec2c6865e933162b883fe62acac02d95d3",
+  "3rdparty/bitshuffle/bitshuffle_internals.h": "43b485812f9b118d50c1e46d5367b724467730eb09365f87af8224319d6e4879",
+  "3rdparty/bitshuffle/iochain.c": "7115af0b2c435d10086faf7198403e9eb5e7df9f85abf8fde9a7fac3ecf024ba",
+  "3rdparty/bitshuffle/iochain.h": "cf3254b6a1d4ca6f0e5bbb472a316a84bf1bae355b242cca70adaef34b5319ac",
+  "3rdparty/cfitsio/fits_hcompress.c": "35340bc4a73746032dabd2380044bbde3758805c817fcda7d8dd36e9312572f8",
+  "3rdparty/cfitsio/fits_hdecompress.c": "c60408a0118083dbcfa14a44d5ab6f8f487bc400d03889eb17c4e592ec6f4318",
+  "3rdparty/cfitsio/fits_hdecompress_api.h": "2d4fbe5b0555865e1a5378ab14d9bac86613e5d1b72fffd0a19597b182e37646",
+  "3rdparty/cfitsio/fitsio2.h": "97930b8d1c2ea9909243566dd2ed80deb1e45119417e18781974805e9b934a6e",
+  "3rdparty/cfitsio/pliocomp.c": "0120e71dbcbc428cbbe71eb4e79c72f7786f307ae0f63ac17e086cb64e1d4218",
+  "3rdparty/cfitsio/ricecomp.c": "5723e5b055e3f030ce0e74fc7cfccbcb86067c69f9294ade917e3e571eddee4e",
+  "3rdparty/cfitsio/ricecomp.h": "50872fa3fe2741961709735c32449dd2169eeb3cdcc7a253ee480334f7346e93",
+  "3rdparty/libspng/spng.c": "b96165200f345eac664be18fe87a71bbcd305f73b9663d98e22ff1d684490628",
+  "3rdparty/libspng/spng.h": "3f398e878a94c49ba8735ba1b410a904a3667ffdf6924f82d6cf5bee61a87cb6",
+  "3rdparty/qoi/qoi.h": "5afc8f0959ff88d7e09faf58ea0b7472eeed6a0fd096fca680afd696168aa3a2"
+}

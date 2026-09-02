@@ -1,0 +1,181 @@
+# Provenance for the source vendored under 3rdparty/.
+#
+# Why this file exists: vendored code drifts silently. Nothing tells you
+# upstream fixed something. That is not hypothetical here, it is how
+# PLIO shipped a decoder that died with SIGBUS on malformed input, long
+# after upstream cfitsio had added the bounds checks that prevent it.
+#
+# ci/check_vendor_drift.py reads this to answer two different questions:
+#
+#   1. Have WE changed the file since vendoring it? (offline, from
+#      local_sha256; a test enforces this so an accidental edit to a
+#      vendored file cannot pass unnoticed.)
+#   2. Has UPSTREAM changed it since? (online: re-fetch at the pinned
+#      ref, and look for newer releases.)
+#
+# `modified = true` means we deliberately diverge from upstream, and the
+# note says why. Those are the files where a blind upstream update would
+# lose something.
+
+schema = 1
+
+# ---------------------------------------------------------------------
+# Our own code. Listed so the "is every vendored file accounted for?"
+# check can pass, and so nobody mistakes it for somebody else's work.
+# ---------------------------------------------------------------------
+
+[[component]]
+name = "oc_eer"
+upstream = "none"
+note = "Written for opencodecs. Clean-room EER decoder; no upstream."
+
+[[component]]
+name = "oc_tifflzw"
+upstream = "none"
+note = "Written for opencodecs. TIFF 6.0 LZW encoder; no upstream."
+
+[[component]]
+name = "oc_giflzw"
+upstream = "none"
+note = "Written for opencodecs. GIF LZW; no upstream."
+
+# ---------------------------------------------------------------------
+# Third-party source with a live upstream.
+# ---------------------------------------------------------------------
+
+[[component]]
+name = "bcdec"
+repo = "iOrange/bcdec"
+ref = "main"
+license = "MIT OR Unlicense"
+note = "Single-header BCn decoder. Upstream moves rarely."
+  [[component.file]]
+  local = "3rdparty/bcdec/bcdec.h"
+  upstream = "bcdec.h"
+  modified = true
+  note = "Differs from upstream main; run `identify` to pin which commit."
+
+[[component]]
+name = "bitshuffle"
+repo = "kiyo-masui/bitshuffle"
+ref = "0.5.2"
+license = "MIT"
+  [[component.file]]
+  local = "3rdparty/bitshuffle/bitshuffle_core.c"
+  upstream = "src/bitshuffle_core.c"
+  modified = true
+  note = """NOT pristine upstream. Carries portability edits (an MSVC \
+may_alias typedef, explicit uint8_t casts) that came in with the \
+original vendoring rather than from Masui. Matches no upstream tag. \
+Needs review: either re-derive from 0.5.2 and re-apply whatever MSVC \
+actually requires, or record where these came from. The other five \
+bitshuffle files are pristine 0.5.2."""
+  [[component.file]]
+  local = "3rdparty/bitshuffle/bitshuffle_core.h"
+  upstream = "src/bitshuffle_core.h"
+  modified = true
+  note = "Same provenance question as bitshuffle_core.c."
+  [[component.file]]
+  local = "3rdparty/bitshuffle/iochain.c"
+  upstream = "src/iochain.c"
+  [[component.file]]
+  local = "3rdparty/bitshuffle/iochain.h"
+  upstream = "src/iochain.h"
+  [[component.file]]
+  local = "3rdparty/bitshuffle/bitshuffle.c"
+  upstream = "src/bitshuffle.c"
+  [[component.file]]
+  local = "3rdparty/bitshuffle/bitshuffle.h"
+  upstream = "src/bitshuffle.h"
+  [[component.file]]
+  local = "3rdparty/bitshuffle/bitshuffle_internals.h"
+  upstream = "src/bitshuffle_internals.h"
+
+[[component]]
+name = "cfitsio"
+repo = "HEASARC/cfitsio"
+ref = "cfitsio-4.7.0"
+license = "NASA permissive"
+note = """The component that motivated this file. pliocomp.c was behind \
+upstream by the commit that added its srclen bounds checks, and the \
+stale copy crashed. Re-check on every cfitsio release."""
+  [[component.file]]
+  local = "3rdparty/cfitsio/pliocomp.c"
+  upstream = "pliocomp.c"
+  [[component.file]]
+  local = "3rdparty/cfitsio/fits_hcompress.c"
+  upstream = "fits_hcompress.c"
+  [[component.file]]
+  local = "3rdparty/cfitsio/fits_hdecompress.c"
+  upstream = "fits_hdecompress.c"
+  ref = "cfitsio-4.6.4"
+  note = """Byte-identical to 4.6.4, one release behind the rest of this \
+directory. Checked: 4.6.4 -> 4.7.0 changed only comments describing the \
+`na` parameter, so there is no fix being missed. Bump with the next \
+real change."""
+  [[component.file]]
+  local = "3rdparty/cfitsio/ricecomp.c"
+  upstream = "ricecomp.c"
+  modified = true
+  note = """Keeps the error-code return convention an earlier vendoring \
+introduced, because our binding depends on it, with upstream's \
+buffer-size guard applied on top. A blind update would break the \
+binding; port the fix, do not overwrite."""
+  # These three live in this directory but are opencodecs code, not
+  # cfitsio's. ours = true means the drift check tracks them for
+  # accidental edits but never compares them to upstream.
+  [[component.file]]
+  local = "3rdparty/cfitsio/fitsio2.h"
+  ours = true
+  note = """A 50-line stub standing in for the cfitsio internals the two \
+hcompress sources reference (LONGLONG, ffpmsg, FFLOCK), so they build \
+without dragging in the rest of the library."""
+  [[component.file]]
+  local = "3rdparty/cfitsio/fits_hdecompress_api.h"
+  ours = true
+  note = "Declares the decode entry points for our binding; cfitsio ships none."
+  [[component.file]]
+  local = "3rdparty/cfitsio/ricecomp.h"
+  ours = true
+  note = """Declares the Rice entry points and the negative error codes \
+ricecomp.c returns. Rewritten 2026-09: the drift audit found the \
+previous copy byte-identical to the one in imagecodecs, which is not \
+upstream cfitsio's file but a third project's, and this repository is \
+meant to carry none of it."""
+
+[[component]]
+name = "libspng"
+repo = "randy408/libspng"
+ref = "v0.7.4"
+license = "BSD-2-Clause"
+  [[component.file]]
+  local = "3rdparty/libspng/spng.c"
+  upstream = "spng/spng.c"
+  modified = true
+  note = "Carries the opencodecs grayscale-defilter patch."
+  [[component.file]]
+  local = "3rdparty/libspng/spng.h"
+  upstream = "spng/spng.h"
+
+[[component]]
+name = "qoi"
+repo = "phoboslab/qoi"
+ref = "master"
+license = "MIT"
+note = "Single header, frozen format."
+  [[component.file]]
+  local = "3rdparty/qoi/qoi.h"
+  upstream = "qoi.h"
+  modified = true
+  note = """Identical to upstream master except for trailing whitespace \
+on one line. qoi publishes no tags, so there is no version to pin."""
+
+[[component]]
+name = "rgbe"
+upstream = "none"
+license = "no formal grant; see 3rdparty/rgbe/rgbe.txt"
+note = """No upstream to track. The Radiance format was frozen in 1991 \
+and every maintained implementation descends from Bruce Walter's 1995 \
+reference. This copy carries fixes from Mentey and Gohlke plus \
+opencodecs changes to the exponent conversion and resolution-line \
+parsing. See THIRD-PARTY.md; do not drop the credited fixes."""
