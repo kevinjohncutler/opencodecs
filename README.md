@@ -184,6 +184,7 @@ BT.2100 HDR; `uint8` returns the SDR-tonemapped base JPEG.
 | `dicom` | ✓ | — | DICOM files (`.dcm`) | Read-only, via `opencodecs.DicomFile`. Explicit and implicit VR, big-endian, deflated; native and encapsulated Pixel Data; multi-frame. Frames route through the same transfer-syntax dispatch DICOMweb uses, so JPEG, JPEG-LS, JPEG 2000, HTJ2K and RLE all work. Reconciles a codestream's signedness with Pixel Representation. |
 | `nrrd` | ✓ | — | NRRD / NHDR (3D Slicer, ITK) | Read-only, via `opencodecs.NrrdFile`. raw, gzip, bzip2, ascii and hex encodings; both byte orders; detached `.nhdr` + `.raw` pairs; `sizes` is fastest-axis-first so the numpy shape is reversed. |
 | `dm` | ✓ | — | Gatan Digital Micrograph (`.dm3`, `.dm4`) | Read-only, via `opencodecs.DmFile`. Walks the tag tree; big-endian structure with little-endian samples; dm4's 64-bit counts; 2-D and 3-D stacks. The embedded thumbnail is identified from the file's own Thumbnails group and skipped, so image 0 is the acquisition. |
+| `emd` | ✓ | — | EMD (Berkeley/NCEM and Thermo Velox) | Read-only, via `opencodecs.EmdFile`. Two conventions share the extension, so the schema is detected from the structure rather than the filename. Berkeley `dimN` axis vectors are returned alongside the array; Velox JSON metadata is decoded. Arrays come back in stored order, so hyperspy's are the transpose. |
 
 #### TIFF writer specifics
 

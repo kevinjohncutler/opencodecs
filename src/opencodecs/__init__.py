@@ -56,6 +56,7 @@ from ._imaris import ImarisReader, ImarisError
 from ._dicom import DicomFile, DicomError
 from ._nrrd import NrrdFile, NrrdError
 from ._dm import DmFile, DmError
+from ._emd import EmdFile, EmdError
 from ._mrc_writer import encode_mrc, write_mrc
 from ._nifti_writer import encode_nifti, write_nifti
 from ._omezarr_writer import write_zarr_array, write_omezarr_pyramid
@@ -189,6 +190,8 @@ __all__ = [
     "NrrdFile", "NrrdError",
     # Gatan Digital Micrograph
     "DmFile", "DmError",
+    # EMD (Berkeley / Velox)
+    "EmdFile", "EmdError",
     # Volume writers
     "encode_mrc", "write_mrc",
     "encode_nifti", "write_nifti",

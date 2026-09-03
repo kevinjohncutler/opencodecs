@@ -29,6 +29,8 @@
   ".test_data/dm/Fei_HAADF-DE_location.dm3": "7a35359858a07501e993c696ab6ab4ff6222c89be36754d1b6fd542e6a8fcd8c",
   ".test_data/dm/test_stackbuilder_imagestack.dm3": "41070d0fd25a838a504f705e1431735192b7a97ca7dd15d9328af5e939fe74a2",
   ".test_data/eer/empiar10568_falcon4.eer": "3b54097e56a9738ebfbdc30612a96aebfabfdad1ed1062eb3e84de24745e9c46",
+  ".test_data/emd/Si100_1x1x3.emd": "80bf01f4e0869c43cb9d6c095c2d09febc3c4c542947e820b6aec5f291583811",
+  ".test_data/emd/Si100_2x1x1_3D.emd": "54c78357daf1713e7145987454a65a902b7a0cfa9b3c7b45e00e45c1faab75a3",
   ".test_data/fits/HorseHead.fits": "c4bcc0bccbadf1488e4e361c0d8f04255dc344ff401fd4827139b3354eafe863",
   ".test_data/gif/rotating_earth.gif": "b0acdc9a01f91f6123dbff38d4bee59d0d6e4b26071b5c83937b242b6b202378",
   ".test_data/hdr/polyhaven_abandoned_bakery_1k.hdr": "e4cbde5721d3d4d6d76de5444a430f3bfaaa08a48044ce30e7c50d8cd1200d5b",

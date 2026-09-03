@@ -711,3 +711,17 @@ notes = "From the reference Python implementation's test data. Both versions are
   [[dataset.file]]
   url = "https://raw.githubusercontent.com/hyperspy/rosettasciio/main/rsciio/tests/data/digitalmicrograph/Fei%20HAADF-DE_location.dm3"
   path = ".test_data/dm/Fei_HAADF-DE_location.dm3"
+
+[[dataset]]
+id = "velox_emd_samples"
+name = "EMD: Berkeley-schema electron-microscopy datasets"
+license = "unverified"
+codecs = ["emd"]
+homepage = "https://github.com/hyperspy/rosettasciio"
+notes = "EMD is HDF5 with a convention layered on top, and two incompatible conventions share the extension: the Berkeley/NCEM schema marks each dataset with an emd_group_type attribute and stores dim vectors beside the data, while Thermo's Velox writes /Data/Image/<hash>/Data with JSON metadata. These samples are the Berkeley schema; both are handled by looking for the marker rather than by trusting the extension."
+  [[dataset.file]]
+  url = "https://raw.githubusercontent.com/hyperspy/rosettasciio/main/rsciio/tests/data/emd/Si100_2x1x1_3D.emd"
+  path = ".test_data/emd/Si100_2x1x1_3D.emd"
+  [[dataset.file]]
+  url = "https://raw.githubusercontent.com/hyperspy/rosettasciio/main/rsciio/tests/data/emd/Si100_1x1x3-zStart6.7875.emd"
+  path = ".test_data/emd/Si100_1x1x3.emd"
