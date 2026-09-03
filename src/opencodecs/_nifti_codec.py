@@ -22,7 +22,7 @@ class NiftiCodec(Codec):
 
     has_native = True
     has_delegate = False
-    can_encode = False
+    can_encode = True
     can_decode = True
     multi_frame = True
     streaming_decode = False
@@ -61,10 +61,19 @@ class NiftiCodec(Codec):
                 return out
             return arr
 
-    def encode(self, data: Any, *, dest=None, **opts):
-        raise NotImplementedError(
-            "nifti: encoding is not implemented; NIfTI is a container "
-            "format and opencodecs reads it rather than writing it")
+    def encode(self, data: Any, *, dest=None, **opts) -> bytes | None:
+        """Serialize an array as a single-file NIfTI-1 (.nii).
+
+        ``compress=True`` gzips it. NIfTI-1 rather than NIfTI-2 because
+        every tool reads NIfTI-1, and its int16 dimension limit is
+        checked rather than silently truncated.
+        """
+        from ._nifti_writer import encode_nifti
+        blob = encode_nifti(data, **opts)
+        if dest is None:
+            return blob
+        from .core._io_helpers import write_dest as _write_dest
+        return _write_dest(dest, blob)
 
 
 __all__ = ["NiftiCodec"]

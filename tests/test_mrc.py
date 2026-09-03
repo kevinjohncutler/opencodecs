@@ -177,9 +177,13 @@ def test_no_magic_still_opens_when_asked_explicitly():
     assert oc.read(blob, format="mrc").shape == (4, 5)
 
 
-def test_encode_is_refused_clearly():
-    with pytest.raises(NotImplementedError, match="container format"):
-        oc.get_codec("mrc").encode(np.zeros((4, 4), dtype="f4"))
+def test_codec_encode_round_trips():
+    """Encoding landed after this reader; the codec surface must expose it."""
+    a = (np.arange(2 * 3 * 4, dtype="f4") - 5).reshape(2, 3, 4)
+    codec = oc.get_codec("mrc")
+    assert codec.can_encode
+    blob = codec.encode(a, voxel_size=(1.0, 2.0, 3.0))
+    assert np.array_equal(oc.read(blob, format="mrc"), a)
 
 
 # --------------------------------------------------------------------

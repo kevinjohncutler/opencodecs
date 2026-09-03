@@ -23,7 +23,7 @@ class MrcCodec(Codec):
 
     has_native = True
     has_delegate = False
-    can_encode = False
+    can_encode = True
     can_decode = True
     multi_frame = True
     streaming_decode = True
@@ -67,10 +67,19 @@ class MrcCodec(Codec):
                 return arr
             return r.asarray(out=out, canonical=canonical)
 
-    def encode(self, data: Any, *, dest=None, **opts):
-        raise NotImplementedError(
-            "mrc: encoding is not implemented; MRC is a container format "
-            "and opencodecs reads it rather than writing it")
+    def encode(self, data: Any, *, dest=None, **opts) -> bytes | None:
+        """Serialize an array as a complete MRC file.
+
+        ``voxel_size`` sets the cell dimensions, which is how every
+        consumer recovers scale. Statistics are computed and written
+        because tools set display contrast from them.
+        """
+        from ._mrc_writer import encode_mrc
+        blob = encode_mrc(data, **opts)
+        if dest is None:
+            return blob
+        from .core._io_helpers import write_dest as _write_dest
+        return _write_dest(dest, blob)
 
 
 __all__ = ["MrcCodec"]

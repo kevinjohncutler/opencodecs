@@ -180,9 +180,14 @@ def test_registered_and_sniffable():
     assert oc.read(build_nifti2(a)).shape == (2, 3, 4)
 
 
-def test_encode_is_refused_clearly():
-    with pytest.raises(NotImplementedError, match="container format"):
-        oc.get_codec("nifti").encode(np.zeros((2, 2, 2), dtype="i2"))
+def test_codec_encode_round_trips():
+    """Encoding landed after this reader; the codec surface must expose it."""
+    a = np.arange(2 * 3 * 4, dtype="i2").reshape(2, 3, 4)
+    codec = oc.get_codec("nifti")
+    assert codec.can_encode
+    blob = codec.encode(a, voxel_size=(1.0, 1.0, 2.0))
+    assert np.array_equal(
+        np.asarray(oc.read(blob, format="nifti"), dtype="i2"), a)
 
 
 # --------------------------------------------------------------------
