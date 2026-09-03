@@ -25,6 +25,7 @@ import hashlib
 import json
 import re
 import sys
+import gzip
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -172,7 +173,25 @@ def cmd_fetch(args) -> int:
                 print(f"  [skip] {f['path']}")
                 continue
             dest.parent.mkdir(parents=True, exist_ok=True)
-            if f.get("member"):
+            if f.get("gunzip"):
+                # Scientific archives publish almost everything gzipped:
+                # EMDB maps, most EBI mirrors. Storing the decompressed
+                # file keeps the reader under test reading the format,
+                # not a decompressor.
+                print(f"  [get ] {f['url']}")
+                tmp = dest.with_suffix(dest.suffix + ".gz.part")
+                try:
+                    urllib.request.urlretrieve(f["url"], tmp)
+                    with gzip.open(tmp, "rb") as gz:
+                        dest.write_bytes(gz.read())
+                except Exception as exc:                 # noqa: BLE001
+                    print(f"  [FAIL] {ds['id']}: {type(exc).__name__}: {exc}")
+                    tmp.unlink(missing_ok=True)
+                    continue
+                finally:
+                    tmp.unlink(missing_ok=True)
+                print(f"  [gunzip] {f['path']}")
+            elif f.get("member"):
                 arc = _fetch_archive(f["url"], archives)
                 if arc is None or not _extract(arc, f["member"], dest):
                     continue

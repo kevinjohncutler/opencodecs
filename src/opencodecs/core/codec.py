@@ -305,8 +305,14 @@ def codec_for_path(path: str | os.PathLike) -> Codec:
     raise KeyError(f"no codec registered for extension {ext!r}")
 
 
-def codec_for_bytes(data: bytes | memoryview, n: int = 32) -> Codec:
-    """Resolve a codec by sniffing the magic bytes of the data."""
+def codec_for_bytes(data: bytes | memoryview, n: int = 256) -> Codec:
+    """Resolve a codec by sniffing the magic bytes of the data.
+
+    256 bytes, not 32. Not every format puts its identifier at the
+    front: MRC carries "MAP " at byte 208, which a 32-byte window can
+    never see. Every signature() here guards with ``len(head) >= k``
+    before indexing, so a longer head is only ever more information.
+    """
     head = bytes(data[:n])
     for c in {id(v): v for v in _REGISTRY.values()}.values():
         try:
@@ -329,7 +335,7 @@ def _resolve_codec(src: Any, *, format: str | None = None) -> Codec:
             # the file's magic bytes.
             try:
                 with open(src, "rb") as f:
-                    head = f.read(64)
+                    head = f.read(256)
                 return codec_for_bytes(head)
             except Exception:
                 pass
@@ -340,7 +346,7 @@ def _resolve_codec(src: Any, *, format: str | None = None) -> Codec:
         # File-like — peek + reset
         if hasattr(src, "seek") and hasattr(src, "tell"):
             pos = src.tell()
-            head = src.read(64)
+            head = src.read(256)
             src.seek(pos)
             return codec_for_bytes(head)
     raise KeyError(f"can't determine codec for {type(src).__name__}")

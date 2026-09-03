@@ -591,3 +591,15 @@ notes = "Camera output rather than anything we or libultrahdr produced: Google C
   [[dataset.file]]
   url = "https://raw.githubusercontent.com/MishaalRahmanGH/Ultra_HDR_Samples/main/Originals/Ultra_HDR_Samples_Originals_01.jpg"
   path = ".test_data/uhdr/pixel6_original_01.jpg"
+
+[[dataset]]
+id = "emdb_map_3001"
+name = "MRC: an EMDB cryo-EM density map (EMD-3001)"
+license = "EMDB terms: freely available without restriction"
+codecs = ["mrc"]
+homepage = "https://www.ebi.ac.uk/emdb/EMD-3001"
+notes = "A deposited cryo-EM reconstruction, written by the software an actual structural-biology pipeline used rather than by us. Real MRC files carry things a synthetic header does not: a non-zero extended header, an axis order that is not always 1/2/3, and origin and cell values that make voxel size meaningful. EMDB publishes maps gzipped, so this is the entry that motivated gunzip support in the fetcher."
+  [[dataset.file]]
+  url = "https://ftp.ebi.ac.uk/pub/databases/emdb/structures/EMD-3001/map/emd_3001.map.gz"
+  path = ".test_data/mrc/emd_3001.map"
+  gunzip = true

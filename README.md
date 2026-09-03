@@ -177,6 +177,7 @@ BT.2100 HDR; `uint8` returns the SDR-tonemapped base JPEG.
 | `eer` | ✓ | — | Thermo Fisher EER (cryo-EM event-list) | Native bitstream decoder + TIFF compression-tag dispatch (codes 65000-65002) |
 | `dicomweb` | ✓ | — | WADO-RS HTTP frame retrieval | Multipart/related parser; transfer-syntax dispatch through opencodecs's codec layer (JPEG-LS / HTJ2K / JPEG-2000 / RLE / raw) |
 | `fits` | ✓ | — | FITS (astronomy) | Multi-HDU walk; BITPIX 8/16/32/64/-32/-64; BZERO unsigned-int trick; compressed images (RICE_1, GZIP_1, GZIP_2, HCOMPRESS_1, NOCOMPRESS) with per-tile ZSCALE/ZZERO quantization. HTTP-range friendly — opening a 50 GB cube reads kilobytes. |
+| `mrc` | ✓ | — | MRC2014 / CCP4 map (cryo-EM volumes, EMDB deposits) | Read-only. MODE 0/1/2/6/12 plus complex; both byte orders; extended header; `plane(i)` for one z-section; `canonical=True` reorients a permuted MAPC/MAPR/MAPS to (z, y, x). |
 
 #### TIFF writer specifics
 

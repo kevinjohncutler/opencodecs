@@ -73,13 +73,26 @@ def test_every_download_script_url_is_in_the_manifest():
 
 
 def test_manifest_codecs_name_real_extensions():
-    """A codec listed in the manifest that we do not build is a typo, with
-    the exception of container formats handled in pure Python."""
-    CONTAINERS = {"czi", "nd2", "lif", "oib", "oir", "vsi", "omezarr", "fits"}
+    """A codec named in the manifest that we do not ship is a typo.
+
+    Checked against the live registry rather than a hand-kept allowlist
+    of container formats. The allowlist version failed the moment a new
+    pure-Python reader was added, which is a maintenance burden with no
+    safety benefit: a typo is not registered either, so the registry
+    catches exactly what the allowlist caught and nothing more.
+    """
+    import opencodecs as oc
+
+    known = {c["name"] for c in oc.list_codecs()}
+    for c in oc.list_codecs():
+        known.update(c.get("aliases", ()) or ())
+    # Extensions that fail to build on this host still register (the
+    # optional-backend stub pattern), so this set does not vary with
+    # which codec libraries happen to be installed.
     built = {p.name[1:-4] for p in (ROOT / "src" / "opencodecs" / "codecs").glob("_*.pyx")
              if not p.name.startswith("._")}
     for ds in _load()["dataset"]:
         for c in ds["codecs"]:
-            assert c in built or c in CONTAINERS, (
-                f"{ds['id']} lists codec {c!r}, which is neither a compiled "
-                f"extension nor a known container format")
+            assert c in known or c in built, (
+                f"{ds['id']} lists codec {c!r}, which no registered codec "
+                f"provides; check for a typo")
