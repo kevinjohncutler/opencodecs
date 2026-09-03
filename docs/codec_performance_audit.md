@@ -110,21 +110,16 @@ faster per megabyte on one large one.
 
 ### Streaming, and where it is missing
 
-MRC is the only one of these that reads through the `read_at` contract,
-so it is the only one that opens over HTTP without downloading the file:
-a 4 MB volume costs 64 KB to open and one plane read stays well under
-half the file. N5 and Imaris reach their data through a store and
-through HDF5 chunking respectively, which gets the same effect by a
-different route.
+MRC, DICOM and NRRD read through the `read_at` contract, so all three
+open over HTTP without downloading the file. N5 and Imaris reach their
+data through a store and through HDF5 chunking respectively, which gets
+the same effect by a different route.
 
-The rest read the whole file:
-
-* **NIfTI** and **DM** have a good reason. Nearly every NIfTI is gzipped
-  and a gzip member has no usable random access, and DM's tag tree has
-  to be walked from the front before anything can be located.
-* **DICOM** and **NRRD** did not, and now do. Both put native pixel
-  data at a fixed offset after a header, which is exactly the shape
-  range requests are for. NRRD parses its text header from one 64 KiB
+* **MRC** costs 64 KB to open a 4 MB volume, and one plane read stays
+  well under half the file.
+* **DICOM** and **NRRD** did not stream and now do. Both put native
+  pixel data at a fixed offset after a header, which is exactly the
+  shape range requests are for. NRRD parses its text header from one 64 KiB
   read and then fetches only the volume; DICOM parses its dataset from
   the same-sized prefix and reads a single frame by offset, so frame 40
   of a 48-frame series costs one frame rather than forty-one. The
@@ -138,5 +133,9 @@ own copy of that; there is one now. `tests/test_reader_streaming.py`
 asserts the byte savings for each, because "the URL opened" is not the
 claim worth testing.
 
-The remaining whole-file readers are NIfTI and DM, both for reasons that
-are properties of the formats rather than of the code.
+The two that still read everything do so for reasons that belong to the
+formats. Nearly every NIfTI in circulation is gzipped and a gzip member
+has no usable random access, so reaching the last slice means inflating
+everything before it; for a bare `.nii` the whole-file read is one
+syscall anyway. DM has no header describing the image at all, so the tag
+tree has to be walked from the front before anything can be located.
