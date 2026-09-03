@@ -52,6 +52,7 @@ from .jxl import (
 from ._tiff_writer import TiffWriter, imwrite as tiff_imwrite
 from ._omezarr import OmeZarrArray, OmeZarrPyramidDataset
 from ._n5 import N5Array, N5Error
+from ._imaris import ImarisReader, ImarisError
 from ._omezarr_writer import write_zarr_array, write_omezarr_pyramid
 from ._fits import FitsStream, FitsHDU, imread as fits_imread
 from ._rgbe import encode as rgbe_encode, decode as rgbe_decode, \
@@ -150,6 +151,8 @@ def open_pyramid(
             fmt = "omezarr"
         elif path_lower.endswith(".czi"):
             fmt = "czi"
+        elif path_lower.endswith(".ims"):
+            fmt = "imaris"
     if fmt in ("tiff", "tif", "btf", "bigtiff", "cog", "ome-tiff"):
         if is_url:
             # Build an HTTPDataSource and feed it through read_at.
@@ -160,6 +163,8 @@ def open_pyramid(
         return OmeZarrPyramidDataset(src, **opts)
     if fmt == "czi":
         return CziPyramidReader(src, **opts)
+    if fmt in ("imaris", "ims"):
+        return ImarisReader(src, **opts)
     raise ValueError(
         f"open_pyramid: cannot determine format for src={src!r}; "
         f"pass format='tiff'|'omezarr'|'czi'"
@@ -171,6 +176,8 @@ __all__ = [
     "read", "write", "open", "open_pyramid",
     # N5 (Janelia chunked arrays)
     "N5Array", "N5Error",
+    # Imaris (.ims)
+    "ImarisReader", "ImarisError",
     "list_codecs", "has_codec", "get_codec",
     # Core types (subclassable)
     "Codec", "Reader", "Writer", "register_codec",

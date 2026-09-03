@@ -68,6 +68,7 @@
   ".test_data/htj2k/conformance/ds1_ht_07_b11.j2k": "15f0309d27a22a65c3b5068e7ebd6443b4f95bb41777d70819342cf01ad4b19d",
   ".test_data/htj2k/conformance/hifi_ht1_02.j2k": "8ecb1ddcd469e4b3fda6df01c919e831e16f7c3bc19a0b3c41d72038f2b44e53",
   ".test_data/htj2k/conformance/hifi_p1_02.j2k": "2870eaf3a8f7ed91b8db07663b0c0ffa3de11b6565dfafd62e3571232a766085",
+  ".test_data/imaris/Convallaria_3C_1T_2x2grid_confocal.ims": "c8b66621198e286162e7a2a1b7bc11b2dd705f3d80fd85dc1daab00fe6f638a4",
   ".test_data/lerc/bluemarble_byte.lerc2": "d0d263e622cdc28a116195d068e5bca6fcae90f98b34cd17c2801b19b07a1f59",
   ".test_data/lerc/california_float.lerc2": "814673af554357ebfe47fcdaca38caf1e6b27ac859c578d2214d477a5ca0f261",
   ".test_data/lif/PR2729_frameOrderCombinedScanTypes.lif": "17994bb1bdf93dd1a34a19ed53e5a3d7f672470a8057e2998e25d2474437a052",

@@ -640,3 +640,14 @@ notes = "A real N5 written by Janelia's own tooling, which is the point: N5 look
   [[dataset.file]]
   url = "https://janelia-cosem-datasets.s3.amazonaws.com/jrc_hela-2/jrc_hela-2.n5/em/fibsem-uint16/s4/0/0/6"
   path = ".test_data/n5/jrc_hela-2.n5/em/fibsem-uint16/s4/0/0/6"
+
+[[dataset]]
+id = "imaris_convallaria"
+name = "Imaris: a 3-channel confocal Convallaria stack (OME sample set)"
+license = "unverified"
+codecs = ["imaris"]
+homepage = "https://downloads.openmicroscopy.org/images/Imaris-IMS/"
+notes = "Written by Imaris itself, which is the only way to get its conventions right: the resolution pyramid under /DataSet/ResolutionLevel N, and the DataSetInfo attributes that Imaris stores as arrays of single characters rather than as strings, so a reader that treats them as HDF5 strings gets nothing back."
+  [[dataset.file]]
+  url = "https://downloads.openmicroscopy.org/images/Imaris-IMS/davemason/Convallaria_3C_1T_2x2grid_confocal.ims"
+  path = ".test_data/imaris/Convallaria_3C_1T_2x2grid_confocal.ims"

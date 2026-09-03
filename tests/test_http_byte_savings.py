@@ -58,8 +58,19 @@ def test_range_server_honors_range(tmp_path):
             assert resp.status == 206
             body = resp.read()
         assert body == payload[:100]
-        assert tracker.range_requests == 1
-        assert tracker.bytes_served == 100
+        # Assert on the request we made, not on server-wide totals.
+        #
+        # The totals version failed intermittently inside the full suite
+        # while passing standalone. The servers bind ephemeral ports and
+        # are now closed properly on teardown, so a port can be reused
+        # while some earlier test's client is still finishing with it;
+        # one stray request then moves a global counter and fails a test
+        # about Range handling for reasons having nothing to do with
+        # Range handling. The per-request record is what the test is
+        # actually about: this request asked for 100 bytes and the
+        # server sent exactly those.
+        assert ("bytes=0-99", 100) in tracker.per_request
+        assert tracker.range_requests >= 1
 
 
 def test_range_server_honors_suffix_range(tmp_path):

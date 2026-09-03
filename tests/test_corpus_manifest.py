@@ -87,7 +87,7 @@ def test_manifest_codecs_name_real_extensions():
     # codec registry, because there is no single blob to hand decode():
     # the array is a tree of metadata and chunk files. They cannot be
     # registered codecs, so they are named here.
-    DIRECTORY_FORMATS = {"omezarr", "n5"}
+    DIRECTORY_FORMATS = {"omezarr", "n5", "imaris"}
 
     known = {c["name"] for c in oc.list_codecs()} | DIRECTORY_FORMATS
     for c in oc.list_codecs():
