@@ -69,16 +69,18 @@ MUST_SHIP_ALL_PLATFORMS = {
 # Codecs promised only on the platforms where the build was actually
 # validated on a matching host, rather than assumed from CI.
 #
-# _openjph is built from source by bench/build_codec_libs.sh. The build
-# was run end to end on macOS arm64, Linux x86_64 and Windows x64 (MSVC
-# 14.44, the real bench/build_codec_libs.sh, then setup.py producing a
-# .pyd that round-trips) before each was promised here. Linux aarch64 is
-# left out only because no arm64 Linux host was available to check it; if
-# that cell does produce the extension it shows in the script's "extras"
-# line, which is the signal to promote it.
+# _openjph is built from source by bench/build_codec_libs.sh. Every cell
+# below was validated on a matching host before being promised here: the
+# real build script, then setup.py producing an extension that imports
+# and round-trips. macOS arm64 and Linux x86_64 natively, Windows x64
+# under MSVC 14.44, and Linux aarch64 in a manylinux_2_28_aarch64
+# container on Apple Silicon. That last one is the reason setup.py globs
+# lib64 as well as lib: OpenJPH installs to lib64 on AlmaLinux, so the
+# older lib-only probe would have skipped the extension there.
 MUST_SHIP_BY_PLATFORM = {
     "macosx_arm64": {"_openjph"},
     "linux_x86_64": {"_openjph"},
+    "linux_aarch64": {"_openjph"},
     "win_amd64": {"_openjph"},
 }
 
