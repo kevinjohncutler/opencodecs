@@ -28,6 +28,8 @@ from typing import Any
 
 import numpy as np
 
+from .core._io_helpers import read_src as _read_src
+
 _TYPES = {
     "signed char": "i1", "int8": "i1", "int8_t": "i1",
     "uchar": "u1", "unsigned char": "u1", "uint8": "u1", "uint8_t": "u1",
@@ -54,23 +56,8 @@ class NrrdFile:
 
     def __init__(self, src: Any):
         self._path = Path(src) if isinstance(src, (str, os.PathLike)) else None
-        raw = self._load(src)
+        raw = _read_src(src)
         self.header, self._data_offset, self._raw = self._parse_header(raw)
-
-    @staticmethod
-    def _load(src: Any) -> bytes:
-        if isinstance(src, (str, os.PathLike)):
-            with open(src, "rb") as fh:
-                return fh.read()
-        if isinstance(src, (bytes, bytearray, memoryview)):
-            return bytes(src)
-        if hasattr(src, "read"):
-            if hasattr(src, "seek"):
-                src.seek(0)
-            return src.read()
-        raise TypeError(
-            f"nrrd: unsupported src type {type(src).__name__}; pass a path, "
-            f"bytes, or a file-like object")
 
     def _parse_header(self, raw: bytes):
         if not raw.startswith(b"NRRD"):

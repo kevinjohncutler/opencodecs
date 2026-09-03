@@ -29,6 +29,8 @@ from typing import Any
 
 import numpy as np
 
+from .core._io_helpers import read_src as _read_src
+
 NIFTI1_HEADER_SIZE = 348
 NIFTI2_HEADER_SIZE = 540
 
@@ -80,25 +82,10 @@ class NiftiStream:
     """
 
     def __init__(self, src: Any):
-        self._raw = _maybe_gunzip(self._load(src))
+        self._raw = _maybe_gunzip(_read_src(src))
         if len(self._raw) < 4:
             raise NiftiError("NIfTI: file is too short to hold a header")
         self._header = self._parse_header(self._raw)
-
-    @staticmethod
-    def _load(src: Any) -> bytes:
-        if isinstance(src, (str, os.PathLike)):
-            with open(src, "rb") as fh:
-                return fh.read()
-        if isinstance(src, (bytes, bytearray, memoryview)):
-            return bytes(src)
-        if hasattr(src, "read"):
-            if hasattr(src, "seek"):
-                src.seek(0)
-            return src.read()
-        raise TypeError(
-            f"NIfTI: unsupported src type {type(src).__name__}; pass a "
-            f"path, bytes, or a file-like object")
 
     # -- header ------------------------------------------------------
 

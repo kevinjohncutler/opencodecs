@@ -31,6 +31,8 @@ from typing import Any, Iterator
 
 import numpy as np
 
+from .core._io_helpers import read_src as _read_src
+
 from ._dicomweb import (TS_EXPLICIT_VR_LE, TS_IMPLICIT_VR_LE, decode_frame)
 
 # Explicit-VR little-endian, but big-endian on the wire. Retired, still
@@ -90,28 +92,13 @@ class DicomFile:
     """Reader for one DICOM file."""
 
     def __init__(self, src: Any):
-        self._raw = self._load(src)
+        self._raw = _read_src(src)
         self._meta: dict[tuple[int, int], _Element] = {}
         self._ds: dict[tuple[int, int], _Element] = {}
         self._pixel_offset: int | None = None
         self._pixel_length: int | None = None
         self._encapsulated = False
         self._parse()
-
-    @staticmethod
-    def _load(src: Any) -> bytes:
-        if isinstance(src, (str, os.PathLike)):
-            with open(src, "rb") as fh:
-                return fh.read()
-        if isinstance(src, (bytes, bytearray, memoryview)):
-            return bytes(src)
-        if hasattr(src, "read"):
-            if hasattr(src, "seek"):
-                src.seek(0)
-            return src.read()
-        raise TypeError(
-            f"dicom: unsupported src type {type(src).__name__}; pass a path, "
-            f"bytes, or a file-like object")
 
     # -- parsing -----------------------------------------------------
 
