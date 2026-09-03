@@ -93,9 +93,21 @@ take them as upper bounds.
   generic scalar path in libspng — no SSE2 / NEON kernel for the
   forward-filter loop. A small ``.c`` shim could shave ~10-20% on
   RGBA8 encode of natural-image data.
-* **Why deferred**: PNG encode is already ~1.5-3× ahead of
-  imagecodecs on natural-image data, so this is diminishing-returns
-  territory.
+* **Measured 2026-09-03, and the estimate above was low.** Encoding
+  six Kodak RGB images with the default all-filters choice takes
+  155.2 ms; forcing `filter_choice="none"`, which skips
+  `get_best_filter` entirely, takes 85.5 ms. So the filter path is up
+  to 45% of encode, not 10-20%.
+* **Read that as a ceiling, not a target.** Dropping filters also
+  makes the output 1.11x bigger, so zlib does less work in the fast
+  case, and the gap conflates the five `filter_sum` passes with both
+  `filter_scanline` and that reduced deflate work. The true SIMD win
+  is some fraction of 45%.
+* **Why still deferred**: PNG encode is already ~1.5-3× ahead of
+  imagecodecs on natural-image data, and every kernel added to
+  `3rdparty/libspng/spng.c` widens a divergence from upstream that
+  `ci/check_vendor_drift.py` now has to carry. Worth doing, but as a
+  deliberate patch with its own benchmark, not as a drive-by.
 
 ## blosc2 perf — Mac + Linux at parity — done
 
