@@ -10,8 +10,16 @@ modes; uint8 / int8 / uint16 / int16 input across 1 / 3 / 4 components.
   `src/opencodecs/codecs/openjph_shim.{h,cpp}`
 - Tests: `tests/test_openjph.py` (13 pass + 1 cross-decode skip when
   imagecodecs has no HTJ2K backend built locally)
-- Build: `_maybe_build_openjph_ext()` in setup.py — built only when
-  libopenjph is on the system (homebrew at `/opt/homebrew/opt/openjph`).
+- Build: `bench/build_codec_libs.sh --only=openjph` builds OpenJPH
+  0.31.0 from source into the codec-libs prefix, and
+  `_maybe_build_openjph_ext()` in setup.py finds it there first, falling
+  back to a system copy. Before 2026-09 it was system-only, which meant
+  htj2k shipped in no wheel at all and ran in no CI job; see
+  docs/htj2k_conformance.md.
+- Conformance: we decode 7 of the JPEG committee's 42 HT codestreams.
+  28 of the 35 refusals are one missing upstream feature (OpenJPH
+  implements a single quality layer). `tests/test_htj2k_conformance.py`
+  pins the score.
 
 ## Why a C++ shim, not a direct Cython binding
 

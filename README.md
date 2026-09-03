@@ -136,7 +136,7 @@ Quick guidance:
 | `mozjpeg` | ✓ | ✓ | gray / RGB, 8/12-bit | system mozjpeg (TJ v2) | `.jpg` |
 | `webp` | ✓ | ✓ | RGB / RGBA, lossy + lossless | system libwebp | `.webp` |
 | `jpeg2k` | ✓ | ✓ | gray / RGB / RGBA, 8/16-bit, lossless + lossy | OpenJPEG | `.jp2`, `.j2k`, `.jpx`, `.jpc` |
-| `htj2k` | ✓ | ✓ | gray / RGB / RGBA, 8/16-bit, lossless + lossy | system OpenJPH | `.j2c` |
+| `htj2k` | ✓ | ✓ | gray / RGB / RGBA, 8/16-bit, lossless + lossy | OpenJPH 0.31.0 (source-built) | `.j2c` |
 | `jpegls` | ✓ | ✓ | gray / RGB / RGBA, 2-16 bit, lossless + near-lossless | system CharLS | `.jls` |
 | `avif` | ✓ | ✓ | RGB / RGBA, lossy + lossless (YUV444+identity) | libavif | `.avif` |
 | `heif` | ✓ | ✓ | RGB / RGBA, lossless + lossy (HEVC) | libheif (+ aomenc) | `.heif`, `.heic` |
