@@ -71,6 +71,7 @@ class MrcStream:
                 src, (str, os.PathLike, bytes, bytearray, memoryview)):
             read_at = src
             self._src = None
+        self._http = None
         if read_at is not None:
             self._read = read_at
             self._owns_fd = False
@@ -160,13 +161,58 @@ class MrcStream:
 
     @property
     def is_mrcz(self) -> bool:
-        """MRCZ stores blosc-compressed blocks and is not plain MRC.
+        """MRCZ stores blosc-compressed voxels behind an MRC header.
 
-        It reuses the header but the voxels are compressed, so a reader
-        that trusts the size arithmetic below would return noise. We
-        detect it and refuse rather than guess.
+        It reuses the header, so the plain size arithmetic below would
+        read compressed bytes as samples. Detected from EXTTYP, and
+        handled by _decompress_mrcz rather than refused.
         """
         return self._header["exttyp"].upper().startswith("MRCZ")
+
+    def _mrcz_payload(self) -> np.ndarray:
+        """Decode MRCZ's blosc-compressed voxel block.
+
+        MRCZ keeps the MRC header and replaces the voxels with one or
+        more blosc frames. blosc carries its own uncompressed size in
+        its 16-byte header, so the frames can be walked without any
+        MRCZ-specific index.
+        """
+        raw = bytes(self._read(self.data_offset, 1 << 62))
+        if not raw:
+            raise MrcError("mrc: MRCZ file has no compressed payload")
+        try:
+            import blosc2
+        except ImportError:                              # pragma: no cover
+            raise MrcError(
+                "mrc: reading MRCZ needs blosc2; install opencodecs[blosc]"
+            ) from None
+        chunks, off = [], 0
+        while off < len(raw):
+            try:
+                nbytes, cbytes, _ = blosc2.get_cbuffer_sizes(raw[off:])
+            except Exception as exc:                     # noqa: BLE001
+                raise MrcError(
+                    f"mrc: MRCZ payload is not a blosc frame at offset "
+                    f"{off}: {exc}") from None
+            if cbytes <= 0:
+                break
+            try:
+                chunks.append(blosc2.decompress(raw[off:off + cbytes]))
+            except Exception as exc:                     # noqa: BLE001
+                # blosc raises its own RuntimeError on a short or corrupt
+                # frame; surface it as an MRC problem so a caller can
+                # catch one exception type for one file.
+                raise MrcError(
+                    f"mrc: MRCZ frame at offset {off} failed to "
+                    f"decompress: {exc}") from None
+            off += cbytes
+        data = b"".join(chunks)
+        count = self._header["nx"] * self._header["ny"] * self.n_planes
+        need = count * self.dtype.itemsize
+        if len(data) < need:
+            raise MrcError(
+                f"mrc: MRCZ decompressed to {len(data)} bytes, needs {need}")
+        return np.frombuffer(data[:need], dtype=self.dtype).reshape(self.shape)
 
     @property
     def voxel_size(self) -> tuple[float, float, float]:
@@ -248,9 +294,7 @@ class MrcStream:
     def plane(self, index: int) -> np.ndarray:
         """Read one z-section as ``(ny, nx)``."""
         if self.is_mrcz:
-            raise MrcError(
-                "MRC: this file is MRCZ (blosc-compressed voxels); "
-                "plain MRC reading would return noise")
+            return self._mrcz_payload()[index]
         n = self.n_planes
         if not 0 <= index < n:
             raise IndexError(f"plane {index} out of range (0..{n - 1})")
@@ -285,9 +329,11 @@ class MrcStream:
         publication.
         """
         if self.is_mrcz:
-            raise MrcError(
-                "MRC: this file is MRCZ (blosc-compressed voxels); "
-                "plain MRC reading would return noise")
+            arr = self._mrcz_payload()
+            if out is not None:
+                out[...] = arr
+                return out
+            return arr
         h = self._header
         total = self._plane_bytes() * self.n_planes
         raw = self._read(self.data_offset, total)
@@ -317,6 +363,16 @@ class MrcStream:
     # -- plumbing ----------------------------------------------------
 
     def _open_read_at(self, src: Any):
+        if isinstance(src, str) and src.startswith(("http://", "https://")):
+            # The header is 1024 bytes and each plane is contiguous, so
+            # over HTTP this reads kilobytes to open a file that may be
+            # gigabytes, the same property the TIFF and FITS readers
+            # advertise. EMDB serves ranges, so a remote map opens
+            # without downloading it.
+            from ._tiff_http import HTTPDataSource
+            ds = HTTPDataSource(src)
+            self._http = ds
+            return ds.read_at, True, None
         if isinstance(src, (str, os.PathLike)):
             fh = open(src, "rb")
 
@@ -345,6 +401,11 @@ class MrcStream:
         if self._owns_fd and self._fh is not None:
             self._fh.close()
             self._fh = None
+        if getattr(self, "_http", None) is not None:
+            closer = getattr(self._http, "close", None)
+            if closer is not None:
+                closer()
+            self._http = None
 
     def __enter__(self) -> "MrcStream":
         return self
