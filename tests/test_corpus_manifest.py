@@ -83,7 +83,13 @@ def test_manifest_codecs_name_real_extensions():
     """
     import opencodecs as oc
 
-    known = {c["name"] for c in oc.list_codecs()}
+    # Directory formats are read through a class rather than the byte
+    # codec registry, because there is no single blob to hand decode():
+    # the array is a tree of metadata and chunk files. They cannot be
+    # registered codecs, so they are named here.
+    DIRECTORY_FORMATS = {"omezarr", "n5"}
+
+    known = {c["name"] for c in oc.list_codecs()} | DIRECTORY_FORMATS
     for c in oc.list_codecs():
         known.update(c.get("aliases", ()) or ())
     # Extensions that fail to build on this host still register (the

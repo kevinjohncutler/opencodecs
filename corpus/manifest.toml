@@ -617,3 +617,26 @@ notes = "The format's own samples at nifti.nimh.nih.gov were unreachable when th
   [[dataset.file]]
   url = "https://raw.githubusercontent.com/nipy/nibabel/master/nibabel/tests/data/example_nifti2.nii.gz"
   path = ".test_data/nifti/example_nifti2.nii.gz"
+
+[[dataset]]
+id = "n5_janelia_hela"
+name = "N5: part of a Janelia OpenOrganelle FIB-SEM volume (jrc_hela-2)"
+license = "unverified"
+codecs = ["n5"]
+homepage = "https://openorganelle.janelia.org/datasets/jrc_hela-2"
+notes = "A real N5 written by Janelia's own tooling, which is the point: N5 looks like Zarr v2 until it does not. This fixture pins the three differences that bite. Its dimensions are column-major so the C-order shape is reversed; every block carries a big-endian header giving mode, rank and its own extents; and blocks are nested one directory per dimension in column-major order, so C-order index (z, y, x) lives at x/y/z. It also settles a question the spec leaves open: the standard permits an edge block to be stored at its true size, and this writer pads to full block size instead, so a reader has to handle both. Only the metadata and four blocks are fetched, not the volume."
+  [[dataset.file]]
+  url = "https://janelia-cosem-datasets.s3.amazonaws.com/jrc_hela-2/jrc_hela-2.n5/em/fibsem-uint16/s4/attributes.json"
+  path = ".test_data/n5/jrc_hela-2.n5/em/fibsem-uint16/s4/attributes.json"
+  [[dataset.file]]
+  url = "https://janelia-cosem-datasets.s3.amazonaws.com/jrc_hela-2/jrc_hela-2.n5/em/fibsem-uint16/s4/0/0/0"
+  path = ".test_data/n5/jrc_hela-2.n5/em/fibsem-uint16/s4/0/0/0"
+  [[dataset.file]]
+  url = "https://janelia-cosem-datasets.s3.amazonaws.com/jrc_hela-2/jrc_hela-2.n5/em/fibsem-uint16/s4/1/0/0"
+  path = ".test_data/n5/jrc_hela-2.n5/em/fibsem-uint16/s4/1/0/0"
+  [[dataset.file]]
+  url = "https://janelia-cosem-datasets.s3.amazonaws.com/jrc_hela-2/jrc_hela-2.n5/em/fibsem-uint16/s4/0/1/0"
+  path = ".test_data/n5/jrc_hela-2.n5/em/fibsem-uint16/s4/0/1/0"
+  [[dataset.file]]
+  url = "https://janelia-cosem-datasets.s3.amazonaws.com/jrc_hela-2/jrc_hela-2.n5/em/fibsem-uint16/s4/0/0/6"
+  path = ".test_data/n5/jrc_hela-2.n5/em/fibsem-uint16/s4/0/0/6"

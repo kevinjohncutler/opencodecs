@@ -179,6 +179,7 @@ BT.2100 HDR; `uint8` returns the SDR-tonemapped base JPEG.
 | `fits` | ✓ | — | FITS (astronomy) | Multi-HDU walk; BITPIX 8/16/32/64/-32/-64; BZERO unsigned-int trick; compressed images (RICE_1, GZIP_1, GZIP_2, HCOMPRESS_1, NOCOMPRESS) with per-tile ZSCALE/ZZERO quantization. HTTP-range friendly — opening a 50 GB cube reads kilobytes. |
 | `mrc` | ✓ | — | MRC2014 / CCP4 map (cryo-EM volumes, EMDB deposits) | Read-only. MODE 0/1/2/6/12 plus complex; both byte orders; extended header; `plane(i)` for one z-section; `canonical=True` reorients a permuted MAPC/MAPR/MAPS to (z, y, x). |
 | `nifti` | ✓ | — | NIfTI-1 / NIfTI-2 (neuroimaging volumes) | Read-only. Both header versions and byte orders; transparent gzip, since almost every NIfTI in the wild is `.nii.gz`; scl_slope/scl_inter applied when they change anything and skipped when they do not, so an unscaled integer volume stays integer. |
+| `n5` | ✓ | — | N5 (Janelia / Saalfeld chunked arrays) | Read-only, via `opencodecs.N5Array`. Local directory, http(s) URL or a fetch callable, so an N5 on S3 reads like one on disk. raw/gzip/bzip2/xz plus blosc, lz4 and zstd through our own codecs; column-major dimensions reversed to C order; big-endian per-block headers; absent blocks read as zeros the way sparse datasets expect. |
 
 #### TIFF writer specifics
 
