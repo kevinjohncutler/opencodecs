@@ -697,3 +697,17 @@ notes = "The same 30x30x30 ball encoded four ways, from the reference Python imp
   [[dataset.file]]
   url = "https://raw.githubusercontent.com/mhe/pynrrd/master/nrrd/tests/data/BallBinary30x30x30.raw"
   path = ".test_data/nrrd/BallBinary30x30x30.raw"
+
+[[dataset]]
+id = "gatan_dm_samples"
+name = "Gatan Digital Micrograph: a dm3 image stack and a dm4"
+license = "unverified"
+codecs = ["dm"]
+homepage = "https://github.com/hyperspy/rosettasciio"
+notes = "From the reference Python implementation's test data. Both versions are here because dm4 is not a new format but the same tag tree with 64-bit counts and lengths and an extra per-entry byte count, so a parser written against dm3 alone silently misreads every offset in a dm4."
+  [[dataset.file]]
+  url = "https://raw.githubusercontent.com/hyperspy/rosettasciio/main/rsciio/tests/data/digitalmicrograph/test_stackbuilder_imagestack.dm3"
+  path = ".test_data/dm/test_stackbuilder_imagestack.dm3"
+  [[dataset.file]]
+  url = "https://raw.githubusercontent.com/hyperspy/rosettasciio/main/rsciio/tests/data/digitalmicrograph/Fei%20HAADF-DE_location.dm3"
+  path = ".test_data/dm/Fei_HAADF-DE_location.dm3"

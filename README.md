@@ -183,6 +183,7 @@ BT.2100 HDR; `uint8` returns the SDR-tonemapped base JPEG.
 | `imaris` | ✓ | — | Imaris `.ims` (Bitplane, HDF5-based) | Read-only, via `opencodecs.ImarisReader` and `open_pyramid`. Resolution pyramid, timepoints and channels; crops the padding Imaris leaves in the stored array using each level's own ImageSize attributes; decodes the character-array attribute convention. Needs `h5py`. |
 | `dicom` | ✓ | — | DICOM files (`.dcm`) | Read-only, via `opencodecs.DicomFile`. Explicit and implicit VR, big-endian, deflated; native and encapsulated Pixel Data; multi-frame. Frames route through the same transfer-syntax dispatch DICOMweb uses, so JPEG, JPEG-LS, JPEG 2000, HTJ2K and RLE all work. Reconciles a codestream's signedness with Pixel Representation. |
 | `nrrd` | ✓ | — | NRRD / NHDR (3D Slicer, ITK) | Read-only, via `opencodecs.NrrdFile`. raw, gzip, bzip2, ascii and hex encodings; both byte orders; detached `.nhdr` + `.raw` pairs; `sizes` is fastest-axis-first so the numpy shape is reversed. |
+| `dm` | ✓ | — | Gatan Digital Micrograph (`.dm3`, `.dm4`) | Read-only, via `opencodecs.DmFile`. Walks the tag tree; big-endian structure with little-endian samples; dm4's 64-bit counts; 2-D and 3-D stacks. The embedded thumbnail is identified from the file's own Thumbnails group and skipped, so image 0 is the acquisition. |
 
 #### TIFF writer specifics
 

@@ -26,6 +26,8 @@
   ".test_data/dicom/MR_small_implicit.dcm": "6077442c42a56fc7fcc7db8411a657dded9fc109e6d3275765c4de358292b299",
   ".test_data/dicom/MR_small_jp2klossless.dcm": "4c0049e0355b560c8c846538d827afbdae5311b20fc5e5a93a3892e109bb140d",
   ".test_data/dicom/emri_small.dcm": "151233ec63f64ebb63b979df51aa827cd612a53422c073f6ef341770c7bc9a56",
+  ".test_data/dm/Fei_HAADF-DE_location.dm3": "7a35359858a07501e993c696ab6ab4ff6222c89be36754d1b6fd542e6a8fcd8c",
+  ".test_data/dm/test_stackbuilder_imagestack.dm3": "41070d0fd25a838a504f705e1431735192b7a97ca7dd15d9328af5e939fe74a2",
   ".test_data/eer/empiar10568_falcon4.eer": "3b54097e56a9738ebfbdc30612a96aebfabfdad1ed1062eb3e84de24745e9c46",
   ".test_data/fits/HorseHead.fits": "c4bcc0bccbadf1488e4e361c0d8f04255dc344ff401fd4827139b3354eafe863",
   ".test_data/gif/rotating_earth.gif": "b0acdc9a01f91f6123dbff38d4bee59d0d6e4b26071b5c83937b242b6b202378",
