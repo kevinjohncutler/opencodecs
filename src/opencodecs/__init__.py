@@ -54,6 +54,7 @@ from ._omezarr import OmeZarrArray, OmeZarrPyramidDataset
 from ._n5 import N5Array, N5Error
 from ._imaris import ImarisReader, ImarisError
 from ._dicom import DicomFile, DicomError
+from ._nrrd import NrrdFile, NrrdError
 from ._mrc_writer import encode_mrc, write_mrc
 from ._nifti_writer import encode_nifti, write_nifti
 from ._omezarr_writer import write_zarr_array, write_omezarr_pyramid
@@ -183,6 +184,8 @@ __all__ = [
     "ImarisReader", "ImarisError",
     # DICOM files
     "DicomFile", "DicomError",
+    # NRRD
+    "NrrdFile", "NrrdError",
     # Volume writers
     "encode_mrc", "write_mrc",
     "encode_nifti", "write_nifti",

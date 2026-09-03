@@ -674,3 +674,26 @@ notes = "From the reference Python implementation's test data, chosen so the sam
   [[dataset.file]]
   url = "https://raw.githubusercontent.com/pydicom/pydicom/main/src/pydicom/data/test_files/CT_small.dcm"
   path = ".test_data/dicom/CT_small.dcm"
+
+[[dataset]]
+id = "nrrd_pynrrd_variants"
+name = "NRRD: one volume in raw, gzip and bzip2, plus a detached header pair"
+license = "unverified"
+codecs = ["nrrd"]
+homepage = "https://github.com/mhe/pynrrd"
+notes = "The same 30x30x30 ball encoded four ways, from the reference Python implementation's test data. Same design as the DICOM entry: one volume, several encodings, so a decode difference is the parser rather than the picture. The .nhdr plus .raw pair is the detached case, where the header names a separate data file and a reader that only knows about attached data silently has nothing to read."
+  [[dataset.file]]
+  url = "https://raw.githubusercontent.com/mhe/pynrrd/master/nrrd/tests/data/BallBinary30x30x30.nrrd"
+  path = ".test_data/nrrd/ball_raw.nrrd"
+  [[dataset.file]]
+  url = "https://raw.githubusercontent.com/mhe/pynrrd/master/nrrd/tests/data/BallBinary30x30x30_gz.nrrd"
+  path = ".test_data/nrrd/ball_gz.nrrd"
+  [[dataset.file]]
+  url = "https://raw.githubusercontent.com/mhe/pynrrd/master/nrrd/tests/data/BallBinary30x30x30_bz2.nrrd"
+  path = ".test_data/nrrd/ball_bz2.nrrd"
+  [[dataset.file]]
+  url = "https://raw.githubusercontent.com/mhe/pynrrd/master/nrrd/tests/data/BallBinary30x30x30.nhdr"
+  path = ".test_data/nrrd/BallBinary30x30x30.nhdr"
+  [[dataset.file]]
+  url = "https://raw.githubusercontent.com/mhe/pynrrd/master/nrrd/tests/data/BallBinary30x30x30.raw"
+  path = ".test_data/nrrd/BallBinary30x30x30.raw"
