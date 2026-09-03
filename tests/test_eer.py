@@ -511,3 +511,47 @@ def test_eer_frame_terminates_on_exact_fill_not_overshoot():
     assert int(decode(SPEC_ENCODED, (20, 16), 7, 1, 1).sum()) == 4
     with pytest.raises(EerError):
         decode(SPEC_ENCODED, (19, 15), 7, 1, 1)     # 285 cells, overshoots
+
+@pytest.mark.skipif(not _REAL_EER.is_file(),
+                    reason="run tests/download_test_corpus.sh --eer")
+def test_eer_reader_on_real_falcon4_acquisition():
+    """Drive the file-level reader with a real container, not a synthetic one.
+
+    The other EerReader tests build their own minimal TIFF so they can
+    run anywhere, which exercises our writer's idea of the container
+    rather than a microscope's. This one walks a genuine Falcon 4
+    BigTIFF: 721 IFDs written by Thermo Fisher's software, with the
+    private tags and the IFD chaining a real acquisition emits.
+    """
+    from opencodecs._eer_reader import EerReader
+
+    with EerReader(str(_REAL_EER)) as r:
+        assert r.n_frames == 721, f"expected 721 frames, got {r.n_frames}"
+        assert r.shape == (4096, 4096)
+
+        first = r.frame(0)
+        assert first.shape == (4096, 4096)
+        assert first.dtype == np.uint8
+        # A real exposure is sparse but not empty: a few electrons per
+        # thousand pixels. Both bounds matter, since a decoder that
+        # silently produced zeros would pass a shape-only check.
+        counted = int(first.sum())
+        assert 0 < counted < first.size, f"implausible event count {counted}"
+
+        # Summing must accumulate, not overwrite. Ten frames of a real
+        # acquisition carry more events than one.
+        ten = r.sum(0, 10, dtype=np.uint32)
+        assert ten.shape == (4096, 4096)
+        assert int(ten.sum()) > counted
+
+
+@pytest.mark.skipif(not _REAL_EER.is_file(),
+                    reason="run tests/download_test_corpus.sh --eer")
+def test_eer_reader_iteration_matches_indexed_access_on_real_data():
+    """iter_frames and frame(i) must agree on a real file."""
+    from opencodecs._eer_reader import EerReader
+    import itertools
+
+    with EerReader(str(_REAL_EER)) as r:
+        for i, frame in enumerate(itertools.islice(r.iter_frames(), 3)):
+            assert np.array_equal(frame, r.frame(i)), f"frame {i} differs"

@@ -32,11 +32,16 @@ take them as upper bounds.
   per-frame dose curve via the ``weights`` argument (commit landing
   with this doc edit). Frame iteration, flat-sum, weighted-sum, and
   range-validation are all tested.
-* **What's left**: a real-acquisition test fixture (a Falcon-4
-  sample file from an actual scope; the synthetic bitstream tests
-  cover encoding logic but not file-container quirks wild EER
-  writers emit). This is a "find a willing collaborator +
-  redistribute under an open license" task more than a coding one.
+* **Done (2026-09)**: the real-acquisition fixture arrived with the
+  corpus work and needed no collaborator after all. EMPIAR-10568 is
+  CC0, so `corpus.py fetch eer_empiar10568` pulls a genuine 230 MB
+  Falcon 4 BigTIFF: 721 IFDs written by Thermo Fisher's software,
+  with the private tags and IFD chaining a real acquisition emits.
+  `test_eer_reader_on_real_falcon4_acquisition` and
+  `test_eer_reader_iteration_matches_indexed_access_on_real_data`
+  drive `EerReader` against it. The other reader tests still build a
+  minimal TIFF so they run on a fresh clone, but they were only ever
+  testing our own idea of the container.
 
 ## DICOMweb live integration test — done
 
