@@ -28,6 +28,7 @@ from typing import Any
 
 import numpy as np
 
+from .core._io_helpers import open_read_at as _open_read_at
 from .core._io_helpers import read_src as _read_src
 
 _TYPES = {
@@ -54,10 +55,23 @@ class NrrdError(Exception):
 class NrrdFile:
     """Reader for one NRRD file (attached or detached data)."""
 
+    # The header is text and rarely long; read this much to start and
+    # extend only if the blank line has not arrived yet.
+    _HEADER_CHUNK = 1 << 16
+
     def __init__(self, src: Any):
         self._path = Path(src) if isinstance(src, (str, os.PathLike)) else None
-        raw = _read_src(src)
-        self.header, self._data_offset, self._raw = self._parse_header(raw)
+        self._read_at, self._close = _open_read_at(src)
+        head = self._read_at(0, self._HEADER_CHUNK)
+        # A pathological header longer than the first read still works;
+        # this just costs a second request rather than being an error.
+        while (b"\n\n" not in head and b"\r\n\r\n" not in head
+               and len(head) >= self._HEADER_CHUNK):
+            more = self._read_at(len(head), self._HEADER_CHUNK)
+            if not more:
+                break
+            head += more
+        self.header, self._data_offset = self._parse_header(head)
 
     def _parse_header(self, raw: bytes):
         if not raw.startswith(b"NRRD"):
@@ -83,7 +97,7 @@ class NrrdFile:
             elif ":" in text:
                 k, _, v = text.partition(":")
                 header[k.strip().lower()] = v.strip()
-        return header, offset, raw
+        return header, offset
 
     # -- metadata ----------------------------------------------------
 
@@ -126,10 +140,27 @@ class NrrdFile:
 
     # -- data --------------------------------------------------------
 
-    def _payload(self) -> bytes:
+    def _payload(self, nbytes: int | None = None) -> bytes:
+        """The encoded samples.
+
+        ``nbytes`` is how much the caller actually needs, which for the
+        raw encoding is exactly the volume: reading only that is what
+        lets a large NRRD open over HTTP without pulling the file. The
+        compressed encodings have no random access, so they still read
+        to the end.
+        """
         detached = self.detached_data_file
         if detached is None:
-            return self._raw[self._data_offset:]
+            if nbytes is None:
+                out, off = b"", self._data_offset
+                while True:
+                    chunk = self._read_at(off, 1 << 22)
+                    if not chunk:
+                        break
+                    out += chunk
+                    off += len(chunk)
+                return out
+            return self._read_at(self._data_offset, nbytes)
         if self._path is None:
             raise NrrdError(
                 f"nrrd: header points at a detached data file {detached!r}, "
@@ -137,7 +168,10 @@ class NrrdFile:
                 f"bytes rather than a path")
         target = (self._path.parent / detached).resolve()
         try:
-            return target.read_bytes()
+            if nbytes is None:
+                return target.read_bytes()
+            with open(target, "rb") as fh:
+                return fh.read(nbytes)
         except FileNotFoundError:
             raise NrrdError(
                 f"nrrd: detached data file {detached!r} not found next to "
@@ -173,8 +207,11 @@ class NrrdFile:
             arr = np.frombuffer(bytes.fromhex(cleaned.decode("ascii")),
                                 dtype=dtype, count=count)
         else:
-            data = self._decode(self._payload())
             need = count * dtype.itemsize
+            # Only the raw encoding has a computable length; gzip and
+            # bzip2 must be read to the end before anything decompresses.
+            wanted = need if enc in ("raw", "") else None
+            data = self._decode(self._payload(wanted))
             if len(data) < need:
                 raise NrrdError(
                     f"nrrd: truncated data; {shape} {dtype} needs {need} "
@@ -184,7 +221,10 @@ class NrrdFile:
         return arr.reshape(shape[::-1]).T if len(shape) > 1 else arr.reshape(shape)
 
     def close(self) -> None:
-        self._raw = b""
+        closer = getattr(self, "_close", None)
+        if closer is not None:
+            closer()
+            self._close = None
 
     def __enter__(self) -> "NrrdFile":
         return self

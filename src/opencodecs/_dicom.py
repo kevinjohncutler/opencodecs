@@ -31,6 +31,7 @@ from typing import Any, Iterator
 
 import numpy as np
 
+from .core._io_helpers import open_read_at as _open_read_at
 from .core._io_helpers import read_src as _read_src
 
 from ._dicomweb import (TS_EXPLICIT_VR_LE, TS_IMPLICIT_VR_LE, decode_frame)
@@ -91,14 +92,37 @@ def _read_tag(buf: bytes, off: int, byteorder: str) -> tuple[int, int]:
 class DicomFile:
     """Reader for one DICOM file."""
 
+    # One 64 KiB block, which is the HTTP source's own unit and far more
+    # than a DICOM header usually needs. Bigger would still be correct
+    # and would defeat the point: the header parse is supposed to be
+    # cheap enough that opening a series does not read its pixels. When
+    # a header really is larger, the prefix grows.
+    _PREFIX = 1 << 16
+
     def __init__(self, src: Any):
-        self._raw = _read_src(src)
+        self._read_at, self._close = _open_read_at(src)
         self._meta: dict[tuple[int, int], _Element] = {}
         self._ds: dict[tuple[int, int], _Element] = {}
         self._pixel_offset: int | None = None
         self._pixel_length: int | None = None
         self._encapsulated = False
-        self._parse()
+
+        # Read a prefix and parse it. Everything before Pixel Data is
+        # header, so this reads kilobytes of a file that may be
+        # gigabytes; the voxels are fetched later, by offset.
+        prefix = self._PREFIX
+        while True:
+            self._raw = self._read_at(0, prefix)
+            short = len(self._raw) < prefix          # hit the end of the file
+            self._meta.clear()
+            self._ds.clear()
+            self._pixel_offset = None
+            self._encapsulated = False
+            self._parse()
+            if self._pixel_offset is not None or short:
+                break
+            prefix *= 8
+        self._prefix_len = len(self._raw)
 
     # -- parsing -----------------------------------------------------
 
@@ -349,22 +373,29 @@ class DicomFile:
 
     # -- pixels ------------------------------------------------------
 
-    def _fragments(self) -> list[bytes]:
-        """Item fragments of an encapsulated Pixel Data element."""
-        raw = self._raw
+    def _fragment_table(self) -> list[tuple[int, int]]:
+        """(offset, length) of each encapsulated fragment.
+
+        Walks only the 8-byte item headers, so locating frame 400 reads
+        a few kilobytes rather than every fragment before it.
+        """
         off = self._pixel_offset or 0
-        frags: list[bytes] = []
-        while off + 8 <= len(raw):
-            g, e = _read_tag(raw, off, "<")
-            (length,) = struct.unpack_from("<I", raw, off + 4)
+        table: list[tuple[int, int]] = []
+        while True:
+            head = self._read_at(off, 8)
+            if len(head) < 8:
+                break
+            g, e = _read_tag(head, 0, "<")
+            (length,) = struct.unpack_from("<I", head, 4)
             off += 8
-            if (g, e) == _SEQ_DELIM:
+            if (g, e) == _SEQ_DELIM or (g, e) != _ITEM:
                 break
-            if (g, e) != _ITEM:
-                break
-            frags.append(raw[off:off + length])
+            table.append((off, length))
             off += length
-        return frags
+        return table
+
+    def _fragments(self) -> list[bytes]:
+        return [self._read_at(o, n) for o, n in self._fragment_table()]
 
     def frame(self, index: int = 0) -> np.ndarray:
         """Decode one frame."""
@@ -379,7 +410,10 @@ class DicomFile:
                 raise DicomError("dicom: file has no Pixel Data element")
             per = r * c * spp * (self.bits_allocated // 8)
             start = self._pixel_offset + index * per
-            buf = self._raw[start:start + per]
+            # Straight to the frame. This is the whole point of native
+            # Pixel Data being a plain buffer at a known offset: frame
+            # 400 of a series costs one read, not the file.
+            buf = self._read_at(start, per)
             if len(buf) < per:
                 raise DicomError(
                     f"dicom: truncated Pixel Data; frame {index} needs {per} "
@@ -387,19 +421,20 @@ class DicomFile:
             arr = np.frombuffer(buf, dtype=self.dtype)
             return arr.reshape((r, c) if spp == 1 else (r, c, spp))
 
-        frags = self._fragments()
-        if not frags:
+        table = self._fragment_table()
+        if not table:
             raise DicomError("dicom: encapsulated Pixel Data has no fragments")
         # The first item is the Basic Offset Table, which is empty when
         # the writer did not bother. With one fragment per frame the
         # mapping is direct; otherwise fall back to concatenating what
         # is left, which is right for the single-frame multi-fragment
         # case and the only sane guess without a BOT.
-        body = frags[1:] if len(frags) > n else frags
+        body = table[1:] if len(table) > n else table
         if len(body) == n:
-            data = body[index]
+            off, length = body[index]
+            data = self._read_at(off, length)
         elif n == 1:
-            data = b"".join(body)
+            data = b"".join(self._read_at(o, ln) for o, ln in body)
         else:
             raise DicomError(
                 f"dicom: {len(body)} fragments for {n} frames and no usable "
@@ -437,6 +472,10 @@ class DicomFile:
 
     def close(self) -> None:
         self._raw = b""
+        closer = getattr(self, "_close", None)
+        if closer is not None:
+            closer()
+            self._close = None
 
     def __enter__(self) -> "DicomFile":
         return self

@@ -122,8 +122,21 @@ The rest read the whole file:
 * **NIfTI** and **DM** have a good reason. Nearly every NIfTI is gzipped
   and a gzip member has no usable random access, and DM's tag tree has
   to be walked from the front before anything can be located.
-* **DICOM** and **NRRD** do not. Both put native pixel data at a fixed
-  offset after a header, which is exactly the shape range requests are
-  for, and both currently read everything. A 500 MB CT series or a raw
-  NRRD volume should be openable without touching the voxels. This is
-  the clearest remaining gap in the streaming story.
+* **DICOM** and **NRRD** did not, and now do. Both put native pixel
+  data at a fixed offset after a header, which is exactly the shape
+  range requests are for. NRRD parses its text header from one 64 KiB
+  read and then fetches only the volume; DICOM parses its dataset from
+  the same-sized prefix and reads a single frame by offset, so frame 40
+  of a 48-frame series costs one frame rather than forty-one. The
+  encapsulated path walks only the 8-byte fragment headers to locate a
+  frame, rather than reading every fragment before it.
+
+All three now reach storage through one helper,
+`core._io_helpers.open_read_at`, which turns a path into a seek, an
+http(s) URL into range requests and bytes into slices. MRC had grown its
+own copy of that; there is one now. `tests/test_reader_streaming.py`
+asserts the byte savings for each, because "the URL opened" is not the
+claim worth testing.
+
+The remaining whole-file readers are NIfTI and DM, both for reasons that
+are properties of the formats rather than of the code.

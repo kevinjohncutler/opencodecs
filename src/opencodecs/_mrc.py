@@ -28,6 +28,8 @@ from typing import Any, Callable
 
 import numpy as np
 
+from .core._io_helpers import open_read_at as _open_read_at
+
 HEADER_SIZE = 1024
 
 # MODE -> dtype. The gaps are real: the specification assigns 3 and 4 to
@@ -72,12 +74,16 @@ class MrcStream:
             read_at = src
             self._src = None
         self._http = None
+        self._closer = None
         if read_at is not None:
             self._read = read_at
             self._owns_fd = False
             self._fh = None
         else:
-            self._read, self._owns_fd, self._fh = self._open_read_at(src)
+            # Shared with the NRRD and DICOM readers; MRC used to carry
+            # its own copy of this.
+            self._read, self._closer = _open_read_at(src)
+            self._owns_fd, self._fh = False, None
 
         head = self._read(0, HEADER_SIZE)
         if len(head) < HEADER_SIZE:
@@ -362,50 +368,11 @@ class MrcStream:
 
     # -- plumbing ----------------------------------------------------
 
-    def _open_read_at(self, src: Any):
-        if isinstance(src, str) and src.startswith(("http://", "https://")):
-            # The header is 1024 bytes and each plane is contiguous, so
-            # over HTTP this reads kilobytes to open a file that may be
-            # gigabytes, the same property the TIFF and FITS readers
-            # advertise. EMDB serves ranges, so a remote map opens
-            # without downloading it.
-            from ._tiff_http import HTTPDataSource
-            ds = HTTPDataSource(src)
-            self._http = ds
-            return ds.read_at, True, None
-        if isinstance(src, (str, os.PathLike)):
-            fh = open(src, "rb")
-
-            def read_at(off: int, n: int, _f=fh) -> bytes:
-                _f.seek(off)
-                return _f.read(n)
-            return read_at, True, fh
-        if isinstance(src, (bytes, bytearray, memoryview)):
-            buf = bytes(src)
-
-            def read_at(off: int, n: int, _b=buf) -> bytes:
-                return _b[off:off + n]
-            return read_at, False, None
-        if hasattr(src, "read") and hasattr(src, "seek"):
-            fh = src
-
-            def read_at(off: int, n: int, _f=fh) -> bytes:
-                _f.seek(off)
-                return _f.read(n)
-            return read_at, False, None
-        raise TypeError(
-            f"MRC: unsupported src type {type(src).__name__}; pass a path, "
-            f"bytes, file-like, or a read_at callable")
-
     def close(self) -> None:
-        if self._owns_fd and self._fh is not None:
-            self._fh.close()
-            self._fh = None
-        if getattr(self, "_http", None) is not None:
-            closer = getattr(self._http, "close", None)
-            if closer is not None:
-                closer()
-            self._http = None
+        closer = getattr(self, "_closer", None)
+        if closer is not None:
+            closer()
+            self._closer = None
 
     def __enter__(self) -> "MrcStream":
         return self
