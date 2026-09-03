@@ -53,6 +53,7 @@ from ._tiff_writer import TiffWriter, imwrite as tiff_imwrite
 from ._omezarr import OmeZarrArray, OmeZarrPyramidDataset
 from ._n5 import N5Array, N5Error
 from ._imaris import ImarisReader, ImarisError
+from ._dicom import DicomFile, DicomError
 from ._omezarr_writer import write_zarr_array, write_omezarr_pyramid
 from ._fits import FitsStream, FitsHDU, imread as fits_imread
 from ._rgbe import encode as rgbe_encode, decode as rgbe_decode, \
@@ -178,6 +179,8 @@ __all__ = [
     "N5Array", "N5Error",
     # Imaris (.ims)
     "ImarisReader", "ImarisError",
+    # DICOM files
+    "DicomFile", "DicomError",
     "list_codecs", "has_codec", "get_codec",
     # Core types (subclassable)
     "Codec", "Reader", "Writer", "register_codec",

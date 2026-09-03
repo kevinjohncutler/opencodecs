@@ -651,3 +651,26 @@ notes = "Written by Imaris itself, which is the only way to get its conventions 
   [[dataset.file]]
   url = "https://downloads.openmicroscopy.org/images/Imaris-IMS/davemason/Convallaria_3C_1T_2x2grid_confocal.ims"
   path = ".test_data/imaris/Convallaria_3C_1T_2x2grid_confocal.ims"
+
+[[dataset]]
+id = "dicom_pydicom_variants"
+name = "DICOM: the same MR slice in four transfer syntaxes, plus a CT"
+license = "unverified"
+codecs = ["dicom"]
+homepage = "https://github.com/pydicom/pydicom"
+notes = "From the reference Python implementation's test data, chosen so the same image appears in explicit VR, implicit VR, RLE and JPEG 2000. That combination is the point: the transfer syntax changes how the dataset is parsed and whether Pixel Data is native or encapsulated, so four encodings of one image mean any decode difference is our parser rather than the picture. CT_small adds Rescale Slope and Intercept, which is what turns stored values into Hounsfield units."
+  [[dataset.file]]
+  url = "https://raw.githubusercontent.com/pydicom/pydicom/main/src/pydicom/data/test_files/MR_small.dcm"
+  path = ".test_data/dicom/MR_small.dcm"
+  [[dataset.file]]
+  url = "https://raw.githubusercontent.com/pydicom/pydicom/main/src/pydicom/data/test_files/MR_small_implicit.dcm"
+  path = ".test_data/dicom/MR_small_implicit.dcm"
+  [[dataset.file]]
+  url = "https://raw.githubusercontent.com/pydicom/pydicom/main/src/pydicom/data/test_files/MR_small_RLE.dcm"
+  path = ".test_data/dicom/MR_small_RLE.dcm"
+  [[dataset.file]]
+  url = "https://raw.githubusercontent.com/pydicom/pydicom/main/src/pydicom/data/test_files/MR_small_jp2klossless.dcm"
+  path = ".test_data/dicom/MR_small_jp2klossless.dcm"
+  [[dataset.file]]
+  url = "https://raw.githubusercontent.com/pydicom/pydicom/main/src/pydicom/data/test_files/CT_small.dcm"
+  path = ".test_data/dicom/CT_small.dcm"

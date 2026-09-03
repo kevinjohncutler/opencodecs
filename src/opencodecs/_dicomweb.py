@@ -147,6 +147,32 @@ def _extract_transfer_syntax(part_headers: dict[str, str]) -> str:
     return m.group(1)
 
 
+def _apply_pixel_representation(arr, pixel_representation: int,
+                                bits_allocated: int | None):
+    """Reconcile a container codec's signedness with the DICOM header.
+
+    JPEG 2000, HTJ2K and JPEG-LS carry their own notion of signedness in
+    the codestream, and encoders routinely write *unsigned* samples with
+    a DC level shift for data the DICOM header calls signed
+    (PixelRepresentation 1). Handing that back untouched gives an image
+    offset by half the range: the pydicom reference decodes
+    MR_small_jp2klossless to int16 [127, 2145] where the raw codestream
+    is uint16 [32895, 34913], exactly 32768 higher.
+
+    Nothing to do when the codestream already agreed, which is why this
+    keys off the returned dtype rather than the transfer syntax.
+    """
+    import numpy as np
+
+    if pixel_representation != 1:
+        return arr
+    if not isinstance(arr, np.ndarray) or arr.dtype.kind != "u":
+        return arr                       # already signed, or not an array
+    bits = bits_allocated or (arr.dtype.itemsize * 8)
+    signed = np.dtype(f"i{arr.dtype.itemsize}")
+    return (arr.astype(np.int64) - (1 << (bits - 1))).astype(signed)
+
+
 def decode_frame(
     part_bytes: bytes,
     transfer_syntax: str,
@@ -174,17 +200,20 @@ def decode_frame(
 
     if transfer_syntax in (TS_JPEGLS_LOSSLESS, TS_JPEGLS_NEAR):
         from opencodecs.codecs import _charls
-        return _charls.decode(part_bytes)
+        return _apply_pixel_representation(
+            _charls.decode(part_bytes), pixel_representation, bits_allocated)
 
     if transfer_syntax in (TS_JPEG2K_LOSSLESS, TS_JPEG2K_LOSSY):
         from opencodecs.codecs import _jpeg2k
-        return _jpeg2k.decode(part_bytes)
+        return _apply_pixel_representation(
+            _jpeg2k.decode(part_bytes), pixel_representation, bits_allocated)
 
     if transfer_syntax in (
         TS_HTJ2K_LOSSLESS, TS_HTJ2K_RPCL, TS_HTJ2K_LOSSY
     ):
         from opencodecs.codecs import _openjph
-        return _openjph.decode(part_bytes)
+        return _apply_pixel_representation(
+            _openjph.decode(part_bytes), pixel_representation, bits_allocated)
 
     if transfer_syntax in (TS_IMPLICIT_VR_LE, TS_EXPLICIT_VR_LE):
         if rows is None or columns is None or bits_allocated is None:
