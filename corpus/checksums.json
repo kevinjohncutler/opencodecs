@@ -75,6 +75,8 @@
   ".test_data/nd2/MeOh_high_fluo_007.nd2": "68ba9ba438b8dc7c76861c252bd096293d83885db0e559fb41bbbe29ba53a47c",
   ".test_data/ndtiff/NDTiff.index": "63c389dad7fc176ab31a6da3f5c1aaf390212bb66dff3153f85d907f8284ebc1",
   ".test_data/ndtiff/NDTiff3.2_monochrome_NDTiffStack.tif": "ce1a249ec68922f15b294e5594b6eb5a16fdb6d21ee37c1767470b8bbd1e52b9",
+  ".test_data/nifti/example4d.nii.gz": "42097dfbab9d2a036b41ae5c97a359591cf2cf5c3f8dc6ca6455c0b8a7f22696",
+  ".test_data/nifti/example_nifti2.nii.gz": "a53e59e70eb0d8275a4fe347422a89551aee92d0eb1137a3444b1932a28c3fe2",
   ".test_data/oib/imagesc_71616_60x.oib": "580d36a9d0dcac1c77ccd6780ad988e94e10cf90d065b9da14fe0e1de83c01af",
   ".test_data/oir/amy_slice_z_stack.oir": "2c530b25c188baec977147850cf4c71d70da0a9a45d949e44aeeba7d5aa1c94d",
   ".test_data/ome_tiff/retina_pyramid.ome.tiff": "dad5c9fca085e277b6deee9ec198725513c36111f772ad01f523f6e2bde6447c",

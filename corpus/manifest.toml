@@ -603,3 +603,17 @@ notes = "A deposited cryo-EM reconstruction, written by the software an actual s
   url = "https://ftp.ebi.ac.uk/pub/databases/emdb/structures/EMD-3001/map/emd_3001.map.gz"
   path = ".test_data/mrc/emd_3001.map"
   gunzip = true
+
+[[dataset]]
+id = "nifti_reference_pair"
+name = "NIfTI: a NIfTI-1 and a NIfTI-2 volume from nibabel's reference data"
+license = "unverified"
+codecs = ["nifti"]
+homepage = "https://github.com/nipy/nibabel"
+notes = "The format's own samples at nifti.nimh.nih.gov were unreachable when this entry was written, so these come from the reference Python implementation's test data instead. Both versions are here on purpose: NIfTI-1 caps a dimension at 32767 because dim is int16, and NIfTI-2 exists to widen it to int64, which moves the magic and changes half the header's field types. A reader tested on only one of them is tested on half the format. example4d is also 4-D and carries scl_slope/scl_inter scaling, which a 3-D unscaled fixture would not exercise."
+  [[dataset.file]]
+  url = "https://raw.githubusercontent.com/nipy/nibabel/master/nibabel/tests/data/example4d.nii.gz"
+  path = ".test_data/nifti/example4d.nii.gz"
+  [[dataset.file]]
+  url = "https://raw.githubusercontent.com/nipy/nibabel/master/nibabel/tests/data/example_nifti2.nii.gz"
+  path = ".test_data/nifti/example_nifti2.nii.gz"
