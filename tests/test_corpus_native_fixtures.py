@@ -245,7 +245,22 @@ def test_htj2k_multiple_quality_layers_is_a_known_limitation():
 
 UHDR_FILES = ["pixel6_original_05.jpg", "pixel6_original_01.jpg"]
 
+# Same shape as the OpenJPH guard above, and missing until now, which
+# is why main went red the day the uhdr fixtures started downloading:
+# the corpus arrived, the tests ran, and the backend they need is not
+# built by the tests workflow, so an optional-backend absence surfaced
+# as four hard ImportErrors instead of four skips.
+try:
+    from opencodecs.uhdr import _HAVE_BACKEND as _HAVE_UHDR
+except Exception:                                     # noqa: BLE001
+    _HAVE_UHDR = False
 
+_needs_uhdr = pytest.mark.skipif(
+    not _HAVE_UHDR,
+    reason="libultrahdr backend not built (system libultrahdr not found)")
+
+
+@_needs_uhdr
 @pytest.mark.parametrize("name", UHDR_FILES)
 def test_uhdr_probe_reads_camera_metadata(name):
     import opencodecs.uhdr as uhdr
@@ -261,6 +276,7 @@ def test_uhdr_probe_reads_camera_metadata(name):
     assert float(np.max(meta["max_content_boost"])) > 1.0
 
 
+@_needs_uhdr
 @pytest.mark.parametrize("name", UHDR_FILES)
 def test_uhdr_decoded_peak_matches_declared_boost(name):
     """The decoded HDR peak should land on the boost the file declares.
