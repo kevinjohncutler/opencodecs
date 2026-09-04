@@ -152,7 +152,7 @@ def main() -> int:
     derived: list[tuple[str, str, float]] = []
 
     for p in sorted(ours):
-        rel = str(p.relative_to(ROOT))
+        rel = p.relative_to(ROOT).as_posix()
         cands = theirs.get(p.name, [])
         if not cands:
             continue
@@ -186,7 +186,7 @@ def main() -> int:
     print(f"cross-checking {len(cy_ours)} Cython files against "
           f"{len(cy_theirs)} of theirs by content, ignoring filenames...")
     for p in sorted(cy_ours):
-        rel = str(p.relative_to(ROOT))
+        rel = p.relative_to(ROOT).as_posix()
         if rel in already:
             continue
         mine = p.read_bytes()

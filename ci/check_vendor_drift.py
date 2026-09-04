@@ -118,7 +118,11 @@ def cmd_verify(args) -> int:
                 continue
             if p.name.startswith("._"):
                 continue
-            rel = str(p.relative_to(ROOT))
+            # as_posix, not str: VENDOR.toml and vendor_hashes.json both
+            # record forward slashes, so on Windows a str() here yields
+            # 3rdparty\qoi\qoi.h, matches nothing, and every vendored
+            # file is reported undeclared.
+            rel = p.relative_to(ROOT).as_posix()
             comp = next(c for c in comps if c["name"] == d.name)
             if comp.get("upstream") == "none":
                 continue                      # our own code, nothing to track
