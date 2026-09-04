@@ -460,6 +460,38 @@ def test_decode_native_dct_scale_preserves_hdr_signal():
         f"scaled mean differs too far: full={fm}, half={hm}")
 
 
+
+# A lossless SDR base is a SOF3 JPEG, and libultrahdr parses the base
+# with whatever libjpeg it was linked against. Homebrew's libjpeg-turbo
+# reads SOF3; the conda-forge build our Linux CI links does not, and
+# fails with libjpeg's own "Unsupported JPEG process: SOF type 0xc3".
+#
+# So this is a property of the linked library, not of the platform, and
+# it is detected by trying it rather than by checking sys.platform --
+# the same Linux box with a different libjpeg gives the other answer.
+_LOSSLESS_PROBE: bool | None = None
+
+
+def _lossless_base_supported() -> bool:
+    global _LOSSLESS_PROBE
+    if _LOSSLESS_PROBE is None:
+        try:
+            encode_native(_synthetic_hdr_rgb(16, 16), lossless=True)
+            _LOSSLESS_PROBE = True
+        except UhdrError:
+            _LOSSLESS_PROBE = False
+        except Exception:                                # noqa: BLE001
+            _LOSSLESS_PROBE = True      # a different failure is a real one
+    return _LOSSLESS_PROBE
+
+
+needs_lossless_jpeg = pytest.mark.skipif(
+    not _lossless_base_supported(),
+    reason="libultrahdr is linked against a libjpeg that cannot parse a "
+           "lossless (SOF3) JPEG, so lossless=True is unavailable here")
+
+
+@needs_lossless_jpeg
 def test_encode_native_lossless_sdr_base():
     """encode_native(lossless=True) produces a valid Ultra-HDR
     container whose SDR base is a libjpeg-turbo lossless JPEG.
@@ -480,6 +512,7 @@ def test_encode_native_lossless_sdr_base():
         decode(lossless, want_hdr=True)
 
 
+@needs_lossless_jpeg
 def test_encode_native_lossless_is_bit_exact_in_sdr_layer():
     """The defining property of ``lossless=True``: the SDR base JPEG
     inside the assembled Ultra-HDR container decodes byte-for-byte

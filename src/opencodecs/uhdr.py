@@ -267,6 +267,32 @@ __all__ = [
 ]
 
 
+def _encode_assembled_checked(*, lossless: bool, **kw):
+    """``encode_assembled``, with a usable message for one real
+    portability difference.
+
+    libultrahdr parses the base JPEG with whatever libjpeg it was linked
+    against, and a lossless base is a SOF3 codestream that only a
+    lossless-capable libjpeg accepts. Homebrew's libjpeg-turbo does; the
+    conda-forge build our Linux CI links does not. The raw failure is
+    ``Unsupported JPEG process: SOF type 0xc3``, which comes from inside
+    libjpeg and tells the caller nothing about what to do -- not even
+    which of the two JPEGs it was looking at.
+    """
+    try:
+        return encode_assembled(**kw)
+    except UhdrError as exc:
+        if lossless and "0xc3" in str(exc):
+            raise UhdrError(
+                "uhdr: lossless=True writes a lossless (SOF3) JPEG as the "
+                "SDR base, and the libjpeg this libultrahdr is linked "
+                "against cannot parse one. Rebuild libultrahdr against a "
+                "libjpeg-turbo with lossless support, or pass "
+                f"lossless=False. Underlying error: {exc}"
+            ) from exc
+        raise
+
+
 def encode_native(hdr, sdr=None, *,
                    gamut='display-p3', sdr_white_nits=1600.0,
                    quality=95, gain_quality=None, gain_scale=1,
@@ -580,7 +606,8 @@ def encode_native(hdr, sdr=None, *,
         exif_seg = None
 
     if exif_seg is None:
-        return encode_assembled(
+        return _encode_assembled_checked(
+            lossless=lossless,
             base_jpeg=base_jpeg,
             gainmap_jpeg=gainmap_jpeg,
             metadata=metadata,
@@ -590,7 +617,8 @@ def encode_native(hdr, sdr=None, *,
 
     # Thumbnail path: assemble to bytes (we need to splice the EXIF
     # segment into the bytestream), then either return or stream-write.
-    blob = encode_assembled(
+    blob = _encode_assembled_checked(
+        lossless=lossless,
         base_jpeg=base_jpeg,
         gainmap_jpeg=gainmap_jpeg,
         metadata=metadata,
