@@ -114,11 +114,13 @@ jobs:
       - name: Install reference implementations (best effort)
         continue-on-error: true
         run: |
+          # Read the list out of pyproject with a regex rather than
+          # tomllib, which is 3.11+ and this matrix still builds 3.10.
           python - <<'PY' > /tmp/reference_pkgs.txt
-          import tomllib
-          with open("pyproject.toml", "rb") as fh:
-              data = tomllib.load(fh)
-          print("\n".join(data["project"]["optional-dependencies"]["reference"]))
+          import pathlib, re
+          text = pathlib.Path("pyproject.toml").read_text()
+          block = re.search(r"^reference = \[(.*?)^\]", text, re.S | re.M)
+          print("\n".join(re.findall(r'"([^"]+)"', block.group(1))))
           PY
           while read -r pkg; do
             [ -z "$pkg" ] && continue
