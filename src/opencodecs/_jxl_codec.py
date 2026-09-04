@@ -32,10 +32,24 @@ class JpegXLReader(Reader):
     def __init__(self, src: Any, **opts):
         self._inner = _JxlReader(src, **opts)
         self.shape = self._inner.frame_shape
-        self.dtype = self._inner.dtype
+        # np.dtype, not the scalar type the inner reader hands back:
+        # Reader annotates dtype as np.dtype and every other format
+        # returns one, so `r.dtype.kind` should not depend on which
+        # codec produced the reader. The two compare equal, so callers
+        # testing `r.dtype == np.uint8` are unaffected.
+        self.dtype = np.dtype(self._inner.dtype)
         self.color = self._inner.color
         self.icc_profile = None  # lazy on the inner reader
-        self.n_frames = self._inner.n_frames
+        # The inner reader answers None for everything, because a JXL
+        # codestream does not carry a frame count -- frames are
+        # discovered as they decode. That is honest for an animation and
+        # needlessly unhelpful for a still, where the answer is one and
+        # costs nothing. None therefore still means "unknown", just no
+        # longer for the overwhelmingly common case.
+        inner_n = self._inner.n_frames
+        if inner_n is None and not self._inner.is_animation:
+            inner_n = 1
+        self.n_frames = inner_n
 
     @property
     def basic_info(self) -> dict:

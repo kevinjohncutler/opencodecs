@@ -50,7 +50,11 @@ class FitsCodec(Codec):
         )
 
     def open(self, src: Any):
-        from ._fits_reader import FitsStream
+        # ._fits, not ._fits_reader: the latter has never existed, so
+        # this raised ModuleNotFoundError for every caller of
+        # oc.open(..., format="fits") and for decode(), which goes
+        # through it. Nothing noticed because no test called either.
+        from ._fits import FitsStream
         return FitsStream(_read_src_or_path(src))
 
     def decode(self, src: Any, **opts) -> np.ndarray:

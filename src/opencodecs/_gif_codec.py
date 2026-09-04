@@ -16,7 +16,7 @@ from typing import Any
 
 import numpy as np
 
-from .core.codec import Codec
+from .core.codec import Codec, Reader
 from .core._io_helpers import read_src as _read_src, write_dest as _write_dest
 from .core._optional_backend import import_or_stubs
 
@@ -41,10 +41,62 @@ except Exception:  # pragma: no cover - extension not built
     GifWriter = None  # type: ignore
 
 
+class GifStreamReader(Reader):
+    """Reader adapter wrapping the cdef GifReader.
+
+    The compiled reader already has the whole surface -- read,
+    iter_frames, shape, dtype, n_frames, ``[i]`` -- but a Cython
+    extension type cannot inherit a Python ABC, so ``isinstance(r,
+    Reader)`` was False for GIF and only for GIF. It also reported
+    ``dtype`` as the scalar type ``numpy.uint8`` rather than an
+    ``np.dtype``, which is what the Reader contract annotates and what
+    every other format returns.
+
+    Same shape as :class:`opencodecs._jxl_codec.JpegXLReader`, which
+    wraps the cdef JXL reader for the same reason. Anything not named
+    here forwards to the inner reader, so no GIF-specific attribute is
+    lost by going through it.
+    """
+
+    is_chunked = True  # [i] replays from frame 0; GIF disposal forbids seek
+
+    def __init__(self, data: Any):
+        self._inner = GifReader(data)
+        self.shape = self._inner.shape
+        self.dtype = np.dtype(self._inner.dtype)
+        self.n_frames = self._inner.n_frames
+
+    def iter_frames(self):
+        return self._inner.iter_frames()
+
+    def read(self) -> np.ndarray:
+        return self._inner.read()
+
+    def __getitem__(self, idx) -> np.ndarray:
+        return self._inner[idx]
+
+    def __len__(self) -> int:
+        return self._inner.n_frames
+
+    def __getattr__(self, name: str):
+        # Only reached for names this class does not define, so the
+        # wrapper adds an interface without hiding one.
+        return getattr(self._inner, name)
+
+    def close(self) -> None:
+        close = getattr(self._inner, "close", None)
+        if close is not None:
+            close()
+
+    def __repr__(self) -> str:
+        return (f"<GifStreamReader shape={self.shape} "
+                f"n_frames={self.n_frames}>")
+
+
 class GifCodec(Codec):
     """GIF87a / GIF89a via giflib — full streaming Reader + Writer.
 
-    ``open(src)`` returns a :class:`GifReader` that lazily composites
+    ``open(src)`` returns a :class:`GifStreamReader` that lazily composites
     frames to RGB on demand (memory cost is one frame, not N). For
     streaming encode (multi-frame animations), use :class:`GifWriter`
     directly::
@@ -92,8 +144,8 @@ class GifCodec(Codec):
         with GifReader(_read_src(src)) as r:
             return r.read()
 
-    def open(self, src: Any, **opts):
-        """Return a streaming :class:`GifReader` for ``src``.
+    def open(self, src: Any, **opts) -> "GifStreamReader":
+        """Return a streaming :class:`GifStreamReader` for ``src``.
 
         ``src`` is bytes-like, a file path, or any object readable via
         :func:`opencodecs.core._io_helpers.read_src`. The returned
@@ -101,7 +153,7 @@ class GifCodec(Codec):
         :meth:`read` (returns the stacked ndarray)."""
         if GifReader is None:  # pragma: no cover - extension missing
             raise RuntimeError("opencodecs._gif extension not built")
-        return GifReader(_read_src(src))
+        return GifStreamReader(_read_src(src))
 
 
-__all__ = ["GifCodec", "GifReader", "GifWriter"]
+__all__ = ["GifCodec", "GifReader", "GifStreamReader", "GifWriter"]

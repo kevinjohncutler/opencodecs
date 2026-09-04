@@ -343,15 +343,13 @@ class OibNativeReader(Reader):
         self.dtype = self._parser.dtype
         L = self._parser.layout
         self.axes = L.axis_order
-        # Use the outermost present axis as the frame axis.
-        if L.n_t > 1:
-            self.n_frames = L.n_t
-        elif L.n_z > 1:
-            self.n_frames = L.n_z
-        elif L.n_channels > 1:
-            self.n_frames = L.n_channels
-        else:
-            self.n_frames = 1
+        # The frame axis is the array's first axis, whatever the layout
+        # happens to call it. Picking a length off a t > z > c priority
+        # list instead chooses a number that need not belong to axis 0:
+        # this file is XYCZ, so the array is (channels=2, z=6, y, x),
+        # the old rule answered 6, and iter_frames walked off the end
+        # of an axis of length 2.
+        self.n_frames = int(self.shape[0]) if len(self.shape) >= 3 else 1
         self.is_chunked = False
 
     def iter_frames(self) -> Iterator[np.ndarray]:
