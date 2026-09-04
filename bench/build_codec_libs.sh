@@ -187,6 +187,19 @@ case "$(uname -s)" in
     *)
         export CPPFLAGS="-I$PREFIX/include ${CPPFLAGS:-}"
         export LDFLAGS="-L$PREFIX/lib -L$PREFIX/lib64 -Wl,-rpath,$PREFIX/lib -Wl,-rpath,$PREFIX/lib64 ${LDFLAGS:-}"
+        # If we are building inside a conda environment, that env's lib
+        # directory has to be on the RUNPATH too, not just the include
+        # path. CMake finds a dependency there at configure time, links
+        # against it, and then -- with only $PREFIX on the RUNPATH --
+        # the loader falls back to whatever the system has under the
+        # same soname. libultrahdr built against conda's libjpeg-turbo
+        # 3.2.0 and ran against Ubuntu's 2.1.5, which refuses the
+        # lossless SOF3 JPEG that uhdr.encode_native(lossless=True)
+        # writes; the build succeeded and the mismatch only surfaced as
+        # an opaque decode error much later.
+        if [ -n "${CONDA_PREFIX:-}" ] && [ -d "$CONDA_PREFIX/lib" ]; then
+            export LDFLAGS="-L$CONDA_PREFIX/lib -Wl,-rpath,$CONDA_PREFIX/lib $LDFLAGS"
+        fi
         ;;
 esac
 if [ "$(uname)" = "Linux" ]; then

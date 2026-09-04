@@ -271,13 +271,17 @@ def _encode_assembled_checked(*, lossless: bool, **kw):
     """``encode_assembled``, with a usable message for one real
     portability difference.
 
-    libultrahdr parses the base JPEG with whatever libjpeg it was linked
-    against, and a lossless base is a SOF3 codestream that only a
-    lossless-capable libjpeg accepts. Homebrew's libjpeg-turbo does; the
-    conda-forge build our Linux CI links does not. The raw failure is
-    ``Unsupported JPEG process: SOF type 0xc3``, which comes from inside
-    libjpeg and tells the caller nothing about what to do -- not even
-    which of the two JPEGs it was looking at.
+    libultrahdr parses the base JPEG with whatever libjpeg it ends up
+    bound to at runtime, and a lossless base is a SOF3 codestream that
+    only a lossless-capable libjpeg accepts. libjpeg-turbo 3.x does;
+    older builds, including the 2.1.5 that Ubuntu ships, do not. The raw
+    failure is ``Unsupported JPEG process: SOF type 0xc3``, which comes
+    from inside libjpeg and tells the caller nothing about what to do --
+    not even which of the two JPEGs it was looking at.
+
+    Note "bound to at runtime" rather than "built against": those can
+    differ, and did. See ``bench/build_codec_libs.sh``, where the RUNPATH
+    now includes the conda lib directory for exactly this reason.
     """
     try:
         return encode_assembled(**kw)
