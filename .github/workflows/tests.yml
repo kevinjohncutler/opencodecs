@@ -102,12 +102,38 @@ jobs:
       # not built and the affected tests skip, which is the behavior we
       # had before. The step still shows red in the log so it gets
       # noticed.
+      # Windows needs MSVC on PATH before CMake looks for a compiler.
+      # Without it CMake picks up whatever gcc the runner image happens
+      # to have -- GitHub's has one -- and emits gnu-format libuhdr.dll
+      # and libuhdr.a. The build then *succeeds*, the install copy looks
+      # for MSVC's uhdr.dll/uhdr.lib, fails, and takes the whole step
+      # down with it. build_wheels.yml has had this step all along and
+      # its own comment predicts exactly this failure; the tests
+      # workflow simply never grew one.
+      #
+      # Verified on a Windows host with the ocbuild conda env: with
+      # vcvars the build emits uhdr.dll + uhdr.lib, the copy succeeds,
+      # and setup.py's discovery finds both _uhdr and _openjph.
+      - name: Enable MSVC dev environment (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
       - name: Build OpenJPH + libultrahdr from source (htj2k, uhdr backends)
         continue-on-error: true
         run: |
+          # Export the prefix first. It is just a path, and doing it
+          # last meant a failure in the second library discarded the
+          # first library's successful build along with it: that is why
+          # Windows reported htj2k False even though OpenJPH had built.
           export OPENCODECS_LIBS_PREFIX="$HOME/.opencodecs-libs"
-          bash bench/build_codec_libs.sh --only=openjph,libultrahdr
           echo "OPENCODECS_CODEC_LIBS_PREFIX=$HOME/.opencodecs-libs" >> "$GITHUB_ENV"
+          # Any conda activation hook that set these injects gcc-style
+          # flags into MSVC command lines; the wheels workflow unsets
+          # them for the same reason.
+          unset LDFLAGS CFLAGS CXXFLAGS CPPFLAGS
+          bash bench/build_codec_libs.sh --only=openjph,libultrahdr
 
       - name: Install package + test deps
         run: |
