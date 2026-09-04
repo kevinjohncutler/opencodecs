@@ -231,3 +231,50 @@ so a missing wheel costs one comparison rather than the run, and one job
 sets `OPENCODECS_REQUIRE_REFERENCE=1`, which turns a missing core
 reference reader from a silent skip into a failure. The suite also
 prints what is and is not being cross-checked on every run.
+
+### Is the filter_scanline trick applicable anywhere else? (2026-09-04)
+
+The libspng win came from a specific shape: a per-element loop whose body
+branches on something the loop cannot change. Worth asking how much more
+of that there is, so the rest of the codebase got scanned for it.
+
+Two searches, over every `.c`, `.h` and `.pyx` under `3rdparty/` and
+`src/`: loops containing a `switch`, and loops containing an `if` whose
+condition names nothing the body assigns. 13 and 35 candidates
+respectively. **None of them is worth changing**, and the reasons are
+worth writing down because they are the criteria, not excuses.
+
+The transformation only pays when all three hold:
+
+1. **The loop is per-element**, not per-row or per-frame. A branch
+   amortized over a whole row costs nothing. `_gif.pyx`'s
+   `if bg_r == 0 and ...` looked like a hit and is a per-frame choice
+   between two vectorized numpy fills.
+2. **The branch is genuinely loop-invariant.** Most of the `switch` hits
+   are in cfitsio's H-compress and PLIO, switching on `a[k]` or
+   `b[s00]` -- the data being decoded. There is nothing to hoist.
+3. **The body is otherwise vectorizable.** This is the one that
+   disqualifies the most plausible-looking candidates:
+   * `_uhdr.pyx`'s gain-map kernel has an invariant `if use_gamma` in a
+     per-pixel loop, but the body calls `log2f` per pixel. That
+     dominates, and no branch removal makes the loop vectorize.
+   * `qoi.h`'s encode loop has an invariant `if (channels == 4)` over
+     pixels, and clang emits no vectorization remark for that loop at
+     all: QOI is a run-length-and-index codec where each pixel depends
+     on the previous one and a running hash table. Serial by
+     construction.
+   * `_bcdec.pyx` dispatches on `fmt_id` per 4x4 block, so the branch is
+     already amortized ~16:1 over a real function call.
+
+Verified with the compiler rather than by argument
+(`clang -Rpass=loop-vectorize -Rpass-missed=loop-vectorize`):
+
+| loop | before | after |
+|---|---|---|
+| libspng `filter_scanline` | `loop not vectorized` | 7 loops, width 16 |
+| libspng `filter_sum_*` | (already done earlier) | 8 loops, width 16 |
+| qoi encode | no remark at all | unchanged, serial |
+| `_bmp.pyx` swizzle | already vectorized | unchanged |
+
+So `filter_scanline` was the outlier: the only place in the tree that
+combined a per-byte loop, cheap arithmetic, and an invariant branch.
