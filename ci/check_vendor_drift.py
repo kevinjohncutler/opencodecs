@@ -42,6 +42,8 @@ MANIFEST = ROOT / "3rdparty" / "VENDOR.toml"
 HASHES = ROOT / "3rdparty" / "vendor_hashes.json"
 RAW = "https://raw.githubusercontent.com/{repo}/{ref}/{path}"
 TAGS = "https://api.github.com/repos/{repo}/tags?per_page=30"
+COMMITS = ("https://api.github.com/repos/{repo}/commits"
+           "?path={path}&per_page={n}")
 
 
 def _load():
@@ -200,6 +202,76 @@ def cmd_check(args) -> int:
     return 1 if drifted else 0
 
 
+def cmd_pin(args) -> int:
+    """Online: which upstream *commit* did each vendored file come from?
+
+    ``identify`` matches against tags, which is no help for the repos
+    that publish none -- and those are exactly the ones left on
+    ``ref = "main"``. A moving ref means the drift check cannot tell
+    "upstream changed" from "we changed", because there is no fixed
+    thing on the other side of the comparison.
+
+    So this walks the commits that touched the file, newest first, and
+    reports the first whose content matches ours. Two kinds of match are
+    reported separately: an exact hash match means we vendored that
+    commit untouched, and a whitespace-only match means we vendored it
+    and something reflowed the file. Both pin the same commit; only the
+    first would justify clearing ``modified``.
+    """
+    import re
+    rc = 0
+    for c in _load():
+        repo = c.get("repo")
+        ref = c.get("ref")
+        if not repo:
+            continue
+        if args.only and c["name"] not in args.only:
+            continue
+        if not args.all and ref not in ("main", "master"):
+            print(f"[{c['name']}] pinned to {ref!r}, skipping "
+                  f"(use --all to check anyway)")
+            continue
+        print(f"[{c['name']}] {repo} @ {ref!r}")
+        for f in c.get("file", []):
+            if f.get("ours"):
+                continue
+            local = ROOT / f["local"]
+            if not local.is_file():
+                continue
+            mine = local.read_bytes()
+            mine_sha = _sha(mine)
+            mine_ws = _sha(re.sub(rb"[ \t]+$", b"", mine, flags=re.M))
+            listing = _fetch(COMMITS.format(repo=repo, path=f["upstream"],
+                                            n=args.limit))
+            if listing is None:
+                print(f"    {f['upstream']}: could not list commits")
+                rc = 1
+                continue
+            shas = [e["sha"] for e in json.loads(listing)]
+            hit = kind = None
+            for sha in shas:
+                up = _fetch(RAW.format(repo=repo, ref=sha,
+                                       path=f["upstream"]))
+                if up is None:
+                    continue
+                if _sha(up) == mine_sha:
+                    hit, kind = sha, "exact"
+                    break
+                if _sha(re.sub(rb"[ \t]+$", b"", up, flags=re.M)) == mine_ws:
+                    hit, kind = sha, "whitespace-only difference"
+                    break
+            if hit:
+                print(f"    {f['upstream']}: {kind} match at {hit}")
+                print(f'      -> set  ref = "{hit}"')
+            else:
+                print(f"    {f['upstream']}: no match in the "
+                      f"{len(shas)} most recent commits touching it; we "
+                      f"have diverged further than that, so pin the "
+                      f"commit we forked from")
+                rc = 1
+    return rc
+
+
 def cmd_identify(args) -> int:
     """Online: find which upstream tag each vendored file matches.
 
@@ -260,6 +332,14 @@ def main() -> int:
     p.add_argument("--limit", type=int, default=12,
                    help="how many recent tags to test (default 12)")
     p.set_defaults(fn=cmd_identify)
+    p = sub.add_parser("pin")
+    p.add_argument("--limit", type=int, default=40,
+                   help="how many recent commits touching the file to try")
+    p.add_argument("--only", nargs="*", default=None,
+                   help="component names to check (default: the unpinned)")
+    p.add_argument("--all", action="store_true",
+                   help="also check components already pinned to a tag")
+    p.set_defaults(fn=cmd_pin)
     sub.add_parser("freeze").set_defaults(fn=cmd_freeze)
     args = ap.parse_args()
     return args.fn(args)

@@ -46,14 +46,22 @@ note = "Written for opencodecs. GIF LZW; no upstream."
 [[component]]
 name = "bcdec"
 repo = "iOrange/bcdec"
-ref = "main"
+ref = "80859ed3b7afb1c527a2a99d70c61457bea72d0c"
 license = "MIT OR Unlicense"
-note = "Single-header BCn decoder. Upstream moves rarely."
+note = """Single-header BCn decoder. bcdec publishes no tags, so the ref \
+is a commit: that is what makes `check` able to say anything, since a \
+moving branch gives it nothing fixed to compare against. This commit is \
+v0.985, "fixed potential unaligned reads" -- taken because the previous \
+pin predated it and the fix is a real portability one, replacing \
+multi-byte casts with byte-wise readers."""
   [[component.file]]
   local = "3rdparty/bcdec/bcdec.h"
   upstream = "bcdec.h"
   modified = true
-  note = "Differs from upstream main; run `identify` to pin which commit."
+  note = """Upstream at the pinned commit, plus one six-line comment on \
+the BC4/BC5 signed path and trailing whitespace stripped. Verified by \
+reconstruction: our file with that comment removed and trailing \
+whitespace normalized is byte-identical to upstream."""
 
 [[component]]
 name = "bitshuffle"
@@ -170,15 +178,18 @@ license = "BSD-2-Clause"
 [[component]]
 name = "qoi"
 repo = "phoboslab/qoi"
-ref = "master"
+ref = "4ab68bbd20618a663255625160c40875713f5485"
 license = "MIT"
-note = "Single header, frozen format."
+note = """Single header, frozen format. qoi publishes no tags, so the \
+ref is a commit rather than a version -- a moving branch would leave \
+`check` with nothing fixed to compare against."""
   [[component.file]]
   local = "3rdparty/qoi/qoi.h"
   upstream = "qoi.h"
   modified = true
-  note = """Identical to upstream master except for trailing whitespace \
-on one line. qoi publishes no tags, so there is no version to pin."""
+  note = """Identical to upstream at the pinned commit except for \
+trailing whitespace on line 583, where upstream has two tabs on an \
+otherwise empty line."""
 
 [[component]]
 name = "rgbe"
