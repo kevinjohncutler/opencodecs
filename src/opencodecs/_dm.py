@@ -35,6 +35,7 @@ from typing import Any
 import numpy as np
 
 from .core._io_helpers import read_src as _read_src
+from .core.codec import ArrayReader
 
 # Simple tag types, from the DM type language.
 _SIMPLE = {
@@ -62,7 +63,7 @@ class DmError(Exception):
     """Raised for malformed or unsupported Digital Micrograph files."""
 
 
-class DmFile:
+class DmFile(ArrayReader):
     """Reader for one .dm3 / .dm4 file."""
 
     def __init__(self, src: Any):
@@ -75,8 +76,10 @@ class DmFile:
         self._parse_group(self._header_size(), self.tags, "")
 
     def _header_size(self) -> int:
-        # version + root length + byte order, widened in dm4.
-        return 12 if self.version == 3 else 24
+        # version (4) + root length + byte order (4). dm4 widened only
+        # the root length, from 4 bytes to 8, so the header is 12 bytes
+        # in dm3 and 16 in dm4.
+        return 12 if self.version == 3 else 16
 
     def _parse_header(self) -> tuple[int, bool]:
         version = struct.unpack_from(">i", self._raw, 0)[0]
@@ -86,7 +89,7 @@ class DmFile:
                 f"Digital Micrograph file")
         # The byte-order flag sits after version and root length, whose
         # width is what changed between the two versions.
-        off = 8 if version == 3 else 16
+        off = 8 if version == 3 else 12
         little = struct.unpack_from(">i", self._raw, off)[0] == 1
         return version, little
 
@@ -312,6 +315,43 @@ class DmFile:
                     f"dm: image array holds {arr.size} samples, needs {count}")
             arr = arr[:count]
         return arr.reshape(shape)
+
+    # -- Reader contract ---------------------------------------------
+    #
+    # A DM file is a collection of images rather than one volume, and
+    # they need not share a shape, so a "frame" here is a whole image
+    # and ``read()`` is the first one. That is already what
+    # ``oc.read(path, format="dm")`` returns, so the two agree.
+
+    is_chunked = True
+
+    def _frame(self, index: int) -> np.ndarray:
+        return self.asarray(index)
+
+    @property
+    def n_frames(self) -> int:
+        return self.n_images
+
+    @property
+    def shape(self) -> tuple[int, ...]:
+        """Shape of image 0. ``shape_at(i)`` for the others."""
+        return self.shape_at(0)
+
+    @property
+    def dtype(self) -> np.dtype:
+        return self.dtype_at(0)
+
+    def shape_at(self, index: int = 0, *,
+                 include_thumbnails: bool = False) -> tuple[int, ...]:
+        return tuple(self._image_tags(index, include_thumbnails)[1])
+
+    def dtype_at(self, index: int = 0, *,
+                 include_thumbnails: bool = False) -> np.dtype:
+        data, _, code = self._image_tags(index, include_thumbnails)
+        if code is not None and code in _IMAGE_DTYPES:
+            return np.dtype(_IMAGE_DTYPES[code]).newbyteorder(
+                "<" if self._little else ">")
+        return np.dtype(data.dtype)
 
     def close(self) -> None:
         self._raw = b""

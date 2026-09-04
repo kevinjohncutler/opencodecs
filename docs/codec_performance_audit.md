@@ -139,3 +139,58 @@ has no usable random access, so reaching the last slice means inflating
 everything before it; for a bare `.nii` the whole-file read is one
 syscall anyway. DM has no header describing the image at all, so the tag
 tree has to be walked from the front before anything can be located.
+
+### Correctness, which the speed table above assumed (2026-09-03)
+
+An external review of the reader work found four defects, all of them
+real, and checking it turned up two more. Recording them because the
+pattern behind them is more useful than the individual fixes.
+
+| Format | Defect | How it hid |
+|---|---|---|
+| NRRD | Axes reversed twice, so every non-cubic volume came back scrambled | Fixture and reader shared the assumption; the corpus volume is a 30x30x30 cube |
+| DM | dm4 header offsets off by eight | Both corpus fixtures are dm3 |
+| DICOM | Explicit VR big-endian read little-endian throughout | No big-endian fixture |
+| DICOM | Deflated datasets inflated from a 64 KiB prefix | No deflated fixture |
+| DICOM | Implicit VR read Columns 48 as the ASCII "0" it spells | No implicit-VR fixture |
+| DICOM | Undefined-length items walked as if they were items | No such sequence in the corpus |
+
+Every one is a gap in what the fixtures covered rather than a mistake in
+reasoning about the spec, and two of them are worse than that:
+
+**A test that writes its own fixture tests nothing about the format.**
+The NRRD fixture builder wrote Fortran-ordered bytes and the reader read
+them back Fortran-ordered, so they agreed with each other and disagreed
+with pynrrd, ITK and Slicer. There *was* a pynrrd comparison test, and it
+passed, because `reshape(sizes).T` equals `reshape(sizes, order="F")`
+exactly when `sizes` is its own reverse -- which a 30x30x30 phantom is.
+The fix is `tests/test_nrrd.py::test_axis_order_on_a_volume_that_is_not_a_cube`:
+pynrrd writes a 2x3x5 volume, we read it. Three different extents, and
+the reference library holds the pen.
+
+**A corpus of real files is not coverage of the format.** Two real .dm3
+files exercise the tag walk thoroughly and say nothing about dm4, whose
+header this reader had wrong the whole time. Synthetic files are the
+complement, not the poor substitute: they can be minimal, and they can
+be wrong on purpose. `tests/test_dm_synthetic.py` builds both versions;
+`tests/test_dicom_encodings.py` builds all four transfer syntaxes and
+cross-checks each against pydicom.
+
+### One reader interface, actually implemented
+
+The same review noted that `Codec.open` is documented to return a
+`Reader` and did not. MRC, NIfTI, NRRD, DM and EMD each returned their
+own format class with no `read()` and no `iter_frames()`, and DICOM was
+not registered as a codec at all, so `oc.read("study.dcm")` failed while
+every other format in the package answered to it.
+
+`core.codec.ArrayReader` now supplies the interface for the formats
+built around `asarray()`, and they all inherit it. A format that can
+fetch one plane without the others says so by defining `_frame`, so
+`iter_frames` on an MRC or a DICOM series streams a plane at a time
+rather than materializing the volume and slicing it. For DM and EMD,
+which hold separate images that need not share a shape, a frame is a
+whole image and `shape_at(i)` / `dtype_at(i)` reach the others.
+
+`tests/test_reader_contract.py` runs the same contract over all of them,
+which is the part that keeps it true.

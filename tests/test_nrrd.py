@@ -29,9 +29,15 @@ _TYPE_NAME = {"u1": "uchar", "i1": "signed char", "i2": "short",
 
 
 def build_nrrd(a, *, encoding="raw", endian="little"):
+    # ``sizes`` lists the fastest-varying axis first, so it is the
+    # reverse of the numpy shape and the buffer is plain C order: the
+    # last numpy axis, which is the first listed size, varies fastest.
+    # Writing Fortran bytes here instead reverses the axes a second
+    # time, and the reader then agrees with the fixture while both
+    # disagree with every other NRRD implementation.
     sizes = " ".join(str(s) for s in a.shape[::-1])
     order = "<" if endian == "little" else ">"
-    body = a.astype(order + a.dtype.str[1:]).tobytes(order="F")
+    body = a.astype(order + a.dtype.str[1:]).tobytes()
     if encoding == "gzip":
         body = gzip.compress(body)
     elif encoding == "bzip2":
@@ -137,8 +143,43 @@ def test_detached_header_reads_its_sibling_raw_file():
 @needs_corpus
 @pytest.mark.parametrize("path", [RAW, GZ, BZ2, NHDR], ids=lambda p: p.stem)
 def test_matches_pynrrd(path):
+    """Against pynrrd's C ordering, which is the convention we report.
+
+    pynrrd defaults to ``index_order="F"``, which hands back the array
+    in ``sizes`` order. Ours is the reverse of that, so the comparison
+    has to name the ordering or it is not comparing anything.
+    """
     pynrrd = pytest.importorskip("nrrd")
-    ref, _ = pynrrd.read(str(path))
+    ref, _ = pynrrd.read(str(path), index_order="C")
     with NrrdFile(str(path)) as f:
         got = f.asarray()
     assert got.shape == ref.shape and np.array_equal(got, ref)
+
+
+def test_axis_order_on_a_volume_that_is_not_a_cube(tmp_path):
+    """The corpus volumes are 30x30x30, where a transposed read passes.
+
+    Reversing the axes twice is invisible on a cube: the shape is
+    unchanged, and reshape(sizes).T equals reshape(sizes, order="F")
+    exactly when sizes is its own reverse. It took a volume with three
+    different extents, written by pynrrd itself, to show the bug.
+    """
+    pynrrd = pytest.importorskip("nrrd")
+    a = np.arange(2 * 3 * 5, dtype="i2").reshape(2, 3, 5)
+    p = tmp_path / "brick.nrrd"
+    pynrrd.write(str(p), a, index_order="C")
+    assert list(pynrrd.read_header(str(p))["sizes"]) == [5, 3, 2]
+    with NrrdFile(str(p)) as f:
+        got, shape = f.asarray(), f.shape
+    assert shape == a.shape
+    assert np.array_equal(got, a), f"got\n{got}\nwant\n{a}"
+
+
+def test_our_files_read_back_by_pynrrd(tmp_path):
+    """The fixture builder agrees with pynrrd, not only with us."""
+    pynrrd = pytest.importorskip("nrrd")
+    a = (np.arange(2 * 3 * 5) % 29).astype("i2").reshape(2, 3, 5)
+    p = tmp_path / "ours.nrrd"
+    p.write_bytes(build_nrrd(a))
+    ref, _ = pynrrd.read(str(p), index_order="C")
+    assert ref.shape == a.shape and np.array_equal(ref, a)

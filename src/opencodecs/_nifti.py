@@ -30,6 +30,7 @@ from typing import Any
 import numpy as np
 
 from .core._io_helpers import read_src as _read_src
+from .core.codec import ArrayReader
 
 NIFTI1_HEADER_SIZE = 348
 NIFTI2_HEADER_SIZE = 540
@@ -71,7 +72,7 @@ def _maybe_gunzip(raw: bytes) -> bytes:
     return gzip.decompress(raw) if raw[:2] == b"\x1f\x8b" else raw
 
 
-class NiftiStream:
+class NiftiStream(ArrayReader):
     """Reader over one NIfTI-1 or NIfTI-2 file.
 
     Unlike the MRC and TIFF readers this holds the file in memory, because

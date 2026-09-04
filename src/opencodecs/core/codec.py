@@ -94,6 +94,57 @@ class Reader(ABC):
         pass  # subclasses override if they hold resources
 
 
+class ArrayReader(Reader):
+    """Reader contract for the container formats built around ``asarray``.
+
+    MRC, NIfTI, NRRD, DICOM, DM and EMD are volumes and image
+    collections rather than frame streams, so the bulk read is their
+    natural operation and ``iter_frames`` is derived from it rather
+    than the other way round. Each supplies ``shape``, ``dtype`` and
+    ``asarray``; this supplies the rest of the interface, so that
+    ``Codec.open`` really does return something with ``read`` and
+    ``iter_frames`` on it whichever format was opened.
+
+    A format that can fetch one plane without the others says so by
+    defining ``_frame``; ``iter_frames`` then streams rather than
+    materializing the volume and slicing it, which is what keeps
+    iterating a remote MRC or a DICOM series to one plane at a time.
+    """
+
+    def read(self) -> np.ndarray:
+        return self.asarray()
+
+    @property
+    def n_frames(self) -> int:                       # type: ignore[override]
+        shape = self.shape
+        return int(shape[0]) if len(shape) > 2 else 1
+
+    def iter_frames(self) -> Iterator[np.ndarray]:
+        n = self.n_frames
+        if n <= 1:
+            yield self.asarray()
+            return
+        frame = getattr(self, "_frame", None)
+        if frame is not None:
+            for i in range(n):
+                yield frame(i)
+            return
+        whole = self.asarray()
+        for i in range(n):
+            yield whole[i]
+
+    def __getitem__(self, idx) -> np.ndarray:
+        frame = getattr(self, "_frame", None)
+        if frame is None:
+            return super().__getitem__(idx)
+        n = self.n_frames
+        if idx < 0:
+            idx += n
+        if not 0 <= idx < n:
+            raise IndexError(f"frame {idx} out of range (0..{n - 1})")
+        return frame(idx)
+
+
 class Writer(ABC):
     """Uniform writer interface for streaming/multi-frame encode."""
 
@@ -358,6 +409,7 @@ def _resolve_codec(src: Any, *, format: str | None = None) -> Codec:
 __all__ = [
     "Codec",
     "Reader",
+    "ArrayReader",
     "Writer",
     "register_codec",
     "get_codec",

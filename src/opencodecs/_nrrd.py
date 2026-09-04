@@ -10,8 +10,13 @@ The parts that are not obvious:
 * **The header is ASCII but the data may not follow it.** A ``data file``
   field detaches the samples into a separate file, which is how the
   ``.nhdr`` + ``.raw`` pair works.
-* **Axis order is Fortran.** ``sizes: 3 256 256`` means the first axis
-  varies fastest, so the numpy shape is reversed.
+* **``sizes`` lists the fastest-varying axis first.** ``sizes: 3 256
+  256`` is a numpy shape of ``(256, 256, 3)``, and because the last
+  numpy axis is then the fastest-varying one, the buffer is read in
+  plain C order. Reshaping to ``sizes`` and transposing looks like the
+  same thing and is not: it is ``reshape(shape, order="F")``, which
+  reverses the axes a second time. That is invisible on a cube, which
+  is what a symmetric test volume hides.
 * **``encoding`` covers raw, gzip, bzip2, ascii and hex**, and gzip is
   the common case in the wild.
 
@@ -30,6 +35,7 @@ import numpy as np
 
 from .core._io_helpers import open_read_at as _open_read_at
 from .core._io_helpers import read_src as _read_src
+from .core.codec import ArrayReader
 
 _TYPES = {
     "signed char": "i1", "int8": "i1", "int8_t": "i1",
@@ -52,7 +58,7 @@ class NrrdError(Exception):
     """Raised for malformed NRRD headers or unsupported encodings."""
 
 
-class NrrdFile:
+class NrrdFile(ArrayReader):
     """Reader for one NRRD file (attached or detached data)."""
 
     # The header is text and rarely long; read this much to start and
@@ -217,8 +223,12 @@ class NrrdFile:
                     f"nrrd: truncated data; {shape} {dtype} needs {need} "
                     f"bytes, {len(data)} available")
             arr = np.frombuffer(data, dtype=dtype, count=count)
-        # sizes lists the fastest axis first.
-        return arr.reshape(shape[::-1]).T if len(shape) > 1 else arr.reshape(shape)
+        # ``sizes`` lists the fastest-varying axis first and ``shape``
+        # is already its reverse, so the fastest axis is last: that is
+        # exactly C order. Reshaping to ``sizes`` and transposing looks
+        # equivalent and is not -- it is reshape(shape, order="F"),
+        # which reverses the axes a second time.
+        return arr.reshape(shape)
 
     def close(self) -> None:
         closer = getattr(self, "_close", None)

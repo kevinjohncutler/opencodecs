@@ -25,7 +25,9 @@ def write_nrrd(path, a):
     sizes = " ".join(str(s) for s in a.shape[::-1])
     head = (f"NRRD0004\ntype: short\ndimension: {a.ndim}\nsizes: {sizes}\n"
             f"encoding: raw\nendian: little\n\n").encode()
-    path.write_bytes(head + a.astype("<i2").tobytes(order="F"))
+    # C order: sizes is the reverse of the shape, so the last numpy
+    # axis is the first listed size and varies fastest.
+    path.write_bytes(head + a.astype("<i2").tobytes())
     return len(head) + a.nbytes
 
 
@@ -142,7 +144,7 @@ def test_compressed_nrrd_still_works_over_http(tmp_path):
     head = (b"NRRD0004\ntype: short\ndimension: 3\nsizes: 16 16 2\n"
             b"encoding: gzip\nendian: little\n\n")
     (tmp_path / "c.nrrd").write_bytes(
-        head + gzip.compress(a.astype("<i2").tobytes(order="F")))
+        head + gzip.compress(a.astype("<i2").tobytes()))
     with range_http_server(tmp_path) as (url, _):
         with NrrdFile(f"{url}/c.nrrd") as f:
             assert np.array_equal(f.asarray(), a)

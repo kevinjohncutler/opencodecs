@@ -54,6 +54,7 @@ from ._omezarr import OmeZarrArray, OmeZarrPyramidDataset
 from ._n5 import N5Array, N5Error
 from ._imaris import ImarisReader, ImarisError
 from ._dicom import DicomFile, DicomError
+from ._dicom_codec import DicomCodec
 from ._nrrd import NrrdFile, NrrdError
 from ._dm import DmFile, DmError
 from ._emd import EmdFile, EmdError
@@ -185,7 +186,7 @@ __all__ = [
     # Imaris (.ims)
     "ImarisReader", "ImarisError",
     # DICOM files
-    "DicomFile", "DicomError",
+    "DicomFile", "DicomError", "DicomCodec",
     # NRRD
     "NrrdFile", "NrrdError",
     # Gatan Digital Micrograph

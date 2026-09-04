@@ -152,5 +152,5 @@ def test_separate_groups_are_not_merged():
     """
     with EmdFile(str(DEPTH)) as f:
         assert f.n_datasets == 2
-        shapes = [f.shape(i) for i in range(f.n_datasets)]
+        shapes = [f.shape_at(i) for i in range(f.n_datasets)]
     assert shapes == [(7, 7, 208), (7, 7, 208)]

@@ -29,6 +29,7 @@ from typing import Any, Callable
 import numpy as np
 
 from .core._io_helpers import open_read_at as _open_read_at
+from .core.codec import ArrayReader
 
 HEADER_SIZE = 1024
 
@@ -57,7 +58,7 @@ class MrcError(Exception):
     """Raised when a file is not valid MRC, or uses a mode we cannot read."""
 
 
-class MrcStream:
+class MrcStream(ArrayReader):
     """Lazy reader over one MRC / CCP4 map file.
 
     Nothing but the 1024-byte header is read on open. ``asarray()`` pulls
@@ -367,6 +368,11 @@ class MrcStream:
         return arr
 
     # -- plumbing ----------------------------------------------------
+
+    # One z-section without the rest, which is what makes iterating
+    # a remote map cost a plane at a time.
+    _frame = plane
+    is_chunked = True
 
     def close(self) -> None:
         closer = getattr(self, "_closer", None)

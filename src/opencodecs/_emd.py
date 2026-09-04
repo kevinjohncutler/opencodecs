@@ -28,6 +28,8 @@ from typing import Any
 
 import numpy as np
 
+from .core.codec import ArrayReader
+
 
 class EmdError(Exception):
     """Raised for files that are not EMD, or that use an unknown layout."""
@@ -36,7 +38,7 @@ class EmdError(Exception):
 _DIM = re.compile(r"^dim\d+$")
 
 
-class EmdFile:
+class EmdFile(ArrayReader):
     """Reader for one EMD file, in either the Berkeley or Velox schema."""
 
     def __init__(self, path: Any):
@@ -122,10 +124,32 @@ class EmdFile:
             return group[name]
         return group["Data"]
 
-    def shape(self, index: int = 0) -> tuple[int, ...]:
+    # An EMD file holds separate datasets that need not share a shape,
+    # so a "frame" is a whole dataset and ``shape``/``dtype`` describe
+    # the first one, which is what ``read()`` returns. ``shape_at`` and
+    # ``dtype_at`` reach the others.
+
+    is_chunked = True
+
+    def _frame(self, index: int) -> np.ndarray:
+        return self.asarray(index)
+
+    @property
+    def n_frames(self) -> int:
+        return self.n_datasets
+
+    @property
+    def shape(self) -> tuple[int, ...]:
+        return self.shape_at(0)
+
+    @property
+    def dtype(self) -> np.dtype:
+        return self.dtype_at(0)
+
+    def shape_at(self, index: int = 0) -> tuple[int, ...]:
         return tuple(self._dataset(index).shape)
 
-    def dtype(self, index: int = 0) -> np.dtype:
+    def dtype_at(self, index: int = 0) -> np.dtype:
         return np.dtype(self._dataset(index).dtype)
 
     def asarray(self, index: int = 0) -> np.ndarray:
