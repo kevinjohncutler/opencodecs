@@ -31,6 +31,22 @@ import numpy as np
 from .core.codec import ArrayReader
 
 
+
+
+def _h5_source(src):
+    """What h5py can open, from what a codec is handed.
+
+    h5py takes a path or a file-like object but not raw bytes: given
+    those it treats them as a filename and raises FileNotFoundError with
+    the binary printed as the name, which reads like a missing file
+    rather than an unsupported argument. Since it does accept a
+    file-like, wrapping is both the clearer error and the working one.
+    """
+    if isinstance(src, (bytes, bytearray, memoryview)):
+        import io
+        return io.BytesIO(bytes(src))
+    return src
+
 class EmdError(Exception):
     """Raised for files that are not EMD, or that use an unknown layout."""
 
@@ -48,7 +64,7 @@ class EmdFile(ArrayReader):
             raise EmdError(
                 "emd: reading .emd needs h5py; install opencodecs[hdf5]"
             ) from None
-        self._h5 = h5py.File(path, "r")
+        self._h5 = h5py.File(_h5_source(path), "r")
         self._h5py = h5py
         self._berkeley = self._find_berkeley()
         self._velox = [] if self._berkeley else self._find_velox()

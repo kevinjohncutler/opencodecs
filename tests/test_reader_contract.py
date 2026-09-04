@@ -340,3 +340,65 @@ def test_fits_open_is_reachable(tmp_path):
         assert np.array_equal(r.read(), a)
     # decode() routes through open(), so it was broken by the same line
     assert np.array_equal(oc.read(str(p), format="fits"), a)
+
+
+# --------------------------------------------------------------------
+# decode(), the other public route into a codec adapter
+# --------------------------------------------------------------------
+
+def test_hdf5_backed_formats_accept_bytes(tmp_path):
+    """h5py takes a path or a file-like, but not raw bytes.
+
+    Handed bytes it treats them as a filename, so the failure arrives as
+    FileNotFoundError with the binary printed as the name. Every other
+    codec here decodes a buffer, and h5py does accept a file-like, so
+    the wrap is both the working path and the honest one.
+    """
+    h5py = pytest.importorskip("h5py")
+    from opencodecs._emd import EmdFile
+
+    a = np.arange(3 * 5, dtype="f4").reshape(3, 5)
+    p = tmp_path / "b.emd"
+    with h5py.File(p, "w") as f:
+        root = f.create_group("experiment")
+        root.attrs["emd_group_type"] = 2
+        g = root.create_group("grp0")
+        g.attrs["emd_group_type"] = 1
+        g.create_dataset("data", data=a)
+
+    blob = p.read_bytes()
+    with EmdFile(str(p)) as from_path:
+        assert np.array_equal(from_path.read(), a)
+    with EmdFile(blob) as from_bytes:
+        assert np.array_equal(from_bytes.read(), a)
+    assert np.array_equal(oc.get_codec("emd").decode(blob), a)
+
+
+def test_a_deliberately_malformed_file_is_refused_not_decoded():
+    """bmpsuite ships broken files on purpose; refusing them is correct.
+
+    Pinned because an audit that walks a corpus directory alphabetically
+    hits b_badbitcount.bmp first and reads the refusal as a bug.
+    """
+    bad = CORPUS / "bmp" / "b_badbitcount.bmp"
+    good = CORPUS / "bmp" / "g_rgb24.bmp"
+    if not bad.is_file() or not good.is_file():
+        pytest.skip("fetch the bmpsuite corpus entry first")
+    codec = oc.get_codec("bmp")
+    arr = codec.decode(good.read_bytes())
+    assert arr.shape == (64, 127, 3)
+    with pytest.raises(Exception):
+        codec.decode(bad.read_bytes())
+
+
+def test_formats_that_need_a_path_say_so_clearly():
+    """OIR cannot work from a buffer, and the error should explain that.
+
+    A clear refusal is a feature; the thing to prevent is the version
+    that fails as something unrelated, which is what EMD did.
+    """
+    p = _corpus_file("oir", "*.oir")
+    if p is None:
+        pytest.skip("fetch the oir corpus entry first")
+    with pytest.raises(TypeError, match="pass a path"):
+        oc.get_codec("oir").decode(p.read_bytes())
