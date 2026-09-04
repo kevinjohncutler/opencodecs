@@ -194,3 +194,40 @@ whole image and `shape_at(i)` / `dtype_at(i)` reach the others.
 
 `tests/test_reader_contract.py` runs the same contract over all of them,
 which is the part that keeps it true.
+
+### The audit that followed, and the gap it found (2026-09-03)
+
+Having found the six defects, the obvious question was how many more of
+the same kind were sitting in the readers nobody had cross-checked. So
+every remaining container reader was compared against an independent
+implementation, on volumes asymmetric in every axis.
+
+| Format | Reference | Result |
+|---|---|---|
+| N5 | tensorstore | Correct. Differs from tensorstore by exactly a transpose, which is a convention choice, not a layout error |
+| OME-Zarr | zarr v2 and v3 | Correct, including ragged chunk grids and straddling sub-regions |
+| Imaris | raw h5py | Correct; the padded stored array is trimmed to the declared extent |
+| NDTiff | the ndtiff package | Correct, all 128 frames |
+| DICOM corpus | pydicom | Correct, all six files, including RLE and JPEG 2000 |
+| FITS | astropy | Already cross-checked; astropy writes the fixtures |
+| EER | imagecodecs | Already cross-checked on real Falcon4 data |
+
+No further defects. The N5 result is worth stating precisely because it
+looked like one at first: N5 dimension 0 varies fastest, and we present
+the reverse so the fastest axis is last, which is what C order means and
+what pynrrd, FITS and z5py do. tensorstore keeps the file's own order.
+Both are right about the bytes, and `test_reference_parity.py` pins the
+transpose relation rather than either convention in isolation.
+
+**The gap was not in a reader. It was that none of this ran in CI.**
+Every cross-check in the suite is an `importorskip`, and `.[test]`
+installed none of the reference implementations: not pydicom, pynrrd,
+nibabel, mrcfile, astropy or rosettasciio. Twelve formats' worth of
+independent verification reported success while testing nothing, which
+is precisely how a green suite carried six reader bugs.
+
+There is now a `reference` extra, CI installs it one package at a time
+so a missing wheel costs one comparison rather than the run, and one job
+sets `OPENCODECS_REQUIRE_REFERENCE=1`, which turns a missing core
+reference reader from a silent skip into a failure. The suite also
+prints what is and is not being cross-checked on every run.

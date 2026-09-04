@@ -104,6 +104,43 @@ jobs:
           python -m pip install --upgrade pip setuptools wheel
           python -m pip install -e .[test]
 
+      # The reference implementations our parity tests compare against.
+      # One at a time and best effort on purpose: a couple of these lack
+      # wheels on some platform/Python combinations, and `pip install`
+      # of the whole set would then install none of them. Losing one
+      # comparison is acceptable; losing all of them silently is what
+      # let six reader bugs through, so the next step says which are
+      # missing rather than leaving the skips invisible.
+      - name: Install reference implementations (best effort)
+        continue-on-error: true
+        run: |
+          python - <<'PY' > /tmp/reference_pkgs.txt
+          import tomllib
+          with open("pyproject.toml", "rb") as fh:
+              data = tomllib.load(fh)
+          print("\n".join(data["project"]["optional-dependencies"]["reference"]))
+          PY
+          while read -r pkg; do
+            [ -z "$pkg" ] && continue
+            python -m pip install "$pkg" || echo "::warning::no $pkg on this platform"
+          done < /tmp/reference_pkgs.txt
+
+      # Enforce only where the wheels are reliable. Elsewhere a missing
+      # reference reader is a skipped comparison, not a failed build.
+      - name: Require the core reference readers (one job)
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.13'
+        run: echo "OPENCODECS_REQUIRE_REFERENCE=1" >> "$GITHUB_ENV"
+
+      - name: Report which reference implementations are present
+        run: python -c "
+          import importlib;
+          mods = ['pydicom','nrrd','nibabel','mrcfile','astropy','rsciio',
+                  'tensorstore','ndtiff','czifile','nd2','readlif','oiffile'];
+          have = [m for m in mods if importlib.util.find_spec(m)];
+          missing = [m for m in mods if m not in have];
+          print('reference readers present:', have);
+          print('reference readers MISSING:', missing or 'none')"
+
       - name: List registered codecs (libjxl MUST be present)
         run: |
           python -c "

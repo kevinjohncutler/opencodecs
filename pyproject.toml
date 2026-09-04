@@ -31,6 +31,28 @@ hdf5 = ["h5py"]
 # So we list `zarr` without a floor; on Py 3.10 pip resolves to 2.x and
 # the v3 wrapper tests skip; on Py 3.11+ pip picks 3.x and they run.
 zarr = ["numcodecs", "zarr"]
+# Reference implementations, used only by the tests that cross-check our
+# readers against somebody else's. Separate from `test` because they are
+# heavier than the rest and a couple of them lack wheels on some
+# platforms; CI installs them one at a time, best effort, so a missing
+# wheel costs one comparison rather than the run. Without these the
+# parity tests skip, which is the state that let six reader bugs through
+# on 2026-09-03 -- see tests/test_reference_parity.py.
+reference = [
+    "pydicom",        # DICOM
+    "pynrrd",         # NRRD          (imports as `nrrd`)
+    "nibabel",        # NIfTI
+    "mrcfile",        # MRC
+    "astropy",        # FITS
+    "rosettasciio",   # DM, EMD       (imports as `rsciio`)
+    "tensorstore",    # N5
+    "ndtiff",         # NDTiff
+    "czifile",        # CZI
+    "nd2",            # ND2
+    "readlif",        # LIF
+    "oiffile",        # OIB
+    "blosc2",         # MRCZ
+]
 test = [
     "pytest>=8",
     "pytest-cov",
