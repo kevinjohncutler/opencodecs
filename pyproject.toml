@@ -47,7 +47,10 @@ reference = [
     "rosettasciio",   # DM, EMD       (imports as `rsciio`)
     "tensorstore",    # N5
     "ndtiff",         # NDTiff
-    "czifile",        # CZI
+    # czifile jumps from 2019.7.2.3 straight to the 2026 releases, which
+    # need 3.11+. Without the marker, pip on 3.10 resolves the 2019
+    # build, whose API the parity tests predate by seven years.
+    "czifile>=2026.3.12; python_version >= '3.11'",  # CZI
     "nd2",            # ND2
     "readlif",        # LIF
     "oiffile",        # OIB

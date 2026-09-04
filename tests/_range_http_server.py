@@ -88,10 +88,16 @@ class _RangeHandler(http.server.BaseHTTPRequestHandler):
                 "Content-Range", f"bytes {start}-{end}/{size}")
             self.send_header("Accept-Ranges", "bytes")
             self.end_headers()
-            self.wfile.write(body)
+            # Count before writing, not after. The client can read the
+            # whole body and return while this thread has not yet run
+            # the line after wfile.write, so a test that asserts on the
+            # counters races the server and sees zero. It showed up as a
+            # Windows-only failure because the timing is tighter there,
+            # but the race is in this helper, not in the platform.
             self.tracker.bytes_served += len(body)
             self.tracker.range_requests += 1
             self.tracker.per_request.append((range_hdr, len(body)))
+            self.wfile.write(body)
         else:
             with open(path, "rb") as f:
                 body = f.read()
@@ -100,10 +106,10 @@ class _RangeHandler(http.server.BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Accept-Ranges", "bytes")
             self.end_headers()
-            self.wfile.write(body)
             self.tracker.bytes_served += len(body)
             self.tracker.full_requests += 1
             self.tracker.per_request.append(("(full)", len(body)))
+            self.wfile.write(body)
 
     @staticmethod
     def _parse_range(hdr: str, size: int) -> tuple[int | None, int | None]:

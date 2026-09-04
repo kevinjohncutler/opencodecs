@@ -149,6 +149,29 @@ def test_n5_real_corpus_blocks_match_tensorstore():
 # OME-Zarr vs zarr
 # ====================================================================
 
+def _write_with_zarr(path, a, chunks, zarr_format):
+    """Create an array with whichever zarr API this version has.
+
+    zarr-python 3 has ``create_array``; 2.x has neither that nor a
+    ``zarr_format`` argument, since everything it writes is v2. The
+    matrix still builds Python 3.10, where pip resolves zarr 2, so
+    reaching straight for the v3 API turns this parity check into an
+    AttributeError on a third of the jobs.
+    """
+    import zarr
+    v3 = zarr.__version__.startswith("3")
+    if zarr_format == 3 and not v3:
+        pytest.skip("a v3 store needs zarr-python 3")
+    if v3:
+        z = zarr.create_array(store=str(path), shape=a.shape, chunks=chunks,
+                              dtype=a.dtype, zarr_format=zarr_format)
+    else:
+        z = zarr.open_array(str(path), mode="w", shape=a.shape,
+                            chunks=chunks, dtype=a.dtype)
+    z[...] = a
+    return z
+
+
 @pytest.mark.parametrize("zarr_format", [2, 3])
 @pytest.mark.parametrize("shape", SHAPES, ids=lambda s: "x".join(map(str, s)))
 def test_omezarr_matches_zarr(tmp_path, zarr_format, shape):
@@ -157,16 +180,12 @@ def test_omezarr_matches_zarr(tmp_path, zarr_format, shape):
     ``(5, 7, 9)`` with ``(2, 3, 4)`` chunks leaves a partial chunk on
     every axis, which is where an off-by-one in the trimming shows up.
     """
-    zarr = pytest.importorskip("zarr")
-    if zarr_format == 3 and not zarr.__version__.startswith("3"):
-        pytest.skip("zarr v3 store needs zarr-python 3")
+    pytest.importorskip("zarr")
     from opencodecs._omezarr import OmeZarrArray
 
     a = (np.arange(int(np.prod(shape))) % 211).astype("u2").reshape(shape)
     path = tmp_path / "a.zarr"
-    z = zarr.create_array(store=str(path), shape=a.shape, chunks=(2, 3, 4),
-                          dtype="u2", zarr_format=zarr_format)
-    z[...] = a
+    _write_with_zarr(path, a, (2, 3, 4), zarr_format)
 
     ours = OmeZarrArray(str(path))
     assert ours.shape == a.shape

@@ -1,0 +1,10 @@
+# Vendored upstream source must stay byte-identical to what upstream
+# published: ci/check_vendor_drift.py and tests/test_vendor_provenance.py
+# both compare recorded SHA-256 hashes, and a checkout that rewrites LF
+# to CRLF changes every one of them. That is what made the provenance
+# test fail on Windows and only on Windows.
+3rdparty/** -text
+patches/** -text
+
+# The corpus is fetched binary and hashed in the manifest.
+.test_data/** -text

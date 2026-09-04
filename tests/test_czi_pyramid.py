@@ -24,6 +24,34 @@ from opencodecs._czi_reader import (
     CziPyramidReader, CziReader, CziSubBlockEntry,
 )
 
+
+def _czifile_exposes_the_pyramid_api() -> bool:
+    """Whether the installed czifile is new enough to compare against.
+
+    czifile jumps straight from 2019.7.2.3 to the 2026 releases, and the
+    2026 ones need Python 3.11+, so on 3.10 pip resolves the 2019 build.
+    Its directory entries predate ``dims`` / ``is_pyramid`` /
+    ``pyramid_type`` and it does not parse a pyramid at all, so these
+    comparisons are not "our reader is wrong", they are "there is
+    nothing here to compare against". Detected by attribute rather than
+    by version because the entry class was renamed along the way.
+    """
+    try:
+        import czifile.czifile as _cz
+    except ImportError:                                   # pragma: no cover
+        return False
+    entry = (getattr(_cz, "CziDirectoryEntryDV", None)
+             or getattr(_cz, "DirectoryEntryDV", None))
+    return entry is not None and all(
+        hasattr(entry, name)
+        for name in ("dims", "is_pyramid", "pyramid_type"))
+
+
+_needs_modern_czifile = pytest.mark.skipif(
+    not _czifile_exposes_the_pyramid_api(),
+    reason="installed czifile predates the pyramid attributes "
+           "(the 2026 releases need Python 3.11+)")
+
 pytestmark = pytest.mark.skipif(
     not oc.has_codec("czi"),
     reason="czi codec requires native zstd + bytetools extensions",
@@ -273,6 +301,7 @@ def test_real_pyramid_fixture_compressed(tmp_path, compression):
         p.close()
 
 
+@_needs_modern_czifile
 def test_pyramid_fixture_validated_by_czifile(tmp_path):
     """Cross-validate the fixture's pyramid layout. ``czifile`` (the
     independently-maintained reference Python CZI reader) must see the

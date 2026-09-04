@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import pathlib
 import re
+import shutil
 import subprocess
 import sys
 
@@ -65,8 +66,29 @@ def folded_multiline_runs(path: pathlib.Path) -> list[str]:
     return problems
 
 
+def _usable_bash() -> bool:
+    """Whether `bash -n` here means what it means on a runner.
+
+    Windows has several things called bash -- a Git for Windows shell, a
+    WSL shim that may not be provisioned -- and the ones that are not a
+    working POSIX shell return non-zero on everything, which turns this
+    check into a wall of empty failures. Prove it works on a script that
+    is definitely valid before trusting it on anything else.
+    """
+    if shutil.which("bash") is None:
+        return False
+    try:
+        probe = subprocess.run(["bash", "-n"], input="echo ok\n",
+                               text=True, capture_output=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):        # pragma: no cover
+        return False
+    return probe.returncode == 0
+
+
 def shell_syntax_errors(path: pathlib.Path) -> list[str]:
     """`bash -n` over every block-scalar run body."""
+    if not _usable_bash():
+        return []
     problems = []
     data = yaml.safe_load(path.read_text())
     for job_name, job in (data.get("jobs") or {}).items():
@@ -95,7 +117,9 @@ def main() -> int:
     for f in failures:
         print(f"  FAIL {f}")
     if not failures:
-        print("  no folded multi-line `run:` scalars, no shell syntax errors")
+        shell = ("and no shell syntax errors" if _usable_bash()
+                 else "(no usable bash here, so the shell check was skipped)")
+        print(f"  no folded multi-line `run:` scalars {shell}")
     return 1 if failures else 0
 
 
