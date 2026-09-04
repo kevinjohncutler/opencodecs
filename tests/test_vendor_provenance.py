@@ -37,3 +37,18 @@ def test_vendored_files_are_declared_and_unmodified():
         "vendored source is undeclared or has changed:\n"
         + proc.stdout + proc.stderr
     )
+
+
+def test_workflow_run_blocks_survive_yaml_folding():
+    """A multi-line `run: python -c "..."` folds into one broken line.
+
+    The YAML stays valid, so nothing catches it until six CI jobs fail
+    at the same step with IndentationError on line 1. ci/ has the
+    checker; this is what makes it run.
+    """
+    root = Path(__file__).resolve().parent.parent
+    script = root / "ci" / "check_workflow_run_blocks.py"
+    assert script.is_file(), "ci/check_workflow_run_blocks.py is missing"
+    proc = subprocess.run([sys.executable, str(script)],
+                          capture_output=True, text=True, cwd=root)
+    assert proc.returncode == 0, proc.stdout + proc.stderr

@@ -134,14 +134,17 @@ jobs:
         run: echo "OPENCODECS_REQUIRE_REFERENCE=1" >> "$GITHUB_ENV"
 
       - name: Report which reference implementations are present
-        run: python -c "
-          import importlib;
-          mods = ['pydicom','nrrd','nibabel','mrcfile','astropy','rsciio',
-                  'tensorstore','ndtiff','czifile','nd2','readlif','oiffile'];
-          have = [m for m in mods if importlib.util.find_spec(m)];
-          missing = [m for m in mods if m not in have];
-          print('reference readers present:', have);
-          print('reference readers MISSING:', missing or 'none')"
+        run: |
+          python - <<'PY'
+          import importlib.util
+          mods = ["pydicom", "nrrd", "nibabel", "mrcfile", "astropy", "rsciio",
+                  "tensorstore", "ndtiff", "czifile", "nd2", "readlif",
+                  "oiffile"]
+          have = [m for m in mods if importlib.util.find_spec(m)]
+          missing = [m for m in mods if m not in have]
+          print("reference readers present:", have)
+          print("reference readers MISSING:", missing or "none")
+          PY
 
       - name: List registered codecs (libjxl MUST be present)
         run: |
