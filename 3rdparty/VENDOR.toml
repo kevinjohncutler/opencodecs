@@ -170,7 +170,12 @@ license = "BSD-2-Clause"
   local = "3rdparty/libspng/spng.c"
   upstream = "spng/spng.c"
   modified = true
-  note = "Carries the opencodecs grayscale-defilter patch."
+  note = """Carries three opencodecs changes: the grayscale-defilter \
+patch, the filter_sum_* family (one function per filter instead of a \
+switch inside the per-byte loop), and the matching filter_scanline_* \
+family. The last two are the same transformation applied to the two \
+halves of the encode filter path; both are branch hoisting, and both \
+produce byte-identical output to the code they replaced."""
   [[component.file]]
   local = "3rdparty/libspng/spng.h"
   upstream = "spng/spng.h"

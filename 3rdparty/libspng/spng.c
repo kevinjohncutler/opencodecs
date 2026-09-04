@@ -1630,6 +1630,74 @@ no_opt:
     return 0;
 }
 
+/* filter_scanline_* mirrors the filter_sum_* family below: one function
+   per filter type, with the first `bytes_per_pixel` bytes (where a and c
+   are zero) split out as a scalar prelude.
+
+   The original had both a switch(filter) and an if(i >= bytes_per_pixel)
+   inside the per-byte loop, which stops any compiler from vectorising
+   it. That mattered more than the sum passes it sits next to: the sums
+   are computed for the filters under consideration and then thrown away,
+   but filter_scanline runs on every row of every encode, on the filter
+   that won.
+
+   Byte-for-byte identical output to the switch version -- these are the
+   same expressions with the branches hoisted out of the loop. */
+
+static void filter_scanline_sub(unsigned char *filtered,
+                                const unsigned char *scanline,
+                                size_t size, unsigned bytes_per_pixel)
+{
+    size_t i = 0;
+    for(; i < bytes_per_pixel && i < size; i++) filtered[i] = scanline[i];
+    for(; i < size; i++)
+        filtered[i] = (uint8_t)(scanline[i] - scanline[i - bytes_per_pixel]);
+}
+
+static void filter_scanline_up(unsigned char *filtered,
+                               const unsigned char *prev_scanline,
+                               const unsigned char *scanline,
+                               size_t size)
+{
+    /* No pixel-boundary special case: `up` never reads a or c. */
+    for(size_t i = 0; i < size; i++)
+        filtered[i] = (uint8_t)(scanline[i] - prev_scanline[i]);
+}
+
+static void filter_scanline_average(unsigned char *filtered,
+                                    const unsigned char *prev_scanline,
+                                    const unsigned char *scanline,
+                                    size_t size, unsigned bytes_per_pixel)
+{
+    size_t i = 0;
+    for(; i < bytes_per_pixel && i < size; i++)
+        filtered[i] = (uint8_t)(scanline[i] - (prev_scanline[i] / 2));
+    for(; i < size; i++)
+    {
+        uint16_t avg = (uint16_t)((scanline[i - bytes_per_pixel]
+                                   + prev_scanline[i]) / 2);
+        filtered[i] = (uint8_t)(scanline[i] - avg);
+    }
+}
+
+static void filter_scanline_paeth(unsigned char *filtered,
+                                  const unsigned char *prev_scanline,
+                                  const unsigned char *scanline,
+                                  size_t size, unsigned bytes_per_pixel)
+{
+    size_t i = 0;
+    /* prelude: a = 0, c = 0, and paeth(0, b, 0) == b */
+    for(; i < bytes_per_pixel && i < size; i++)
+        filtered[i] = (uint8_t)(scanline[i] - prev_scanline[i]);
+    for(; i < size; i++)
+    {
+        uint8_t a = scanline[i - bytes_per_pixel];
+        uint8_t b = prev_scanline[i];
+        uint8_t c = prev_scanline[i - bytes_per_pixel];
+        filtered[i] = (uint8_t)(scanline[i] - paeth(a, b, c));
+    }
+}
+
 static int filter_scanline(unsigned char *filtered, const unsigned char *prev_scanline, const unsigned char *scanline,
                            size_t scanline_width, unsigned bytes_per_pixel, const unsigned filter)
 {
@@ -1640,52 +1708,21 @@ static int filter_scanline(unsigned char *filtered, const unsigned char *prev_sc
 
     scanline_width--;
 
-    uint32_t i;
-    for(i=0; i < scanline_width; i++)
+    switch(filter)
     {
-        uint8_t x, a, b, c;
-
-        if(i >= bytes_per_pixel)
-        {
-            a = scanline[i - bytes_per_pixel];
-            b = prev_scanline[i];
-            c = prev_scanline[i - bytes_per_pixel];
-        }
-        else /* first pixel in row */
-        {
-            a = 0;
-            b = prev_scanline[i];
-            c = 0;
-        }
-
-        x = scanline[i];
-
-        switch(filter)
-        {
-            case SPNG_FILTER_SUB:
-            {
-                x = x - a;
-                break;
-            }
-            case SPNG_FILTER_UP:
-            {
-                x = x - b;
-                break;
-            }
-            case SPNG_FILTER_AVERAGE:
-            {
-                uint16_t avg = (a + b) / 2;
-                x = x - avg;
-                break;
-            }
-            case SPNG_FILTER_PAETH:
-            {
-                x = x - paeth(a,b,c);
-                break;
-            }
-        }
-
-        filtered[i] = x;
+        case SPNG_FILTER_SUB:
+            filter_scanline_sub(filtered, scanline, scanline_width, bytes_per_pixel);
+            break;
+        case SPNG_FILTER_UP:
+            filter_scanline_up(filtered, prev_scanline, scanline, scanline_width);
+            break;
+        case SPNG_FILTER_AVERAGE:
+            filter_scanline_average(filtered, prev_scanline, scanline, scanline_width, bytes_per_pixel);
+            break;
+        case SPNG_FILTER_PAETH:
+            filter_scanline_paeth(filtered, prev_scanline, scanline, scanline_width, bytes_per_pixel);
+            break;
+        default: return SPNG_EFILTER;
     }
 
     return 0;

@@ -14,7 +14,7 @@
   "3rdparty/cfitsio/pliocomp.c": "0120e71dbcbc428cbbe71eb4e79c72f7786f307ae0f63ac17e086cb64e1d4218",
   "3rdparty/cfitsio/ricecomp.c": "5723e5b055e3f030ce0e74fc7cfccbcb86067c69f9294ade917e3e571eddee4e",
   "3rdparty/cfitsio/ricecomp.h": "50872fa3fe2741961709735c32449dd2169eeb3cdcc7a253ee480334f7346e93",
-  "3rdparty/libspng/spng.c": "b96165200f345eac664be18fe87a71bbcd305f73b9663d98e22ff1d684490628",
+  "3rdparty/libspng/spng.c": "67f5064b7784f0b07c8e391e46e9793e85423b8387cb840c5f59975fb7f9b92d",
   "3rdparty/libspng/spng.h": "3f398e878a94c49ba8735ba1b410a904a3667ffdf6924f82d6cf5bee61a87cb6",
   "3rdparty/qoi/qoi.h": "5afc8f0959ff88d7e09faf58ea0b7472eeed6a0fd096fca680afd696168aa3a2"
 }

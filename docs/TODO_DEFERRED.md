@@ -110,32 +110,42 @@ take them as upper bounds.
   same length* and simply fails to decode, so no size or smoke check
   catches it.
 
-## libspng PAETH filter NEON / SSE intrinsics
+## libspng encode filters — measured, and the win was elsewhere — done
 
-* **Status**: decode-side PAETH SIMD is already in the vendored
-  libspng — `3rdparty/libspng/spng.c` ships both SSE2
-  (``defilter_paeth{3,4}`` near line 6688) and NEON
-  (``defilter_paeth{3,4}`` near line 7078) defilters. PNG decode is
-  not the gap.
-* **What's left**: encode-side PAETH filter selection still uses the
-  generic scalar path in libspng — no SSE2 / NEON kernel for the
-  forward-filter loop. A small ``.c`` shim could shave ~10-20% on
-  RGBA8 encode of natural-image data.
-* **Measured 2026-09-03, and the estimate above was low.** Encoding
-  six Kodak RGB images with the default all-filters choice takes
-  155.2 ms; forcing `filter_choice="none"`, which skips
-  `get_best_filter` entirely, takes 85.5 ms. So the filter path is up
-  to 45% of encode, not 10-20%.
-* **Read that as a ceiling, not a target.** Dropping filters also
-  makes the output 1.11x bigger, so zlib does less work in the fast
-  case, and the gap conflates the five `filter_sum` passes with both
-  `filter_scanline` and that reduced deflate work. The true SIMD win
-  is some fraction of 45%.
-* **Why still deferred**: PNG encode is already ~1.5-3× ahead of
-  imagecodecs on natural-image data, and every kernel added to
-  `3rdparty/libspng/spng.c` widens a divergence from upstream that
-  `ci/check_vendor_drift.py` now has to carry. Worth doing, but as a
-  deliberate patch with its own benchmark, not as a drive-by.
+* **The deferred item was encode-side PAETH SIMD**, on the strength of a
+  measurement that encoding six Kodak images with all filters took
+  155 ms against 85 ms with filtering off, so "the filter path is up to
+  45% of encode".
+* **That attribution was wrong.** Comparing against no-filtering also
+  changes what deflate sees, so it conflates three costs. Varying only
+  the number of `filter_sum` passes separates them, using a single
+  filter choice as the control (it returns from `get_best_filter`
+  immediately but still filters every row):
+
+  | content | sums @ default | sums @ "all" |
+  |---|---|---|
+  | kodak RGB8 | ~0% | 5.2% |
+  | gradient RGB8 | 9.1% | 20.8% |
+  | noise RGB8 | ~0% | 2.0% |
+  | gradient u16 | 1.9% | 5.6% |
+
+  So a perfect SIMD kernel in `filter_sum` would have bought roughly
+  nothing at the default and ~5% on real content at `"all"`. The
+  `filter_sum_*` specialization already there had taken the win.
+* **`filter_scanline` was the real target**, and nobody had looked at
+  it: it kept both a `switch(filter)` and an `if(i >= bytes_per_pixel)`
+  inside the per-byte loop, so it could not vectorize. It also runs on
+  every row of every encode, on the filter that won — where the sums are
+  computed for candidates and discarded.
+* Specializing it the same way (one function per filter, boundary split
+  out as a prelude) gives **13.4% faster encode on arm64 and 5.7% on
+  x86_64** at the default filter choice, with **byte-identical output**
+  across 104 (case, filter) combinations. `filter_choice="off"` is
+  unchanged, which is the control: it skips filtering entirely.
+* **What is left**: genuine SIMD intrinsics for the paeth kernels, worth
+  perhaps a few more percent, at the cost of platform-specific code in a
+  vendored file. Not obviously worth it now that the branchy loop is
+  gone.
 
 ## blosc2 perf — Mac + Linux at parity — done
 
