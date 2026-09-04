@@ -32,6 +32,50 @@ from pathlib import Path
 
 _THIS_DIR = Path(__file__).resolve().parent
 
+
+def _register_windows_dll_dirs() -> None:
+    """Let Windows find the codec DLLs a source build linked against.
+
+    Since Python 3.8 an extension's dependent DLLs are not looked up on
+    PATH: the directory has to be registered with
+    ``os.add_dll_directory``. Wheels do not need this, because delvewheel
+    vendors the DLLs beside the extensions, so the gap only appears in a
+    source or editable install -- which is what CI runs, and what a
+    developer on Windows gets after ``bench/build_codec_libs.sh``.
+
+    The symptom is unmistakable once seen and opaque before:
+    ``ImportError: DLL load failed while importing _uhdr: The specified
+    module could not be found``, where the module that cannot be found
+    is not ``_uhdr``, which plainly exists, but ``uhdr.dll`` beside it.
+
+    The directories come from the same prefixes the build used, so this
+    exposes nothing that was not already linked against.
+    """
+    if os.name != "nt":  # pragma: no cover - Windows-only branch
+        return
+    add = getattr(os, "add_dll_directory", None)
+    if add is None:  # pragma: no cover - Python < 3.8
+        return
+    seen: set[str] = set()
+    for env in ("OPENCODECS_CODEC_LIBS_PREFIX", "OPENCODECS_LIBS_PREFIX",
+                "OPENCODECS_JXL_PREFIX", "CONDA_PREFIX"):
+        root = os.environ.get(env)
+        if not root:
+            continue
+        for sub in ("bin", "Library/bin", "lib"):
+            d = Path(root) / sub
+            key = str(d).lower()
+            if key in seen or not d.is_dir():
+                continue
+            seen.add(key)
+            try:
+                add(str(d))
+            except OSError:  # pragma: no cover - unreadable directory
+                pass
+
+
+_register_windows_dll_dirs()
+
 # Native Cython extensions shipped with opencodecs. Add new entries here
 # when implementing a new native codec. Each must have a corresponding
 # `_<name>.pyx` source file and a registration in `_registry.py`.
