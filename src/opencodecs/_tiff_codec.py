@@ -924,6 +924,13 @@ class TiffCodec(Codec):
         with self.open(src, **opts) as r:
             return r.read()
 
+    def writer(self, dest: Any = None, **opts):
+        """A real streaming TIFF writer: one page at a time, no buffer."""
+        from ._tiff_writer import TiffWriter
+        if dest is None:
+            raise ValueError("tiff: writer() needs a destination path")
+        return TiffWriter(dest, **opts)
+
     def open(self, src: Any, **opts) -> TiffStream:
         return TiffStream(src, **opts)
 

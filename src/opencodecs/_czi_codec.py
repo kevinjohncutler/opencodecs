@@ -61,6 +61,13 @@ class CziCodec(Codec):
         with CziReader(path) as r:
             return r.read(**opts)
 
+    def writer(self, dest: Any = None, **opts):
+        """A real streaming CZI writer: one sub-block per frame."""
+        from ._czi_writer import CziWriter
+        if dest is None:
+            raise ValueError("czi: writer() needs a destination path")
+        return CziWriter(dest, **opts)
+
     def open(self, src: Any, **opts) -> Reader:
         path = self._coerce_to_path(src)
         return CziReader(path)

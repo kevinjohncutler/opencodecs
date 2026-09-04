@@ -101,6 +101,48 @@ class GifStreamReader(Reader):
                 f"n_frames={self.n_frames}>")
 
 
+class _LazyGifWriter(Writer):
+    """GifWriter needs the canvas size before the first frame.
+
+    Every other writer here takes a destination and learns the geometry
+    from what it is given, so a caller driving writers generically has
+    nothing to pass. This defers construction to the first
+    ``write_frame`` and takes the canvas from that frame's shape, which
+    is what the caller meant anyway -- GIF requires every frame to match
+    it. Passing ``width``/``height`` explicitly still works and skips
+    the inference.
+    """
+
+    def __init__(self, dest: Any = None, **opts):
+        self._dest = dest
+        self._opts = opts
+        self._inner = None
+        self._closed = False
+        self._result: bytes | None = None
+
+    def write_frame(self, arr, **opts) -> None:
+        if self._closed:
+            raise RuntimeError("gif: writer is closed")
+        arr = np.asarray(arr)
+        if self._inner is None:
+            opts_ = dict(self._opts)
+            opts_.setdefault("height", arr.shape[0])
+            opts_.setdefault("width", arr.shape[1])
+            self._inner = GifWriter(**opts_)
+        self._inner.write_frame(arr, **opts)
+
+    def close(self) -> bytes | None:
+        if self._closed:
+            return self._result
+        self._closed = True
+        if self._inner is None:
+            raise ValueError("gif: closed without writing a frame")
+        self._result = self._inner.close()
+        if self._dest is not None and self._result is not None:
+            self._result = _write_dest(self._result, self._dest)
+        return self._result
+
+
 class GifCodec(Codec):
     """GIF87a / GIF89a via giflib — full streaming Reader + Writer.
 
@@ -151,6 +193,12 @@ class GifCodec(Codec):
             return _gif_decode(_read_src(src), asrgb=True)
         with GifReader(_read_src(src)) as r:
             return r.read()
+
+    def writer(self, dest: Any = None, **opts):
+        """A real streaming GIF writer, one composited frame at a time."""
+        if GifWriter is None:  # pragma: no cover - extension missing
+            raise RuntimeError("opencodecs._gif extension not built")
+        return _LazyGifWriter(dest, **opts)
 
     def open(self, src: Any, **opts) -> "GifStreamReader":
         """Return a streaming :class:`GifStreamReader` for ``src``.

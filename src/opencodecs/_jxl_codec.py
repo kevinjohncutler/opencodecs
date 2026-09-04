@@ -33,6 +33,49 @@ if _HAVE_BACKEND:
     Writer.register(_JxlWriter)
 
 
+class _JxlStreamWriter(Writer):
+    """Holds one frame back so ``close()`` can mark the last one.
+
+    libjxl needs the final frame of an animation flagged when it is
+    submitted -- ``is_last=True`` sets a bit in that frame's header, and
+    ``JxlEncoderCloseInput`` at close time is not a substitute. A caller
+    driving the Writer contract only has ``write_frame(arr)`` and cannot
+    know which frame is last until there are no more.
+
+    Without this the failure is quiet in the worst way: the stream is
+    exactly the same length either way, so nothing looks wrong until
+    something tries to decode it and reports a truncated file. Deferring
+    by one frame costs one frame of memory and makes the contract call
+    produce a valid animation.
+    """
+
+    def __init__(self, dest: Any = None, **opts):
+        self._inner = _JxlWriter(dest, **opts)
+        self._pending: np.ndarray | None = None
+        self._closed = False
+        self._result: bytes | None = None
+
+    def write_frame(self, arr: np.ndarray, **opts) -> None:
+        if self._closed:
+            raise RuntimeError("jxl: writer is closed")
+        if self._pending is not None:
+            self._inner.write_frame(self._pending, **opts)
+        self._pending = np.asarray(arr)
+
+    def close(self) -> bytes | None:
+        if self._closed:
+            return self._result
+        self._closed = True
+        if self._pending is not None:
+            self._inner.write_frame(self._pending, is_last=True)
+            self._pending = None
+        self._result = self._inner.close()
+        return self._result
+
+    def __getattr__(self, name: str):
+        return getattr(self._inner, name)
+
+
 class JpegXLReader(Reader):
     """Reader adapter wrapping the cdef JxlReader."""
 
@@ -110,6 +153,10 @@ class JpegXLCodec(Codec):
 
     def decode(self, src: Any, **opts) -> np.ndarray:
         return _jxl_decode(src, **opts)
+
+    def writer(self, dest: Any = None, **opts):
+        """A real streaming JXL encoder. ``dest=None`` returns bytes."""
+        return _JxlStreamWriter(dest, **opts)
 
     def open(self, src: Any, **opts) -> JpegXLReader:
         return JpegXLReader(src, **opts)

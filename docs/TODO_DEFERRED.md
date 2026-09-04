@@ -93,12 +93,22 @@ take them as upper bounds.
 * All six now implement it, the format-specific names stay, and
   `tests/test_writer_contract.py` drives each of them from a helper
   that knows nothing about the format.
-* **What's left**: there is still no uniform way to *obtain* a writer.
-  `oc.open()` gets you a Reader for any format; there is no
-  `Codec.writer()` / `oc.writer()` counterpart, so a caller has to
-  import `TiffWriter` or `CziWriter` by name. That is a new public
-  entry point rather than completing an existing one, so it wants a
-  deliberate decision, not a drive-by.
+* **Also done**: `Codec.writer()` and `oc.writer()` now mirror
+  `Codec.open()` / `oc.open()`, including the default -- where `open()`
+  decodes eagerly and wraps the result in a one-frame Reader,
+  `writer()` buffers frames and encodes on close. So a caller drives
+  any encoder through one interface and only pays the buffering for
+  formats that cannot stream. TIFF, CZI, GIF and JXL return real
+  streaming writers.
+* Two adapters were needed to make the contract call *correct* rather
+  than merely accepted. GIF needs the canvas size before the first
+  frame, which a generic caller has not got, so construction defers to
+  the first `write_frame` and takes it from that frame's shape. JXL
+  needs the final frame of an animation flagged when it is submitted --
+  `close()` is not a substitute -- so its writer holds one frame back.
+  That one is worth remembering: without it the stream is *exactly the
+  same length* and simply fails to decode, so no size or smoke check
+  catches it.
 
 ## libspng PAETH filter NEON / SSE intrinsics
 

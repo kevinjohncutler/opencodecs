@@ -110,6 +110,42 @@ def open(  # noqa: A001
     return _resolve_codec(src, format=format).open(src, **opts)
 
 
+def writer(
+    dest: Any = None,
+    *,
+    format: str | None = None,
+    **opts,
+) -> Writer:
+    """Open `dest` for streaming / multi-frame writing.
+
+    The write-side counterpart of :func:`open`. Dispatch matches
+    :func:`write` rather than :func:`open`, because there are no bytes
+    to sniff yet: the codec comes from `dest`'s extension, or from
+    `format=`.
+
+    `dest` may be a path, a file-like, or None for the formats that
+    return bytes from `close()`::
+
+        with oc.writer("stack.tif") as w:
+            for plane in volume:
+                w.write_frame(plane)
+
+    Codecs with a real streaming writer hand one back; the rest get a
+    writer that buffers frames and encodes on close, so the interface
+    is the same either way.
+    """
+    if format is None:
+        if isinstance(dest, (str, os.PathLike)):
+            codec = codec_for_path(dest)
+        else:
+            raise ValueError(
+                "writer() needs format=... when dest isn't a path"
+            )
+    else:
+        codec = get_codec(format)
+    return codec.writer(dest, **opts)
+
+
 def open_pyramid(
     src: Any,
     *,
@@ -196,7 +232,7 @@ __all__ = [
     # Volume writers
     "encode_mrc", "write_mrc",
     "encode_nifti", "write_nifti",
-    "list_codecs", "has_codec", "get_codec",
+    "list_codecs", "has_codec", "get_codec", "writer",
     # Core types (subclassable)
     "Codec", "Reader", "Writer", "register_codec",
     "PyramidReader", "PyramidLevel",

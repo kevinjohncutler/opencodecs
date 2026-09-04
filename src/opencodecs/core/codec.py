@@ -233,6 +233,24 @@ class Codec(ABC):
         arr = self.decode(src, **opts)
         return _SingleFrameReader(arr)
 
+    def writer(self, dest: Any = None, **opts) -> "Writer":
+        """Open ``dest`` for streaming / multi-frame writing.
+
+        The mirror of :meth:`open`, and it has the same kind of default:
+        where ``open`` decodes eagerly and wraps the result in a
+        one-frame Reader, this collects frames and encodes the stack on
+        ``close()``. Formats with a real streaming writer override it and
+        never hold more than a frame.
+
+        The default is not a placeholder -- it means a caller can drive
+        any encoder through one interface, and only pays the buffering
+        for formats that cannot stream.
+        """
+        if not self.can_encode:
+            raise NotImplementedError(
+                f"{self.name}: this codec cannot encode, so it has no writer")
+        return _BufferedWriter(self, dest, **opts)
+
     def __repr__(self) -> str:
         flags = []
         if self.has_native:
@@ -271,6 +289,47 @@ class _SingleFrameReader(Reader):
 
     def read(self) -> np.ndarray:
         return self._arr
+
+
+class _BufferedWriter(Writer):
+    """Writer for codecs whose encoder wants the whole stack at once.
+
+    Frames are held until ``close()``, which encodes them in one call.
+    That is the write-side counterpart of ``_SingleFrameReader``: the
+    interface is uniform even where the format underneath is not
+    streaming, and the cost is visible rather than pretended away.
+    """
+
+    def __init__(self, codec: "Codec", dest: Any = None, **opts):
+        self._codec = codec
+        self._dest = dest
+        self._opts = opts
+        self._frames: list[np.ndarray] = []
+        self._closed = False
+        self._result: bytes | None = None
+
+    def write_frame(self, arr: np.ndarray, **opts) -> None:
+        if self._closed:
+            raise ValueError(
+                f"{self._codec.name}: writer is closed")
+        if opts:
+            raise TypeError(
+                f"{self._codec.name}: per-frame options are not supported "
+                f"by the buffering writer, got {sorted(opts)}")
+        self._frames.append(np.asarray(arr))
+
+    def close(self) -> bytes | None:
+        if self._closed:
+            return self._result
+        self._closed = True
+        if not self._frames:
+            raise ValueError(
+                f"{self._codec.name}: closed without writing a frame")
+        stack = (self._frames[0] if len(self._frames) == 1
+                 else np.stack(self._frames))
+        self._result = self._codec.encode(stack, dest=self._dest, **self._opts)
+        self._frames = []
+        return self._result
 
 
 # ---------------------------------------------------------------------------
