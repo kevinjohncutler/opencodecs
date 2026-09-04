@@ -83,20 +83,30 @@ jobs:
           restore-keys: pip-v${{ env.CACHE_VERSION }}-${{ runner.os }}-py${{ matrix.python-version }}-
 
       # ----- Build + test -----
-      # OpenJPH from source, with patches/openjph/*.patch applied, so the
-      # library the tests exercise is the same one the wheels ship. Taking
-      # it from conda-forge instead would be easier, but then a patch of
-      # ours would go out in wheels having never been tested: the wheel
-      # workflow only runs a two-file smoke test.
+      # OpenJPH and libultrahdr from source, with patches/<lib>/*.patch
+      # applied, so the libraries the tests exercise are the ones the
+      # wheels ship. Taking them from conda-forge instead would be
+      # easier, but then a patch of ours would go out in wheels having
+      # never been tested: the wheel workflow only runs a two-file smoke
+      # test.
+      #
+      # libultrahdr was missing from this list while build_wheels.yml
+      # built it, so every wheel shipped a libultrahdr built from five
+      # of our patches that CI never exercised, and the four Ultra HDR
+      # corpus tests skipped on every runner. It is on conda-forge for
+      # all six of our platform/Python combinations, but that build
+      # would not carry the patches, which is the whole reason this step
+      # exists.
       #
       # Best-effort: if this fails on a platform, the extension is simply
-      # not built and the htj2k tests skip, which is the behavior we had
-      # before. The step still shows red in the log so it gets noticed.
-      - name: Build OpenJPH from source (htj2k backend)
+      # not built and the affected tests skip, which is the behavior we
+      # had before. The step still shows red in the log so it gets
+      # noticed.
+      - name: Build OpenJPH + libultrahdr from source (htj2k, uhdr backends)
         continue-on-error: true
         run: |
           export OPENCODECS_LIBS_PREFIX="$HOME/.opencodecs-libs"
-          bash bench/build_codec_libs.sh --only=openjph
+          bash bench/build_codec_libs.sh --only=openjph,libultrahdr
           echo "OPENCODECS_CODEC_LIBS_PREFIX=$HOME/.opencodecs-libs" >> "$GITHUB_ENV"
 
       - name: Install package + test deps
@@ -154,10 +164,12 @@ jobs:
           print(f'{len(names)} codecs:', names)
           assert 'jxl' in names, 'libjxl extension MUST register on every platform'
           "
-          python -c "
-          from opencodecs._htj2k_codec import _HAVE_BACKEND
-          print('htj2k backend built:', _HAVE_BACKEND)
-          "
+          python - <<'PY'
+          from opencodecs._htj2k_codec import _HAVE_BACKEND as htj2k
+          from opencodecs.uhdr import _HAVE_BACKEND as uhdr
+          print("htj2k backend built:", htj2k)
+          print("uhdr  backend built:", uhdr)
+          PY
 
       # Small native-format fixtures (~8 MB) so the corpus decode tests
       # actually run rather than skipping. Best-effort on purpose: these
