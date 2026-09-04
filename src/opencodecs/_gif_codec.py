@@ -16,7 +16,7 @@ from typing import Any
 
 import numpy as np
 
-from .core.codec import Codec, Reader
+from .core.codec import Codec, Reader, Writer
 from .core._io_helpers import read_src as _read_src, write_dest as _write_dest
 from .core._optional_backend import import_or_stubs
 
@@ -39,6 +39,14 @@ except Exception:  # pragma: no cover - extension not built
     )
     GifReader = None  # type: ignore
     GifWriter = None  # type: ignore
+
+
+if GifWriter is not None:
+    # An extension type cannot inherit a Python ABC, and GifWriter
+    # already has the whole surface (write_frame + close), so register
+    # it as a virtual subclass rather than wrap it. The reader needs a
+    # wrapper because it also had to normalize dtype; this does not.
+    Writer.register(GifWriter)
 
 
 class GifStreamReader(Reader):

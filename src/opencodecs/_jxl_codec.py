@@ -14,7 +14,7 @@ from typing import Any, Iterator
 
 import numpy as np
 
-from .core.codec import Codec, Reader
+from .core.codec import Codec, Reader, Writer
 from .core._optional_backend import import_or_stubs
 
 (_JxlReader, _JxlWriter, _jxl_encode, _jxl_decode, _jxl_check_signature,
@@ -22,6 +22,15 @@ from .core._optional_backend import import_or_stubs
     "opencodecs.codecs._jxl",
     "JxlReader", "JxlWriter", "encode", "decode", "check_signature",
 )
+
+
+if _HAVE_BACKEND:
+    # Same story as GifWriter: an extension type cannot inherit a
+    # Python ABC, and this one already has write_frame + close, so
+    # register it as a virtual subclass. Registering the name imported
+    # above rather than re-importing, so the module keeps one binding
+    # for it.
+    Writer.register(_JxlWriter)
 
 
 class JpegXLReader(Reader):

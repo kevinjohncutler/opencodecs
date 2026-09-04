@@ -82,6 +82,24 @@ take them as upper bounds.
     network correctly; ``tests/test_http_byte_savings.py`` keeps the
     sparse-workload bytes-budget assertions green.
 
+## Writer ABC — done
+
+* **Status**: `core/codec.py` declared three ABCs and exported all
+  three, but nothing implemented `Writer`. Six streaming writers, none
+  of them a `Writer`, and only three with a `write_frame` at all: TIFF
+  called it `write_page`, CZI `write`, the CZI pyramid writer
+  `write_level`. NDTiff had the name with the axes dict in the array's
+  position, so it satisfied the name and not the contract.
+* All six now implement it, the format-specific names stay, and
+  `tests/test_writer_contract.py` drives each of them from a helper
+  that knows nothing about the format.
+* **What's left**: there is still no uniform way to *obtain* a writer.
+  `oc.open()` gets you a Reader for any format; there is no
+  `Codec.writer()` / `oc.writer()` counterpart, so a caller has to
+  import `TiffWriter` or `CziWriter` by name. That is a new public
+  entry point rather than completing an existing one, so it wants a
+  deliberate decision, not a drive-by.
+
 ## libspng PAETH filter NEON / SSE intrinsics
 
 * **Status**: decode-side PAETH SIMD is already in the vendored
@@ -117,13 +135,21 @@ take them as upper bounds.
   rebuild state cleared after the remount as expected. No code
   change was needed.
 
+## Shipped since this list was written
+
+* **N5** was on the "won't ship" list below as "supplanted by zarr v3".
+  It shipped anyway in the scientific-reader work: `_n5.py`, a corpus
+  entry (Janelia's jrc_hela-2), and parity tests against tensorstore.
+  The reasoning that excluded it was about what people should write,
+  not about what is already on disk, and the FIB-SEM datasets that
+  matter are N5.
+
 ## Excluded by user filter (won't ship)
 
 These were considered + rejected because they don't fit the
 "streaming + scientific imaging" thesis. Listed for posterity so
 nobody re-proposes them:
 
-* N5 (supplanted by zarr v3)
 * JPEG-XR (Microsoft-deprecated)
 * JPEG-XS (broadcast-only)
 * JPEG-SOF3 (legacy medical; revisit only if DICOM compat needs it)

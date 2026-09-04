@@ -343,7 +343,7 @@ def bench_ndtiff_random_frame_read():
                 base = (i * 137) & 0x7FFF   # ensure < 32768
                 a = ((np.arange(H * W, dtype=np.int32) + base) & 0xFFFF
                      ).astype(np.uint16).reshape(H, W)
-                w.write_frame({"z": i}, a)
+                w.write_frame(a, {"z": i})
 
         rng = np.random.default_rng(0)
         zs = rng.integers(0, N, size=100)
@@ -1346,7 +1346,7 @@ def bench_ndtiff_write_10gb():
             with NDTiffWriter(tmp) as w:
                 for i in range(N):
                     a = rng.integers(0, 4000, size=(H, W), dtype=np.uint16)
-                    w.write_frame({"z": i}, a)
+                    w.write_frame(a, {"z": i})
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 

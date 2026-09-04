@@ -31,6 +31,8 @@ from typing import Any, Iterable
 
 import numpy as np
 
+from .core.codec import Writer
+
 
 # ---------------------------------------------------------------------------
 # Tag + type constants — match _tiff_codec.py / codecs/_tiff.pyx
@@ -236,7 +238,7 @@ class _IFDEntry:
 # TiffWriter
 # ---------------------------------------------------------------------------
 
-class TiffWriter:
+class TiffWriter(Writer):
     """Streaming classic-TIFF writer with multi-page support.
 
     Usage — one-shot single-page::
@@ -1355,6 +1357,16 @@ class TiffWriter:
             metadata=metadata,
             subifds=subifds,
         )
+
+    def write_frame(self, arr, **opts) -> None:
+        """The Writer contract's name for :meth:`write_page`.
+
+        A page is what TIFF calls a frame. Both names stay: write_page
+        is the format's own word and what existing callers use, and
+        write_frame is what code that does not know which format it is
+        holding can call.
+        """
+        self.write_page(arr, **opts)
 
     def close(self) -> None:
         """Patch a null next-IFD pointer for the last page and close

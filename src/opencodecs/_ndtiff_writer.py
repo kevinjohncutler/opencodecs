@@ -40,6 +40,8 @@ from typing import Any, Iterable
 
 import numpy as np
 
+from .core.codec import Writer
+
 
 # Format constants — must match ndstorage exactly for cross-reader
 # compatibility. Copied from ndstorage.ndtiff_file.
@@ -80,14 +82,14 @@ class NDTiffWriterError(RuntimeError):
     """Raised on writer state-machine violations."""
 
 
-class NDTiffWriter:
+class NDTiffWriter(Writer):
     """Write an NDTiff acquisition incrementally.
 
     Usage::
 
         with NDTiffWriter(out_dir, base_name="Acq", summary={"PixelSize": 0.108}) as w:
             for z in range(N):
-                w.write_frame({"z": z}, pixels[z], metadata={"z_um": z * 0.5})
+                w.write_frame(pixels[z], {"z": z}, metadata={"z_um": z * 0.5})
         # ↑ on close(): NDTiff.index is flushed atomically and all
         #   stack files have null next-IFD pointers patched in.
 
@@ -157,14 +159,46 @@ class NDTiffWriter:
 
     def write_frame(
         self,
-        axes: dict[str, Any],
         pixels: np.ndarray,
+        axes: dict[str, Any] | None = None,
         metadata: dict | str | None = None,
     ) -> dict:
         """Write one frame. Returns the index record (also stashed for
-        the final NDTiff.index)."""
+        the final NDTiff.index).
+
+        ``axes`` places the frame in the dataset's coordinate space and
+        defaults to the next index along ``z``.
+
+        The array comes first because that is what ``Writer.write_frame``
+        means everywhere else: GIF, JXL, TIFF and CZI all take the frame
+        as the first argument, and code holding a writer it did not
+        choose has to be able to call it. This one used to take ``axes``
+        there, so it satisfied the name and not the contract.
+
+        The old ``write_frame({"z": 0}, arr)`` order still works: a dict
+        in the first position is unambiguous, since a frame is never a
+        dict. That is a compatibility shim, not a second supported
+        spelling -- pass the array first.
+        """
+        if isinstance(pixels, dict):
+            pixels, axes = axes, pixels           # legacy (axes, pixels)
+            if pixels is None:
+                raise TypeError(
+                    "ndtiff: write_frame(axes, pixels) needs both arguments")
+        if axes is None:
+            axes = {"z": self._next_default_axis()}
         with self._lock:
             return self._write_frame_inner(axes, pixels, metadata)
+
+    def _next_default_axis(self) -> int:
+        """The next z index, so a bare write_frame(arr) works.
+
+        Without a default, the contract-conforming call is impossible
+        for this format and the unification would be only cosmetic.
+        Frames written without explicit axes stack along z in the order
+        they arrive, which is what a caller iterating a volume means.
+        """
+        return self._frame_count
 
     def write_many(
         self,

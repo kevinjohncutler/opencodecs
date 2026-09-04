@@ -39,6 +39,8 @@ from typing import Iterable
 
 import numpy as np
 
+from .core.codec import Writer
+
 
 # CZI segment ID magic strings (libCZI ABNF — fixed 16-byte ASCII).
 _FILE_MAGIC = b"ZISRAWFILE"
@@ -275,7 +277,7 @@ def _assemble(
 # ---------------------------------------------------------------------------
 
 
-class CziWriter:
+class CziWriter(Writer):
     """Write a single-resolution CZI file.
 
     Usage::
@@ -326,6 +328,13 @@ class CziWriter:
             )
         self._frames.append(array)
 
+    def write_frame(self, arr, **opts) -> None:
+        """The Writer contract's name for :meth:`write`."""
+        if opts:
+            raise TypeError(
+                f"czi: write_frame takes no options, got {sorted(opts)}")
+        self.write(arr)
+
     def close(self) -> None:
         if self._closed:
             return
@@ -370,7 +379,7 @@ class CziWriter:
 # ---------------------------------------------------------------------------
 
 
-class CziPyramidWriter:
+class CziPyramidWriter(Writer):
     """Write a multi-resolution CZI file (the format ZEN produces for
     multiscale acquisitions).
 
@@ -443,6 +452,18 @@ class CziPyramidWriter:
         """Convenience: append all levels at once."""
         for lvl in levels:
             self.write_level(lvl)
+
+    def write_frame(self, arr, **opts) -> None:
+        """The Writer contract's name for :meth:`write_level`.
+
+        A pyramid's frame is a resolution level, so iterating a source
+        and calling write_frame produces levels in order, which is what
+        write_level already required.
+        """
+        if opts:
+            raise TypeError(
+                f"czi: write_frame takes no options, got {sorted(opts)}")
+        self.write_level(arr)
 
     def close(self) -> None:
         if self._closed:
