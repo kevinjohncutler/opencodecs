@@ -334,9 +334,14 @@ either can be right. The point of this pass was not to make things
 faster but to check that a choice was *made* everywhere it matters, and
 to measure the two where it was in doubt.
 
-Only kernels we own are listed. Most "codecs" here are a thin wrapper
-whose loop body is one call into zstd, lz4, brotli, libdeflate or
-similar; there is nothing of ours in the hot path and nothing to decide.
+Only kernels we own are listed, and that is a larger set than it first
+looks. Of the ~39 registered codecs, roughly two thirds really are a
+wrapper whose loop body is one call into zstd, lz4, brotli, libdeflate,
+libjxl, libavif and so on -- nothing of ours in the hot path, nothing to
+decide. The rest have substantial code we compile: three C
+implementations written here (`oc_eer`, `oc_giflzw`, `oc_tifflzw`),
+libspng with our patches, `rgbe.c`, the cfitsio codecs, qoi, bcdec,
+bitshuffle, and the Cython kernels. All of those were checked.
 
 | kernel | strategy | verdict |
 |---|---|---|
@@ -351,8 +356,29 @@ similar; there is nothing of ours in the hot path and nothing to decide.
 | `rgbe.c` float2rgbe / rgbe2float | tables replacing per-pixel `frexpf`/`ldexp` | deliberate, done earlier |
 | `_tiff.undo_horizontal_*` | specialized by samples-per-pixel | serial prefix sum; the specialization is the available win |
 | `_gif._paint_frame` | palette gather | **measured**: 1985 Mpx/s, ~6 GB/s of writes -- memory-bound, not branch-bound |
-| `_eer` bitstream | scalar | serial by construction |
+| `_eer` / `oc_eer.c` bitstream | scalar | serial by construction |
 | `_bcdec` | per-4x4-block dispatch | branch amortized ~16:1 over a real call |
+| `oc_giflzw.c` | serial chain walk + `first_byte` table + vectorized drain | see below |
+| `oc_tifflzw.c` | same structure | **measured 1.22x faster than imagecodecs** |
+
+The two LZW decoders deserve their own note, because they are the place
+where all three strategies appear in one function and the split is the
+whole design. The prefix-chain walk (`while (c >= clear_code) { stack[sp++]
+= suffix[c]; c = prefix[c]; }`) is pointer chasing and cannot vectorize;
+the compiler refuses it and should. A `first_byte[]` table sidesteps
+re-walking that chain just to learn a string's first byte -- the table
+strategy, used exactly where the serial cost would otherwise be paid.
+And the string drain into the output vectorizes at width 16. Serial part
+minimal, table where the chain would be walked twice, vector on the bulk
+copy.
+
+Raced against an independent implementation rather than judged by
+inspection: TIFF LZW decodes at 231 MB/s against imagecodecs' 190 MB/s,
+1.22x. Both decoders keep an invariant branch in their bit-refill loop
+(`lsb_first` for TIFF), which is the `filter_scanline` shape again --
+but hoisting it means duplicating a hundred-line decoder to micro-
+optimize something already ahead of the reference, and the refill runs
+one or two iterations per code with a perfectly predicted branch.
 
 Two general findings.
 
