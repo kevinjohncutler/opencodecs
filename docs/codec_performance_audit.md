@@ -278,3 +278,51 @@ Verified with the compiler rather than by argument
 
 So `filter_scanline` was the outlier: the only place in the tree that
 combined a per-byte loop, cheap arithmetic, and an invariant branch.
+
+### Asking the compiler instead of guessing the shape (2026-09-04)
+
+The scan above looked for the shape that had just been fixed, which only
+finds failures whose cause is already known. The better question is the
+outcome one: **which loops does the vectorizer refuse, and why?**
+`-Rpass=loop-vectorize -Rpass-analysis=loop-vectorize` answers it
+directly, and the reasons differ, so the fixes would differ too.
+
+Over every vendored `.c` we compile plus every Cython-generated `.c`:
+641 loops vectorized, 4125 refused. The raw count is meaningless --
+Cython emits ~130 refused loops per file for refcounting and argument
+marshalling, and a thin wrapper whose real work is one call into
+libdeflate does not care. Mapping each remark back through Cython's
+`/* "....pyx":NNN */` comments and keeping only the `nogil` kernels
+leaves 17 loops that were written to be fast:
+
+| kernel | vectorized | why not |
+|---|---|---|
+| `_bytetools` byteshuffle | 6 | — |
+| `_uhdr._upscale_gainmap_kernel` | 2 | — |
+| `_uhdr._rgb_to_rgba_pack_kernel` | 1 | — |
+| `_uhdr._sdr_from_hdr_kernel` | 0 | cannot identify array bounds |
+| `_uhdr._srgb_eotf_lut_np` | 0 | call instruction (libm) |
+| `_jxl._decode_one_frame*` | 0 | unsupported switch (decoder driver, not per-pixel) |
+
+The one worth chasing was `_sdr_from_hdr_kernel`, whose docstring
+claimed it "compiles to tight NEON/SSE2/AVX2 with gather". It does not:
+the LUT index is data-dependent, so the load is a gather, and arm64 has
+no gather instruction.
+
+**And the kernel is still right.** Measured against a branch-free sRGB
+OETF written as arithmetic, which does vectorize at width 8, on a
+4.19 Mpx RGB frame:
+
+    scalar LUT gather      8.7 ms
+    vectorized polynomial 65.7 ms      0.13x
+
+Vectorized `exp2f`/`log2f` is far more expensive than a scalar table
+lookup, so the table wins by 7.5x while losing the vectorizer entirely.
+The docstring was corrected; the code was not.
+
+Two things worth keeping from this. Not vectorizing is not a defect --
+`_gain_map_kernel` next door deliberately uses a polynomial `_fast_log2`
+*so that* it can vectorize, and that is the same trade decided the other
+way for a cheaper function. And a performance claim in a comment is
+worth checking against the compiler: this one had been wrong for as long
+as it had been written, and it points the next reader at the wrong work.

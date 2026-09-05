@@ -415,11 +415,24 @@ cdef void _sdr_from_hdr_kernel(const float* hdr_lin,
     """Per-image peak-normalize linear HDR + apply sRGB OETF → uint8 SDR base.
 
     Inner loop: scale by 1/peak, clip [0,1], multiply by 4096 + 0.5,
-    cast to int, LUT lookup. Compiles to tight NEON/SSE2/AVX2 with
-    gather under -O3 -ffast-math. ~5x faster than the polynomial-pow
-    version (the LUT avoids ~20 ops/pixel for the sRGB OETF) and ~5x
-    faster than the equivalent numpy chain (which can't fuse the
-    intermediate float arrays).
+    cast to int, LUT lookup.
+
+    This loop does **not** vectorize, and that is the right outcome.
+    clang reports "cannot identify array bounds": the LUT index is
+    data-dependent, so the load is a gather, and arm64 has no gather
+    instruction. Measured against a branch-free sRGB OETF written as
+    arithmetic, which does vectorize at width 8, on a 4.19 Mpx RGB
+    frame: 8.7 ms for the scalar LUT against 65.7 ms for the vectorized
+    polynomial. Vectorized exp2f/log2f is still far more expensive than
+    a scalar table lookup, so the table wins by 7.5x while losing the
+    vectorizer.
+
+    (An earlier version of this docstring claimed the loop "compiles to
+    tight NEON/SSE2/AVX2 with gather". It does not, and the claim would
+    send someone optimizing in the wrong direction.)
+
+    Also ~5x faster than the equivalent numpy chain, which cannot fuse
+    the intermediate float arrays.
     """
     cdef Py_ssize_t i
     cdef float v
