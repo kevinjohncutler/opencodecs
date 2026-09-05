@@ -326,3 +326,50 @@ Two things worth keeping from this. Not vectorizing is not a defect --
 way for a cheaper function. And a performance claim in a comment is
 worth checking against the compiler: this one had been wrong for as long
 as it had been written, and it points the next reader at the wrong work.
+
+### Every kernel we own, and why it is written the way it is (2026-09-04)
+
+Vectorizing and a lookup table are two answers to the same question, and
+either can be right. The point of this pass was not to make things
+faster but to check that a choice was *made* everywhere it matters, and
+to measure the two where it was in doubt.
+
+Only kernels we own are listed. Most "codecs" here are a thin wrapper
+whose loop body is one call into zstd, lz4, brotli, libdeflate or
+similar; there is nothing of ours in the hot path and nothing to decide.
+
+| kernel | strategy | verdict |
+|---|---|---|
+| libspng `filter_sum_*` | specialized per filter, vectorizes | fine |
+| libspng `filter_scanline_*` | specialized per filter, vectorizes | **was the gap**; 13% arm64, 5.7% x86 |
+| `_uhdr._sdr_from_hdr_kernel` | LUT, does *not* vectorize | **measured**: 7.5x better than the vectorizable alternative |
+| `_uhdr._gain_map_kernel` | polynomial `_fast_log2` *to enable* vectorizing | deliberate, and the opposite call to the one above |
+| `_uhdr._upscale_gainmap_kernel` | vectorizes | fine |
+| `_uhdr._rgb_to_rgba_pack_kernel` | vectorizes | fine |
+| `_bytetools` byteshuffle | vectorizes, 6 loops | fine |
+| `_bmp` swizzle + RLE | vectorizes | fine |
+| `rgbe.c` float2rgbe / rgbe2float | tables replacing per-pixel `frexpf`/`ldexp` | deliberate, done earlier |
+| `_tiff.undo_horizontal_*` | specialized by samples-per-pixel | serial prefix sum; the specialization is the available win |
+| `_gif._paint_frame` | palette gather | **measured**: 1985 Mpx/s, ~6 GB/s of writes -- memory-bound, not branch-bound |
+| `_eer` bitstream | scalar | serial by construction |
+| `_bcdec` | per-4x4-block dispatch | branch amortized ~16:1 over a real call |
+
+Two general findings.
+
+**The two strategies are chosen against each other correctly.** The
+clearest evidence is that `_uhdr` contains both calls, fifty lines apart
+and for opposite reasons: `_sdr_from_hdr_kernel` keeps a table and gives
+up vectorizing because the sRGB OETF is expensive, while
+`_gain_map_kernel` gives up an exact `log2f` for a polynomial precisely
+so the loop can vectorize. Neither is a default.
+
+**"Not vectorized" is not a bug, and neither is "no table".** Three
+kernels here are scalar and right: a prefix sum is serial, a bitstream
+decoder is serial, and a palette gather at 6 GB/s is already at memory
+speed. The question is only ever whether the limit is the one the
+algorithm implies.
+
+The one thing this pass changed, beyond `filter_scanline`, was a
+docstring: `_sdr_from_hdr_kernel` claimed to vectorize, and pointed the
+reader at optimizing something that is already 7.5x ahead of the
+alternative.
