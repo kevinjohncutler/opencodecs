@@ -52,6 +52,21 @@ def _resolve_int_dtype_from_itemsize(itemsize: int, signed: bool = False):
 _DELTA_KERNEL = "unset"
 
 
+_XOR_KERNEL = "unset"
+
+
+def _xor_decode_kernel():
+    """The compiled running XOR, or None when the extension is absent."""
+    global _XOR_KERNEL
+    if _XOR_KERNEL == "unset":
+        try:
+            from .codecs._bytetools import xor_decode_inplace
+            _XOR_KERNEL = xor_decode_inplace
+        except ImportError:                              # pragma: no cover
+            _XOR_KERNEL = None
+    return _XOR_KERNEL
+
+
 def _delta_decode_kernel():
     """The compiled prefix sum, or None when the extension is absent.
 
@@ -305,12 +320,32 @@ class XorCodec(Codec):
     @staticmethod
     def _apply_along(arr, axis, dist, mode):
         if mode == "encode":
-            shifted = np.roll(arr, dist, axis=axis)
-            sl = [slice(None)] * arr.ndim
-            sl[axis] = slice(0, dist)
-            shifted[tuple(sl)] = 0
-            return arr ^ shifted
-        # decode: running XOR
+            # Slice-xor rather than np.roll, which allocates a whole
+            # shifted copy of the input just to throw it away. Same
+            # reasoning as the delta encoder above.
+            out = np.empty_like(arr)
+            head = [slice(None)] * arr.ndim
+            head[axis] = slice(0, dist)
+            tail = [slice(None)] * arr.ndim
+            tail[axis] = slice(dist, None)
+            prev = [slice(None)] * arr.ndim
+            prev[axis] = slice(0, -dist)
+            out[tuple(head)] = arr[tuple(head)]
+            np.bitwise_xor(arr[tuple(tail)], arr[tuple(prev)],
+                           out=out[tuple(tail)])
+            return out
+
+        # decode: running XOR. np.bitwise_xor.accumulate carries the
+        # same per-element dispatch as np.cumsum did for delta, and the
+        # same ~5x gap against a specialized loop.
+        kern = _xor_decode_kernel()
+        if kern is not None and arr.dtype.kind in "iu" and \
+                arr.dtype.itemsize in (1, 2, 4, 8):
+            moved = np.moveaxis(arr, axis, -1)
+            work = np.array(moved, dtype=arr.dtype, order="C", copy=True)
+            kern(work.reshape(-1, work.shape[-1]), dist)
+            return np.moveaxis(work, -1, axis)
+
         result = arr.copy()
         if dist == 1:
             return np.bitwise_xor.accumulate(result, axis=axis)

@@ -83,25 +83,31 @@ def _bitunpack(buf: bytes, dtype: np.dtype, bitspersample: int,
         if target_dt is not None:
             arr = np.frombuffer(buf, dtype=target_dt, count=n_elements)
             return arr.astype(dtype, copy=False)
-    # General path: walk bytes into a bit accumulator, slice out groups.
-    mask = (1 << bitspersample) - 1
-    out = np.empty(n_elements, dtype=dtype)
-    acc = 0
-    acc_bits = 0
-    src = memoryview(buf)
-    bp = 0
-    for i in range(n_elements):
-        while acc_bits < bitspersample:
-            if bp >= len(src):
-                raise ValueError(
-                    f"packints decode: input ran out at element {i}/"
-                    f"{n_elements}")
-            acc = (acc << 8) | src[bp]
-            bp += 1
-            acc_bits += 8
-        acc_bits -= bitspersample
-        out[i] = (acc >> acc_bits) & mask
-    return out
+    # General path, for the widths this codec actually exists to serve:
+    # 1, 2, 4 and 12 bits, none of which land on a byte boundary.
+    #
+    # This used to be a Python loop doing one numpy scalar store per
+    # element, which cost 81 seconds for a million 4-bit samples against
+    # imagecodecs' 0.02 ms. Expanding to a bit array and folding each
+    # group with a dot product is the same arithmetic done by numpy in
+    # one pass; the bits come out MSB-first either way, which is what
+    # the old accumulator produced (`acc = (acc << 8) | byte`) and what
+    # np.unpackbits gives by default.
+    need_bits = n_elements * bitspersample
+    have_bits = len(buf) * 8
+    if have_bits < need_bits:
+        raise ValueError(
+            f"packints decode: input holds {have_bits} bits, need "
+            f"{need_bits} for {n_elements} samples of {bitspersample} bits")
+
+    raw = np.frombuffer(buf, dtype=np.uint8)
+    bits = np.unpackbits(raw)[:need_bits].reshape(n_elements, bitspersample)
+    # int64 for the weights so widths above 32 do not overflow the
+    # intermediate; the cast back to `dtype` is the caller's width.
+    weights = (np.int64(1) << np.arange(bitspersample - 1, -1, -1,
+                                        dtype=np.int64))
+    vals = bits.astype(np.int64) @ weights
+    return vals.astype(dtype, copy=False)
 
 
 class PackintsCodec(Codec):

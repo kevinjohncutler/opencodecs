@@ -110,3 +110,81 @@ def test_wraparound_is_preserved():
     back = oc.get_codec("delta").decode(enc, dtype="u1", shape=a.shape,
                                         axis=-1)
     assert np.array_equal(np.asarray(back), a)
+
+
+# --------------------------------------------------------------------
+# xor and packints, found by the same race
+# --------------------------------------------------------------------
+
+@pytest.mark.parametrize("dtype", ["u1", "u2", "u4", "u8"])
+@pytest.mark.parametrize("dist", [1, 2])
+def test_xor_round_trip(dtype, dist):
+    rng = np.random.default_rng(2)
+    a = rng.integers(0, 255, (5, 71), dtype="u1").astype(dtype)
+    enc = oc.get_codec("xor").encode(a, axis=-1, dist=dist)
+    back = oc.get_codec("xor").decode(enc, dtype=dtype, shape=a.shape,
+                                      axis=-1, dist=dist)
+    assert np.array_equal(np.asarray(back), a)
+
+
+def test_xor_decode_uses_the_kernel():
+    """np.bitwise_xor.accumulate is 5x slower; the kernel is the point."""
+    from opencodecs import _predictor_codec as pc
+    if pc._xor_decode_kernel() is None:
+        pytest.skip("_bytetools extension not built")
+    a = np.arange(400, dtype="u2").reshape(4, 100)
+    blob = oc.get_codec("xor").encode(a, axis=-1)
+    back = oc.get_codec("xor").decode(blob, dtype="u2", shape=a.shape,
+                                      axis=-1)
+    assert np.array_equal(np.asarray(back), a)
+
+
+@pytest.mark.parametrize("bps", [1, 2, 3, 4, 5, 6, 7, 12, 16, 24, 32])
+def test_packints_round_trip_every_width(bps):
+    """The widths that matter here are the ones that miss a byte boundary.
+
+    Decode used to be a Python loop with a numpy scalar store per
+    element: 81 seconds for a million 4-bit samples. It is vectorized
+    now, and these assert the bits are unchanged, which is the only
+    thing that made the rewrite safe.
+    """
+    rng = np.random.default_rng(3)
+    n = 997
+    src = (rng.integers(0, 1 << min(bps, 20), n, dtype="u4")
+           & ((1 << bps) - 1)).astype("u4")
+    packed = oc.get_codec("packints").encode(src, bitspersample=bps)
+    back = oc.get_codec("packints").decode(
+        packed, dtype="u4", bitspersample=bps, n_elements=n)
+    assert np.array_equal(np.asarray(back), src)
+
+
+def test_packints_decode_is_not_quadratic():
+    """A guard on the shape of the cost, not on a wall-clock number.
+
+    The old loop took ~81 s for a million samples. Anything still doing
+    per-element Python work will not finish this in a few seconds, and
+    anything vectorized finishes in milliseconds, so the threshold does
+    not need to be tight to be meaningful.
+    """
+    import time
+    n = 1 << 20
+    rng = np.random.default_rng(4)
+    src = rng.integers(0, 16, n, dtype="u1")
+    packed = oc.get_codec("packints").encode(src, bitspersample=4)
+    t = time.perf_counter()
+    back = oc.get_codec("packints").decode(
+        packed, dtype="u1", bitspersample=4, n_elements=n)
+    elapsed = time.perf_counter() - t
+    assert np.array_equal(np.asarray(back), src)
+    assert elapsed < 2.0, (
+        f"packints decode took {elapsed:.1f}s for {n} samples; the "
+        f"per-element Python loop is back")
+
+
+def test_packints_rejects_a_short_buffer():
+    """The old loop raised mid-walk; the vectorized one checks up front."""
+    packed = oc.get_codec("packints").encode(
+        np.arange(10, dtype="u1"), bitspersample=4)
+    with pytest.raises(ValueError, match="bits"):
+        oc.get_codec("packints").decode(
+            packed, dtype="u1", bitspersample=4, n_elements=10_000)

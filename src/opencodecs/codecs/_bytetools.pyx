@@ -265,3 +265,30 @@ def delta_decode_inplace(delta_t[:, ::1] arr, Py_ssize_t dist=1):
                     while i < n:
                         arr[r, i] = <delta_t>(arr[r, i] + arr[r, i - dist])
                         i += dist
+
+
+def xor_decode_inplace(delta_t[:, ::1] arr, Py_ssize_t dist=1):
+    """Running XOR along the last axis, the sibling of the prefix sum.
+
+    np.bitwise_xor.accumulate has the same per-element dispatch cost as
+    np.cumsum, and the same 5x gap against a specialized loop. XOR needs
+    no wraparound reasoning -- it cannot carry -- so this is the simpler
+    of the two.
+    """
+    cdef Py_ssize_t rows = arr.shape[0]
+    cdef Py_ssize_t n = arr.shape[1]
+    cdef Py_ssize_t r, i, start
+    if n < 2:
+        return
+    with nogil:
+        if dist == 1:
+            for r in range(rows):
+                for i in range(1, n):
+                    arr[r, i] = <delta_t>(arr[r, i] ^ arr[r, i - 1])
+        else:
+            for r in range(rows):
+                for start in range(dist):
+                    i = start + dist
+                    while i < n:
+                        arr[r, i] = <delta_t>(arr[r, i] ^ arr[r, i - dist])
+                        i += dist
