@@ -16,6 +16,7 @@ runs in parallel across threads (vs the GIL-serialised numpy path).
 
 from cpython.bytes cimport PyBytes_FromStringAndSize, PyBytes_AsString
 from libc.stdint cimport uint8_t
+cimport cython
 
 
 def byteshuffle_encode(data, int itemsize, Py_ssize_t n_elements, *, out=None):
@@ -209,3 +210,58 @@ def byteshuffle_decode(data, int itemsize, Py_ssize_t n_elements, *, out=None):
         del out_view
         return out[:total]
     return out_bytes
+
+
+# ---------------------------------------------------------------------------
+# Delta predictor: prefix sum along the last (contiguous) axis
+# ---------------------------------------------------------------------------
+#
+# numpy has cumsum, and for this shape it is 5.5x slower than a plain C
+# loop: 34.6 ms against 6.3 ms on 17 MB of uint8. A prefix sum is serial,
+# so neither version vectorizes; the difference is that np.cumsum carries
+# per-element dispatch that a specialized loop does not. This is the same
+# specialization argument as libspng's filter_scanline, applied to a
+# numpy call rather than to a switch.
+#
+# Encode does not need a kernel: np.roll allocates a whole shifted copy,
+# and replacing it with a slice-subtract already matches the reference
+# exactly. Only decode was worth compiling.
+
+ctypedef fused delta_t:
+    cython.uchar
+    cython.schar
+    cython.ushort
+    cython.short
+    cython.uint
+    cython.int
+    cython.ulonglong
+    cython.longlong
+
+
+def delta_decode_inplace(delta_t[:, ::1] arr, Py_ssize_t dist=1):
+    """In-place prefix sum along the last axis, wrapping like the dtype.
+
+    ``arr`` is (rows, n) and C-contiguous, which is what the codec
+    reshapes any axis into before calling. Wraparound is what the format
+    means by delta on unsigned types, and C's unsigned arithmetic is
+    already modular, so nothing special is needed to get it.
+    """
+    cdef Py_ssize_t rows = arr.shape[0]
+    cdef Py_ssize_t n = arr.shape[1]
+    cdef Py_ssize_t r, i, start
+    if n < 2:
+        return
+    with nogil:
+        if dist == 1:
+            for r in range(rows):
+                for i in range(1, n):
+                    arr[r, i] = <delta_t>(arr[r, i] + arr[r, i - 1])
+        else:
+            # dist > 1 is `dist` independent chains interleaved; walking
+            # each in its own pass keeps the inner loop a simple stride.
+            for r in range(rows):
+                for start in range(dist):
+                    i = start + dist
+                    while i < n:
+                        arr[r, i] = <delta_t>(arr[r, i] + arr[r, i - dist])
+                        i += dist
