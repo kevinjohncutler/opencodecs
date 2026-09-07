@@ -52,3 +52,23 @@ def test_workflow_run_blocks_survive_yaml_folding():
     proc = subprocess.run([sys.executable, str(script)],
                           capture_output=True, text=True, cwd=root)
     assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
+def test_capability_claims_match_the_code():
+    """capabilities.toml records what each codec can do for a web client.
+
+    Streaming, range reads, tiles, pyramids: promises that are per format
+    and that some formats cannot keep. The file exists so "not built yet"
+    and "impossible here" stop looking identical from outside, and this
+    test exists so the file cannot quietly stop being true -- which is
+    what happens to every performance claim nobody re-derives.
+    """
+    root = Path(__file__).resolve().parent.parent
+    script = root / "ci" / "check_capabilities.py"
+    assert script.is_file(), "ci/check_capabilities.py is missing"
+    proc = subprocess.run([sys.executable, str(script), "verify"],
+                          capture_output=True, text=True, cwd=root)
+    assert proc.returncode == 0, (
+        "capabilities.toml has drifted from the code. Re-sync it with "
+        "ci/check_capabilities.py and read the diff:\n"
+        + proc.stdout + proc.stderr)

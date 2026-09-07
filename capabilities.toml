@@ -1,0 +1,681 @@
+# Streaming and web-delivery capabilities, per codec.
+#
+# What this file is for: opencodecs promises more than "it
+# decodes" -- it promises formats that can be streamed, served
+# over HTTP with range requests, decoded a tile at a time, and
+# viewed at multiple resolutions. Those promises are per format,
+# and some of them are impossible for some formats. Without a
+# record, "we have not done that yet" and "that cannot be done"
+# look identical from outside.
+#
+# Every field below is seeded from evidence rather than opinion:
+# the Codec class flags, whether the reader reaches storage
+# through the read_at contract, and whether a PyramidReader
+# backend exists. ci/check_capabilities.py re-derives them and
+# fails if this file has drifted, which is what stops it turning
+# into the kind of stale claim a docstring becomes.
+#
+# feasible = "no" needs a reason. That is the field that carries
+# the actual engineering judgement.
+
+schema = 1
+
+[[codec]]
+name = "aec"
+multi_frame = false
+chunked = false
+streaming_decode = false
+parallel_decode = false
+range_reads = false
+pyramid = false
+http = false
+feasible = "unassessed"
+
+[[codec]]
+name = "avif"
+multi_frame = false
+chunked = false
+streaming_decode = false
+parallel_decode = false
+range_reads = false
+pyramid = false
+http = false
+feasible = "unassessed"
+
+[[codec]]
+name = "b2nd"
+multi_frame = false
+chunked = false
+streaming_decode = false
+parallel_decode = false
+range_reads = false
+pyramid = false
+http = false
+feasible = "unassessed"
+
+[[codec]]
+name = "bcn"
+multi_frame = false
+chunked = false
+streaming_decode = false
+parallel_decode = false
+range_reads = false
+pyramid = false
+http = false
+feasible = "unassessed"
+
+[[codec]]
+name = "bitshuffle"
+multi_frame = false
+chunked = false
+streaming_decode = false
+parallel_decode = false
+range_reads = false
+pyramid = false
+http = false
+feasible = "unassessed"
+
+[[codec]]
+name = "blosc2"
+multi_frame = false
+chunked = false
+streaming_decode = false
+parallel_decode = false
+range_reads = false
+pyramid = false
+http = false
+feasible = "unassessed"
+
+[[codec]]
+name = "bmp"
+multi_frame = false
+chunked = false
+streaming_decode = false
+parallel_decode = false
+range_reads = false
+pyramid = false
+http = false
+feasible = "unassessed"
+
+[[codec]]
+name = "brotli"
+multi_frame = false
+chunked = false
+streaming_decode = false
+parallel_decode = false
+range_reads = false
+pyramid = false
+http = false
+feasible = "unassessed"
+
+[[codec]]
+name = "brunsli"
+multi_frame = false
+chunked = false
+streaming_decode = false
+parallel_decode = false
+range_reads = false
+pyramid = false
+http = false
+feasible = "unassessed"
+
+[[codec]]
+name = "byteshuffle"
+multi_frame = false
+chunked = false
+streaming_decode = false
+parallel_decode = false
+range_reads = false
+pyramid = false
+http = false
+feasible = "unassessed"
+
+[[codec]]
+name = "bz2"
+multi_frame = false
+chunked = false
+streaming_decode = false
+parallel_decode = false
+range_reads = false
+pyramid = false
+http = false
+feasible = "unassessed"
+
+[[codec]]
+name = "cms"
+multi_frame = false
+chunked = false
+streaming_decode = false
+parallel_decode = false
+range_reads = false
+pyramid = false
+http = false
+feasible = "unassessed"
+
+[[codec]]
+name = "czi"
+multi_frame = true
+chunked = true
+streaming_decode = true
+parallel_decode = true
+range_reads = true
+pyramid = true
+http = true
+feasible = "unassessed"
+
+[[codec]]
+name = "deflate"
+multi_frame = false
+chunked = false
+streaming_decode = false
+parallel_decode = false
+range_reads = false
+pyramid = false
+http = false
+feasible = "unassessed"
+
+[[codec]]
+name = "delta"
+multi_frame = false
+chunked = false
+streaming_decode = false
+parallel_decode = false
+range_reads = false
+pyramid = false
+http = false
+feasible = "unassessed"
+
+[[codec]]
+name = "dicom"
+multi_frame = true
+chunked = false
+streaming_decode = true
+parallel_decode = false
+range_reads = true
+pyramid = false
+http = false
+feasible = "unassessed"
+
+[[codec]]
+name = "dicomrle"
+multi_frame = false
+chunked = false
+streaming_decode = false
+parallel_decode = false
+range_reads = false
+pyramid = false
+http = false
+feasible = "unassessed"
+
+[[codec]]
+name = "dm"
+multi_frame = true
+chunked = false
+streaming_decode = false
+parallel_decode = false
+range_reads = false
+pyramid = false
+http = false
+feasible = "unassessed"
+
+[[codec]]
+name = "eer"
+multi_frame = true
+chunked = true
+streaming_decode = true
+parallel_decode = false
+range_reads = false
+pyramid = false
+http = true
+feasible = "unassessed"
+
+[[codec]]
+name = "emd"
+multi_frame = true
+chunked = false
+streaming_decode = false
+parallel_decode = false
+range_reads = false
+pyramid = false
+http = false
+feasible = "unassessed"
+
+[[codec]]
+name = "fits"
+multi_frame = true
+chunked = false
+streaming_decode = true
+parallel_decode = false
+range_reads = true
+pyramid = false
+http = true
+feasible = "unassessed"
+
+[[codec]]
+name = "floatpred"
+multi_frame = false
+chunked = false
+streaming_decode = false
+parallel_decode = false
+range_reads = false
+pyramid = false
+http = false
+feasible = "unassessed"
+
+[[codec]]
+name = "gif"
+multi_frame = true
+chunked = false
+streaming_decode = true
+parallel_decode = false
+range_reads = false
+pyramid = false
+http = false
+feasible = "unassessed"
+
+[[codec]]
+name = "gzip"
+multi_frame = false
+chunked = false
+streaming_decode = false
+parallel_decode = false
+range_reads = false
+pyramid = false
+http = false
+feasible = "unassessed"
+
+[[codec]]
+name = "hdf5"
+multi_frame = true
+chunked = true
+streaming_decode = true
+parallel_decode = false
+range_reads = false
+pyramid = false
+http = true
+feasible = "unassessed"
+
+[[codec]]
+name = "heif"
+multi_frame = false
+chunked = false
+streaming_decode = false
+parallel_decode = false
+range_reads = false
+pyramid = false
+http = false
+feasible = "unassessed"
+
+[[codec]]
+name = "htj2k"
+multi_frame = false
+chunked = false
+streaming_decode = false
+parallel_decode = false
+range_reads = false
+pyramid = false
+http = false
+feasible = "unassessed"
+
+[[codec]]
+name = "jpeg"
+multi_frame = false
+chunked = false
+streaming_decode = false
+parallel_decode = false
+range_reads = false
+pyramid = false
+http = false
+feasible = "unassessed"
+
+[[codec]]
+name = "jpeg2k"
+multi_frame = false
+chunked = false
+streaming_decode = false
+parallel_decode = false
+range_reads = false
+pyramid = false
+http = false
+feasible = "unassessed"
+
+[[codec]]
+name = "jpegls"
+multi_frame = false
+chunked = false
+streaming_decode = false
+parallel_decode = false
+range_reads = false
+pyramid = false
+http = false
+feasible = "unassessed"
+
+[[codec]]
+name = "jxl"
+multi_frame = true
+chunked = true
+streaming_decode = true
+parallel_decode = false
+range_reads = false
+pyramid = false
+http = true
+feasible = "unassessed"
+
+[[codec]]
+name = "lerc"
+multi_frame = false
+chunked = false
+streaming_decode = false
+parallel_decode = false
+range_reads = false
+pyramid = false
+http = false
+feasible = "unassessed"
+
+[[codec]]
+name = "lif"
+multi_frame = true
+chunked = false
+streaming_decode = true
+parallel_decode = false
+range_reads = true
+pyramid = false
+http = true
+feasible = "unassessed"
+
+[[codec]]
+name = "lz4"
+multi_frame = false
+chunked = false
+streaming_decode = false
+parallel_decode = false
+range_reads = false
+pyramid = false
+http = false
+feasible = "unassessed"
+
+[[codec]]
+name = "lzma"
+multi_frame = false
+chunked = false
+streaming_decode = false
+parallel_decode = false
+range_reads = false
+pyramid = false
+http = false
+feasible = "unassessed"
+
+[[codec]]
+name = "mozjpeg"
+multi_frame = false
+chunked = false
+streaming_decode = false
+parallel_decode = false
+range_reads = false
+pyramid = false
+http = false
+feasible = "unassessed"
+
+[[codec]]
+name = "mrc"
+multi_frame = true
+chunked = false
+streaming_decode = true
+parallel_decode = false
+range_reads = true
+pyramid = false
+http = false
+feasible = "unassessed"
+
+[[codec]]
+name = "nd2"
+multi_frame = true
+chunked = true
+streaming_decode = true
+parallel_decode = false
+range_reads = true
+pyramid = false
+http = true
+feasible = "unassessed"
+
+[[codec]]
+name = "nifti"
+multi_frame = true
+chunked = false
+streaming_decode = false
+parallel_decode = false
+range_reads = false
+pyramid = false
+http = false
+feasible = "unassessed"
+
+[[codec]]
+name = "none"
+multi_frame = false
+chunked = false
+streaming_decode = false
+parallel_decode = false
+range_reads = false
+pyramid = false
+http = false
+feasible = "unassessed"
+
+[[codec]]
+name = "nrrd"
+multi_frame = false
+chunked = false
+streaming_decode = false
+parallel_decode = false
+range_reads = true
+pyramid = false
+http = false
+feasible = "unassessed"
+
+[[codec]]
+name = "numpy"
+multi_frame = false
+chunked = false
+streaming_decode = false
+parallel_decode = false
+range_reads = false
+pyramid = false
+http = false
+feasible = "unassessed"
+
+[[codec]]
+name = "oib"
+multi_frame = true
+chunked = false
+streaming_decode = true
+parallel_decode = false
+range_reads = false
+pyramid = false
+http = true
+feasible = "unassessed"
+
+[[codec]]
+name = "oir"
+multi_frame = true
+chunked = true
+streaming_decode = false
+parallel_decode = false
+range_reads = true
+pyramid = false
+http = false
+feasible = "unassessed"
+
+[[codec]]
+name = "packints"
+multi_frame = false
+chunked = false
+streaming_decode = false
+parallel_decode = false
+range_reads = false
+pyramid = false
+http = false
+feasible = "unassessed"
+
+[[codec]]
+name = "pcodec"
+multi_frame = false
+chunked = false
+streaming_decode = false
+parallel_decode = false
+range_reads = false
+pyramid = false
+http = false
+feasible = "unassessed"
+
+[[codec]]
+name = "png"
+multi_frame = false
+chunked = false
+streaming_decode = false
+parallel_decode = false
+range_reads = false
+pyramid = false
+http = false
+feasible = "unassessed"
+
+[[codec]]
+name = "qoi"
+multi_frame = false
+chunked = false
+streaming_decode = false
+parallel_decode = false
+range_reads = false
+pyramid = false
+http = false
+feasible = "unassessed"
+
+[[codec]]
+name = "quantize"
+multi_frame = false
+chunked = false
+streaming_decode = false
+parallel_decode = false
+range_reads = false
+pyramid = false
+http = false
+feasible = "unassessed"
+
+[[codec]]
+name = "rcomp"
+multi_frame = false
+chunked = false
+streaming_decode = false
+parallel_decode = false
+range_reads = false
+pyramid = false
+http = false
+feasible = "unassessed"
+
+[[codec]]
+name = "rgbe"
+multi_frame = false
+chunked = false
+streaming_decode = false
+parallel_decode = false
+range_reads = false
+pyramid = false
+http = false
+feasible = "unassessed"
+
+[[codec]]
+name = "snappy"
+multi_frame = false
+chunked = false
+streaming_decode = false
+parallel_decode = false
+range_reads = false
+pyramid = false
+http = false
+feasible = "unassessed"
+
+[[codec]]
+name = "sperr"
+multi_frame = false
+chunked = false
+streaming_decode = false
+parallel_decode = false
+range_reads = false
+pyramid = false
+http = false
+feasible = "unassessed"
+
+[[codec]]
+name = "sz3"
+multi_frame = false
+chunked = false
+streaming_decode = false
+parallel_decode = false
+range_reads = false
+pyramid = false
+http = false
+feasible = "unassessed"
+
+[[codec]]
+name = "tiff"
+multi_frame = true
+chunked = true
+streaming_decode = true
+parallel_decode = false
+range_reads = true
+pyramid = true
+http = true
+feasible = "unassessed"
+
+[[codec]]
+name = "vsi"
+multi_frame = true
+chunked = true
+streaming_decode = true
+parallel_decode = false
+range_reads = false
+pyramid = false
+http = false
+feasible = "unassessed"
+
+[[codec]]
+name = "webp"
+multi_frame = false
+chunked = false
+streaming_decode = false
+parallel_decode = false
+range_reads = false
+pyramid = false
+http = false
+feasible = "unassessed"
+
+[[codec]]
+name = "xor"
+multi_frame = false
+chunked = false
+streaming_decode = false
+parallel_decode = false
+range_reads = false
+pyramid = false
+http = false
+feasible = "unassessed"
+
+[[codec]]
+name = "zfp"
+multi_frame = false
+chunked = false
+streaming_decode = false
+parallel_decode = false
+range_reads = false
+pyramid = false
+http = false
+feasible = "unassessed"
+
+[[codec]]
+name = "zstd"
+multi_frame = false
+chunked = false
+streaming_decode = false
+parallel_decode = false
+range_reads = false
+pyramid = false
+http = false
+feasible = "unassessed"
