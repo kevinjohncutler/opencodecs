@@ -38,6 +38,7 @@ from typing import Any, Callable, Iterator
 
 import numpy as np
 
+from .core.io import coerce_data_source as _coerce_data_source
 from .core.codec import Reader
 
 
@@ -325,7 +326,9 @@ class FitsStream(Reader):
             self._read = read_at
             self._owns_fd = False
         else:
-            self._read, self._owns_fd = self._open_read_at(src)
+            _ds, self._owns_fd, _ = _coerce_data_source(src)
+            self._ds = _ds
+            self._read = _ds.read_at
 
         # Probe for FITS magic. If the file doesn't look like FITS we
         # quietly accept it with zero HDUs — matches the contract the
@@ -379,44 +382,16 @@ class FitsStream(Reader):
 
     # ---------- I/O ----------
 
-    def _open_read_at(self, src: Any) -> tuple[Callable[[int, int], bytes], bool]:
-        if isinstance(src, (str, os.PathLike)):
-            f = open(src, "rb")
-
-            def read_at(off: int, n: int, _f=f) -> bytes:
-                _f.seek(off)
-                return _f.read(n)
-            return read_at, True
-        if isinstance(src, (bytes, bytearray, memoryview)):
-            buf = bytes(src)
-
-            def read_at(off: int, n: int, _b=buf) -> bytes:
-                return _b[off : off + n]
-            return read_at, False
-        if hasattr(src, "read") and hasattr(src, "seek"):
-            f = src
-
-            def read_at(off: int, n: int, _f=f) -> bytes:
-                _f.seek(off)
-                return _f.read(n)
-            return read_at, False
-        raise TypeError(
-            f"FITS: unsupported src type {type(src).__name__}; "
-            f"pass a path, bytes, file-like, or read_at callable"
-        )
-
     def close(self) -> None:
-        if self._owns_fd and self._src is not None:
-            # ``self._src`` is a path; the file-handle is captured inside
-            # the read_at closure. Close it via the closure's __closure__.
-            for cell in (getattr(self._read, "__closure__", None) or ()):
-                contents = cell.cell_contents
-                if hasattr(contents, "close"):
-                    try:
-                        contents.close()
-                    except OSError:
-                        pass
-                    break
+        # The DataSource owns whatever handle it opened, so closing is
+        # one call. This used to walk self._read.__closure__ looking
+        # for a cell with a .close attribute, because the helper it
+        # called handed back a bare function and no way to release it.
+        if self._owns_fd and getattr(self, "_ds", None) is not None:
+            try:
+                self._ds.close()
+            except OSError:
+                pass
             self._owns_fd = False
 
     def __enter__(self) -> "FitsStream":

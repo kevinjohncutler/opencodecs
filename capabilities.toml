@@ -594,10 +594,10 @@ streaming_decode = false
 parallel_decode = false
 range_reads = true
 pyramid = false
-http = false
+http = true
 feasible = "gap"
-gaps = ["streaming_decode", "http"]
-note = "the reader already seeks to block offsets, so serving those same offsets from HTTPDataSource is wiring rather than new parsing."
+gaps = ["streaming_decode"]
+note = "HTTP arrived by unification rather than by being built for OIR: the reader coerces its source through core.io.coerce_data_source, which turns an http(s) URL into an HTTPDataSource, and OIR already read at offsets. Verified against a range-serving test server -- opening and fully reading a 25.96 MB file moved 16.86 MB in 198 range requests, byte-identical to the local read. Streaming decode is what is left."
 
 [[codec]]
 name = "packints"

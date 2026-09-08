@@ -262,42 +262,49 @@ def test_coerce_data_source_still_rejects_nonsense():
 # ---- one coercion, not two -----
 
 
-def _both_helpers():
-    from opencodecs.core._io_helpers import open_read_at
-    from opencodecs.core.io import coerce_data_source
-    return {"coerce_data_source": coerce_data_source,
-            "open_read_at": open_read_at}
-
-
-@pytest.mark.parametrize("helper", sorted(_both_helpers()))
 @pytest.mark.parametrize("kind", ["bytes", "bytearray", "memoryview",
                                   "BytesIO", "callable", "path"])
-def test_both_source_helpers_accept_the_same_kinds(helper, kind, tmp_path):
-    """The two helpers must not answer the same question differently.
+def test_the_one_coercion_accepts_every_kind(kind, tmp_path):
+    from opencodecs.core.io import coerce_data_source
 
-    They did: one took buffers, URLs and callables while the other took
-    a path or a DataSource, so which sources a reader supported came
-    down to which helper it happened to call. open_read_at is now an
-    adapter over coerce_data_source, and this fails if anyone splits
-    them again.
-    """
-    fn = _both_helpers()[helper]
     raw = bytes(range(256))
     p = tmp_path / "s.bin"
     p.write_bytes(raw)
     src = {"bytes": raw, "bytearray": bytearray(raw),
            "memoryview": memoryview(raw), "BytesIO": io.BytesIO(raw),
            "callable": (lambda o, n: raw[o:o + n]), "path": str(p)}[kind]
-    out = fn(src)
-    read_at = out[0].read_at if hasattr(out[0], "read_at") else out[0]
-    assert read_at(4, 4) == raw[4:8]
+    ds, _owns, _size = coerce_data_source(src)
+    assert ds.read_at(4, 4) == raw[4:8]
 
 
-@pytest.mark.parametrize("helper", sorted(_both_helpers()))
-def test_both_helpers_reject_the_same_thing_the_same_way(helper):
-    fn = _both_helpers()[helper]
+def test_source_coercion_is_not_reimplemented():
+    """There is one place that decides what a source may be.
+
+    There were four: coerce_data_source, _io_helpers.open_read_at, and
+    private copies on FitsStream and TiffStream. They drifted -- two of
+    them treated an http(s) URL as a filename, one promised "or read_at
+    callable" in an error message for callables it rejected. None was
+    public API, so the duplicates are gone rather than wrapped.
+
+    TiffStream keeps a narrow override, and only that one: its mapped
+    and in-memory branches return memoryviews instead of bytes so a
+    segment decodes without being copied first, worth 1.5x on zstd
+    tiles. It delegates everything else.
+    """
+    from opencodecs.core import _io_helpers
+    from opencodecs._fits import FitsStream
+
+    assert not hasattr(_io_helpers, "open_read_at"), (
+        "open_read_at is back; it was an adapter over coerce_data_source "
+        "and a second set of rules for one question")
+    assert not hasattr(FitsStream, "_open_read_at"), (
+        "FITS grew its own source coercion again")
+
+
+def test_the_one_coercion_rejects_nonsense():
+    from opencodecs.core.io import coerce_data_source
     with pytest.raises(TypeError, match="unsupported source"):
-        fn(object())
+        coerce_data_source(object())
 
 
 def test_callable_data_source_wraps_a_bare_read_at():
@@ -363,3 +370,37 @@ def test_open_on_an_image_codec_gives_a_one_frame_reader(name, image):
         assert r.shape[:2] == arr.shape[:2]
         assert r.n_frames in (None, 1)
         assert np.asarray(r.read()).shape[:2] == arr.shape[:2]
+
+
+def test_oir_opens_over_http_by_range(tmp_path):
+    """A capability OIR gained by unification, not by being built for it.
+
+    OIR coerces its source through coerce_data_source, which turns an
+    http(s) URL into an HTTPDataSource; OIR already read at offsets.
+    Worth an end-to-end check rather than trusting that reasoning:
+    "the plumbing should make this work" is how the capability
+    manifest ends up claiming things nobody ran.
+    """
+    import sys as _sys
+    _sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+    try:
+        from _range_http_server import range_http_server
+    except ImportError:
+        pytest.skip("range test server helper unavailable")
+
+    oir = None
+    if CORPUS.is_dir():
+        for f in sorted((CORPUS / "oir").glob("*.oir")) \
+                if (CORPUS / "oir").is_dir() else []:
+            if not f.name.startswith("._"):
+                oir = f
+                break
+    if oir is None:
+        pytest.skip("fetch the oir corpus entry first")
+
+    local = np.asarray(oc.get_codec("oir").decode(str(oir)))
+    with range_http_server(oir.parent) as served:
+        base = served[0] if isinstance(served, tuple) else served
+        with oc.get_codec("oir").open(f"{base}/{oir.name}") as r:
+            assert r.shape == local.shape
+            assert np.array_equal(np.asarray(r.read()), local)

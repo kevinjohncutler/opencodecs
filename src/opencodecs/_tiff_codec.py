@@ -1051,17 +1051,19 @@ class TiffStream(Reader):
             _read._buf = mv  # type: ignore[attr-defined]
             return _read
 
-        if hasattr(src, "read") and hasattr(src, "seek"):
-            def _read(offset: int, n: int) -> bytes:
-                src.seek(int(offset))
-                return src.read(int(n))
-
-            return _read
-
-        raise TypeError(
-            f"TiffStream: don't know how to read from {type(src).__name__}; "
-            "pass a path, bytes, file-like, or a custom read_at=..."
-        )
+        # Everything else -- file-likes, http(s) URLs, read_at
+        # callables, DataSources -- goes to the shared coercion. Only
+        # the two branches above are TIFF's own, and only because they
+        # hand back memoryviews instead of bytes: that is what lets a
+        # segment decode without being copied first, and it is worth
+        # 1.5x on zstd tiles. Reimplementing the rest here is how this
+        # reader ended up with its own idea of which sources exist.
+        from .core.io import coerce_data_source
+        ds, owns, _size = coerce_data_source(src)
+        if owns:
+            self._owns_fd = True
+            self._fd = ds
+        return ds.read_at
 
     def close(self) -> None:
         # Order matters: every memoryview into the mapping has to be
@@ -1087,6 +1089,8 @@ class TiffStream(Reader):
             self._mmap = None
         if self._owns_fd:
             try:
+                # Either a file object (the mapped path opens one) or a
+                # DataSource from the shared coercion; both close().
                 self._fd.close()
             finally:
                 self._owns_fd = False

@@ -127,7 +127,7 @@ the same effect by a different route.
   frame, rather than reading every fragment before it.
 
 All three now reach storage through one helper,
-`core._io_helpers.open_read_at`, which turns a path into a seek, an
+`core.io.coerce_data_source`, which turns a path into a seek, an
 http(s) URL into range requests and bytes into slices. MRC had grown its
 own copy of that; there is one now. `tests/test_reader_streaming.py`
 asserts the byte savings for each, because "the URL opened" is not the

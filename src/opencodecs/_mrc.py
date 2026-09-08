@@ -28,7 +28,7 @@ from typing import Any, Callable
 
 import numpy as np
 
-from .core._io_helpers import open_read_at as _open_read_at
+from .core.io import coerce_data_source as _coerce_data_source
 from .core.codec import ArrayReader
 
 HEADER_SIZE = 1024
@@ -83,7 +83,9 @@ class MrcStream(ArrayReader):
         else:
             # Shared with the NRRD and DICOM readers; MRC used to carry
             # its own copy of this.
-            self._read, self._closer = _open_read_at(src)
+            _ds, _owns, _ = _coerce_data_source(src)
+            self._read = _ds.read_at
+            self._closer = _ds.close if _owns else (lambda: None)
             self._owns_fd, self._fh = False, None
 
         head = self._read(0, HEADER_SIZE)

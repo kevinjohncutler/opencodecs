@@ -33,7 +33,7 @@ from typing import Any
 
 import numpy as np
 
-from .core._io_helpers import open_read_at as _open_read_at
+from .core.io import coerce_data_source as _coerce_data_source
 from .core._io_helpers import read_src as _read_src
 from .core.codec import ArrayReader
 
@@ -67,7 +67,9 @@ class NrrdFile(ArrayReader):
 
     def __init__(self, src: Any):
         self._path = Path(src) if isinstance(src, (str, os.PathLike)) else None
-        self._read_at, self._close = _open_read_at(src)
+        _ds, _owns, _ = _coerce_data_source(src)
+        self._read_at = _ds.read_at
+        self._close = _ds.close if _owns else (lambda: None)
         head = self._read_at(0, self._HEADER_CHUNK)
         # A pathological header longer than the first read still works;
         # this just costs a second request rather than being an error.

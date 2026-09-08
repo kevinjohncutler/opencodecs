@@ -85,7 +85,8 @@ def derive() -> dict[str, dict]:
     # shared stream (_eer_reader does exactly this) is doing range reads
     # without ever spelling the call itself, and the narrower pattern
     # recorded that as a `false`.
-    range_capable = _grep("open_read_at\\|read_at(\\|read_at=\\|read_many(")
+    range_capable = _grep(
+        "coerce_data_source\\|read_at(\\|read_at=\\|read_many(")
     # A file counts as a pyramid backend when it DEFINES or RE-EXPORTS
     # one, not when it mentions the name. _jpeg2k.pyx refers to
     # Jpeg2kPyramidReader in a docstring to point callers at it, and
@@ -111,15 +112,17 @@ def derive() -> dict[str, dict]:
     # the codec's own file would record oib as a false.
     #
     # The other direction of the same delegation problem: core's
-    # open_read_at() turns an http(s) URL into an HTTPDataSource itself,
-    # so every reader that opens through it already serves range
-    # requests without naming the class. dicom, mrc and nrrd all do, and
-    # all three were recorded as `false` for a capability the README
-    # documents them as having.
+    # coerce_data_source() turns an http(s) URL into an HTTPDataSource
+    # itself, so every reader that opens through it already serves
+    # range requests without naming the class. dicom, mrc and nrrd all
+    # do, and all three were recorded as `false` for a capability the
+    # README documents them as having. (This used to name
+    # open_read_at, which was a second coercion helper; it was folded
+    # into coerce_data_source and deleted.)
     whole_file_get = _grep("http_fetch_all")
     http_files = {f for f in _grep("HTTPDataSource")
                   if f in range_capable or f not in whole_file_get}
-    http_files |= _grep("open_read_at")
+    http_files |= _grep("coerce_data_source")
 
     def files_for(name: str) -> set[str]:
         return {str(p.relative_to(ROOT)) for p in src.rglob(f"*{name}*")

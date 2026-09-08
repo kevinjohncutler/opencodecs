@@ -5,7 +5,7 @@ native pixel data at a fixed offset behind a header, which is exactly
 the shape range requests are for. The assertion in each case is what the
 server actually sent, because "the URL opened" is not the claim.
 
-All three now reach storage through ``core._io_helpers.open_read_at``,
+All three now reach storage through ``core.io.coerce_data_source``,
 so this file is also the test that the shared plumbing works for each.
 """
 

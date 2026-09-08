@@ -31,7 +31,7 @@ from typing import Any, Iterator
 
 import numpy as np
 
-from .core._io_helpers import open_read_at as _open_read_at
+from .core.io import coerce_data_source as _coerce_data_source
 from .core._io_helpers import read_src as _read_src
 from .core.codec import ArrayReader
 
@@ -121,7 +121,9 @@ class DicomFile(ArrayReader):
     _PREFIX = 1 << 16
 
     def __init__(self, src: Any):
-        self._read_at, self._close = _open_read_at(src)
+        _ds, _owns, _ = _coerce_data_source(src)
+        self._read_at = _ds.read_at
+        self._close = _ds.close if _owns else (lambda: None)
         self._meta: dict[tuple[int, int], _Element] = {}
         self._ds: dict[tuple[int, int], _Element] = {}
         self._pixel_offset: int | None = None

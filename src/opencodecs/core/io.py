@@ -265,9 +265,10 @@ class BufferDataSource(DataSource):
     reader built on it therefore refused bytes outright (OIR) or
     spilled them to a temporary file first (ND2, LIF, OIB, CZI) --
     writing 40 MB to disk to read it back, when it was already in
-    memory. Readers built on the other helper, ``open_read_at``, took
-    buffers directly. Which surface a reader offered came down to
-    which helper it happened to use.
+    memory. A second helper, ``_io_helpers.open_read_at``, took buffers
+    directly, so which surface a reader offered came down to which
+    helper it happened to call. That helper is gone and this is the
+    only coercion left.
 
     Accepts anything supporting the buffer protocol -- bytes,
     bytearray, memoryview, mmap, a numpy array of bytes -- and slices

@@ -192,7 +192,7 @@ def test_http_means_range_backed_not_merely_url_openable():
 
 
 def test_reaching_storage_through_a_helper_still_counts():
-    """dicom, mrc and nrrd open through core.open_read_at.
+    """dicom, mrc and nrrd open through core.io.coerce_data_source.
 
     That helper turns a URL into an HTTPDataSource itself, so these
     readers serve range requests without naming the class. Attributing
