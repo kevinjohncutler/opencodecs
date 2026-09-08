@@ -18,7 +18,9 @@ the first IFD.
 from __future__ import annotations
 
 import io
+import mmap
 import os
+import sys
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
@@ -112,9 +114,18 @@ def _get_decoder(modname: str):
 _TIFF_PARALLEL_MIN_SEGMENTS = 4
 _TIFF_MAX_WORKERS = 16
 
+# Don't start a worker for less than this much output. A fixed cap is
+# wrong at both ends, and measurably so: on a 9 MB image the whole
+# decode is a few milliseconds and 16 threads lose to 8 on pool
+# overhead, while on a 72 MB image 16 threads are 12x serial and 8 are
+# only 7x. Sizing the pool by how much work there actually is gets
+# both, where any single constant gives up one of them.
+_TIFF_MIN_BYTES_PER_WORKER = 1 << 20
+
 
 def _resolve_tiff_workers(numthreads: int | None, n_segments: int,
-                          has_decode_work: bool = True) -> int:
+                          has_decode_work: bool = True,
+                          output_bytes: int | None = None) -> int:
     """How many threads to decode ``n_segments`` segments with.
 
     ``None`` means "decide": scale with the CPU count but never exceed
@@ -122,23 +133,55 @@ def _resolve_tiff_workers(numthreads: int | None, n_segments: int,
     divide. An explicit number is honored as given, so a caller can pin
     it -- including to 1 for a reproducible serial run.
 
-    ``has_decode_work`` is false for uncompressed segments, where the
-    "decode" is a reshape and the only thing threads add is pool
-    overhead. That is not a small effect: measured on a 144-tile
-    uncompressed TIFF, threading made it 3x SLOWER (1.9 ms serial
-    against 5.8 ms), while the same file in LZW went 4.0x faster.
-    Parallelism that is on by default has to know when to decline.
+    ``has_decode_work`` is false for uncompressed segments, and there
+    the answer is 1 no matter what was asked for. A thread count is a
+    budget -- "use up to N" -- not an instruction to spend it, and
+    spending it here cannot pay: an uncompressed tile's "decode" is a
+    reshape and a memcpy, so the work is memory-bandwidth-bound and
+    already runs at about 5 GB/s on one core. Measured on a 144-tile
+    3072x3072 uncompressed TIFF, the whole read is 1.8 ms serial;
+    creating the pool is a visible fraction of that, and 4 threads
+    took 3.6 ms. The same file in LZW goes 5.9x faster on 8.
+
+    Honoring the number literally would mean quietly doing what the
+    caller asked twice as slowly, which is a worse answer than
+    declining and saying why.
     """
+    if not has_decode_work:
+        return 1
     if numthreads is not None:
         n = int(numthreads)
         if n <= 1:
             return 1
         return min(n, max(1, n_segments))
-    if not has_decode_work:
-        return 1
     if n_segments < _TIFF_PARALLEL_MIN_SEGMENTS:
         return 1
-    return max(1, min(os.cpu_count() or 1, n_segments, _TIFF_MAX_WORKERS))
+    cap = min(os.cpu_count() or 1, n_segments, _TIFF_MAX_WORKERS)
+    if output_bytes is not None:
+        # Enough work per worker to be worth its own existence.
+        cap = min(cap, output_bytes // _TIFF_MIN_BYTES_PER_WORKER)
+    return max(1, cap)
+
+
+# numpy writes native order as "=" and single-byte types as "|", so a
+# character comparison cannot answer "do these two need a swap".
+_NATIVE_BYTEORDER = "<" if sys.byteorder == "little" else ">"
+
+
+def _resolved_byteorder(dt: np.dtype) -> str:
+    """A dtype's byte order as "<" or ">", with native resolved."""
+    bo = np.dtype(dt).byteorder
+    return _NATIVE_BYTEORDER if bo in ("=", "|") else bo
+
+
+def _byteorder_differs(a, b) -> bool:
+    """True when reinterpreting `a` as `b` requires a byte swap.
+
+    Single-byte types never do, whatever they claim.
+    """
+    if np.dtype(a).itemsize == 1 or np.dtype(b).itemsize == 1:
+        return False
+    return _resolved_byteorder(a) != _resolved_byteorder(b)
 
 
 def _tag(tags: dict, tag_id: int, default=None):
@@ -395,8 +438,14 @@ class TiffPage:
             return np.frombuffer(raw_bytes, dtype=np.uint8)
         file_dtype = self.dtype.newbyteorder(self._stream._byte_order)
         arr = np.frombuffer(raw_bytes, dtype=file_dtype)
-        if file_dtype.byteorder not in ("=", "|") and \
-                file_dtype.byteorder != np.dtype(self.dtype).byteorder:
+        # Only swap when the orders genuinely differ. numpy spells
+        # native as "=" and explicit little as "<", so comparing the
+        # characters made a little-endian file on a little-endian
+        # machine -- overwhelmingly the common case -- look like a
+        # mismatch and pay a full byte-swapping copy that changed
+        # nothing. It was half the time of an uncompressed read, once
+        # per tile, and every byte-stream codec goes through here.
+        if _byteorder_differs(file_dtype, self.dtype):
             arr = arr.astype(self.dtype, copy=True)
         return arr
 
@@ -411,21 +460,29 @@ class TiffPage:
             return self._bytes_to_array(raw)
 
         # Byte-stream codecs: decode → bytes → frombuffer → flat array.
+        #
+        # `raw` is passed through rather than bytes()-ed. It is already
+        # bytes from the seek+read path, and a contiguous memoryview
+        # from the mapped one -- and the Cython decoders bind both to
+        # `const uint8_t[::1]`. Copying it first would undo the point
+        # of mapping the file: measured, the conversion made mmap 0.78x
+        # of seek+read on zstd, because it paid the page faults AND the
+        # copy.
         if cmp in (CMP_DEFLATE, CMP_ADOBE_DEFLATE):
-            decoded = _get_decoder("opencodecs.codecs._deflate")(bytes(raw))
+            decoded = _get_decoder("opencodecs.codecs._deflate")(raw)
             return self._bytes_to_array(decoded)
         if cmp == CMP_ZSTD:
-            decoded = _get_decoder("opencodecs.codecs._zstd")(bytes(raw))
+            decoded = _get_decoder("opencodecs.codecs._zstd")(raw)
             return self._bytes_to_array(decoded)
         if cmp == CMP_PACKBITS:
             decoded = _tiff_packbits_decode(
-                bytes(raw),
+                raw,
                 self._expected_uncompressed_bytes(),
             )
             return self._bytes_to_array(decoded)
         if cmp == CMP_LZW:
             decoded = _tiff_lzw_decode(
-                bytes(raw),
+                raw,
                 self._expected_uncompressed_bytes(),
             )
             return self._bytes_to_array(decoded)
@@ -661,6 +718,15 @@ class TiffPage:
                 arr = decoded.reshape(full_shape)[:self.height, :self.width]
             else:
                 arr = decoded.reshape(self.shape)
+            # ascontiguousarray returns the SAME array when it is
+            # already contiguous, and for an uncompressed page that
+            # array is a view straight into the file mapping. Handing
+            # it back would give the caller pixels that stop existing
+            # when the reader is closed -- a use-after-free that shows
+            # up as garbage or a crash, long after the call that
+            # caused it. Copy when the buffer is not ours to keep.
+            if self._stream._mmap is not None:
+                return np.array(arr, dtype=arr.dtype, order="C", copy=True)
             return np.ascontiguousarray(arr)
 
         out = np.empty(self.shape, dtype=self.dtype)
@@ -805,16 +871,33 @@ class TiffPage:
 
         workers = _resolve_tiff_workers(
             numthreads, len(tasks),
-            has_decode_work=self.compression != CMP_NONE)
+            has_decode_work=self.compression != CMP_NONE,
+            output_bytes=out.nbytes)
         if workers > 1 and prefetched is None:
             import threading
             read_lock = threading.Lock()
         if workers > 1:
             from concurrent.futures import ThreadPoolExecutor
+            # One task per WORKER, not per segment. ThreadPoolExecutor
+            # ignores map()'s chunksize (it is a process-pool knob), so
+            # a 144-tile image meant 144 futures, each with its own
+            # lock traffic and GIL round-trip, to wrap work that for an
+            # uncompressed tile is a reshape and a memcpy. That
+            # overhead alone is what made threading measure SLOWER than
+            # serial there. Contiguous batches also keep each worker
+            # writing to a contiguous band of `out`.
+            step = (len(tasks) + workers - 1) // workers
+            batches = [tasks[i:i + step]
+                       for i in range(0, len(tasks), step)]
+
+            def _run_batch(batch):
+                for t in batch:
+                    _do_segment(*t)
+
             with ThreadPoolExecutor(max_workers=workers) as ex:
                 # Consume the iterator so a worker's exception is
                 # raised here rather than silently discarded.
-                for _ in ex.map(lambda t: _do_segment(*t), tasks):
+                for _ in ex.map(_run_batch, batches):
                     pass
         else:
             for t in tasks:
@@ -857,6 +940,8 @@ class TiffStream(Reader):
                  read_at: Callable[[int, int], bytes] | None = None,
                  numthreads: int | None = None):
         self._numthreads = numthreads
+        self._mmap = None
+        self._mmap_view = None
         self._src = src
         self._owns_fd = False
 
@@ -900,6 +985,34 @@ class TiffStream(Reader):
             self._owns_fd = True
             self._fd = f
 
+            # Map the file rather than read()ing each segment into a
+            # fresh bytes object. A seek+read copies every segment
+            # before anything is done with it, and for an uncompressed
+            # image that copy is the larger half of the work: on a
+            # 75 MB tiled TIFF, reading the tiles cost 8.7 ms against
+            # 6.1 ms to place them. A mapping makes the read a view and
+            # leaves one copy instead of two.
+            #
+            # It also hands parse_ifd_chain its buffer fast path, which
+            # until now only local bytes sources got.
+            try:
+                mm = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
+            except (ValueError, OSError):
+                # Empty file, or a filesystem that will not map. The
+                # seek+read path is always correct, just slower.
+                mm = None
+            if mm is not None:
+                self._mmap = mm
+                mv = memoryview(mm)
+                self._mmap_view = mv
+
+                def _read(offset: int, n: int):
+                    start = int(offset)
+                    return mv[start:start + int(n)]
+
+                _read._buf = mv  # type: ignore[attr-defined]
+                return _read
+
             def _read(offset: int, n: int) -> bytes:
                 f.seek(int(offset))
                 return f.read(int(n))
@@ -940,6 +1053,27 @@ class TiffStream(Reader):
         )
 
     def close(self) -> None:
+        # Order matters: every memoryview into the mapping has to be
+        # released before the mmap, and the mmap before the file.
+        # mmap.close() raises BufferError while an exported buffer is
+        # alive, which would turn a tidy close into a crash on exit.
+        mv = getattr(self, "_mmap_view", None)
+        if mv is not None:
+            try:
+                mv.release()
+            except Exception:                          # noqa: BLE001
+                pass
+            self._mmap_view = None
+        mm = getattr(self, "_mmap", None)
+        if mm is not None:
+            try:
+                mm.close()
+            except (BufferError, ValueError):
+                # Something still holds a view. Leaving the mapping
+                # open leaks an fd until GC; closing it under a live
+                # view would segfault. The leak is the better failure.
+                pass
+            self._mmap = None
         if self._owns_fd:
             try:
                 self._fd.close()

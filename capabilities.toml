@@ -733,7 +733,7 @@ range_reads = true
 pyramid = true
 http = true
 feasible = "done"
-note = "every capability the format offers is built. Tile and strip decode now spreads across threads -- measured on a 144-tile 3072x3072 image: lzw 3.9x, deflate 2.2x, zstd 1.2x -- with uncompressed segments deliberately left serial, because threading a reshape measured 3x SLOWER than not. Reads serialize under a lock since the path-based reader is one shared handle; the decode is the expensive half and the Cython codecs release the GIL for it."
+note = "every capability the format offers is built. Tile and strip decode spreads across threads, and the worker count is sized by how much output there is rather than by a constant -- a fixed cap is wrong at both ends, losing to 8 threads on a 9 MB image and to 16 on a 75 MB one. Measured against single-threaded, 512px tiles: 6144x6144 uint16 lzw 12.2x, deflate 11.6x, zstd 3.2x. Uncompressed segments stay serial whatever is asked for, because their decode is a memcpy and threading it measured slower. Local files are mapped rather than read segment by segment, and the byte-order check no longer swaps a little-endian file on a little-endian machine, which had been costing a full copy per tile."
 
 [[codec]]
 name = "vsi"

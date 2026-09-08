@@ -91,17 +91,20 @@ def test_uncompressed_declines_threads_by_default():
     assert _resolve_tiff_workers(None, 144, has_decode_work=True) > 1
 
 
-def test_explicit_thread_count_is_honored():
-    """An explicit number is the caller's call, not a hint.
+def test_explicit_thread_count_is_a_budget_not_a_mandate():
+    """A thread count means "use up to N", and N can be too many.
 
-    Including numbers the heuristic would not have picked: pinning to 1
-    is how you get a reproducible serial run, and pinning high on an
-    uncompressed file is the caller's business.
+    Pinning to 1 is how you get a reproducible serial run. Pinning
+    high is honored wherever it can help -- but not on uncompressed
+    segments, where spending the budget measured 2x SLOWER than not.
+    Quietly doing what was asked at half the speed is a worse answer
+    than declining.
     """
     assert _resolve_tiff_workers(1, 500) == 1
     assert _resolve_tiff_workers(0, 500) == 1
     assert _resolve_tiff_workers(4, 500) == 4
-    assert _resolve_tiff_workers(4, 500, has_decode_work=False) == 4
+    assert _resolve_tiff_workers(4, 500, has_decode_work=False) == 1
+    assert _resolve_tiff_workers(None, 500, has_decode_work=False) == 1
     # Never more workers than there is work.
     assert _resolve_tiff_workers(64, 3) == 3
 
