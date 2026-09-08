@@ -56,13 +56,11 @@ _POOL: ThreadPoolExecutor | None = None
 
 
 def _get_pool() -> ThreadPoolExecutor:
-    global _POOL
-    if _POOL is None:
-        _POOL = ThreadPoolExecutor(
-            max_workers=_DEFAULT_POOL_SIZE,
-            thread_name_prefix="opencodecs-czi",
-        )
-    return _POOL
+    # Shared with the other readers that do this. The local copy was
+    # missing the double-checked lock, so a race on the first call
+    # built two pools and leaked one.
+    from .core.io import get_reader_pool
+    return get_reader_pool("czi", _DEFAULT_POOL_SIZE)
 
 
 # ---------------------------------------------------------------------------

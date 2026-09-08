@@ -79,29 +79,52 @@ def _packbits_encode(buf: bytes) -> bytes:
     return bytes(out)
 
 
-def _packbits_decode(buf: bytes, expected_size: int | None = None) -> bytes:
+def packbits_decode_dicom(buf: bytes,
+                          expected_size: int | None = None) -> bytes:
+    """PackBits as DICOM RLE needs it: stop at the pixel count.
+
+    The strict decoder in ``codecs/_tiff.pyx`` is the right one for
+    TIFF, where a run extending past the end of a strip means the file
+    is damaged. DICOM RLE segments are padded to an even length, so the
+    pad byte reads as a run header and the strict decoder rejects
+    files pydicom reads happily. Stopping once ``expected_size`` bytes
+    exist is DICOM's natural terminator and sidesteps the pad.
+
+    Shared by the RLE codec and the DICOMweb client, which each used to
+    carry their own copy of this loop and disagree about it: one raised
+    on a truncated replicate run, the other ignored it.
+    """
     out = bytearray()
     i = 0
     n = len(buf)
-    while i < n:
+    limit = expected_size if expected_size is not None else -1
+    while i < n and (limit < 0 or len(out) < limit):
         h = buf[i]
         i += 1
-        if h <= 127:  # literal run of h+1 bytes
-            k = h + 1
-            out.extend(buf[i:i + k])
-            i += k
-        elif h == 128:  # no-op
+        if h == 128:                      # no-op
             continue
-        else:  # replicate (257-h) copies
+        if h < 128:                       # literal run of h+1 bytes
+            k = h + 1
+            out.extend(buf[i:i + k])      # short slice = trailing pad
+            i += k
+        else:                             # replicate (257-h) copies
             k = 257 - h
             if i >= n:
-                raise ValueError("packbits: replicate run truncated")
+                break                     # trailing pad, not corruption
             out.extend(bytes([buf[i]]) * k)
             i += 1
+    if limit >= 0 and len(out) > limit:
+        del out[limit:]
+    return bytes(out)
+
+
+def _packbits_decode(buf: bytes, expected_size: int | None = None) -> bytes:
+    """Strict wrapper: the RLE codec knows exactly how big a plane is."""
+    out = packbits_decode_dicom(buf, expected_size)
     if expected_size is not None and len(out) != expected_size:
         raise ValueError(
             f"packbits: expected {expected_size} bytes, got {len(out)}")
-    return bytes(out)
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -215,10 +238,16 @@ def _decode_dicomrle(buf: bytes, shape, dtype: np.dtype) -> np.ndarray:
     # Each segment ends where the next one starts (or at end-of-buffer
     # for the last segment).
     boundaries = offsets + [len(buf)]
+    # One segment is one byte plane, so its decoded length is exactly
+    # the pixel count. Passing it matters: the shared decoder sizes its
+    # output at 2x the input when told nothing, which is right for a
+    # TIFF strip and far too small for an RLE segment that compressed
+    # well -- a 3768-byte plane from a 1.4 KB segment overflowed it.
+    plane_bytes = int(shape[0]) * int(shape[1])
     segments = []
     for i in range(n_segs):
         seg_bytes = buf[boundaries[i]:boundaries[i + 1]]
-        decoded = _packbits_decode(seg_bytes)
+        decoded = _packbits_decode(seg_bytes, plane_bytes)
         segments.append(decoded)
     return _assemble_dicomrle_array(segments, shape, dtype)
 

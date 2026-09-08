@@ -100,15 +100,8 @@ _POOL_LOCK = threading.Lock()
 
 
 def _get_pool() -> ThreadPoolExecutor:
-    global _POOL
-    if _POOL is None:
-        with _POOL_LOCK:
-            if _POOL is None:
-                _POOL = ThreadPoolExecutor(
-                    max_workers=_DEFAULT_POOL_SIZE,
-                    thread_name_prefix="opencodecs-ndtiff",
-                )
-    return _POOL
+    from .core.io import get_reader_pool
+    return get_reader_pool("ndtiff", _DEFAULT_POOL_SIZE)
 
 
 # ---------------------------------------------------------------------------

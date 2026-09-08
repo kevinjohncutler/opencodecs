@@ -177,22 +177,11 @@ class Nd2Codec(Codec):
             try:
                 from ._nd2_native import Nd2NativeReader
                 from .core.io import DataSource
-                if isinstance(src, (str, Path)) or isinstance(src, DataSource):
-                    return Nd2NativeReader(src)
-                # bytes / file-like: spill to a temp file so the
-                # native reader's FileDataSource can mmap-style read.
-                import os, tempfile
-                if isinstance(src, (bytes, bytearray, memoryview)):
-                    fd, tmp = tempfile.mkstemp(suffix=".nd2")
-                    os.write(fd, bytes(src))
-                    os.close(fd)
-                    return Nd2NativeReader(tmp)
-                if hasattr(src, "read"):
-                    data = src.read()
-                    fd, tmp = tempfile.mkstemp(suffix=".nd2")
-                    os.write(fd, data)
-                    os.close(fd)
-                    return Nd2NativeReader(tmp)
+                # Nd2NativeReader reaches storage through a
+                # DataSource, and a buffer is one, so there is nothing
+                # to write to disk first.
+                from .core.io import normalize_source
+                return Nd2NativeReader(normalize_source(src))
             except (NotImplementedError, ValueError) as e:
                 if backend == "native":
                     raise

@@ -215,7 +215,8 @@ class LifCodec(Codec):
         # native path never writes the source to disk to read it back.
         # Only the readlif fallback needs a real path, and it spills
         # lazily below.
-        src = _normalize_lif_source(src)
+        from .core.io import normalize_source
+        src = normalize_source(src)
 
         if backend in (None, "native") and image is None:
             try:
@@ -233,7 +234,7 @@ class LifCodec(Codec):
                         return LifNativeReader(src_for_parse, image=image)
                     # Discard the partial parser; readlif re-opens.
                     parser = None  # noqa: F841
-                # Nothing else to handle: _normalize_lif_source has
+                # Nothing else to handle: normalize_source has
                 # already turned every accepted source into a path, a
                 # Path, or a DataSource.
             except (ValueError, ImportError) as e:
@@ -262,7 +263,8 @@ class LifCodec(Codec):
         """
         from ._lif_native import LifFileParser
         from .core.io import DataSource
-        src = _normalize_lif_source(src)
+        from .core.io import normalize_source
+        src = normalize_source(src)
         parser = LifFileParser(
             src if isinstance(src, DataSource) else str(src))
         return {
@@ -307,22 +309,6 @@ def _native_can_handle(parser) -> bool:
     if parser.xml.count("<ATLConfocalSettingDefinition") > 1:
         return False
     return True
-
-
-def _normalize_lif_source(src):
-    """Turn any accepted source into a path, Path, or DataSource.
-
-    Called once at entry so that no later branch re-reads a stream an
-    earlier one already drained. Buffers and file-likes become a
-    BufferDataSource, which costs no temp file; paths and DataSources
-    pass through untouched.
-    """
-    from pathlib import Path as _P
-    from .core.io import DataSource, coerce_data_source
-    if isinstance(src, (str, _P, DataSource)):
-        return src
-    ds, _owns, _size = coerce_data_source(src)
-    return ds
 
 
 def _spill_datasource_to_temp(src) -> str:

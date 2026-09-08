@@ -138,21 +138,11 @@ class OibCodec(Codec):
         if backend in (None, "native"):
             try:
                 from ._oib_native import OibNativeReader
-                if isinstance(src, (str, Path)) or isinstance(src, DataSource):
-                    return OibNativeReader(src)
-                # bytes / file-like: spill to a temp file
-                import os, tempfile
-                if isinstance(src, (bytes, bytearray, memoryview)):
-                    fd, tmp = tempfile.mkstemp(suffix=".oib")
-                    os.write(fd, bytes(src))
-                    os.close(fd)
-                    return OibNativeReader(tmp)
-                if hasattr(src, "read"):
-                    data = src.read()
-                    fd, tmp = tempfile.mkstemp(suffix=".oib")
-                    os.write(fd, data)
-                    os.close(fd)
-                    return OibNativeReader(tmp)
+                # OibNativeReader takes a DataSource, and a buffer is
+                # one, so bytes no longer make a round trip through
+                # the filesystem just to become a path.
+                from .core.io import normalize_source
+                return OibNativeReader(normalize_source(src))
             except (NotImplementedError, ValueError, KeyError) as e:
                 if backend == "native":
                     raise

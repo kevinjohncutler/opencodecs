@@ -52,13 +52,8 @@ class CziCodec(Codec):
         return len(head) >= 10 and head[:10] == b"ZISRAWFILE"
 
     def decode(self, src: Any, **opts) -> np.ndarray:
-        """Decode an entire CZI file to a stacked ndarray.
-
-        Bytes input is supported but writes to a temp file first because
-        CZI parsing wants a seekable mmap-able fd.
-        """
-        path = self._coerce_to_path(src)
-        with CziReader(path) as r:
+        """Decode an entire CZI file to a stacked ndarray."""
+        with self._reader(src) as r:
             return r.read(**opts)
 
     def writer(self, dest: Any = None, **opts):
@@ -69,27 +64,28 @@ class CziCodec(Codec):
         return CziWriter(dest, **opts)
 
     def open(self, src: Any, **opts) -> Reader:
-        path = self._coerce_to_path(src)
-        return CziReader(path)
+        return self._reader(src)
 
     @staticmethod
-    def _coerce_to_path(src: Any) -> str:
+    def _reader(src: Any) -> "CziReader":
+        """Open `src` without putting it on disk if it is already bytes.
+
+        CziReader takes either a path, which it maps, or a buffer, and
+        it has taken both for as long as it has existed. This wrote
+        every non-path source to a temp file anyway -- a 43 MB CZI
+        already in memory went to disk to be read back -- on the
+        reasoning, recorded in a docstring, that "CZI parsing wants a
+        seekable mmap-able fd". Its own reader says otherwise.
+        """
         if isinstance(src, (str, Path)):
-            return str(src)
+            return CziReader(str(src))
         if isinstance(src, (bytes, bytearray, memoryview)):
-            import tempfile, os
-            fd, tmp = tempfile.mkstemp(suffix=".czi")
-            os.write(fd, bytes(src))
-            os.close(fd)
-            return tmp
-        if hasattr(src, "read"):
-            import tempfile, os
-            data = src.read()
-            fd, tmp = tempfile.mkstemp(suffix=".czi")
-            os.write(fd, data)
-            os.close(fd)
-            return tmp
+            return CziReader(buffer=src)
+        if hasattr(src, "read") and hasattr(src, "seek"):
+            src.seek(0)
+            return CziReader(buffer=src.read())
         raise TypeError(f"unsupported CZI source: {type(src).__name__}")
+
 
 
 __all__ = ["CziCodec"]

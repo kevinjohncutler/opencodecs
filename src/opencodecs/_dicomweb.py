@@ -328,26 +328,16 @@ def _rle_lossless_decode(
 
 
 def _packbits_decode(seg: bytes, expected_size: int) -> bytes:
-    """PackBits decode (Apple Macintosh format, also used in DICOM RLE
-    and TIFF compression=32773). Stops at expected_size if reached."""
-    out = bytearray()
-    i = 0
-    n = len(seg)
-    while i < n and len(out) < expected_size:
-        b = seg[i]
-        i += 1
-        if b == 0x80:  # -128: no-op
-            continue
-        if b < 0x80:  # 0..127: copy next b+1 bytes literally
-            count = b + 1
-            out.extend(seg[i:i + count])
-            i += count
-        else:  # 129..255: replicate next byte (1 - signed b) times
-            count = 257 - b
-            if i < n:
-                out.extend(bytes([seg[i]]) * count)
-                i += 1
-    return bytes(out)
+    """PackBits decode. See ``_dicomrle_codec.packbits_decode_dicom``.
+
+    Was a third hand-written copy of the same loop, differing from the
+    RLE codec's on truncated input. There is one DICOM implementation
+    now; the strict TIFF one still exists and still should, because
+    what is a pad byte here is corruption there.
+    """
+    from ._dicomrle_codec import packbits_decode_dicom
+
+    return packbits_decode_dicom(seg, expected_size)
 
 
 class DicomwebClient:

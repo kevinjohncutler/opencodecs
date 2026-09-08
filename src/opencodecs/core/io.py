@@ -354,6 +354,55 @@ class _ClampedDataSource(DataSource):
         self._inner.close()
 
 
+_READER_POOLS: dict[str, "ThreadPoolExecutor"] = {}
+_READER_POOLS_LOCK = threading.Lock()
+
+
+def get_reader_pool(name: str, max_workers: int | None = None):
+    """A process-wide thread pool per reader family, created on demand.
+
+    Readers that fan out chunk reads want a pool that outlives any one
+    file, so it is a lazy singleton -- and a lazy singleton needs the
+    double-checked lock, or two threads racing the first call each
+    build one, one gets leaked, and the work splits across two pools
+    with twice the threads. CZI's copy of this was missing the lock.
+    """
+    pool = _READER_POOLS.get(name)
+    if pool is None:
+        with _READER_POOLS_LOCK:
+            pool = _READER_POOLS.get(name)
+            if pool is None:
+                from concurrent.futures import ThreadPoolExecutor
+                if max_workers is None:
+                    max_workers = max(2 * (os.cpu_count() or 4), 8)
+                pool = ThreadPoolExecutor(
+                    max_workers=max_workers,
+                    thread_name_prefix=f"opencodecs-{name}",
+                )
+                _READER_POOLS[name] = pool
+    return pool
+
+
+def normalize_source(src: Any):
+    """Return something every native parser here can open.
+
+    Paths and DataSources pass through untouched; anything else becomes
+    a DataSource. Readers call this once at entry, which does two
+    things: their native parser stops needing a temp file to turn bytes
+    into a path, and a source is consumed exactly once -- LIF used to
+    hand the caller's stream to its native parser and then again to its
+    fallback, where the second read started at EOF and returned
+    nothing.
+
+    Delegate libraries that only open paths (readlif, oiffile, nd2,
+    czifile) still need a file; spill lazily, and only on that branch.
+    """
+    if isinstance(src, (str, os.PathLike, DataSource)):
+        return src
+    ds, _owns, _size = coerce_data_source(src)
+    return ds
+
+
 def coalesce_ranges(
     ranges: Sequence[Range],
     *,
@@ -534,6 +583,8 @@ __all__ = [
     "BufferDataSource",
     "CallableDataSource",
     "DataSource",
+    "get_reader_pool",
+    "normalize_source",
     "Range",
     "coalesce_ranges",
     "coerce_data_source",
