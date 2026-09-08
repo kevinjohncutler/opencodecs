@@ -128,11 +128,24 @@ cdef OPJ_BOOL _seek_write_cb(OPJ_OFF_T p_nb_bytes, void* p_user_data) noexcept n
 # ----- Public API -----
 
 
-def decode(data, *, numthreads: int | None = None, out=None) -> np.ndarray:
+def decode(data, *, numthreads: int | None = None, reduce: int = 0,
+           out=None) -> np.ndarray:
     """Decode JPEG-2000 (JP2 or J2K codestream) bytes to a numpy array.
 
     Parameters
     ----------
+    reduce : int, optional
+        Skip this many of the finest wavelet resolutions, returning an
+        image roughly ``2**reduce`` times smaller on each axis. This is
+        not a resize of the decoded image: the discarded subbands are
+        never entropy-decoded, so the work drops with the pixel count.
+        It is the reason JPEG 2000 is used for large imagery, and it is
+        what :class:`opencodecs.Jpeg2kPyramidReader` is built on.
+
+        ``0`` (the default) decodes at full resolution. A value larger
+        than the codestream's decomposition count raises Jpeg2kError
+        rather than silently returning full resolution; use
+        :func:`decode_info` to discover the usable range.
     numthreads : int, optional
         Worker threads for OpenJPEG's parallel decoder. ``None``
         defaults to ``opj_get_num_cpus() / 2`` (matches imagecodecs).
@@ -156,6 +169,9 @@ def decode(data, *, numthreads: int | None = None, out=None) -> np.ndarray:
         int codec_format
         int _opj_n
         cnp.ndarray result
+
+    if reduce < 0:
+        raise ValueError(f'reduce must be >= 0, got {reduce}')
 
     if isinstance(data, (bytes, bytearray)):
         src = data
@@ -192,6 +208,11 @@ def decode(data, *, numthreads: int | None = None, out=None) -> np.ndarray:
         if codec == NULL:
             raise Jpeg2kError('opj_create_decompress failed')
         opj_set_default_decoder_parameters(&dparams)
+        # cp_reduce has to be in place before setup_decoder: openjpeg
+        # uses it while parsing the tile headers to decide which
+        # subbands to skip, so setting it afterwards would decode
+        # everything and then throw the fine detail away.
+        dparams.cp_reduce = <OPJ_UINT32> reduce
         if not opj_setup_decoder(codec, &dparams):
             raise Jpeg2kError('opj_setup_decoder failed')
 
@@ -212,11 +233,110 @@ def decode(data, *, numthreads: int | None = None, out=None) -> np.ndarray:
 
         ok = opj_decode(codec, stream, image)
         if not ok:
+            if reduce:
+                raise Jpeg2kError(
+                    f'opj_decode failed at reduce={reduce}; the '
+                    f'codestream may have fewer decomposition levels '
+                    f'than that (decode_info reports the usable range)')
             raise Jpeg2kError('opj_decode failed')
         opj_end_decompress(codec, stream)
 
         result = _image_to_ndarray(image, out)
         return result
+    finally:
+        if image != NULL:
+            opj_image_destroy(image)
+        if codec != NULL:
+            opj_destroy_codec(codec)
+        opj_stream_destroy(stream)
+
+
+def decode_info(data, *, reduce: int = 0) -> dict:
+    """Report an image's shape at a given reduction without decoding it.
+
+    Reads the codestream headers only, which for JPEG 2000 is enough to
+    know the reduced geometry: ``cp_reduce`` is applied while the
+    headers are parsed, so openjpeg reports the dimensions the decode
+    would produce. That makes enumerating a pyramid's levels cheap --
+    no entropy decoding happens here.
+
+    Returns a dict with ``shape``, ``dtype``, ``numcomps`` and
+    ``precision``. Raises :class:`Jpeg2kError` when ``reduce`` exceeds
+    what the codestream carries.
+    """
+    cdef:
+        const uint8_t[::1] src
+        OPJ_SIZE_T srcsize
+        opj_codec_t* codec = NULL
+        opj_image_t* image = NULL
+        opj_stream_t* stream = NULL
+        opj_dparameters_t dparams
+        mem_buffer_read rdbuf
+        int codec_format
+        OPJ_UINT32 w, h, prec, numcomps
+
+    if reduce < 0:
+        raise ValueError(f'reduce must be >= 0, got {reduce}')
+
+    if isinstance(data, (bytes, bytearray)):
+        src = data
+    else:
+        src = bytes(data)
+    srcsize = <OPJ_SIZE_T> src.shape[0]
+    if srcsize < 12:
+        raise Jpeg2kError('input too short')
+
+    if (
+        src[0] == 0xFF and src[1] == 0x4F and
+        src[2] == 0xFF and src[3] == 0x51
+    ):
+        codec_format = OPJ_CODEC_J2K
+    else:
+        codec_format = OPJ_CODEC_JP2
+
+    rdbuf.data = &src[0]
+    rdbuf.size = srcsize
+    rdbuf.offset = 0
+
+    stream = opj_stream_default_create(1)
+    if stream == NULL:
+        raise Jpeg2kError('opj_stream_default_create failed')
+    try:
+        opj_stream_set_user_data(stream, &rdbuf, NULL)
+        opj_stream_set_user_data_length(stream, <OPJ_UINT32> srcsize)
+        opj_stream_set_read_function(stream, _read_cb)
+        opj_stream_set_skip_function(stream, _skip_read_cb)
+        opj_stream_set_seek_function(stream, _seek_read_cb)
+
+        codec = opj_create_decompress(<CODEC_FORMAT> codec_format)
+        if codec == NULL:
+            raise Jpeg2kError('opj_create_decompress failed')
+        opj_set_default_decoder_parameters(&dparams)
+        dparams.cp_reduce = <OPJ_UINT32> reduce
+        if not opj_setup_decoder(codec, &dparams):
+            raise Jpeg2kError('opj_setup_decoder failed')
+
+        if not opj_read_header(stream, codec, &image) or image == NULL:
+            raise Jpeg2kError(
+                f'opj_read_header failed at reduce={reduce}')
+        if image.numcomps == 0:
+            raise Jpeg2kError('image has 0 components')
+
+        numcomps = image.numcomps
+        w = image.comps[0].w
+        h = image.comps[0].h
+        prec = image.comps[0].prec
+        if w == 0 or h == 0:
+            raise Jpeg2kError(
+                f'reduce={reduce} leaves a zero-sized image')
+
+        return {
+            'shape': (int(h), int(w)) if numcomps == 1
+                     else (int(h), int(w), int(numcomps)),
+            'dtype': np.uint8 if prec <= 8 else np.uint16,
+            'numcomps': int(numcomps),
+            'precision': int(prec),
+        }
     finally:
         if image != NULL:
             opj_image_destroy(image)

@@ -275,16 +275,22 @@ int opencodecs_htj2k_encode(
 int opencodecs_htj2k_decode_info(
     const void* src,
     size_t srcsize,
+    int reduce,
     int* width,
     int* height,
     int* components,
     int* bit_depth,
-    int* is_signed_out
+    int* is_signed_out,
+    int* num_decompositions
 ) {
     install_warning_collector();
     if (!src || srcsize == 0 || !width || !height || !components ||
         !bit_depth || !is_signed_out) {
         set_error("null arg");
+        return 1;
+    }
+    if (reduce < 0) {
+        set_error("reduce must be >= 0");
         return 1;
     }
     try {
@@ -293,13 +299,39 @@ int opencodecs_htj2k_decode_info(
         mf.open(reinterpret_cast<const ojph::ui8*>(src), srcsize);
         cs.read_headers(&mf);
 
+        const int ndecomp =
+            static_cast<int>(cs.access_cod().get_num_decompositions());
+        if (num_decompositions) {
+            *num_decompositions = ndecomp;
+        }
+        if (reduce > ndecomp) {
+            set_error("reduce exceeds the codestream's decomposition count");
+            return 4;
+        }
+
         ojph::param_siz siz = cs.access_siz();
-        ojph::point ext = siz.get_image_extent();
-        *width = static_cast<int>(ext.x);
-        *height = static_cast<int>(ext.y);
         *components = static_cast<int>(siz.get_num_components());
         *bit_depth = static_cast<int>(siz.get_bit_depth(0));
         *is_signed_out = siz.is_signed(0) ? 1 : 0;
+
+        if (reduce == 0) {
+            ojph::point ext = siz.get_image_extent();
+            *width = static_cast<int>(ext.x);
+            *height = static_cast<int>(ext.y);
+        } else {
+            // get_recon_* only reports the reduced geometry once the
+            // restriction is in place, so ask for it the same way the
+            // decode will: restrict, then read back component 0.
+            cs.restrict_input_resolution(
+                static_cast<ojph::ui32>(reduce),
+                static_cast<ojph::ui32>(reduce));
+            *width = static_cast<int>(siz.get_recon_width(0));
+            *height = static_cast<int>(siz.get_recon_height(0));
+        }
+        if (*width <= 0 || *height <= 0) {
+            set_error("reduce leaves a zero-sized image");
+            return 4;
+        }
         cs.close();
         return 0;
     } catch (const std::exception& e) {
@@ -316,7 +348,8 @@ int opencodecs_htj2k_decode(
     size_t srcsize,
     void* dst,
     size_t dst_size,
-    int bytes_per_sample
+    int bytes_per_sample,
+    int reduce
 ) {
     install_warning_collector();
     if (!src || srcsize == 0 || !dst) {
@@ -327,16 +360,37 @@ int opencodecs_htj2k_decode(
         set_error("invalid bytes_per_sample");
         return 2;
     }
+    if (reduce < 0) {
+        set_error("reduce must be >= 0");
+        return 2;
+    }
     try {
         ojph::codestream cs;
         ojph::mem_infile mf;
         mf.open(reinterpret_cast<const ojph::ui8*>(src), srcsize);
         cs.read_headers(&mf);
 
+        if (reduce > static_cast<int>(
+                cs.access_cod().get_num_decompositions())) {
+            set_error("reduce exceeds the codestream's decomposition count");
+            return 6;
+        }
+        // Must land between read_headers() and create(): OpenJPH uses it
+        // to decide which subbands to read at all, so the finest
+        // resolutions are never entropy-decoded rather than decoded and
+        // discarded. Both arguments are equal because we want the
+        // output image itself smaller, not just less data read.
+        if (reduce > 0) {
+            cs.restrict_input_resolution(
+                static_cast<ojph::ui32>(reduce),
+                static_cast<ojph::ui32>(reduce));
+        }
+
         ojph::param_siz siz = cs.access_siz();
-        ojph::point ext = siz.get_image_extent();
-        const ojph::ui32 W = ext.x;
-        const ojph::ui32 H = ext.y;
+        const ojph::ui32 W = reduce > 0 ? siz.get_recon_width(0)
+                                        : siz.get_image_extent().x;
+        const ojph::ui32 H = reduce > 0 ? siz.get_recon_height(0)
+                                        : siz.get_image_extent().y;
         const int comps = static_cast<int>(siz.get_num_components());
         const int bd = static_cast<int>(siz.get_bit_depth(0));
         const bool sg = siz.is_signed(0);

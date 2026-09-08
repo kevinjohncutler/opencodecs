@@ -22,11 +22,13 @@ cdef extern from "openjph_shim.h" nogil:
     int opencodecs_htj2k_decode_info(
         const void* src,
         size_t srcsize,
+        int reduce,
         int* width,
         int* height,
         int* components,
         int* bit_depth,
         int* is_signed,
+        int* num_decompositions,
     )
 
     int opencodecs_htj2k_decode(
@@ -35,6 +37,7 @@ cdef extern from "openjph_shim.h" nogil:
         void* dst,
         size_t dst_size,
         int bytes_per_sample,
+        int reduce,
     )
 
     void opencodecs_htj2k_free(void* buf)

@@ -59,26 +59,44 @@ int opencodecs_htj2k_encode(
     size_t* out_size
 );
 
-/* Reads the SIZ marker only; doesn't allocate or decode. */
+/* Reads the headers only; doesn't allocate or decode.
+ *
+ * `reduce` is the number of finest resolutions to skip, matching
+ * opencodecs_htj2k_decode. The reported width/height are the
+ * reconstructed extent at that reduction, so a caller can enumerate a
+ * pyramid's level shapes without decoding any of them.
+ *
+ * `num_decompositions` receives the codestream's DWT decomposition
+ * count, which is the largest useful `reduce`. May be NULL. */
 int opencodecs_htj2k_decode_info(
     const void* src,
     size_t srcsize,
+    int reduce,
     int* width,
     int* height,
     int* components,
     int* bit_depth,
-    int* is_signed
+    int* is_signed,
+    int* num_decompositions
 );
 
 /* Decodes into a caller-allocated planar buffer of total
  * width * height * components * bytes_per_sample bytes (component
- * planes back-to-back). */
+ * planes back-to-back), where width/height are the RECONSTRUCTED
+ * extent at `reduce` -- query opencodecs_htj2k_decode_info with the
+ * same `reduce` to size the buffer.
+ *
+ * `reduce` skips that many of the finest resolutions: the subbands are
+ * neither read nor reconstructed, so the cost falls with the output
+ * size rather than this being a downscale of a full decode. 0 decodes
+ * at full resolution. */
 int opencodecs_htj2k_decode(
     const void* src,
     size_t srcsize,
     void* dst,
     size_t dst_size,
-    int bytes_per_sample
+    int bytes_per_sample,
+    int reduce
 );
 
 void opencodecs_htj2k_free(void* buf);

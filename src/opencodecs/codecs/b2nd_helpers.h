@@ -91,7 +91,33 @@ int oc_b2nd_decode(
     const void* cframe,
     int64_t cframe_len,
     void* dest_buffer,
-    int64_t dest_buffer_size
+    int64_t dest_buffer_size,
+    int nthreads
+);
+
+/* Decode one n-dimensional slice, touching only the chunks it covers.
+ *
+ * This is the capability b2nd exists for: the cframe is a grid of
+ * independently compressed chunks, so reading a sub-box decompresses
+ * the chunks that intersect it and leaves the rest packed. Reading a
+ * corner of a large array costs a fraction of decoding all of it.
+ *
+ *   start, stop  - half-open box, length ndim, in elements
+ *   dest_buffer  - receives product(stop - start) * itemsize bytes,
+ *                  C-contiguous in the slice's own shape
+ *   nthreads     - 0 or 1 for the library default; higher spreads the
+ *                  covered chunks across threads
+ *
+ * Returns 0 on success, negative blosc2 error code on failure.
+ */
+int oc_b2nd_decode_slice(
+    const void* cframe,
+    int64_t cframe_len,
+    const int64_t* start,
+    const int64_t* stop,
+    void* dest_buffer,
+    int64_t dest_buffer_size,
+    int nthreads
 );
 
 #ifdef __cplusplus

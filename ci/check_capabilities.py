@@ -57,9 +57,20 @@ def _load():
         return tomllib.load(fh).get("codec", [])
 
 
-def _grep(pattern: str) -> set[str]:
-    r = subprocess.run(["git", "grep", "-l", pattern, "--", "src/opencodecs"],
-                       cwd=ROOT, capture_output=True, text=True)
+def _grep(pattern: str, extended: bool = False) -> set[str]:
+    """Files matching `pattern`. Only tracked ones -- git grep's rule.
+
+    That is a trap worth naming: a new module is invisible here until
+    it is added, so a capability can look unbuilt purely because the
+    file implementing it is untracked. `verify` catching that is a
+    feature (nothing ships untracked), but the reason for a surprising
+    `false` is worth knowing.
+    """
+    cmd = ["git", "grep", "-l"]
+    if extended:
+        cmd.append("-E")
+    cmd += [pattern, "--", "src/opencodecs"]
+    r = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True)
     return set(r.stdout.split())
 
 
@@ -75,7 +86,17 @@ def derive() -> dict[str, dict]:
     # without ever spelling the call itself, and the narrower pattern
     # recorded that as a `false`.
     range_capable = _grep("open_read_at\\|read_at(\\|read_at=\\|read_many(")
-    pyramid_files = _grep("PyramidReader")
+    # A file counts as a pyramid backend when it DEFINES or RE-EXPORTS
+    # one, not when it mentions the name. _jpeg2k.pyx refers to
+    # Jpeg2kPyramidReader in a docstring to point callers at it, and
+    # the bare-substring pattern credited the codec for that sentence
+    # -- the same false positive that had jxl claiming range-backed
+    # HTTP because a docstring named HTTPDataSource while denying it.
+    pyramid_files = _grep(
+        r"class [A-Za-z0-9_]+PyramidReader"      # defines one
+        r"|PyramidReader\)"                      # subclasses the ABC
+        r"|^from .*import.*PyramidReader",       # re-exports one
+        extended=True)
 
     # `http` is meant to say "fetches only the bytes it needs", not
     # merely "accepts a URL". jxl.py names HTTPDataSource only in a

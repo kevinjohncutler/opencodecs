@@ -35,7 +35,7 @@ cimport numpy as cnp
 from mozjpeg cimport (
     tjhandle, tjInitCompress, tjInitDecompress, tjDestroy,
     tjGetErrorStr2, tjCompress2, tjDecompressHeader3, tjDecompress2,
-    tjFree,
+    tjFree, tjscalingfactor, tjGetScalingFactors,
     TJPF_GRAY, TJPF_RGB,
     TJSAMP_GRAY, TJSAMP_444, TJSAMP_422, TJSAMP_420, TJSAMP_440, TJSAMP_411,
 )
@@ -159,12 +159,80 @@ def encode(data, *, level: int | None = None,
         tjDestroy(handle)
 
 
-def decode(data, *, out=None) -> np.ndarray:
+def supported_scaling_factors() -> list[tuple[int, int]]:
+    """MozJPEG's allowed decode-time scaling factors, ``(num, denom)``.
+
+    Pass any of these to ``decode(scale=...)``. The ratios come from
+    the library rather than a hardcoded list, because MozJPEG tracks
+    libjpeg-turbo's set and it has changed across versions.
+    """
+    cdef int n = 0
+    cdef tjscalingfactor* arr = tjGetScalingFactors(&n)
+    if arr == NULL or n <= 0:
+        return []
+    return [(int(arr[i].num), int(arr[i].denom)) for i in range(n)]
+
+
+def _resolve_scale(scale, scale_num, scale_denom):
+    """Coerce a caller's scale into a supported ``(num, denom)``.
+
+    Deliberately the same surface as ``_jpeg._resolve_scale``: an int N
+    means 1/N, a float snaps to the nearest supported ratio, a tuple is
+    explicit. Two JPEG codecs that take the same argument differently
+    would be a trap, and mozjpeg is a drop-in for jpeg at decode.
+    """
+    if scale is None:
+        if scale_num is None and scale_denom is None:
+            return (1, 1)
+        if scale_num is None:
+            scale_num = 1
+        if scale_denom is None:
+            scale_denom = 1
+        return (int(scale_num), int(scale_denom))
+
+    if isinstance(scale, (tuple, list)):
+        if len(scale) != 2:
+            raise ValueError(
+                f"mozjpeg decode: scale tuple must be (num, denom); "
+                f"got {scale!r}")
+        return (int(scale[0]), int(scale[1]))
+
+    if isinstance(scale, int) and not isinstance(scale, bool):
+        if scale < 1:
+            raise ValueError(
+                f"mozjpeg decode: scale int must be >= 1 (means '1/N'); "
+                f"got {scale!r}")
+        return (1, int(scale))
+
+    f = float(scale)
+    if f <= 0:
+        raise ValueError(f"mozjpeg decode: scale must be > 0; got {scale!r}")
+    factors = supported_scaling_factors()
+    if not factors:
+        return (1, 1)
+    return min(factors, key=lambda nd: abs(nd[0] / nd[1] - f))
+
+
+def decode(data, *, out=None, scale=None,
+           scale_num=None, scale_denom=None) -> np.ndarray:
     """Decode JPEG bytes into a uint8 array.
 
     Decode is standard JPEG — the output is identical regardless of
     which library encoded the input. We expose this for symmetry with
     the rest of the codec module surface.
+
+    Parameters
+    ----------
+    scale : int | float | tuple, optional
+        Decode at a fraction of the stored size using the DCT-domain
+        shortcut: the decoder runs a smaller inverse DCT and never
+        reconstructs the high-frequency detail, so a 1/8 decode costs a
+        fraction of a full one rather than being a resize of it.
+        ``8`` means 1/8; a float snaps to the nearest supported ratio;
+        a ``(num, denom)`` tuple is explicit.
+        :func:`supported_scaling_factors` lists what is allowed.
+    scale_num, scale_denom : int, optional
+        The ratio spelled out, as an alternative to ``scale``.
     """
     cdef:
         const uint8_t[::1] src
@@ -172,12 +240,21 @@ def decode(data, *, out=None) -> np.ndarray:
         tjhandle handle = NULL
         int rc
         int width, height, subsamp, colorspace
+        int full_width, full_height
+        int s_num, s_den
         int pf
         int channels
         cnp.ndarray out_arr
         cnp.npy_intp shape[3]
         int ndim
         tuple expected_shape
+
+    s_num, s_den = _resolve_scale(scale, scale_num, scale_denom)
+    if (s_num, s_den) != (1, 1):
+        if (s_num, s_den) not in supported_scaling_factors():
+            raise ValueError(
+                f"mozjpeg decode: scaling factor {s_num}/{s_den} is not "
+                f"supported; available: {supported_scaling_factors()}")
 
     if isinstance(data, (bytes, bytearray)):
         src = data
@@ -192,11 +269,19 @@ def decode(data, *, out=None) -> np.ndarray:
         raise MozJpegError('tjInitDecompress failed')
     try:
         rc = tjDecompressHeader3(
-            handle, &src[0], srcsize, &width, &height, &subsamp, &colorspace,
+            handle, &src[0], srcsize,
+            &full_width, &full_height, &subsamp, &colorspace,
         )
         if rc < 0:
             err = tjGetErrorStr2(handle).decode('ascii', errors='replace')
             raise MozJpegError(f'tjDecompressHeader3: {err}')
+
+        # TurboJPEG v2 has no SetScalingFactor: tjDecompress2 picks the
+        # scaling factor from the destination size it is given, so the
+        # scaled extent has to be computed here. TJSCALED(d, f) is
+        # (d * num + denom - 1) // denom.
+        width = (full_width * s_num + s_den - 1) // s_den
+        height = (full_height * s_num + s_den - 1) // s_den
 
         if subsamp == TJSAMP_GRAY:
             pf = TJPF_GRAY

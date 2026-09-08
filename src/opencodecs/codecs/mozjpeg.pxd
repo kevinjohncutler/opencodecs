@@ -38,6 +38,16 @@ cdef extern from 'turbojpeg.h' nogil:
         TJFLAG_ACCURATEDCT = 4096
         TJFLAG_PROGRESSIVE = 16384
 
+    # Decode-time DCT scaling. The v2 API has no SetScalingFactor:
+    # tjDecompress2 infers the factor from the destination dimensions
+    # it is handed, so the caller computes them with TJSCALED and the
+    # decompressor skips the high-frequency IDCT work accordingly.
+    ctypedef struct tjscalingfactor:
+        int num
+        int denom
+
+    tjscalingfactor* tjGetScalingFactors(int* numscalingfactors)
+
     ctypedef void* tjhandle
 
     tjhandle tjInitCompress()

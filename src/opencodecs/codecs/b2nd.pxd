@@ -34,9 +34,20 @@ cdef extern from "b2nd_helpers.h" nogil:
 
     void oc_b2nd_release(void* handle)
 
+    int oc_b2nd_decode_slice(
+        const void* cframe,
+        int64_t cframe_len,
+        const int64_t* start,
+        const int64_t* stop,
+        void* dest_buffer,
+        int64_t dest_buffer_size,
+        int nthreads,
+    )
+
     int oc_b2nd_decode(
         const void* cframe,
         int64_t cframe_len,
         void* dest_buffer,
         int64_t dest_buffer_size,
+        int nthreads,
     )

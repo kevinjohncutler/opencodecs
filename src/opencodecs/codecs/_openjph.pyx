@@ -215,14 +215,24 @@ def encode(
         opencodecs_htj2k_free(out_buf)
 
 
-def decode_info(data) -> dict:
-    """Read HTJ2K SIZ marker without decoding any samples."""
+def decode_info(data, *, int reduce=0) -> dict:
+    """Read the HTJ2K headers without decoding any samples.
+
+    ``reduce`` reports the geometry a decode at that reduction would
+    produce, so a pyramid's level shapes cost only a header parse.
+    ``num_decompositions`` in the result is the largest ``reduce`` the
+    codestream supports.
+    """
     cdef:
         const uint8_t[::1] src
         size_t srcsize
         int width = 0, height = 0, components = 0
         int bit_depth = 0, is_signed_out = 0
+        int ndecomp = 0
         int rc
+
+    if reduce < 0:
+        raise ValueError(f"reduce must be >= 0, got {reduce}")
 
     opencodecs_htj2k_clear_warnings()
 
@@ -233,8 +243,9 @@ def decode_info(data) -> dict:
     srcsize = <size_t> src.shape[0]
 
     rc = opencodecs_htj2k_decode_info(
-        <const void*> &src[0], srcsize,
+        <const void*> &src[0], srcsize, reduce,
         &width, &height, &components, &bit_depth, &is_signed_out,
+        &ndecomp,
     )
     if rc != 0:
         _raise(rc, "decode_info")
@@ -244,21 +255,34 @@ def decode_info(data) -> dict:
         "components": components,
         "bit_depth": bit_depth,
         "signed": bool(is_signed_out),
+        "num_decompositions": ndecomp,
     }
 
 
-def decode(data, *, bint ignore_unsupported=False) -> np.ndarray:
+def decode(data, *, bint ignore_unsupported=False,
+           int reduce=0) -> np.ndarray:
     """Decode an HTJ2K codestream to an ndarray.
 
     Raises :class:`OpenJphUnsupportedFeature` when OpenJPH reports that
     it skipped a marker segment it does not implement; pass
     ``ignore_unsupported=True`` to accept the image regardless.
+
+    Parameters
+    ----------
+    reduce : int, optional
+        Skip this many of the finest wavelet resolutions, returning an
+        image about ``2**reduce`` times smaller on each axis. OpenJPH
+        never reads those subbands, so this costs proportionally less
+        than a full decode rather than being a downscale of one. Raises
+        when it exceeds the codestream's decomposition count, which
+        :func:`decode_info` reports as ``num_decompositions``.
     """
     cdef:
         const uint8_t[::1] src
         size_t srcsize
         int width = 0, height = 0, components = 0
         int bit_depth = 0, is_signed_out = 0
+        int ndecomp = 0
         int bytes_per_sample, rc
         cnp.ndarray planar
         cnp.npy_intp shape[3]
@@ -272,9 +296,15 @@ def decode(data, *, bint ignore_unsupported=False) -> np.ndarray:
         src = bytes(data)
     srcsize = <size_t> src.shape[0]
 
+    if reduce < 0:
+        raise ValueError(f"reduce must be >= 0, got {reduce}")
+
+    # Sized at the SAME reduction the decode will use, so the buffer
+    # matches the reconstructed extent rather than the full image.
     rc = opencodecs_htj2k_decode_info(
-        <const void*> &src[0], srcsize,
+        <const void*> &src[0], srcsize, reduce,
         &width, &height, &components, &bit_depth, &is_signed_out,
+        &ndecomp,
     )
     if rc != 0:
         _raise(rc, "decode_info")
@@ -307,6 +337,7 @@ def decode(data, *, bint ignore_unsupported=False) -> np.ndarray:
         <void*> cnp.PyArray_DATA(planar),
         <size_t> planar.nbytes,
         bytes_per_sample,
+        reduce,
     )
     if rc != 0:
         _raise(rc, "decode")

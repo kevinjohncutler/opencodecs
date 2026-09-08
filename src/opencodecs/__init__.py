@@ -15,6 +15,7 @@ magic bytes when it's bytes/file-like. Override with format="png".
 from __future__ import annotations
 
 import os
+import pathlib
 from typing import Any
 
 from .core.codec import (
@@ -53,6 +54,9 @@ from ._tiff_writer import TiffWriter, imwrite as tiff_imwrite
 from ._omezarr import OmeZarrArray, OmeZarrPyramidDataset
 from ._n5 import N5Array, N5Error
 from ._imaris import ImarisReader, ImarisError
+from ._jpeg_pyramid import JpegPyramidReader, MozjpegPyramidReader
+from ._jpeg2k_pyramid import Jpeg2kPyramidReader
+from ._htj2k_pyramid import Htj2kPyramidReader
 from ._dicom import DicomFile, DicomError
 from ._dicom_codec import DicomCodec
 from ._nrrd import NrrdFile, NrrdError
@@ -162,6 +166,17 @@ def open_pyramid(
     * Zarr (.zarr/ome.zarr) → :class:`OmeZarrPyramidDataset`
     * CZI (.czi) → :class:`CziPyramidReader`
     * NDTiff directory → :class:`NDTiffPyramidReader` (when available)
+    * Imaris (.ims) → :class:`ImarisReader`
+    * JPEG 2000 (.jp2/.j2k/.jpx/.jpc) → :class:`Jpeg2kPyramidReader`
+    * HTJ2K (.jph/.j2c) → :class:`Htj2kPyramidReader`
+    * JPEG (.jpg/.jpeg) → :class:`JpegPyramidReader`
+
+    The last three are a different kind of pyramid: those formats store
+    one image and decode a smaller one out of it, rather than storing
+    several resolutions. So they need no pyramid on disk, but they also
+    cannot fetch only the tiles a region covers -- the saving is
+    resolution, not bytes read. See :mod:`opencodecs._scaled_pyramid`
+    for what each one actually costs.
 
     Examples
     --------
@@ -196,6 +211,12 @@ def open_pyramid(
             fmt = "czi"
         elif path_lower.endswith(".ims"):
             fmt = "imaris"
+        elif path_lower.endswith((".jp2", ".j2k", ".jpx", ".jpc")):
+            fmt = "jpeg2k"
+        elif path_lower.endswith((".jph", ".j2c")):
+            fmt = "htj2k"
+        elif path_lower.endswith((".jpg", ".jpeg")):
+            fmt = "jpeg"
     if fmt in ("tiff", "tif", "btf", "bigtiff", "cog", "ome-tiff"):
         if is_url:
             # Build an HTTPDataSource and feed it through read_at.
@@ -208,10 +229,45 @@ def open_pyramid(
         return CziPyramidReader(src, **opts)
     if fmt in ("imaris", "ims"):
         return ImarisReader(src, **opts)
+    # Single-codestream pyramids. These formats store one image and
+    # decode a smaller one out of it, so the reader is handed bytes
+    # rather than a seekable source -- there is nothing to seek to.
+    if fmt in ("jpeg2k", "jp2", "j2k", "jpx", "jpc"):
+        return Jpeg2kPyramidReader(_pyramid_bytes(src), **opts)
+    if fmt in ("htj2k", "jph", "j2c"):
+        return Htj2kPyramidReader(_pyramid_bytes(src), **opts)
+    if fmt in ("jpeg", "jpg"):
+        return JpegPyramidReader(_pyramid_bytes(src), **opts)
+    if fmt == "mozjpeg":
+        return MozjpegPyramidReader(_pyramid_bytes(src), **opts)
     raise ValueError(
-        f"open_pyramid: cannot determine format for src={src!r}; "
-        f"pass format='tiff'|'omezarr'|'czi'"
+        f"open_pyramid: cannot determine format for src={src!r}; pass "
+        f"format='tiff'|'omezarr'|'czi'|'imaris'|'jpeg'|'jpeg2k'|'htj2k'"
     )
+
+
+def _pyramid_bytes(src: Any) -> bytes:
+    """Read a whole-codestream source into bytes.
+
+    JPEG, JPEG 2000 and HTJ2K decoders here all want the complete
+    codestream, so an http(s) URL is fetched in full rather than by
+    range: pretending otherwise would put a `http` tick against formats
+    that cannot use it. The reduced-resolution decode still pays off,
+    because the saving is CPU and memory rather than bytes moved.
+    """
+    if isinstance(src, (bytes, bytearray, memoryview)):
+        return bytes(src)
+    if isinstance(src, str) and src.startswith(("http://", "https://")):
+        from ._tiff_http import http_fetch_all
+        return http_fetch_all(src)
+    if isinstance(src, (str, os.PathLike)):
+        # `open` is this module's own reader factory, so go through
+        # pathlib rather than shadowing our way into a bug.
+        return pathlib.Path(src).read_bytes()
+    if hasattr(src, "read"):
+        return src.read()
+    raise TypeError(
+        f"open_pyramid: cannot read a codestream from {type(src).__name__}")
 
 
 __all__ = [
@@ -246,6 +302,8 @@ __all__ = [
     "jxl_encode", "jxl_decode", "jxl_iter_frames", "jxl_open",
     "TiffWriter", "tiff_imwrite",
     "TiffPyramidReader",
+    "JpegPyramidReader", "MozjpegPyramidReader",
+    "Jpeg2kPyramidReader", "Htj2kPyramidReader",
     "HTTPDataSource", "FileDataSource",
     "OmeZarrArray", "OmeZarrPyramidDataset",
     "write_zarr_array", "write_omezarr_pyramid",

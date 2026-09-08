@@ -27,18 +27,22 @@ Sub-header at offset 64 (the "ETS\\0" block):
   @28     u32 nominal height (observed 260 for the test sample)
   @32     u32 depth or fourth axis
 
-The second chunk (near EOF) appears to be a pyramid/tile index
-with one record per pyramid level — each record holds a level
-offset + level data size. Verifying this requires either:
-  (a) cross-referencing a .ets with bioformats output (we don't
-      do because of license contamination concerns), or
-  (b) building decoding for individual tiles + checking against
-      the .vsi thumbnail.
+The second chunk (near EOF) is a table of data-block entries: a
+28-byte preamble followed by 44-byte records of
+``(offset, _, size, plane_index, tag)``.
 
-Current status: ``info(path)`` parses the header + sub-header and
-returns ``{geometry, level_count, level_index, magic_ok}``.
-Per-tile pixel decoding is a future native upgrade (single-session
-work given a frame-of-known-content sample).
+It was previously read as a pyramid level index, which it is not.
+In the OME corpus sample the table holds four entries, each naming
+a block of 260x216 uint16 planes -- one resolution throughout, the
+same resolution as the top-level ``.vsi`` page, 36 planes apart,
+144 planes in total. Whatever a pyramidal VSI looks like, this
+file is not one, and nothing here counts levels.
+
+Current status: ``parse_ets(path)`` returns geometry plus the
+record table. Per-tile pixel decoding, and pyramid support for the
+whole-slide VSI files that do carry one, both wait on a sample we
+can check against: writing either from this file alone would be
+guessing, and a plausible-looking wrong answer is worse than none.
 """
 
 from __future__ import annotations
@@ -56,6 +60,28 @@ from .core.io import DataSource, coerce_data_source
 _SIS_MAGIC = b"SIS\x00"
 _ETS_MAGIC = b"ETS\x00"
 
+# Trailing-table geometry, mapped from the OME corpus sample: a 28-byte
+# preamble, then fixed-size records. Both are only as good as the files
+# they were read from, which is why parse_ets stops at the first entry
+# pointing outside the file rather than trusting the stride.
+_ETS_TABLE_PREAMBLE = 28
+_ETS_TABLE_RECORD = 44
+
+
+@dataclass(frozen=True)
+class EtsRecord:
+    """One entry of the .ets trailing table.
+
+    Each entry points at a block of image data. ``plane_index`` is the
+    index of the first plane in that block, and consecutive entries are
+    a fixed number of planes apart -- so the table is sparse, naming
+    every Nth plane rather than every one.
+    """
+    offset: int          # absolute byte offset of the block
+    size: int            # bytes of ONE plane at that offset
+    plane_index: int     # index of the first plane in this block
+    tag: int             # constant across entries in observed files
+
 
 @dataclass
 class EtsInfo:
@@ -66,8 +92,19 @@ class EtsInfo:
     n_components: int
     sub_chunk_offsets: list[int]   # 3 entries, last may be 0
     sub_chunk_sizes: list[int]
-    level_count: int               # tile-pyramid level count
+    records: tuple                 # EtsRecord entries from the trailer
     magic_ok: bool
+
+    @property
+    def n_records(self) -> int:
+        return len(self.records)
+
+    @property
+    def plane_stride(self) -> int:
+        """Bytes between the blocks two consecutive records name."""
+        if len(self.records) < 2:
+            return 0
+        return self.records[1].offset - self.records[0].offset
 
 
 def parse_ets(src: Any) -> EtsInfo:
@@ -85,7 +122,7 @@ def parse_ets(src: Any) -> EtsInfo:
             return EtsInfo(
                 file_size=file_size, width=0, height=0,
                 n_components=0, sub_chunk_offsets=[],
-                sub_chunk_sizes=[], level_count=0, magic_ok=False,
+                sub_chunk_sizes=[], records=(), magic_ok=False,
             )
         ptr1 = struct.unpack_from("<Q", hdr, 16)[0]
         sz1  = struct.unpack_from("<Q", hdr, 24)[0]
@@ -104,10 +141,36 @@ def parse_ets(src: Any) -> EtsInfo:
                 width  = struct.unpack_from("<I", sub, 28)[0]
                 height = struct.unpack_from("<I", sub, 32)[0]
 
-        level_count = 0
-        if sz2 >= 4:
-            idx_head = ds.read_at(ptr2, min(sz2, 64))
-            level_count = struct.unpack_from("<I", idx_head, 0)[0]
+        # The trailing chunk is a table of data-block entries: a 28-byte
+        # preamble, then 44-byte records of
+        # (offset, _, size, plane_index, tag).
+        #
+        # This used to report the chunk's very first u32 as
+        # `level_count`, on the reading that the trailer was a pyramid
+        # level index. It is not. In the OME corpus sample that u32 is
+        # 6, which is the same constant that appears as `tag` in every
+        # record -- and the file it was describing has four entries, all
+        # naming blocks of identically sized 260x216 planes. There is no
+        # pyramid there to count. A test asserted the 6, which is what
+        # let the misreading stand: it pinned the number the parser
+        # produced rather than anything about the file.
+        records = []
+        if sz2 > _ETS_TABLE_PREAMBLE:
+            table = ds.read_at(ptr2, min(sz2, 1 << 16))
+            pos = _ETS_TABLE_PREAMBLE
+            while pos + 20 <= len(table):
+                off, _, size, plane_index, tag = struct.unpack_from(
+                    "<IIIII", table, pos)
+                # An entry has to point inside the file to be believed;
+                # a plausible-looking table read at the wrong stride
+                # would otherwise produce offsets that silently index
+                # past the end.
+                if off == 0 or off >= file_size or size == 0:
+                    break
+                records.append(EtsRecord(offset=int(off), size=int(size),
+                                         plane_index=int(plane_index),
+                                         tag=int(tag)))
+                pos += _ETS_TABLE_RECORD
 
         return EtsInfo(
             file_size=file_size,
@@ -116,7 +179,7 @@ def parse_ets(src: Any) -> EtsInfo:
             n_components=n_components,
             sub_chunk_offsets=[ptr1, ptr2, ptr3],
             sub_chunk_sizes=[sz1, sz2, sz3],
-            level_count=level_count,
+            records=tuple(records),
             magic_ok=True,
         )
     finally:

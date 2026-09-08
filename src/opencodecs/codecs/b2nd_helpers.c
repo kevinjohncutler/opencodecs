@@ -199,11 +199,29 @@ void oc_b2nd_release(void* handle) {
 }
 
 
+/* Point the loaded array's decompression context at n threads.
+ *
+ * b2nd_from_cframe rebuilds the schunk with the dparams the frame was
+ * written with, so the thread count has to be applied afterwards. Set
+ * on the schunk's own context rather than through
+ * blosc2_set_nthreads(), which is process-global and would change the
+ * setting for every other user in the process. */
+static void oc_b2nd_set_nthreads(b2nd_array_t* array, int nthreads) {
+    if (array == NULL || array->sc == NULL || nthreads < 1) return;
+    blosc2_free_ctx(array->sc->dctx);
+    blosc2_dparams dparams;
+    memcpy(&dparams, array->sc->storage->dparams, sizeof(blosc2_dparams));
+    dparams.nthreads = (int16_t)nthreads;
+    array->sc->storage->dparams->nthreads = (int16_t)nthreads;
+    array->sc->dctx = blosc2_create_dctx(dparams);
+}
+
 int oc_b2nd_decode(
     const void* cframe,
     int64_t cframe_len,
     void* dest_buffer,
-    int64_t dest_buffer_size
+    int64_t dest_buffer_size,
+    int nthreads
 ) {
     if (cframe == NULL || dest_buffer == NULL) return -1;
     oc_ensure_blosc2_init();
@@ -211,7 +229,44 @@ int oc_b2nd_decode(
     int rc = b2nd_from_cframe((uint8_t*)cframe, cframe_len, false, &array);
     if (rc != BLOSC2_ERROR_SUCCESS) return rc;
 
+    if (nthreads > 1) oc_b2nd_set_nthreads(array, nthreads);
     rc = b2nd_to_cbuffer(array, dest_buffer, dest_buffer_size);
+    b2nd_free(array);
+    return rc;
+}
+
+int oc_b2nd_decode_slice(
+    const void* cframe,
+    int64_t cframe_len,
+    const int64_t* start,
+    const int64_t* stop,
+    void* dest_buffer,
+    int64_t dest_buffer_size,
+    int nthreads
+) {
+    if (cframe == NULL || dest_buffer == NULL ||
+        start == NULL || stop == NULL) {
+        return -1;
+    }
+    oc_ensure_blosc2_init();
+    b2nd_array_t* array = NULL;
+    int rc = b2nd_from_cframe((uint8_t*)cframe, cframe_len, false, &array);
+    if (rc != BLOSC2_ERROR_SUCCESS) return rc;
+
+    /* The destination is contiguous in the slice's own shape, which is
+     * what b2nd_get_slice_cbuffer wants as `buffershape`. */
+    int64_t buffershape[OC_B2ND_MAX_DIM];
+    for (int8_t i = 0; i < array->ndim; ++i) {
+        if (start[i] < 0 || stop[i] > array->shape[i] || start[i] > stop[i]) {
+            b2nd_free(array);
+            return -1;
+        }
+        buffershape[i] = stop[i] - start[i];
+    }
+
+    if (nthreads > 1) oc_b2nd_set_nthreads(array, nthreads);
+    rc = b2nd_get_slice_cbuffer(array, start, stop, dest_buffer,
+                                buffershape, dest_buffer_size);
     b2nd_free(array);
     return rc;
 }

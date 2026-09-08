@@ -70,15 +70,14 @@ note = "libavif reads image sequences and progressive layers through avifDecoder
 [[codec]]
 name = "b2nd"
 multi_frame = false
-chunked = false
+chunked = true
 streaming_decode = false
-parallel_decode = false
+parallel_decode = true
 range_reads = false
 pyramid = false
 http = false
-feasible = "gap"
-gaps = ["chunked", "parallel_decode"]
-note = "b2nd is n-dimensional Blosc2, where a slice maps onto a set of chunks and blosc2_context carries an nthreads field. Both are upstream API we do not call, and both are the reason the format exists."
+feasible = "done"
+note = "both are built. decode_slice() pulls an n-dimensional sub-box, decompressing only the chunks it intersects: measured 8x cheaper for a 0.2% box of a 256x256x64 array. Threads are applied to the array's own context rather than the global setting."
 
 [[codec]]
 name = "bcn"
@@ -108,15 +107,14 @@ note = "a bit permutation inside a block the container already sized. Streaming 
 [[codec]]
 name = "blosc2"
 multi_frame = false
-chunked = false
+chunked = true
 streaming_decode = false
-parallel_decode = false
+parallel_decode = true
 range_reads = false
 pyramid = false
 http = false
-feasible = "gap"
-gaps = ["chunked", "parallel_decode"]
-note = "blosc2_getitem reads a range of items straight out of a compressed buffer without expanding the rest, and blosc2_context has an nthreads field. Blosc2 is already a chunked container; we call it as though it were a plain buffer codec."
+feasible = "done"
+note = "both are built. decode_partial() reads a range of items straight out of a compressed buffer, touching only the blocks it covers: 1/64th of a 64 MB chunk costs 64x less than expanding the whole thing. Threading goes through a decompression context, never the process-global blosc2_set_nthreads, and gives 5.9x on 64 MB -- but 0.42x on 1 MB, so it stays opt-in rather than automatic. Item width is read from the chunk header, not taken from the caller."
 
 [[codec]]
 name = "bmp"
@@ -378,11 +376,10 @@ chunked = false
 streaming_decode = false
 parallel_decode = false
 range_reads = false
-pyramid = false
+pyramid = true
 http = false
-feasible = "gap"
-gaps = ["pyramid"]
-note = "openjph's restrict_input_resolution(skipped_res_for_data, skipped_res_for_recon) decodes at a reduced resolution without touching the fine subbands, which is the cheap thumbnail HTJ2K exists for. openjph 0.27's public headers expose no threading API, so parallel decode is not ours to call."
+feasible = "done"
+note = "reduced-resolution decode is built through OpenJPH's restrict_input_resolution, applied between read_headers and create so the fine subbands are never read: a 256x256 overview of a 2048x2048 codestream takes 1.4 ms against 97 ms full, about 70x. Htj2kPyramidReader exposes the levels, and the codestream's own num_decompositions bounds them. Nothing further is available to call: openjph 0.27's public headers expose neither a threading API nor a per-tile decode."
 
 [[codec]]
 name = "jpeg"
@@ -391,11 +388,11 @@ chunked = false
 streaming_decode = false
 parallel_decode = false
 range_reads = false
-pyramid = false
+pyramid = true
 http = false
 feasible = "gap"
-gaps = ["streaming_decode", "pyramid"]
-note = "jpeg_read_scanlines decodes row by row, and scale_num/scale_denom give 1/2, 1/4 and 1/8 straight out of the IDCT, which is a real and very cheap pyramid. Restart markers would allow parallel strips, but libjpeg-turbo exposes no entry point for it."
+gaps = ["streaming_decode"]
+note = "DCT-scaled decode is built: scale=1/2, 1/4 and 1/8 come straight out of a smaller inverse DCT, and JpegPyramidReader exposes them as levels. Be clear about what that buys, though -- the Huffman pass still reads every coefficient, so a 1/8 decode measured 1.3x faster than full on noisy content and 2.0x on photo-like; the win is a 192 KB output instead of 12 MB, not fast JPEG. jpeg_read_scanlines would still add row-at-a-time streaming. Restart markers could drive parallel strips, but libjpeg-turbo exposes no entry point."
 
 [[codec]]
 name = "jpeg2k"
@@ -404,11 +401,11 @@ chunked = false
 streaming_decode = false
 parallel_decode = true
 range_reads = false
-pyramid = false
+pyramid = true
 http = false
 feasible = "gap"
-gaps = ["pyramid", "chunked"]
-note = "opj_set_decoded_resolution_factor decodes at 1/2, 1/4 and onward straight from the wavelet levels, and opj_get_decoded_tile fetches a single tile. Those two are most of why JPEG 2000 exists for large imagery. Threading is already wired: measured 6.6x from one core to eight."
+gaps = ["chunked"]
+note = "reduced-resolution decode is built and it is the real thing: cp_reduce skips the finest subbands before they are entropy-decoded, so a 256x256 overview of a 2048x2048 codestream takes 2.3 ms against 211 ms for a full decode -- about 90x. Jpeg2kPyramidReader exposes the levels and decode_info reports their shapes from headers alone. opj_get_decoded_tile would still give single-tile reads. Threading was already wired: measured 6.6x."
 
 [[codec]]
 name = "jpegls"
@@ -493,11 +490,11 @@ chunked = false
 streaming_decode = false
 parallel_decode = false
 range_reads = false
-pyramid = false
+pyramid = true
 http = false
 feasible = "gap"
-gaps = ["streaming_decode", "pyramid"]
-note = "the same decoder surface as jpeg: scanline decode and IDCT scaling at 1/2, 1/4 and 1/8 are both there and both unused. mozjpeg's differences from libjpeg-turbo are all on the encode side."
+gaps = ["streaming_decode"]
+note = "same DCT scaling as jpeg, reached through TurboJPEG v2, which infers the factor from the destination size instead of taking it directly; the outputs are byte-identical to the jpeg codec at every supported ratio, and a test pins that. Scanline streaming is still unbuilt."
 
 [[codec]]
 name = "mrc"
@@ -731,13 +728,12 @@ name = "tiff"
 multi_frame = true
 chunked = true
 streaming_decode = true
-parallel_decode = false
+parallel_decode = true
 range_reads = true
 pyramid = true
 http = true
-feasible = "gap"
-gaps = ["parallel_decode"]
-note = "tiles and strips are independent and their offsets are already in hand, so decoding them across threads is the one remaining win. Everything else the format offers -- streaming, tile random access, range reads, HTTP, multi-page, SubIFD pyramids -- is built."
+feasible = "done"
+note = "every capability the format offers is built. Tile and strip decode now spreads across threads -- measured on a 144-tile 3072x3072 image: lzw 3.9x, deflate 2.2x, zstd 1.2x -- with uncompressed segments deliberately left serial, because threading a reshape measured 3x SLOWER than not. Reads serialize under a lock since the path-based reader is one shared handle; the decode is the expensive half and the Cython codecs release the GIL for it."
 
 [[codec]]
 name = "vsi"
@@ -750,7 +746,7 @@ pyramid = false
 http = false
 feasible = "gap"
 gaps = ["pyramid", "range_reads", "http"]
-note = "VSI is an Olympus whole-slide format and stores a real resolution pyramid in its ETS files, which makes this the highest-value gap here: it is the format most likely to be opened over a network at one zoom level. The tile offsets the reader already uses would serve range requests directly."
+note = "the pyramid is feasible for whole-slide VSI in principle, but it is blocked on a sample to check against rather than on effort, and that distinction is the point of this entry. The one VSI in the corpus has no pyramid at all: its ETS trailer is a table of four entries naming blocks of identically sized 260x216 planes, 144 in total at one resolution, and the top-level .vsi page is that same size. The parser used to report level_count=6 from that trailer, which was a misreading of a constant repeated in every record -- a test asserted the 6, so it pinned the parser's own output rather than anything about the file. Both are fixed. Writing a pyramid reader from this file alone would be guessing. Range reads and HTTP are unblocked: the plane offsets are already parsed."
 
 [[codec]]
 name = "webp"

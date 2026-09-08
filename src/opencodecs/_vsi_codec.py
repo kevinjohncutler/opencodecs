@@ -147,7 +147,11 @@ class VsiCodec(Codec):
                         "width": info.width,
                         "height": info.height,
                         "n_components": info.n_components,
-                        "level_count": info.level_count,
+                        # Not a pyramid level count: see _ets.py.
+                        # These are data-block entries, all at one
+                        # resolution in every sample we have.
+                        "record_count": info.n_records,
+                        "plane_stride": info.plane_stride,
                         "magic_ok": info.magic_ok,
                     })
         out["ets_stacks"] = stacks

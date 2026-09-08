@@ -30,6 +30,7 @@ cimport numpy as cnp
 from b2nd cimport (
     OC_B2ND_MAX_DIM,
     oc_b2nd_encode, oc_b2nd_inspect, oc_b2nd_release, oc_b2nd_decode,
+    oc_b2nd_decode_slice,
 )
 
 
@@ -147,7 +148,7 @@ def encode(arr,
     return out
 
 
-def decode(data, *, out=None) -> np.ndarray:
+def decode(data, *, out=None, numthreads: int | None = None) -> np.ndarray:
     """Decode a b2nd cframe back to a fully-typed ndarray.
 
     ``out=`` is a preallocated ndarray; oc_b2nd_decode writes directly
@@ -213,13 +214,114 @@ def decode(data, *, out=None) -> np.ndarray:
         out_arr = np.empty(py_shape, dtype=dtype)
     cdef int64_t out_size = <int64_t> out_arr.nbytes
 
+    cdef int c_nthreads = 1 if numthreads is None else max(1, int(numthreads))
     with nogil:
         rc = oc_b2nd_decode(
             <const void*> &src[0], <int64_t> srclen,
-            <void*> out_arr.data, out_size,
+            <void*> out_arr.data, out_size, c_nthreads,
         )
     if rc != 0:
         raise B2ndError(f"oc_b2nd_decode failed: blosc2 error {rc}")
+    return out_arr
+
+
+def decode_slice(data, start, stop, *, numthreads: int | None = None,
+                 out=None) -> np.ndarray:
+    """Decode one n-dimensional sub-box, touching only the chunks it covers.
+
+    b2nd stores an array as a grid of independently compressed chunks,
+    so reading a sub-box decompresses the chunks that intersect it and
+    leaves the rest packed. That is the whole reason the format exists
+    over plain blosc2, and reading a corner of a large array costs a
+    fraction of decoding all of it.
+
+    ``start`` and ``stop`` are per-axis element coordinates of a
+    half-open box, each of length ``ndim``. The result is C-contiguous
+    with shape ``stop - start``.
+    """
+    cdef:
+        const uint8_t[::1] src
+        Py_ssize_t srclen
+        int8_t ndim = 0
+        int64_t shape[8]
+        int64_t c_start[8]
+        int64_t c_stop[8]
+        int32_t itemsize = 0
+        char* dtype_ptr = NULL
+        void* handle = NULL
+        int rc
+        int64_t out_size
+        cnp.ndarray out_arr
+
+    cdef int c_nthreads = 1 if numthreads is None else max(1, int(numthreads))
+
+    try:
+        src = data
+    except (TypeError, ValueError, BufferError):
+        src = bytes(data)
+    srclen = src.shape[0]
+    if srclen == 0:
+        raise B2ndError("b2nd decode_slice: empty input")
+
+    rc = oc_b2nd_inspect(
+        <const void*> &src[0], <int64_t> srclen,
+        &ndim, shape, &itemsize, &dtype_ptr, &handle,
+    )
+    if rc != 0:
+        if handle != NULL:
+            oc_b2nd_release(handle)
+        raise B2ndError(f"oc_b2nd_inspect failed: blosc2 error {rc}")
+    try:
+        dtype = np.dtype(dtype_ptr.decode() if dtype_ptr != NULL else 'u1')
+        py_shape = tuple(int(shape[i]) for i in range(ndim))
+    finally:
+        oc_b2nd_release(handle)
+
+    start = tuple(int(v) for v in start)
+    stop = tuple(int(v) for v in stop)
+    if len(start) != ndim or len(stop) != ndim:
+        raise ValueError(
+            f"b2nd decode_slice: start/stop must have {ndim} entries to "
+            f"match the array's shape {py_shape}; got {len(start)} and "
+            f"{len(stop)}")
+    for i in range(ndim):
+        if not (0 <= start[i] <= stop[i] <= py_shape[i]):
+            raise ValueError(
+                f"b2nd decode_slice: axis {i} range [{start[i]}, "
+                f"{stop[i]}) is not within [0, {py_shape[i]})")
+        c_start[i] = <int64_t> start[i]
+        c_stop[i] = <int64_t> stop[i]
+
+    slice_shape = tuple(stop[i] - start[i] for i in range(ndim))
+    if out is not None:
+        if not isinstance(out, np.ndarray):
+            raise TypeError(
+                f"b2nd decode_slice: out= must be an ndarray, got "
+                f"{type(out).__name__}")
+        if tuple(out.shape) != slice_shape:
+            raise ValueError(
+                f"b2nd decode_slice: out= shape {tuple(out.shape)} does "
+                f"not match the slice shape {slice_shape}")
+        if out.dtype != dtype:
+            raise ValueError(
+                f"b2nd decode_slice: out= dtype {out.dtype} does not "
+                f"match expected {dtype}")
+        if not out.flags['C_CONTIGUOUS']:
+            raise ValueError("b2nd decode_slice: out= must be C-contiguous")
+        out_arr = out
+    else:
+        out_arr = np.empty(slice_shape, dtype=dtype)
+
+    if out_arr.size == 0:
+        return out_arr
+    out_size = <int64_t> out_arr.nbytes
+    with nogil:
+        rc = oc_b2nd_decode_slice(
+            <const void*> &src[0], <int64_t> srclen,
+            c_start, c_stop, <void*> out_arr.data, out_size, c_nthreads,
+        )
+    if rc != 0:
+        raise B2ndError(f"oc_b2nd_decode_slice failed: blosc2 error {rc}")
     return out_arr
 
 

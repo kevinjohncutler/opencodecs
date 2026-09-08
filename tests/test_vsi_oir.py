@@ -187,8 +187,50 @@ def test_vsi_ets_partial_parse():
     assert stack["magic_ok"] is True
     assert stack["width"] == 260
     assert stack["height"] == 216
-    assert stack["level_count"] == 6
     assert stack["n_components"] == 4
+    # Was `level_count == 6`, which pinned a misreading rather than
+    # checking anything: 6 is a constant repeated in every record of
+    # the trailing table, not a count of pyramid levels. Assert the
+    # table's shape against the file instead -- entries that point
+    # inside it, at one plane's worth of bytes each, a whole number of
+    # planes apart.
+    assert stack["record_count"] == 4
+    plane_bytes = stack["width"] * stack["height"] * 2
+    assert stack["plane_stride"] % plane_bytes == 0
+    assert stack["plane_stride"] // plane_bytes == 36
+
+
+def test_ets_records_point_at_real_planes():
+    """Every record names image data, not an arbitrary offset.
+
+    A table read at the wrong stride still yields numbers; what it
+    does not yield is offsets whose bytes look like a microscope
+    image. Neighbouring pixels in real acquisition correlate, so a
+    small mean absolute difference across a row separates a genuine
+    plane from a misaligned read of compressed or unrelated bytes.
+    """
+    import numpy as np
+    from opencodecs._ets import parse_ets
+
+    ets = (CORPUS / "vsi" / "_metadataTest_01_" / "stack1"
+           / "frame_t_0.ets")
+    if not ets.is_file():
+        pytest.skip("VSI corpus sample not present")
+    info = parse_ets(str(ets))
+    raw = ets.read_bytes()
+    plane_bytes = info.width * info.height * 2
+    assert info.n_records >= 1
+    for rec in info.records:
+        assert rec.size == plane_bytes
+        assert rec.offset + plane_bytes <= info.file_size
+        a = np.frombuffer(raw[rec.offset:rec.offset + plane_bytes],
+                          dtype="<u2").reshape(info.height, info.width)
+        span = int(a.max()) - int(a.min())
+        assert span > 0, "a constant block is not an image"
+        neighbour = np.abs(np.diff(a.astype(np.int32), axis=1)).mean()
+        assert neighbour < span / 4, (
+            f"record at {rec.offset} has no spatial structure "
+            f"(neighbour diff {neighbour:.1f} vs span {span})")
 
 
 # ---------------------------------------------------------------------------
