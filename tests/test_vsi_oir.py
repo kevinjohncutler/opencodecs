@@ -270,3 +270,126 @@ def test_ets_decode_full_native():
             / "stack1" / "frame_t_0.ets"))
     assert arr.shape == (180, 216, 260)
     assert arr.dtype == np.uint16
+
+
+def test_ets_record_fields_are_populated():
+    """EtsRecord is what replaced the bogus level_count.
+
+    Each field has to carry a real value, or the record table is just
+    a differently shaped way of reporting nothing.
+    """
+    from opencodecs._ets import EtsInfo, EtsRecord, parse_ets
+
+    ets = (CORPUS / "vsi" / "_metadataTest_01_" / "stack1"
+           / "frame_t_0.ets")
+    if not ets.is_file():
+        pytest.skip("VSI corpus sample not present")
+    info = parse_ets(str(ets))
+    assert isinstance(info, EtsInfo)
+    assert info.n_records == len(info.records) == 4
+    assert all(isinstance(r, EtsRecord) for r in info.records)
+    # plane_index counts up in equal steps; that is what makes the
+    # table sparse rather than one entry per plane.
+    idx = [r.plane_index for r in info.records]
+    assert idx == sorted(idx) and idx[0] == 0
+    steps = {b - a for a, b in zip(idx, idx[1:])}
+    assert len(steps) == 1, f"uneven plane_index steps: {idx}"
+    # tag is the constant that used to be reported as a level count.
+    assert len({r.tag for r in info.records}) == 1
+
+
+def test_parse_ets_rejects_a_file_without_the_magic(tmp_path):
+    from opencodecs._ets import parse_ets
+    bogus = tmp_path / "not.ets"
+    bogus.write_bytes(b"\x00" * 128)
+    info = parse_ets(str(bogus))
+    assert info.magic_ok is False
+    assert info.records == ()
+    assert info.n_records == 0
+    assert info.plane_stride == 0
+
+
+def _synthetic_ets(records, *, width=8, height=4, file_pad=4096):
+    """Build a minimal SIS/ETS file with a chosen record table.
+
+    The corpus sample is one well-formed file, which cannot exercise
+    what happens when the table is not well-formed. Synthesizing lets
+    the malformed cases be tested without waiting for a bad file to
+    turn up in the wild -- and a table read at the wrong stride
+    produces exactly this shape of garbage.
+    """
+    import struct
+
+    from opencodecs._ets import _ETS_TABLE_PREAMBLE, _ETS_TABLE_RECORD
+
+    table = bytearray(b"\x00" * _ETS_TABLE_PREAMBLE)
+    for off, size, plane_index, tag in records:
+        # Only the first 20 bytes of each record are fields we read;
+        # the rest is padding to the stride the real files use. Packing
+        # them back to back instead would build a file the parser is
+        # right to disagree with.
+        rec = struct.pack("<IIIII", off, 0, size, plane_index, tag)
+        table += rec + b"\x00" * (_ETS_TABLE_RECORD - len(rec))
+
+    ptr2 = file_pad
+    hdr = bytearray(64)
+    hdr[0:4] = b"SIS\x00"
+    struct.pack_into("<I", hdr, 4, 64)
+    struct.pack_into("<I", hdr, 8, 3)
+    struct.pack_into("<Q", hdr, 16, 64)      # sub-header at 64
+    struct.pack_into("<Q", hdr, 24, 228)
+    struct.pack_into("<Q", hdr, 32, ptr2)    # table
+    struct.pack_into("<Q", hdr, 40, len(table))
+
+    sub = bytearray(228)
+    sub[0:4] = b"ETS\x00"
+    struct.pack_into("<I", sub, 8, 1)        # n_components
+    struct.pack_into("<I", sub, 28, width)
+    struct.pack_into("<I", sub, 32, height)
+
+    blob = bytearray(hdr + sub)
+    blob += b"\x00" * (ptr2 - len(blob))
+    blob += table
+    return bytes(blob)
+
+
+def test_ets_table_walk_stops_at_a_record_pointing_outside_the_file(tmp_path):
+    """An offset past the end ends the walk instead of being recorded.
+
+    Without this the parser would happily report entries addressing
+    bytes that do not exist, and every consumer downstream would read
+    garbage while the table looked structurally fine.
+    """
+    from opencodecs._ets import parse_ets
+
+    plane = 8 * 4 * 2
+    good = [(300, plane, 0, 6), (300 + plane, plane, 1, 6)]
+    bad = good + [(1 << 30, plane, 2, 6)]     # way past the end
+    f = tmp_path / "truncated.ets"
+    f.write_bytes(_synthetic_ets(bad))
+    info = parse_ets(str(f))
+    assert info.magic_ok is True
+    assert info.width == 8 and info.height == 4
+    assert info.n_records == 2, (
+        f"walk did not stop at the out-of-range record: {info.records}")
+
+
+def test_ets_table_walk_stops_at_a_zero_sized_record(tmp_path):
+    from opencodecs._ets import parse_ets
+
+    plane = 8 * 4 * 2
+    recs = [(300, plane, 0, 6), (400, 0, 1, 6), (500, plane, 2, 6)]
+    f = tmp_path / "zerosize.ets"
+    f.write_bytes(_synthetic_ets(recs))
+    assert parse_ets(str(f)).n_records == 1
+
+
+def test_ets_with_an_empty_table_reports_no_records(tmp_path):
+    from opencodecs._ets import parse_ets
+
+    f = tmp_path / "notable.ets"
+    f.write_bytes(_synthetic_ets([]))
+    info = parse_ets(str(f))
+    assert info.magic_ok is True
+    assert info.n_records == 0
+    assert info.plane_stride == 0

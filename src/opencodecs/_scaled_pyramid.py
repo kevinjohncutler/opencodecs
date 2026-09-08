@@ -31,7 +31,7 @@ coding of the fine subbands too, which is why they scale properly.
 
 from __future__ import annotations
 
-from typing import Any, Callable, Sequence
+from typing import Any, Callable
 
 import numpy as np
 
@@ -169,11 +169,3 @@ def probe_by_reduction(
         out.append((r, shape, dtype))
     return out
 
-
-def levels_from_shapes(
-    shapes: Sequence[tuple[int, ...]],
-) -> list[tuple[int, int]]:
-    """``(y, x)`` downscale factors for a list of level shapes."""
-    bh, bw = shapes[0][0], shapes[0][1]
-    return [(max(1, round(bh / s[0])), max(1, round(bw / s[1])))
-            for s in shapes]

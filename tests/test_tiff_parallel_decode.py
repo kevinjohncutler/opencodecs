@@ -114,3 +114,67 @@ def test_too_few_segments_stays_serial():
 def test_codec_declares_parallel_decode():
     """The flag is public API -- README tells callers to read it."""
     assert oc.get_codec("tiff").parallel_decode is True
+
+
+def test_numthreads_reaches_every_read_path(tmp_path):
+    """read(), iter_frames() and [idx] all decode segments.
+
+    They each call asarray() separately, so a numthreads that only
+    reached one of them would leave the others silently serial -- and
+    nothing about the returned pixels would say so.
+    """
+    pages = [_img(300, 400, seed=i) for i in range(3)]
+    p = tmp_path / "paths.tif"
+    with oc.TiffWriter(str(p)) as w:
+        for a in pages:
+            w.write_page(a, tile=(128, 128), compression="deflate")
+
+    codec = oc.get_codec("tiff")
+    with codec.open(str(p), numthreads=8) as r:
+        assert r._numthreads == 8
+        assert np.array_equal(r[1], pages[1])
+        for i, frame in enumerate(r.iter_frames()):
+            assert np.array_equal(frame, pages[i]), f"iter_frames page {i}"
+        assert np.array_equal(r.read()[2], pages[2])
+
+
+def test_page_asarray_takes_numthreads_directly(tmp_path):
+    img = _img(400, 500)
+    p = tmp_path / "one.tif"
+    with oc.TiffWriter(str(p)) as w:
+        w.write_page(img, tile=(128, 128), compression="lzw")
+    with oc.get_codec("tiff").open(str(p)) as r:
+        page = r.page(0)
+        serial = page.asarray(numthreads=1)
+        assert np.array_equal(serial, img)
+        assert np.array_equal(page.asarray(numthreads=6), serial)
+        assert np.array_equal(page.asarray(), serial)
+
+
+def test_codec_decode_accepts_numthreads(tmp_path):
+    img = _img(300, 300)
+    p = tmp_path / "dec.tif"
+    with oc.TiffWriter(str(p)) as w:
+        w.write_page(img, tile=(128, 128), compression="zstd")
+    codec = oc.get_codec("tiff")
+    assert np.array_equal(codec.decode(str(p), numthreads=4), img)
+    assert np.array_equal(codec.decode(str(p), numthreads=1), img)
+
+
+def test_a_worker_exception_is_not_swallowed(tmp_path, monkeypatch):
+    """ex.map returns a lazy iterator.
+
+    If the results are never consumed, a decode failure in a worker
+    disappears and the caller gets a half-filled array with no error.
+    """
+    img = _img(400, 400)
+    p = tmp_path / "boom.tif"
+    with oc.TiffWriter(str(p)) as w:
+        w.write_page(img, tile=(64, 64), compression="deflate")
+    with oc.get_codec("tiff").open(str(p), numthreads=4) as r:
+        page = r.page(0)
+        monkeypatch.setattr(page, "_decode_segment",
+                            lambda raw: (_ for _ in ()).throw(
+                                RuntimeError("segment exploded")))
+        with pytest.raises(RuntimeError, match="segment exploded"):
+            page.asarray(numthreads=4)

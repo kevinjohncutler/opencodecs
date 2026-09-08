@@ -54,7 +54,8 @@ from ._tiff_writer import TiffWriter, imwrite as tiff_imwrite
 from ._omezarr import OmeZarrArray, OmeZarrPyramidDataset
 from ._n5 import N5Array, N5Error
 from ._imaris import ImarisReader, ImarisError
-from ._jpeg_pyramid import JpegPyramidReader, MozjpegPyramidReader
+from ._jpeg_pyramid import JpegPyramidReader
+from ._mozjpeg_pyramid import MozjpegPyramidReader
 from ._jpeg2k_pyramid import Jpeg2kPyramidReader
 from ._htj2k_pyramid import Htj2kPyramidReader
 from ._dicom import DicomFile, DicomError

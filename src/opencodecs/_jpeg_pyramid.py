@@ -39,25 +39,39 @@ class _JpegFamilyPyramid(ScaledCodestreamPyramid):
 
     def __init__(self, data: Any, *, max_levels: int | None = None):
         super().__init__(data, max_levels=max_levels)
+        self._denoms: tuple[int, ...] | None = None
 
     def _mod(self):
         from importlib import import_module
         return import_module(f".codecs.{self._module_name}", __package__)
 
+    def denominators(self) -> tuple[int, ...]:
+        """The 1/N factors this build supports, coarsest last.
+
+        Asked of the library rather than assumed: libjpeg-turbo's set
+        has changed across versions, and MozJPEG tracks its own. Cached
+        because both probing and decoding need it, and computing it in
+        each -- as an earlier version did -- is how the two drift into
+        indexing different lists for the same level.
+        """
+        if self._denoms is None:
+            supported = set(self._mod().supported_scaling_factors())
+            self._denoms = tuple(
+                d for d in _POWER_OF_TWO_DENOMS if (1, d) in supported)
+        return self._denoms
+
     def _probe_levels(self):
         mod = self._mod()
-        supported = set(mod.supported_scaling_factors())
-        denoms = [d for d in _POWER_OF_TWO_DENOMS if (1, d) in supported]
-        if 1 not in denoms:
-            denoms = [1] + denoms
+        denoms = self.denominators()
+        if not denoms:
+            return []
 
         def info(i):
-            # `reduction` here indexes the denominator list rather than
-            # being a subband count, which is why the level's `reader`
-            # field is opaque to callers: each backend decides what it
-            # means and only ever hands it back to its own decoder.
-            d = denoms[i]
-            a = mod.decode(self._data, scale=(1, d))
+            # This index is into `denoms`, not a subband count, which is
+            # why a level's `reader` field is opaque to callers: each
+            # backend decides what it means and only ever hands it back
+            # to its own decoder.
+            a = mod.decode(self._data, scale=(1, denoms[i]))
             return a.shape, a.dtype
 
         levels = probe_by_reduction(info, max_reduction=len(denoms) - 1)
@@ -66,12 +80,8 @@ class _JpegFamilyPyramid(ScaledCodestreamPyramid):
         return levels
 
     def _decode_level(self, index: int) -> np.ndarray:
-        mod = self._mod()
-        supported = set(mod.supported_scaling_factors())
-        denoms = [d for d in _POWER_OF_TWO_DENOMS if (1, d) in supported]
-        if 1 not in denoms:
-            denoms = [1] + denoms
-        return mod.decode(self._data, scale=(1, denoms[index]))
+        return self._mod().decode(
+            self._data, scale=(1, self.denominators()[index]))
 
 
 class JpegPyramidReader(_JpegFamilyPyramid):
@@ -80,15 +90,3 @@ class JpegPyramidReader(_JpegFamilyPyramid):
     codec_name = "jpeg"
     _module_name = "_jpeg"
 
-
-class MozjpegPyramidReader(_JpegFamilyPyramid):
-    """Multi-resolution view of one JPEG, decoded through MozJPEG.
-
-    MozJPEG ships only TurboJPEG v2, which infers the scaling factor
-    from the destination size rather than taking it directly; the
-    difference is entirely inside ``_mozjpeg.decode`` and the levels
-    here are identical to :class:`JpegPyramidReader`'s.
-    """
-
-    codec_name = "mozjpeg"
-    _module_name = "_mozjpeg"
