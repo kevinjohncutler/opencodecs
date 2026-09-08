@@ -256,6 +256,53 @@ class DataSource(ABC):
         self.close()
 
 
+class BufferDataSource(DataSource):
+    """A DataSource over bytes already in memory.
+
+    The gap this fills: DataSource had exactly two implementations,
+    both of which own an operating-system handle, so
+    ``coerce_data_source`` could only take a path or a DataSource. Any
+    reader built on it therefore refused bytes outright (OIR) or
+    spilled them to a temporary file first (ND2, LIF, OIB, CZI) --
+    writing 40 MB to disk to read it back, when it was already in
+    memory. Readers built on the other helper, ``open_read_at``, took
+    buffers directly. Which surface a reader offered came down to
+    which helper it happened to use.
+
+    Accepts anything supporting the buffer protocol -- bytes,
+    bytearray, memoryview, mmap, a numpy array of bytes -- and slices
+    it. It does not copy the source, so the caller must keep it alive,
+    which is the same contract every zero-copy view in this package
+    has.
+    """
+
+    def __init__(self, buf: Any):
+        mv = buf if isinstance(buf, memoryview) else memoryview(buf)
+        if mv.ndim != 1 or mv.format != "B":
+            # A view of an int32 array reports itemsize 4, and slicing
+            # it by byte offsets would silently address the wrong
+            # bytes. Casting makes offsets mean bytes.
+            mv = mv.cast("B")
+        self._mv = mv
+        self.size = mv.nbytes
+
+    def read_at(self, offset: int, n: int) -> bytes:
+        if offset < 0 or n < 0:
+            raise ValueError(
+                f"BufferDataSource: negative read ({offset}, {n})")
+        return bytes(self._mv[offset:offset + n])
+
+    def close(self) -> None:
+        mv, self._mv = getattr(self, "_mv", None), None
+        if mv is not None:
+            try:
+                mv.release()
+            except Exception:                            # noqa: BLE001
+                # A view of a bytes object cannot be released while
+                # something else holds it; harmless either way.
+                pass
+
+
 def coalesce_ranges(
     ranges: Sequence[Range],
     *,
@@ -326,9 +373,11 @@ def coalesce_ranges(
 def coerce_data_source(src: Any) -> tuple["DataSource", bool, int]:
     """Normalize a path / DataSource argument into ``(ds, owns, size)``.
 
-    Used by every native vendor parser (ND2, OIR, ETS, OLE2, …) to
-    accept either a filesystem path or a DataSource (HTTPDataSource,
-    FileDataSource, custom backends). Returns:
+    Used by every native vendor parser (ND2, OIR, ETS, OLE2, …) so
+    that all of them accept the same set of sources: a filesystem
+    path, a buffer (bytes / bytearray / memoryview / mmap), a seekable
+    file-like, or a DataSource (HTTPDataSource, FileDataSource, custom
+    backends). Returns:
 
     * ``ds`` — a :class:`DataSource` instance to do ``read_at`` calls
       against
@@ -361,14 +410,51 @@ def coerce_data_source(src: Any) -> tuple["DataSource", bool, int]:
         from .._tiff_http import FileDataSource
         ds = FileDataSource(str(src))
         return ds, True, int(ds.size)
+
+    # Bytes already in memory. Previously a TypeError, which is why the
+    # readers built on this helper each either refused buffers or wrote
+    # them to a temporary file to get a path back.
+    if isinstance(src, (bytes, bytearray, memoryview)) or (
+            not hasattr(src, "read") and _supports_buffer(src)):
+        ds = BufferDataSource(src)
+        return ds, True, int(ds.size)
+
+    # A seekable file-like. Read it once into a buffer rather than
+    # holding the handle: DataSource promises random access from any
+    # thread, and a shared file object's seek+read cannot give that.
+    # The caller's handle is left open -- closing something we were
+    # merely handed is not ours to do.
+    if hasattr(src, "read") and hasattr(src, "seek"):
+        pos = src.tell() if hasattr(src, "tell") else None
+        src.seek(0)
+        data = src.read()
+        if pos is not None:
+            try:
+                src.seek(pos)
+            except Exception:                            # noqa: BLE001
+                pass
+        ds = BufferDataSource(data)
+        return ds, True, int(ds.size)
+
     raise TypeError(
-        f"unsupported source: {type(src).__name__}; pass a path or "
-        f"a DataSource (HTTPDataSource / FileDataSource / ...)"
+        f"unsupported source: {type(src).__name__}; pass a path, a "
+        f"buffer (bytes / bytearray / memoryview / mmap), a seekable "
+        f"file-like, or a DataSource (HTTPDataSource / FileDataSource)"
     )
+
+
+def _supports_buffer(obj: Any) -> bool:
+    """True when `obj` exposes the buffer protocol (mmap, arrays, ...)."""
+    try:
+        memoryview(obj)
+    except TypeError:
+        return False
+    return True
 
 
 __all__ = [
     "BackgroundChunkReader",
+    "BufferDataSource",
     "DataSource",
     "Range",
     "coalesce_ranges",

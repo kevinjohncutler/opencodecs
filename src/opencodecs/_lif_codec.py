@@ -204,6 +204,19 @@ class LifCodec(Codec):
           * ``"native"``: force the native parser.
           * ``"readlif"``: force the readlif delegate.
         """
+        # Normalize a non-path source ONCE, before either branch looks
+        # at it. Both the native parser and the readlif delegate want
+        # the bytes, and this used to hand the caller's stream to each
+        # in turn: the second read started at EOF, produced b"", and
+        # readlif then failed on an empty file with an error about a
+        # closed handle that pointed nowhere near the cause.
+        #
+        # A buffer becomes a DataSource rather than a temp file, so the
+        # native path never writes the source to disk to read it back.
+        # Only the readlif fallback needs a real path, and it spills
+        # lazily below.
+        src = _normalize_lif_source(src)
+
         if backend in (None, "native") and image is None:
             try:
                 from ._lif_native import LifNativeReader, LifFileParser
@@ -220,13 +233,9 @@ class LifCodec(Codec):
                         return LifNativeReader(src_for_parse, image=image)
                     # Discard the partial parser; readlif re-opens.
                     parser = None  # noqa: F841
-                else:
-                    # Spill bytes / file-like to a temp file.
-                    tmp = _spill_to_temp(src)
-                    if tmp is not None:
-                        parser = LifFileParser(tmp)
-                        if backend == "native" or _native_can_handle(parser):
-                            return LifNativeReader(tmp, image=image)
+                # Nothing else to handle: _normalize_lif_source has
+                # already turned every accepted source into a path, a
+                # Path, or a DataSource.
             except (ValueError, ImportError) as e:
                 if backend == "native":
                     raise
@@ -239,19 +248,9 @@ class LifCodec(Codec):
                 "overrides.")
         if isinstance(src, (str, Path)):
             return LifReader(src, image=image)
-        import os, tempfile
-        if isinstance(src, (bytes, bytearray, memoryview)):
-            fd, tmp = tempfile.mkstemp(suffix=".lif")
-            os.write(fd, bytes(src))
-            os.close(fd)
-            return LifReader(tmp, image=image)
-        if hasattr(src, "read"):
-            data = src.read()
-            fd, tmp = tempfile.mkstemp(suffix=".lif")
-            os.write(fd, data)
-            os.close(fd)
-            return LifReader(tmp, image=image)
-        raise TypeError(f"unsupported LIF source: {type(src).__name__}")
+        # readlif only opens paths, so a DataSource has to land on disk
+        # here -- but only here, and only once.
+        return LifReader(_spill_datasource_to_temp(src), image=image)
 
     def info(self, src: Any) -> dict:
         """Partial-parse: returns ``{file_size, n_images, n_memblocks,
@@ -263,14 +262,9 @@ class LifCodec(Codec):
         """
         from ._lif_native import LifFileParser
         from .core.io import DataSource
-        if isinstance(src, (str, Path, DataSource)):
-            parser = LifFileParser(src if isinstance(src, DataSource) else str(src))
-        else:
-            tmp = _spill_to_temp(src)
-            if tmp is None:
-                raise TypeError(
-                    f"unsupported LIF source: {type(src).__name__}")
-            parser = LifFileParser(tmp)
+        src = _normalize_lif_source(src)
+        parser = LifFileParser(
+            src if isinstance(src, DataSource) else str(src))
         return {
             "file_size": parser._size,
             "n_images": len(parser.images),
@@ -315,23 +309,49 @@ def _native_can_handle(parser) -> bool:
     return True
 
 
-def _spill_to_temp(src) -> str | None:
-    """Write a bytes / file-like LIF source to a temp file so the
-    native parser can mmap it. Returns the path, or None for
-    unsupported source types."""
-    import os, tempfile
-    if isinstance(src, (bytes, bytearray, memoryview)):
-        fd, tmp = tempfile.mkstemp(suffix=".lif")
-        os.write(fd, bytes(src))
-        os.close(fd)
-        return tmp
-    if hasattr(src, "read"):
-        data = src.read()
-        fd, tmp = tempfile.mkstemp(suffix=".lif")
-        os.write(fd, data)
-        os.close(fd)
-        return tmp
-    return None
+def _normalize_lif_source(src):
+    """Turn any accepted source into a path, Path, or DataSource.
+
+    Called once at entry so that no later branch re-reads a stream an
+    earlier one already drained. Buffers and file-likes become a
+    BufferDataSource, which costs no temp file; paths and DataSources
+    pass through untouched.
+    """
+    from pathlib import Path as _P
+    from .core.io import DataSource, coerce_data_source
+    if isinstance(src, (str, _P, DataSource)):
+        return src
+    ds, _owns, _size = coerce_data_source(src)
+    return ds
+
+
+def _spill_datasource_to_temp(src) -> str:
+    """Materialize a DataSource on disk for readlif, which needs a path.
+
+    Only the delegate path calls this. The native parser reads a
+    DataSource directly, so a caller passing bytes does not pay for a
+    round trip through the filesystem unless the fallback is used.
+    """
+    import os
+    import tempfile
+    from .core.io import DataSource
+    if not isinstance(src, DataSource):
+        raise TypeError(f"unsupported LIF source: {type(src).__name__}")
+    size = getattr(src, "size", None)
+    if size is None:
+        raise TypeError("LIF: source has no discoverable size")
+    handle, tmp = tempfile.mkstemp(suffix=".lif")
+    try:
+        pos, chunk = 0, 8 << 20
+        while pos < size:
+            block = src.read_at(pos, min(chunk, size - pos))
+            if not block:
+                break
+            os.write(handle, block)
+            pos += len(block)
+    finally:
+        os.close(handle)
+    return tmp
 
 
 __all__ = ["LifCodec", "LifReader", "LifError"]

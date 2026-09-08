@@ -391,14 +391,36 @@ def test_a_deliberately_malformed_file_is_refused_not_decoded():
         codec.decode(bad.read_bytes())
 
 
-def test_formats_that_need_a_path_say_so_clearly():
-    """OIR cannot work from a buffer, and the error should explain that.
+def test_a_buffer_decodes_to_the_same_thing_as_a_path():
+    """OIR used to refuse buffers, and this test asserted the refusal.
 
-    A clear refusal is a feature; the thing to prevent is the version
-    that fails as something unrelated, which is what EMD did.
+    The refusal was never about the format. OIR reaches its data
+    through core.io.coerce_data_source, which took only a path or a
+    DataSource, so every reader built on that helper either refused
+    buffers or wrote them to a temp file to get a path back. Adding an
+    in-memory DataSource removed the restriction, and the useful thing
+    to pin is now the stronger claim: the same bytes decode the same
+    way however they are handed over.
+
+    Kept pointed at OIR because that is where the limitation lived;
+    test_reader_source_kinds covers the whole matrix.
     """
     p = _corpus_file("oir", "*.oir")
     if p is None:
         pytest.skip("fetch the oir corpus entry first")
-    with pytest.raises(TypeError, match="pass a path"):
-        oc.get_codec("oir").decode(p.read_bytes())
+    codec = oc.get_codec("oir")
+    from_path = np.asarray(codec.decode(str(p)))
+    from_buffer = np.asarray(codec.decode(p.read_bytes()))
+    assert from_buffer.shape == from_path.shape
+    assert np.array_equal(from_buffer, from_path)
+
+
+def test_an_unusable_source_still_says_so_clearly():
+    """Widening what is accepted must not blur what is not.
+
+    A clear refusal is a feature; the failure to avoid is the one that
+    surfaces as something unrelated three layers down, which is what
+    EMD used to do.
+    """
+    with pytest.raises(TypeError, match="unsupported source"):
+        oc.get_codec("oir").decode(object())
