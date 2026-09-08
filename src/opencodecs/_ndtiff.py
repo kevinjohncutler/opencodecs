@@ -602,7 +602,14 @@ class NDTiffDataset(Reader):
                 f"for compressed frame {entry.axes} in {entry.filename}"
             )
         from .core.segment_compression import decode_segment
-        raw = decode_segment(bytes(comp_bytes), entry.pixel_compression)
+        # Passed through rather than bytes()-ed. Today this changes
+        # nothing measurable: the local reader is os.pread, which
+        # already returns bytes, so the call was a no-op (measured
+        # 1.00x either way on a 50 MB zstd dataset). It matters if this
+        # reader ever gets a mapped source, where bytes() would copy
+        # every segment -- that cost TIFF 1.5x on zstd until it was
+        # removed. Decoders accept a memoryview either way.
+        raw = decode_segment(comp_bytes, entry.pixel_compression)
         # raw might be bytes (for deflate/zstd/lzw/packbits) or ndarray
         # (for jpeg/jxl/lerc/jpeg2k/webp). For byte-stream codecs we
         # reshape; for image-codecs we trust the codec's shape.
