@@ -257,3 +257,109 @@ def test_coerce_data_source_still_rejects_nonsense():
         coerce_data_source(object())
     with pytest.raises(TypeError, match="unsupported source"):
         coerce_data_source(42)
+
+
+# ---- one coercion, not two -----
+
+
+def _both_helpers():
+    from opencodecs.core._io_helpers import open_read_at
+    from opencodecs.core.io import coerce_data_source
+    return {"coerce_data_source": coerce_data_source,
+            "open_read_at": open_read_at}
+
+
+@pytest.mark.parametrize("helper", sorted(_both_helpers()))
+@pytest.mark.parametrize("kind", ["bytes", "bytearray", "memoryview",
+                                  "BytesIO", "callable", "path"])
+def test_both_source_helpers_accept_the_same_kinds(helper, kind, tmp_path):
+    """The two helpers must not answer the same question differently.
+
+    They did: one took buffers, URLs and callables while the other took
+    a path or a DataSource, so which sources a reader supported came
+    down to which helper it happened to call. open_read_at is now an
+    adapter over coerce_data_source, and this fails if anyone splits
+    them again.
+    """
+    fn = _both_helpers()[helper]
+    raw = bytes(range(256))
+    p = tmp_path / "s.bin"
+    p.write_bytes(raw)
+    src = {"bytes": raw, "bytearray": bytearray(raw),
+           "memoryview": memoryview(raw), "BytesIO": io.BytesIO(raw),
+           "callable": (lambda o, n: raw[o:o + n]), "path": str(p)}[kind]
+    out = fn(src)
+    read_at = out[0].read_at if hasattr(out[0], "read_at") else out[0]
+    assert read_at(4, 4) == raw[4:8]
+
+
+@pytest.mark.parametrize("helper", sorted(_both_helpers()))
+def test_both_helpers_reject_the_same_thing_the_same_way(helper):
+    fn = _both_helpers()[helper]
+    with pytest.raises(TypeError, match="unsupported source"):
+        fn(object())
+
+
+def test_callable_data_source_wraps_a_bare_read_at():
+    from opencodecs.core.io import CallableDataSource, DataSource
+
+    raw = bytes(range(256))
+    calls = []
+
+    def read_at(offset, n):
+        calls.append((offset, n))
+        return raw[offset:offset + n]
+
+    ds = CallableDataSource(read_at)
+    assert isinstance(ds, DataSource)
+    assert ds.read_at(8, 4) == raw[8:12]
+    # read_many has no batched path here, so it must still work.
+    assert ds.read_many([(0, 2), (10, 2)]) == [raw[:2], raw[10:12]]
+    assert calls[0] == (8, 4)
+
+
+# ---- open() on codecs that are not containers -----
+
+
+BYTE_STREAM = ["zstd", "deflate", "lz4", "brotli", "bz2", "gzip",
+               "lzma", "snappy", "none"]
+
+
+@pytest.mark.parametrize("name", BYTE_STREAM)
+def test_open_on_a_byte_stream_codec_explains_itself(name):
+    """These have no frames, so open() cannot return a Reader.
+
+    It used to build one anyway and die inside it with "'bytes' object
+    has no attribute 'shape'" -- an error naming neither the codec nor
+    the reason. Refusing is right; refusing legibly is the point.
+    """
+    if not oc.has_codec(name):
+        pytest.skip(f"{name} not built")
+    codec = oc.get_codec(name)
+    blob = codec.encode(bytes(range(256)) * 8)
+    with pytest.raises(TypeError, match="nothing to open"):
+        codec.open(blob)
+    # And the error names the codec, so it is actionable.
+    try:
+        codec.open(blob)
+    except TypeError as exc:
+        assert name in str(exc)
+        assert "decode()" in str(exc)
+
+
+@pytest.mark.parametrize("name", ["png", "webp", "jpeg", "qoi", "bmp"])
+def test_open_on_an_image_codec_gives_a_one_frame_reader(name, image):
+    """The other half of the same default: codecs that decode to an
+    array do get a Reader, with a shape and exactly one frame."""
+    if not oc.has_codec(name):
+        pytest.skip(f"{name} not built")
+    codec = oc.get_codec(name)
+    arr = image if name != "qoi" else np.dstack([image] * 3)
+    try:
+        blob = codec.encode(arr)
+    except Exception:                                         # noqa: BLE001
+        pytest.skip(f"{name} cannot encode the probe image")
+    with codec.open(blob) as r:
+        assert r.shape[:2] == arr.shape[:2]
+        assert r.n_frames in (None, 1)
+        assert np.asarray(r.read()).shape[:2] == arr.shape[:2]

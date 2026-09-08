@@ -303,6 +303,56 @@ class BufferDataSource(DataSource):
                 pass
 
 
+class CallableDataSource(DataSource):
+    """A DataSource wrapping a bare ``read_at(offset, n) -> bytes``.
+
+    Callers hand these in for storage backends opencodecs knows
+    nothing about (an S3 client, a database blob, a test double). The
+    callable is the whole contract, so ``size`` is only known if the
+    caller says so, and read_many falls back to the serial default.
+    """
+
+    def __init__(self, fn, size: int | None = None):
+        self._fn = fn
+        self.size = size
+
+    def read_at(self, offset: int, n: int) -> bytes:
+        return self._fn(offset, n)
+
+    def close(self) -> None:
+        closer = getattr(self._fn, "close", None)
+        if callable(closer):
+            closer()
+
+
+class _ClampedDataSource(DataSource):
+    """Clamps reads to a known total size.
+
+    An HTTP range that starts inside the file but runs past its end
+    returns nothing rather than a short read, and a reader that asked
+    for a generous header chunk then sees an empty buffer and reports
+    the file as invalid. Clamping turns that into the short read the
+    caller expected.
+    """
+
+    def __init__(self, inner: DataSource, total: int):
+        self._inner = inner
+        self.size = total
+
+    def read_at(self, offset: int, n: int) -> bytes:
+        n = min(n, max(0, self.size - offset))
+        if n <= 0:
+            return b""
+        return self._inner.read_at(offset, n)
+
+    def read_many(self, ranges):
+        return self._inner.read_many(
+            [(o, min(n, max(0, self.size - o))) for o, n in ranges])
+
+    def close(self) -> None:
+        self._inner.close()
+
+
 def coalesce_ranges(
     ranges: Sequence[Range],
     *,
@@ -389,6 +439,25 @@ def coerce_data_source(src: Any) -> tuple["DataSource", bool, int]:
 
     Raises :class:`TypeError` for unsupported source types.
     """
+    if isinstance(src, str) and src.startswith(("http://", "https://")):
+        # Local import: modules that only need the ABC should not drag
+        # in the HTTP stack.
+        from .._tiff_http import HTTPDataSource
+        ds = HTTPDataSource(src)
+        # Learn the length with a one-byte read. Readers open by asking
+        # for a generous header chunk, and a range running past the end
+        # of a small file comes back EMPTY rather than short, which
+        # reads as "not a valid file" three layers up.
+        try:
+            ds.read_at(0, 1)
+        except Exception:                                # noqa: BLE001
+            pass
+        total = getattr(ds, "total_size", None)
+        if total is not None:
+            ds = _ClampedDataSource(ds, int(total))
+            return ds, True, int(total)
+        return ds, True, 0
+
     if isinstance(src, DataSource):
         size = getattr(src, "size", None)
         if size is None:
@@ -419,6 +488,12 @@ def coerce_data_source(src: Any) -> tuple["DataSource", bool, int]:
         ds = BufferDataSource(src)
         return ds, True, int(ds.size)
 
+    # A bare read_at callable, for backends opencodecs does not know.
+    # Checked before the buffer branch because a callable is not a
+    # buffer, and after paths because a PathLike is not callable.
+    if callable(src) and not isinstance(src, (bytes, bytearray, memoryview)):
+        return CallableDataSource(src), False, 0
+
     # A seekable file-like. Read it once into a buffer rather than
     # holding the handle: DataSource promises random access from any
     # thread, and a shared file object's seek+read cannot give that.
@@ -437,9 +512,10 @@ def coerce_data_source(src: Any) -> tuple["DataSource", bool, int]:
         return ds, True, int(ds.size)
 
     raise TypeError(
-        f"unsupported source: {type(src).__name__}; pass a path, a "
-        f"buffer (bytes / bytearray / memoryview / mmap), a seekable "
-        f"file-like, or a DataSource (HTTPDataSource / FileDataSource)"
+        f"unsupported source: {type(src).__name__}; pass a path, an "
+        f"http(s) URL, a buffer (bytes / bytearray / memoryview / "
+        f"mmap), a seekable file-like, a read_at callable, or a "
+        f"DataSource (HTTPDataSource / FileDataSource)"
     )
 
 
@@ -455,6 +531,7 @@ def _supports_buffer(obj: Any) -> bool:
 __all__ = [
     "BackgroundChunkReader",
     "BufferDataSource",
+    "CallableDataSource",
     "DataSource",
     "Range",
     "coalesce_ranges",

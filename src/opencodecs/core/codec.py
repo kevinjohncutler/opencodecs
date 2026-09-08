@@ -231,6 +231,19 @@ class Codec(ABC):
         single-frame Reader. Codec-specific overrides do real streaming.
         """
         arr = self.decode(src, **opts)
+        if not isinstance(arr, np.ndarray):
+            # A byte-stream codec (zstd, deflate, lz4, blosc2, ...)
+            # decodes to bytes: there are no pixels, no shape and no
+            # frames, so there is nothing for a Reader to navigate.
+            # This used to build the Reader anyway and die inside it
+            # with "'bytes' object has no attribute 'shape'", which
+            # names neither the codec nor the reason.
+            raise TypeError(
+                f"{self.name}: decodes to {type(arr).__name__}, not an "
+                f"array, so there is nothing to open -- a Reader exists "
+                f"to walk frames and regions, and a byte-stream codec "
+                f"has neither. Use {self.name}.decode() for the bytes, "
+                f"or open() the container the codec sits inside.")
         return _SingleFrameReader(arr)
 
     def writer(self, dest: Any = None, **opts) -> "Writer":

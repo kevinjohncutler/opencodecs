@@ -57,81 +57,29 @@ __all__ = ["read_src", "write_dest"]
 def open_read_at(src: Any):
     """Return ``(read_at, close)`` for random access to *src*.
 
+    A thin adapter over :func:`opencodecs.core.io.coerce_data_source`,
+    which is where source coercion lives. This stayed a separate
+    function only because it predates that one, and for a while the two
+    grew apart: this accepted buffers, URLs and callables while the
+    other took a path or a DataSource, so which sources a reader
+    supported came down to which helper it happened to call. Two sets
+    of rules for one question drift, and these did.
+
+    Prefer ``coerce_data_source`` in new code: it also reports the size
+    and exposes ``read_many`` for batched parallel fetch. This form
+    remains for the readers already written against a plain callable,
+    which is all a reader needs when it only ever calls ``read_at``.
+
     Deliberately NOT memory-mapped, which was tried and measured. The
     readers behind this helper (MRC, NRRD, DICOM, FITS) fetch their
     bulk data in one large read, and mapping only removes per-read
-    syscall overhead -- of which one read has none. Alternating A/B on
-    a 134 MB volume: MRC 1.00x, NRRD 0.97x, against a control reader
-    that does not use this helper at all and moved 1.05x, which is the
-    noise floor. Mapping earns its keep in the TIFF reader instead,
-    where a page is hundreds of separate tile reads.
-
-    ``read_at(offset, n) -> bytes`` is the contract the TIFF, FITS and
-    MRC readers already share, and it is what lets a reader open a file
-    it never downloads: a path becomes a seek, an http(s) URL becomes a
-    range request, bytes become a slice.
-
-    Factored here because three readers had grown their own copy of it.
-    A format whose data sits at a computable offset should not have to
-    reimplement the plumbing to reach it.
+    syscall overhead, of which one read has none. Alternating A/B on a
+    134 MB volume: MRC 1.00x, NRRD 0.97x, against a control reader that
+    does not use this helper at all and moved 1.05x, which is the noise
+    floor. Mapping earns its keep in the TIFF reader instead, where a
+    page is hundreds of separate tile reads.
     """
-    import os
+    from .io import coerce_data_source
 
-    if callable(src) and not isinstance(
-            src, (str, os.PathLike, bytes, bytearray, memoryview)):
-        return src, lambda: None
-
-    if isinstance(src, str) and src.startswith(("http://", "https://")):
-        from .._tiff_http import HTTPDataSource
-        ds = HTTPDataSource(src)
-        # Learn the length up front with a one-byte read, then clamp.
-        # Readers open by asking for a generous header chunk, and a
-        # range that runs past the end of a small file comes back empty
-        # rather than short, which reads as "not a valid file" three
-        # layers up. The clamp costs one tiny request at open.
-        try:
-            ds.read_at(0, 1)
-        except Exception:                                # noqa: BLE001
-            pass
-        total = getattr(ds, "total_size", None)
-
-        def read_at(offset: int, n: int, _ds=ds, _total=total) -> bytes:
-            if _total is not None:
-                n = min(n, max(0, _total - offset))
-                if n <= 0:
-                    return b""
-            return _ds.read_at(offset, n)
-
-        closer = getattr(ds, "close", None)
-        return read_at, (closer if callable(closer) else (lambda: None))
-
-    if isinstance(src, (str, os.PathLike)):
-        fh = open(src, "rb")
-
-        def read_at(off: int, n: int, _f=fh) -> bytes:
-            _f.seek(off)
-            return _f.read(n)
-        return read_at, fh.close
-
-    if isinstance(src, (bytes, bytearray, memoryview)):
-        # A memoryview is sliced, not copied. bytes(src) here used to
-        # duplicate the entire source before a single byte was read,
-        # which for a caller passing a view of a large mapping meant
-        # copying the whole file to read its header.
-        buf = src if isinstance(src, memoryview) else memoryview(src)
-        if buf.format != "B":
-            buf = buf.cast("B")
-
-        def read_at(off: int, n: int, _b=buf) -> bytes:
-            return bytes(_b[off:off + n])
-        return read_at, lambda: None
-
-    if hasattr(src, "read") and hasattr(src, "seek"):
-        def read_at(off: int, n: int, _f=src) -> bytes:
-            _f.seek(off)
-            return _f.read(n)
-        return read_at, lambda: None
-
-    raise TypeError(
-        f"unsupported src type {type(src).__name__}; pass a path, an "
-        f"http(s) URL, bytes, a seekable file-like, or a read_at callable")
+    ds, owns, _size = coerce_data_source(src)
+    return ds.read_at, (ds.close if owns else (lambda: None))
