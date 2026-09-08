@@ -33,6 +33,10 @@ class HeifCodec(Codec):
     can_decode = True
     multi_frame = False
     streaming_decode = False
+    # _heif.pyx does call heif_context_set_max_decoding_threads, but
+    # decoding one untiled image measures 1.00x from one thread to
+    # eight -- there is nothing to divide. Left False deliberately:
+    # do not flip it back on the strength of the API call alone.
     parallel_decode = False
 
     supported_dtypes = (np.uint8, np.uint16)

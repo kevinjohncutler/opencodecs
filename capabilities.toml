@@ -1,22 +1,44 @@
 # Streaming and web-delivery capabilities, per codec.
 #
-# What this file is for: opencodecs promises more than "it
-# decodes" -- it promises formats that can be streamed, served
-# over HTTP with range requests, decoded a tile at a time, and
-# viewed at multiple resolutions. Those promises are per format,
-# and some of them are impossible for some formats. Without a
-# record, "we have not done that yet" and "that cannot be done"
-# look identical from outside.
+# What this file is for: opencodecs promises more than "it decodes" --
+# it promises formats that can be streamed, served over HTTP with range
+# requests, decoded a tile at a time, and viewed at multiple
+# resolutions. Those promises are per format, and some of them are
+# impossible for some formats. Without a record, "we have not done that
+# yet" and "that cannot be done" look identical from outside.
 #
-# Every field below is seeded from evidence rather than opinion:
-# the Codec class flags, whether the reader reaches storage
-# through the read_at contract, and whether a PyramidReader
-# backend exists. ci/check_capabilities.py re-derives them and
-# fails if this file has drifted, which is what stops it turning
-# into the kind of stale claim a docstring becomes.
+# The seven booleans are derived from the tree, not asserted here:
+# ci/check_capabilities.py re-reads the Codec class flags and greps for
+# the offset-read and PyramidReader call sites, and `verify` fails when
+# this file disagrees with what it finds. Two of them mean something
+# narrower than their name suggests:
 #
-# feasible = "no" needs a reason. That is the field that carries
-# the actual engineering judgement.
+#   range_reads  the reader reaches storage by offset (read_at,
+#                read_many) rather than swallowing the file.
+#   http         it fetches only the bytes it needs. A format that can
+#                be opened from a URL with one whole-file GET does not
+#                count -- see jxl, whose own docstring says so.
+#
+# `feasible` is the field no script can derive, because it is a
+# judgment about the format rather than a fact about the tree:
+#
+#   done   everything this format can support, we support.
+#   gap    something the format supports is not built. `gaps` names
+#          which capabilities, and `note` says what it would take.
+#   no     nothing further is available here. `note` says why -- either
+#          the format cannot express it (a prefix sum has no seek
+#          point, a single deflate frame has no index) or the upstream
+#          library exposes no entry point for it.
+#
+# Every entry carries a `note`, including the ones with no work left,
+# because the reason is the part that goes stale. A gap may only name a
+# capability currently recorded as false; claiming a gap for something
+# already built is a contradiction the apply-time check rejects.
+#
+# Where a note cites a number, it was measured, not assumed. The three
+# `parallel_decode = true` image codecs were timed at one thread versus
+# eight before the flag was set, and heif -- which calls the threading
+# API but measured 1.00x -- is deliberately left false.
 
 schema = 1
 
@@ -29,18 +51,21 @@ parallel_decode = false
 range_reads = false
 pyramid = false
 http = false
-feasible = "unassessed"
+feasible = "no"
+note = "libaec is handed one HDF5/szip chunk at a time, so the container has already chosen the unit of streaming and the codec never sees a whole file. CCSDS 121 carries no block index to seek into either."
 
 [[codec]]
 name = "avif"
 multi_frame = false
 chunked = false
 streaming_decode = false
-parallel_decode = false
+parallel_decode = true
 range_reads = false
 pyramid = false
 http = false
-feasible = "unassessed"
+feasible = "gap"
+gaps = ["multi_frame", "chunked"]
+note = "libavif reads image sequences and progressive layers through avifDecoderNextImage and imageCount, neither of which we call, and AVIF grid images are tiles with their own item offsets. Decode already threads: measured 7.6x going from one core to eight."
 
 [[codec]]
 name = "b2nd"
@@ -51,7 +76,9 @@ parallel_decode = false
 range_reads = false
 pyramid = false
 http = false
-feasible = "unassessed"
+feasible = "gap"
+gaps = ["chunked", "parallel_decode"]
+note = "b2nd is n-dimensional Blosc2, where a slice maps onto a set of chunks and blosc2_context carries an nthreads field. Both are upstream API we do not call, and both are the reason the format exists."
 
 [[codec]]
 name = "bcn"
@@ -62,7 +89,9 @@ parallel_decode = false
 range_reads = false
 pyramid = false
 http = false
-feasible = "unassessed"
+feasible = "gap"
+gaps = ["chunked", "parallel_decode"]
+note = "every 4x4 block is independently decodable at a fixed byte offset, which is the whole point of block compression: a sub-rectangle is a block range and the blocks have no dependencies at all. We decode the entire surface in one pass."
 
 [[codec]]
 name = "bitshuffle"
@@ -73,7 +102,8 @@ parallel_decode = false
 range_reads = false
 pyramid = false
 http = false
-feasible = "unassessed"
+feasible = "no"
+note = "a bit permutation inside a block the container already sized. Streaming and chunking are decisions made by whatever holds the block."
 
 [[codec]]
 name = "blosc2"
@@ -84,7 +114,9 @@ parallel_decode = false
 range_reads = false
 pyramid = false
 http = false
-feasible = "unassessed"
+feasible = "gap"
+gaps = ["chunked", "parallel_decode"]
+note = "blosc2_getitem reads a range of items straight out of a compressed buffer without expanding the rest, and blosc2_context has an nthreads field. Blosc2 is already a chunked container; we call it as though it were a plain buffer codec."
 
 [[codec]]
 name = "bmp"
@@ -95,7 +127,9 @@ parallel_decode = false
 range_reads = false
 pyramid = false
 http = false
-feasible = "unassessed"
+feasible = "gap"
+gaps = ["streaming_decode"]
+note = "an uncompressed BMP is a header plus fixed-stride rows, so rows can be produced as bytes arrive and row N is computable arithmetic. The RLE4 and RLE8 variants are sequential and would not get this."
 
 [[codec]]
 name = "brotli"
@@ -106,7 +140,9 @@ parallel_decode = false
 range_reads = false
 pyramid = false
 http = false
-feasible = "unassessed"
+feasible = "gap"
+gaps = ["streaming_decode"]
+note = "BrotliDecoderDecompressStream decodes incrementally. A brotli stream carries no block index, so seeking into one is unavailable at any amount of effort."
 
 [[codec]]
 name = "brunsli"
@@ -117,7 +153,8 @@ parallel_decode = false
 range_reads = false
 pyramid = false
 http = false
-feasible = "unassessed"
+feasible = "no"
+note = "a whole-file JPEG recompression: the decoder rebuilds the original JPEG in a single pass and upstream exposes no incremental entry point."
 
 [[codec]]
 name = "byteshuffle"
@@ -128,7 +165,8 @@ parallel_decode = false
 range_reads = false
 pyramid = false
 http = false
-feasible = "unassessed"
+feasible = "no"
+note = "a byte permutation inside a block the container already sized; the filter never sees a whole file."
 
 [[codec]]
 name = "bz2"
@@ -139,7 +177,9 @@ parallel_decode = false
 range_reads = false
 pyramid = false
 http = false
-feasible = "unassessed"
+feasible = "gap"
+gaps = ["streaming_decode"]
+note = "BZ2_bzDecompress is incremental. bzip2's 900k blocks are independently decodable in principle, which is how bzip2recover works, but finding their boundaries means scanning the whole stream, so random access is not worth claiming."
 
 [[codec]]
 name = "cms"
@@ -150,7 +190,8 @@ parallel_decode = false
 range_reads = false
 pyramid = false
 http = false
-feasible = "unassessed"
+feasible = "no"
+note = "a color transform over pixels already in memory. There is no bitstream, so none of these dimensions are its to have."
 
 [[codec]]
 name = "czi"
@@ -161,7 +202,8 @@ parallel_decode = true
 range_reads = true
 pyramid = true
 http = true
-feasible = "unassessed"
+feasible = "done"
+note = "streaming, subblock random access, range reads, HTTP, multi-scene stacks and the pyramid CZI natively stores are all wired, and subblocks decode in parallel. Nothing the format offers is unbuilt."
 
 [[codec]]
 name = "deflate"
@@ -172,7 +214,9 @@ parallel_decode = false
 range_reads = false
 pyramid = false
 http = false
-feasible = "unassessed"
+feasible = "gap"
+gaps = ["streaming_decode"]
+note = "libdeflate is one-shot by design and ships no streaming API, so this means adding a zlib inflate path beside it rather than setting a flag. A raw deflate stream has no index, so seeking is out regardless."
 
 [[codec]]
 name = "delta"
@@ -183,7 +227,8 @@ parallel_decode = false
 range_reads = false
 pyramid = false
 http = false
-feasible = "unassessed"
+feasible = "no"
+note = "a prefix sum: element N depends on every element before it, so there is no boundary inside one buffer to seek to. The container picks the block, and the decode is already a nogil pass over it."
 
 [[codec]]
 name = "dicom"
@@ -194,7 +239,9 @@ parallel_decode = false
 range_reads = true
 pyramid = false
 http = false
-feasible = "unassessed"
+feasible = "gap"
+gaps = ["chunked", "http", "parallel_decode", "pyramid"]
+note = "the Basic Offset Table already gives per-frame offsets, so frame N is a seek and frames decode independently, and the reader reads at offsets so pointing it at HTTPDataSource is small. VL Whole Slide Microscopy DICOM is genuinely pyramidal, which is real but is a reader of its own rather than a missing switch."
 
 [[codec]]
 name = "dicomrle"
@@ -205,7 +252,8 @@ parallel_decode = false
 range_reads = false
 pyramid = false
 http = false
-feasible = "unassessed"
+feasible = "no"
+note = "the 64-byte header does give per-segment offsets, but the segments are byte planes of one image (high byte, then low byte), not independent regions: every pixel needs all of them. The offset table therefore buys no random access."
 
 [[codec]]
 name = "dm"
@@ -216,7 +264,9 @@ parallel_decode = false
 range_reads = false
 pyramid = false
 http = false
-feasible = "unassessed"
+feasible = "gap"
+gaps = ["streaming_decode", "range_reads", "http", "chunked"]
+note = "DM3 and DM4 tags carry absolute offsets to uncompressed image data, so a plane is an offset and a length. Nothing in the format requires reading the whole file; the reader simply does."
 
 [[codec]]
 name = "eer"
@@ -224,10 +274,12 @@ multi_frame = true
 chunked = true
 streaming_decode = true
 parallel_decode = false
-range_reads = false
+range_reads = true
 pyramid = false
 http = true
-feasible = "unassessed"
+feasible = "gap"
+gaps = ["parallel_decode"]
+note = "EER frames are independent electron-event bitstreams, so decoding them across threads needs no format work. There are no resolution levels, so there is no pyramid to expose."
 
 [[codec]]
 name = "emd"
@@ -238,7 +290,9 @@ parallel_decode = false
 range_reads = false
 pyramid = false
 http = false
-feasible = "unassessed"
+feasible = "gap"
+gaps = ["streaming_decode", "chunked", "range_reads", "http"]
+note = "EMD is HDF5, and the hdf5 backend here already streams, reads chunks and serves over range requests; the emd reader does not go through it. A wiring gap, not a format limit."
 
 [[codec]]
 name = "fits"
@@ -249,7 +303,9 @@ parallel_decode = false
 range_reads = true
 pyramid = false
 http = true
-feasible = "unassessed"
+feasible = "gap"
+gaps = ["chunked", "parallel_decode"]
+note = "tile-compressed FITS stores a per-tile byte offset in its binary table, so a tile is a seek and tiles decode independently. FITS has no resolution levels, so there is no pyramid."
 
 [[codec]]
 name = "floatpred"
@@ -260,7 +316,8 @@ parallel_decode = false
 range_reads = false
 pyramid = false
 http = false
-feasible = "unassessed"
+feasible = "no"
+note = "TIFF's floating-point predictor: a byte shuffle plus a delta across one scanline. The scanline is the unit, and tiff chose it."
 
 [[codec]]
 name = "gif"
@@ -271,7 +328,9 @@ parallel_decode = false
 range_reads = false
 pyramid = false
 http = false
-feasible = "unassessed"
+feasible = "gap"
+gaps = ["range_reads", "http"]
+note = "frames are sequential LZW carrying disposal state, so frame N really does require the frames before it and chunked is unavailable at any effort. Fetching the file itself by ranges still is."
 
 [[codec]]
 name = "gzip"
@@ -282,7 +341,9 @@ parallel_decode = false
 range_reads = false
 pyramid = false
 http = false
-feasible = "unassessed"
+feasible = "gap"
+gaps = ["streaming_decode"]
+note = "gzip is the streaming case by construction, which is what gzip(1) does; the binding is one-shot. Random access needs an index built by a full pass, so it is not part of the format."
 
 [[codec]]
 name = "hdf5"
@@ -290,10 +351,12 @@ multi_frame = true
 chunked = true
 streaming_decode = true
 parallel_decode = false
-range_reads = false
+range_reads = true
 pyramid = false
 http = true
-feasible = "unassessed"
+feasible = "gap"
+gaps = ["parallel_decode"]
+note = "chunks are independent and the B-tree already gives their offsets, so multi-core chunk decode needs no format work. HDF5 itself has no pyramid; that is a convention layered on top, and belongs to the layer that defines it."
 
 [[codec]]
 name = "heif"
@@ -304,7 +367,9 @@ parallel_decode = false
 range_reads = false
 pyramid = false
 http = false
-feasible = "unassessed"
+feasible = "gap"
+gaps = ["multi_frame", "chunked"]
+note = "HEIF grid images are tiles with their own item offsets, and HEIF holds image sequences; we decode only the primary image. Threading is already requested via heif_context_set_max_decoding_threads, but an untiled image measures 1.00x from one core to eight, so parallel_decode is false on purpose."
 
 [[codec]]
 name = "htj2k"
@@ -315,7 +380,9 @@ parallel_decode = false
 range_reads = false
 pyramid = false
 http = false
-feasible = "unassessed"
+feasible = "gap"
+gaps = ["pyramid"]
+note = "openjph's restrict_input_resolution(skipped_res_for_data, skipped_res_for_recon) decodes at a reduced resolution without touching the fine subbands, which is the cheap thumbnail HTJ2K exists for. openjph 0.27's public headers expose no threading API, so parallel decode is not ours to call."
 
 [[codec]]
 name = "jpeg"
@@ -326,18 +393,22 @@ parallel_decode = false
 range_reads = false
 pyramid = false
 http = false
-feasible = "unassessed"
+feasible = "gap"
+gaps = ["streaming_decode", "pyramid"]
+note = "jpeg_read_scanlines decodes row by row, and scale_num/scale_denom give 1/2, 1/4 and 1/8 straight out of the IDCT, which is a real and very cheap pyramid. Restart markers would allow parallel strips, but libjpeg-turbo exposes no entry point for it."
 
 [[codec]]
 name = "jpeg2k"
 multi_frame = false
 chunked = false
 streaming_decode = false
-parallel_decode = false
+parallel_decode = true
 range_reads = false
 pyramid = false
 http = false
-feasible = "unassessed"
+feasible = "gap"
+gaps = ["pyramid", "chunked"]
+note = "opj_set_decoded_resolution_factor decodes at 1/2, 1/4 and onward straight from the wavelet levels, and opj_get_decoded_tile fetches a single tile. Those two are most of why JPEG 2000 exists for large imagery. Threading is already wired: measured 6.6x from one core to eight."
 
 [[codec]]
 name = "jpegls"
@@ -348,18 +419,21 @@ parallel_decode = false
 range_reads = false
 pyramid = false
 http = false
-feasible = "unassessed"
+feasible = "no"
+note = "CharLS exposes only charls_jpegls_decoder_decode_to_buffer, a whole-image call: there is no scanline or region entry point to build streaming on, and JPEG-LS has no tiles."
 
 [[codec]]
 name = "jxl"
 multi_frame = true
 chunked = true
 streaming_decode = true
-parallel_decode = false
+parallel_decode = true
 range_reads = false
 pyramid = false
-http = true
-feasible = "unassessed"
+http = false
+feasible = "gap"
+gaps = ["pyramid"]
+note = "JXL's progressive DC is an 8x downsampled image sitting inside the bitstream, reachable through JxlDecoderSetProgressiveDetail(kDC) with JXL_DEC_FRAME_PROGRESSION -- a preview from the first few kilobytes. http is false deliberately: jxl.open_http issues one whole-file GET because libjxl wants the whole stream, which is not a range read. Decode threads already: measured 4.8x."
 
 [[codec]]
 name = "lerc"
@@ -370,7 +444,8 @@ parallel_decode = false
 range_reads = false
 pyramid = false
 http = false
-feasible = "unassessed"
+feasible = "no"
+note = "LERC's blocks are entropy-coded back to back with no offset table, and Lerc_c_api decodes a whole blob. Multiple bands are already handled inside one decode call."
 
 [[codec]]
 name = "lif"
@@ -381,7 +456,9 @@ parallel_decode = false
 range_reads = true
 pyramid = false
 http = true
-feasible = "unassessed"
+feasible = "gap"
+gaps = ["chunked"]
+note = "LIF's XML header gives each plane's absolute offset and length, so a plane is a seek. The format stores no resolution levels, so there is no pyramid to expose."
 
 [[codec]]
 name = "lz4"
@@ -392,7 +469,9 @@ parallel_decode = false
 range_reads = false
 pyramid = false
 http = false
-feasible = "unassessed"
+feasible = "gap"
+gaps = ["streaming_decode"]
+note = "LZ4F has a streaming decompressor. Per-block random access would need LZ4F_blockIndependent plus an index the frame format has nowhere to store, so it is unavailable without inventing a sidecar."
 
 [[codec]]
 name = "lzma"
@@ -403,7 +482,9 @@ parallel_decode = false
 range_reads = false
 pyramid = false
 http = false
-feasible = "unassessed"
+feasible = "gap"
+gaps = ["streaming_decode", "chunked"]
+note = ".xz carries a block index in its footer and liblzma exposes it through lzma_index, so seeking to a block is genuinely in the format. Raw LZMA1 streams have no index and stay whole-file."
 
 [[codec]]
 name = "mozjpeg"
@@ -414,7 +495,9 @@ parallel_decode = false
 range_reads = false
 pyramid = false
 http = false
-feasible = "unassessed"
+feasible = "gap"
+gaps = ["streaming_decode", "pyramid"]
+note = "the same decoder surface as jpeg: scanline decode and IDCT scaling at 1/2, 1/4 and 1/8 are both there and both unused. mozjpeg's differences from libjpeg-turbo are all on the encode side."
 
 [[codec]]
 name = "mrc"
@@ -425,7 +508,9 @@ parallel_decode = false
 range_reads = true
 pyramid = false
 http = false
-feasible = "unassessed"
+feasible = "gap"
+gaps = ["chunked", "http"]
+note = "MRC is a 1024-byte header followed by a contiguous volume, the easiest possible case for range requests: slice N is a fixed offset and a fixed length. Decode is a memcpy, so threading it would buy nothing."
 
 [[codec]]
 name = "nd2"
@@ -436,7 +521,9 @@ parallel_decode = false
 range_reads = true
 pyramid = false
 http = true
-feasible = "unassessed"
+feasible = "gap"
+gaps = ["parallel_decode"]
+note = "chunks are independent, so decoding them across threads needs no format work. ND2 stores no resolution levels."
 
 [[codec]]
 name = "nifti"
@@ -447,7 +534,9 @@ parallel_decode = false
 range_reads = false
 pyramid = false
 http = false
-feasible = "unassessed"
+feasible = "gap"
+gaps = ["streaming_decode", "chunked", "range_reads", "http"]
+note = "an uncompressed .nii is a 348-byte header and a contiguous volume, so a slice is an offset -- which is exactly how browser neuroimaging viewers fetch data. A .nii.gz is one deflate stream and gets none of it."
 
 [[codec]]
 name = "none"
@@ -458,7 +547,8 @@ parallel_decode = false
 range_reads = false
 pyramid = false
 http = false
-feasible = "unassessed"
+feasible = "no"
+note = "the identity codec, which exists so a container can say 'stored'. The container's own offsets already give random access; there is nothing here to make faster."
 
 [[codec]]
 name = "nrrd"
@@ -469,7 +559,9 @@ parallel_decode = false
 range_reads = true
 pyramid = false
 http = false
-feasible = "unassessed"
+feasible = "gap"
+gaps = ["streaming_decode", "chunked", "http"]
+note = "raw and detached NRRD put the data contiguously at a known offset, so slices are seeks and the reader already reads at offsets. The gzip and bzip2 encodings are single streams and stay whole-file."
 
 [[codec]]
 name = "numpy"
@@ -480,7 +572,9 @@ parallel_decode = false
 range_reads = false
 pyramid = false
 http = false
-feasible = "unassessed"
+feasible = "gap"
+gaps = ["streaming_decode", "chunked", "range_reads", "http"]
+note = ".npy is a short header followed by a contiguous C-order buffer, so a slice is an offset and a length -- what np.load(mmap_mode=) exploits locally, and nothing stops the same arithmetic driving range requests."
 
 [[codec]]
 name = "oib"
@@ -491,7 +585,9 @@ parallel_decode = false
 range_reads = false
 pyramid = false
 http = true
-feasible = "unassessed"
+feasible = "gap"
+gaps = ["chunked", "range_reads"]
+note = "OIB is an OLE compound file whose directory gives every stream's sector chain, so a plane is addressable without reading the whole archive; _ole2 already walks those chains."
 
 [[codec]]
 name = "oir"
@@ -502,7 +598,9 @@ parallel_decode = false
 range_reads = true
 pyramid = false
 http = false
-feasible = "unassessed"
+feasible = "gap"
+gaps = ["streaming_decode", "http"]
+note = "the reader already seeks to block offsets, so serving those same offsets from HTTPDataSource is wiring rather than new parsing."
 
 [[codec]]
 name = "packints"
@@ -513,7 +611,8 @@ parallel_decode = false
 range_reads = false
 pyramid = false
 http = false
-feasible = "unassessed"
+feasible = "no"
+note = "unpacks sub-byte samples out of a buffer whose length the container fixed. The decode is one vectorized pass; there is no file here to stream."
 
 [[codec]]
 name = "pcodec"
@@ -524,7 +623,8 @@ parallel_decode = false
 range_reads = false
 pyramid = false
 http = false
-feasible = "unassessed"
+feasible = "no"
+note = "pcodec's wrapped format does have chunks, but the C surface it ships and we bind is pco_standalone_simple_compress_into / _decompress_into, which is whole-buffer. Per-chunk decode would mean binding a Rust API that has no C entry point today."
 
 [[codec]]
 name = "png"
@@ -535,7 +635,9 @@ parallel_decode = false
 range_reads = false
 pyramid = false
 http = false
-feasible = "unassessed"
+feasible = "gap"
+gaps = ["streaming_decode"]
+note = "libspng has SPNG_DECODE_PROGRESSIVE with spng_decode_row and a spng_set_png_stream read callback, so rows can come out as bytes arrive. PNG has no tiles, so there is nothing to seek to, and Adam7 interlace gives seven passes rather than a resolution pyramid."
 
 [[codec]]
 name = "qoi"
@@ -546,7 +648,8 @@ parallel_decode = false
 range_reads = false
 pyramid = false
 http = false
-feasible = "unassessed"
+feasible = "no"
+note = "decoding position N needs every byte before it: QOI carries a running 64-entry hash table across the whole stream. Row-wise output could be bolted onto the vendored decoder, but the format targets images small enough that the whole buffer is already in memory."
 
 [[codec]]
 name = "quantize"
@@ -557,7 +660,8 @@ parallel_decode = false
 range_reads = false
 pyramid = false
 http = false
-feasible = "unassessed"
+feasible = "no"
+note = "a lossy rounding filter applied before a real compressor. It has no bitstream of its own."
 
 [[codec]]
 name = "rcomp"
@@ -568,7 +672,8 @@ parallel_decode = false
 range_reads = false
 pyramid = false
 http = false
-feasible = "unassessed"
+feasible = "no"
+note = "Rice compression of a single FITS tile. The tiling and the per-tile offsets live in the FITS file, and the fits reader is where that work belongs."
 
 [[codec]]
 name = "rgbe"
@@ -579,7 +684,9 @@ parallel_decode = false
 range_reads = false
 pyramid = false
 http = false
-feasible = "unassessed"
+feasible = "gap"
+gaps = ["streaming_decode"]
+note = "Radiance .hdr is RLE per scanline, so rows can be produced as they arrive. There is no scanline offset table, so they cannot be seeked to."
 
 [[codec]]
 name = "snappy"
@@ -590,7 +697,9 @@ parallel_decode = false
 range_reads = false
 pyramid = false
 http = false
-feasible = "unassessed"
+feasible = "gap"
+gaps = ["streaming_decode"]
+note = "the framing format is a sequence of self-contained chunks and decodes incrementally; the raw format we read and write is one-shot and has no index to seek with."
 
 [[codec]]
 name = "sperr"
@@ -601,7 +710,9 @@ parallel_decode = false
 range_reads = false
 pyramid = false
 http = false
-feasible = "unassessed"
+feasible = "gap"
+gaps = ["streaming_decode"]
+note = "SPERR's bitstream is embedded, and SPERR3D_Stream_Tools exposes progressive_read and progressive_truncate: a prefix of the file decodes to a lower-quality version of the whole volume. That is quality progression rather than a tile index, so it buys early preview, not random access."
 
 [[codec]]
 name = "sz3"
@@ -612,7 +723,8 @@ parallel_decode = false
 range_reads = false
 pyramid = false
 http = false
-feasible = "unassessed"
+feasible = "no"
+note = "SZ3 entropy-codes the whole array as one unit: there are no independently decodable blocks in the bitstream, and upstream exposes no incremental entry point."
 
 [[codec]]
 name = "tiff"
@@ -623,7 +735,9 @@ parallel_decode = false
 range_reads = true
 pyramid = true
 http = true
-feasible = "unassessed"
+feasible = "gap"
+gaps = ["parallel_decode"]
+note = "tiles and strips are independent and their offsets are already in hand, so decoding them across threads is the one remaining win. Everything else the format offers -- streaming, tile random access, range reads, HTTP, multi-page, SubIFD pyramids -- is built."
 
 [[codec]]
 name = "vsi"
@@ -634,7 +748,9 @@ parallel_decode = false
 range_reads = false
 pyramid = false
 http = false
-feasible = "unassessed"
+feasible = "gap"
+gaps = ["pyramid", "range_reads", "http"]
+note = "VSI is an Olympus whole-slide format and stores a real resolution pyramid in its ETS files, which makes this the highest-value gap here: it is the format most likely to be opened over a network at one zoom level. The tile offsets the reader already uses would serve range requests directly."
 
 [[codec]]
 name = "webp"
@@ -645,7 +761,9 @@ parallel_decode = false
 range_reads = false
 pyramid = false
 http = false
-feasible = "unassessed"
+feasible = "gap"
+gaps = ["streaming_decode", "multi_frame"]
+note = "WebPIAppend decodes incrementally as bytes arrive, and WebPAnimDecoder reads animated WebP, which we do not read at all today. libwebp's threading is an encoder setting (WebPConfig.thread_level), so decode stays on one core: measured 1.00x."
 
 [[codec]]
 name = "xor"
@@ -656,7 +774,8 @@ parallel_decode = false
 range_reads = false
 pyramid = false
 http = false
-feasible = "unassessed"
+feasible = "no"
+note = "out[i] depends on out[i-dist], the same serial chain as delta. There is no boundary inside one buffer to seek to, and the container picks the block."
 
 [[codec]]
 name = "zfp"
@@ -667,7 +786,9 @@ parallel_decode = false
 range_reads = false
 pyramid = false
 http = false
-feasible = "unassessed"
+feasible = "gap"
+gaps = ["chunked", "parallel_decode"]
+note = "in fixed-rate mode every 4^d block occupies the same number of bits, so a block's position is arithmetic and zfp_decode_block_* is the per-block entry point: true random access, which is what fixed-rate mode exists for. The variable-rate modes cannot do this, so it would be a fixed-rate-only path."
 
 [[codec]]
 name = "zstd"
@@ -678,4 +799,6 @@ parallel_decode = false
 range_reads = false
 pyramid = false
 http = false
-feasible = "unassessed"
+feasible = "gap"
+gaps = ["streaming_decode"]
+note = "ZSTD_decompressStream decodes without holding the whole frame. Random access into one frame is not possible: there is no index, and the seekable format is a separate container rather than a mode."

@@ -17,10 +17,12 @@ mechanical field from the code and fails when the two disagree:
     python ci/check_capabilities.py sync     rewrite the derived fields
     python ci/check_capabilities.py report   what is done, what is not
 
-`feasible` is the one field the code cannot derive, because it is a
-judgement about the format rather than a fact about the tree. It is
-carried through untouched, and `report` lists the codecs where it is
-still "unassessed" -- that list is the worklist.
+`feasible` and `gaps` are the fields the code cannot derive, because
+they are judgments about the format rather than facts about the tree.
+They are carried through untouched by `sync`, and `report` adds them up:
+for each capability, how many codecs have it, and how many could. That
+second number is the worklist, and keeping it separate from "the format
+cannot do this" is the entire point of the file.
 """
 
 from __future__ import annotations
@@ -36,6 +38,9 @@ MANIFEST = ROOT / "capabilities.toml"
 # Mechanically derivable: each is a fact about the tree, not an opinion.
 DERIVED = ("multi_frame", "chunked", "streaming_decode", "parallel_decode",
            "range_reads", "pyramid", "http")
+# Same fields, ordered the way a caller cares about them.
+DERIVED_ORDER = ("streaming_decode", "chunked", "range_reads", "http",
+                 "multi_frame", "pyramid", "parallel_decode")
 
 
 def _load():
@@ -64,9 +69,28 @@ def derive() -> dict[str, dict]:
     import opencodecs as oc
 
     src = ROOT / "src/opencodecs"
-    range_capable = _grep("open_read_at\\|read_at(")
+    # Reaching storage by offset. `read_at=` matters as much as
+    # `read_at(`: a reader that takes the callable and threads it into a
+    # shared stream (_eer_reader does exactly this) is doing range reads
+    # without ever spelling the call itself, and the narrower pattern
+    # recorded that as a `false`.
+    range_capable = _grep("open_read_at\\|read_at(\\|read_at=\\|read_many(")
     pyramid_files = _grep("PyramidReader")
-    http_files = _grep("HTTPDataSource")
+
+    # `http` is meant to say "fetches only the bytes it needs", not
+    # merely "accepts a URL". jxl.py names HTTPDataSource only in a
+    # docstring, to point callers at the formats that do have it, and
+    # gets its own bytes from a single whole-file GET -- so the bare
+    # name marked it `true` for a capability its docstring denies.
+    #
+    # The exclusion is aimed at that specific shape rather than at
+    # "no offsets in this file", because a reader can perfectly well
+    # delegate its seeking: _oib_codec hands the source to _ole2, which
+    # does the offset arithmetic, and requiring the call site to be in
+    # the codec's own file would record oib as a false.
+    whole_file_get = _grep("http_fetch_all")
+    http_files = {f for f in _grep("HTTPDataSource")
+                  if f in range_capable or f not in whole_file_get}
 
     def files_for(name: str) -> set[str]:
         return {str(p.relative_to(ROOT)) for p in src.rglob(f"*{name}*")
@@ -112,6 +136,37 @@ def cmd_verify(args) -> int:
                       f"code says {want}")
                 bad += 1
 
+        # The judgment fields cannot be re-derived, but they can still
+        # contradict themselves, and a contradiction is how a worklist
+        # turns into decoration. A gap has to name a real capability
+        # that is really missing, and the verdict has to agree with
+        # whether anything is listed.
+        rec = recorded[name]
+        verdict = rec.get("feasible")
+        gaps = rec.get("gaps") or []
+        if verdict not in ("done", "gap", "no", "unassessed"):
+            print(f"  BAD         {name}.feasible: {verdict!r} is not one "
+                  f"of done/gap/no/unassessed")
+            bad += 1
+        if verdict == "gap" and not gaps:
+            print(f"  BAD         {name}: feasible=gap but nothing listed")
+            bad += 1
+        if verdict in ("done", "no") and gaps:
+            print(f"  BAD         {name}: feasible={verdict} but lists "
+                  f"gaps {gaps}")
+            bad += 1
+        if verdict != "unassessed" and not rec.get("note"):
+            print(f"  BAD         {name}: judged {verdict!r} with no reason")
+            bad += 1
+        for g in gaps:
+            if g not in DERIVED:
+                print(f"  BAD         {name}: {g!r} is not a capability")
+                bad += 1
+            elif actual[name][g]:
+                print(f"  BAD         {name}: lists {g} as a gap, but the "
+                      f"code already has it")
+                bad += 1
+
     print(f"{len(actual)} codecs; {bad} discrepancy(ies)")
     return 1 if bad else 0
 
@@ -132,6 +187,9 @@ def cmd_sync(args) -> int:
             lines.append(f"{field} = {str(actual[name][field]).lower()}")
         prev = old.get(name, {})
         lines.append(f'feasible = "{prev.get("feasible", "unassessed")}"')
+        if prev.get("gaps"):
+            inner = ", ".join(f'"{g}"' for g in prev["gaps"])
+            lines.append(f"gaps = [{inner}]")
         if prev.get("note"):
             note = prev["note"].replace('"', '\\"')
             lines.append(f'note = "{note}"')
@@ -145,29 +203,43 @@ def cmd_report(args) -> int:
     recorded = _load()
     n = len(recorded)
     print(f"{n} codecs\n")
-    print(f"{'capability':18s} {'have':>5s}  what it buys a caller")
-    print("-" * 74)
     blurb = {
         "streaming_decode": "decode without holding the whole file",
         "chunked": "fetch tile N without decoding 0..N-1",
-        "range_reads": "open over HTTP without downloading it",
-        "http": "a data source that speaks range requests",
+        "range_reads": "reaches storage by offset, not whole-file",
+        "http": "fetches only the bytes it needs over HTTP",
         "multi_frame": "stacks and animations",
         "pyramid": "open at a resolution that fits the screen",
-        "parallel_decode": "more than one core on one image",
+        "parallel_decode": "more than one core on ONE image",
     }
-    for field in ("streaming_decode", "chunked", "range_reads", "http",
-                  "multi_frame", "pyramid", "parallel_decode"):
+    print(f"{'capability':18s} {'have':>5s} {'+can':>5s}  "
+          f"what it buys a caller")
+    print("-" * 74)
+    for field in DERIVED_ORDER:
         have = sum(1 for c in recorded if c.get(field))
-        print(f"{field:18s} {have:3d}/{n}  {blurb[field]}")
+        can = sum(1 for c in recorded if field in (c.get("gaps") or []))
+        print(f"{field:18s} {have:3d}/{n} {'+' + str(can):>5s}  {blurb[field]}")
+    print("\n'have' is built. '+can' is feasible and not built: the work "
+          "this file exists\nto keep visible, rather than letting it blur "
+          "into what the format cannot do.")
 
     un = [c["name"] for c in recorded if c.get("feasible") == "unassessed"]
-    print(f"\nfeasibility not yet judged for {len(un)} codec(s).")
-    print("That is the worklist: for each, is the missing capability")
-    print("impossible for the format, or merely not built yet?")
-    if args.verbose and un:
+    if un:
+        print(f"\nfeasibility not yet judged for {len(un)} codec(s):")
         for i in range(0, len(un), 8):
             print("  " + " ".join(un[i:i + 8]))
+
+    gapped = [c for c in recorded if c.get("gaps")]
+    done = [c["name"] for c in recorded if c.get("feasible") == "done"]
+    shut = [c["name"] for c in recorded if c.get("feasible") == "no"]
+    print(f"\n{len(gapped)} codec(s) with feasible work left, "
+          f"{sum(len(c['gaps']) for c in gapped)} capability(ies) in total.")
+    print(f"{len(done)} complete; {len(shut)} where nothing further is "
+          f"available (see each note for why).")
+    if args.verbose:
+        print()
+        for c in sorted(gapped, key=lambda c: -len(c["gaps"])):
+            print(f"  {c['name']:10s} {', '.join(c['gaps'])}")
     return 0
 
 
