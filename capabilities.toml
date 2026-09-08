@@ -238,10 +238,10 @@ streaming_decode = true
 parallel_decode = false
 range_reads = true
 pyramid = false
-http = false
+http = true
 feasible = "gap"
-gaps = ["chunked", "http", "parallel_decode", "pyramid"]
-note = "the Basic Offset Table already gives per-frame offsets, so frame N is a seek and frames decode independently, and the reader reads at offsets so pointing it at HTTPDataSource is small. VL Whole Slide Microscopy DICOM is genuinely pyramidal, which is real but is a reader of its own rather than a missing switch."
+gaps = ["chunked", "parallel_decode", "pyramid"]
+note = "the Basic Offset Table already gives per-frame offsets, so frame N is a seek and frames decode independently. HTTP is already there: the reader opens through core.open_read_at, which turns a URL into an HTTPDataSource. VL Whole Slide Microscopy DICOM is genuinely pyramidal, which is real but is a reader of its own rather than a missing switch."
 
 [[codec]]
 name = "dicomrle"
@@ -507,10 +507,10 @@ streaming_decode = true
 parallel_decode = false
 range_reads = true
 pyramid = false
-http = false
+http = true
 feasible = "gap"
-gaps = ["chunked", "http"]
-note = "MRC is a 1024-byte header followed by a contiguous volume, the easiest possible case for range requests: slice N is a fixed offset and a fixed length. Decode is a memcpy, so threading it would buy nothing."
+gaps = ["chunked"]
+note = "MRC is a 1024-byte header followed by a contiguous volume, so slice N is a fixed offset and a fixed length -- reading one slice out of a remote volume is already served, via core.open_read_at. What is left is exposing that as chunk access rather than whole-array reads. Decode is a memcpy, so threading it would buy nothing."
 
 [[codec]]
 name = "nd2"
@@ -558,10 +558,10 @@ streaming_decode = false
 parallel_decode = false
 range_reads = true
 pyramid = false
-http = false
+http = true
 feasible = "gap"
-gaps = ["streaming_decode", "chunked", "http"]
-note = "raw and detached NRRD put the data contiguously at a known offset, so slices are seeks and the reader already reads at offsets. The gzip and bzip2 encodings are single streams and stay whole-file."
+gaps = ["streaming_decode", "chunked"]
+note = "raw and detached NRRD put the data contiguously at a known offset, so slices are seeks, and the reader already reads at offsets over HTTP through core.open_read_at. The gzip and bzip2 encodings are single streams and stay whole-file."
 
 [[codec]]
 name = "numpy"

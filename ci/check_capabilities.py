@@ -88,9 +88,17 @@ def derive() -> dict[str, dict]:
     # delegate its seeking: _oib_codec hands the source to _ole2, which
     # does the offset arithmetic, and requiring the call site to be in
     # the codec's own file would record oib as a false.
+    #
+    # The other direction of the same delegation problem: core's
+    # open_read_at() turns an http(s) URL into an HTTPDataSource itself,
+    # so every reader that opens through it already serves range
+    # requests without naming the class. dicom, mrc and nrrd all do, and
+    # all three were recorded as `false` for a capability the README
+    # documents them as having.
     whole_file_get = _grep("http_fetch_all")
     http_files = {f for f in _grep("HTTPDataSource")
                   if f in range_capable or f not in whole_file_get}
+    http_files |= _grep("open_read_at")
 
     def files_for(name: str) -> set[str]:
         return {str(p.relative_to(ROOT)) for p in src.rglob(f"*{name}*")
