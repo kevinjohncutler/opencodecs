@@ -177,7 +177,8 @@ def encode(arr, *,
 
         if zfp_write_header(zstream, field, ZFP_HEADER_FULL) == 0:
             raise ZfpError("zfp_write_header failed")
-        nbytes = zfp_compress(zstream, field)
+        with nogil:
+            nbytes = zfp_compress(zstream, field)
         if nbytes == 0:
             raise ZfpError("zfp_compress failed")
         out_size = <Py_ssize_t> stream_size(bs)
@@ -273,7 +274,11 @@ def decode(data, *, out=None) -> 'np.ndarray':
             out_arr = np.empty(shape, dtype=dtype)
         zfp_field_set_pointer(field, <void*> out_arr.data)
 
-        rc = zfp_decompress(zstream, field)
+        # zfp works over the bit stream and the field pointer, both
+        # raw, and touches nothing Python. Held, the GIL made every
+        # caller decoding blocks on threads measure 1.00x.
+        with nogil:
+            rc = zfp_decompress(zstream, field)
         if rc == 0:
             raise ZfpError("zfp_decompress failed")
     finally:

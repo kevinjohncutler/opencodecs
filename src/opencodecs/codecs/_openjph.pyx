@@ -284,6 +284,8 @@ def decode(data, *, bint ignore_unsupported=False,
         int bit_depth = 0, is_signed_out = 0
         int ndecomp = 0
         int bytes_per_sample, rc
+        void* planar_ptr
+        size_t planar_nbytes
         cnp.ndarray planar
         cnp.npy_intp shape[3]
         int ndim
@@ -301,11 +303,11 @@ def decode(data, *, bint ignore_unsupported=False,
 
     # Sized at the SAME reduction the decode will use, so the buffer
     # matches the reconstructed extent rather than the full image.
-    rc = opencodecs_htj2k_decode_info(
-        <const void*> &src[0], srcsize, reduce,
-        &width, &height, &components, &bit_depth, &is_signed_out,
-        &ndecomp,
-    )
+    with nogil:
+        rc = opencodecs_htj2k_decode_info(
+            <const void*> &src[0], srcsize, reduce,
+            &width, &height, &components, &bit_depth, &is_signed_out,
+            &ndecomp)
     if rc != 0:
         _raise(rc, "decode_info")
 
@@ -332,13 +334,19 @@ def decode(data, *, bint ignore_unsupported=False,
 
     planar = cnp.PyArray_EMPTY(ndim, shape, npy_type, 0)
 
-    rc = opencodecs_htj2k_decode(
-        <const void*> &src[0], srcsize,
-        <void*> cnp.PyArray_DATA(planar),
-        <size_t> planar.nbytes,
-        bytes_per_sample,
-        reduce,
-    )
+    # OpenJPH works over raw pointers here and its warning buffer in
+    # the shim is already thread_local, so nothing in the decode
+    # touches Python or shared state. The pxd declared these nogil,
+    # meaning "safe to call without the GIL", but the call sites never
+    # dropped it -- so htj2k measured 1.12x on four threads while every
+    # neighbouring codec reached 3.8x.
+    planar_ptr = <void*> cnp.PyArray_DATA(planar)
+    planar_nbytes = <size_t> planar.nbytes
+    with nogil:
+        rc = opencodecs_htj2k_decode(
+            <const void*> &src[0], srcsize,
+            planar_ptr, planar_nbytes,
+            bytes_per_sample, reduce)
     if rc != 0:
         _raise(rc, "decode")
 

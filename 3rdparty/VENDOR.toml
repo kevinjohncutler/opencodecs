@@ -127,10 +127,19 @@ stale copy crashed. Re-check on every cfitsio release."""
   local = "3rdparty/cfitsio/fits_hdecompress.c"
   upstream = "fits_hdecompress.c"
   ref = "cfitsio-4.6.4"
-  note = """Byte-identical to 4.6.4, one release behind the rest of this \
-directory. Checked: 4.6.4 -> 4.7.0 changed only comments describing the \
-`na` parameter, so there is no fix being missed. Bump with the next \
-real change."""
+  modified = true
+  note = """4.6.4, one release behind the rest of this directory. Checked: \
+4.6.4 -> 4.7.0 changed only comments describing the `na` parameter, so there \
+is no fix being missed. Bump with the next real change.
+
+One local patch, three lines: the file-scope `nextchar`, `buffer2` and \
+`bits_to_go` are marked thread-local. They are the bit reader's position, \
+not shared configuration, and cfitsio never intended two decodes to \
+overlap -- but the tiles of one compressed FITS HDU are independent \
+codestreams and we decode them on a thread pool, which corrupts that state \
+and returns status=414 on every tile after the first. Single-threaded \
+behavior is unchanged. Carry the patch forward on any update; the macro is \
+OC_THREAD_LOCAL, defined next to the min/max compatibility defines."""
   [[component.file]]
   local = "3rdparty/cfitsio/ricecomp.c"
   upstream = "ricecomp.c"

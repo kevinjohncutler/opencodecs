@@ -74,16 +74,23 @@ def test_a_chunked_codec_does_not_use_the_walking_default():
         f"__getitem__: {offenders}")
 
 
-def test_eer_no_longer_claims_cheap_random_access():
-    """The claim this file exists because of.
+def test_eer_random_access_is_cheap_and_says_so():
+    """The claim this file exists because of, now the other way round.
 
-    EER frames are independent, so real random access is buildable --
-    it is simply not built, which the manifest now records as a gap
-    rather than as done.
+    EER frames are independent and sit at their own IFD offsets, so
+    cheap random access was always buildable; it simply was not built,
+    and chunked said otherwise. EerReader indexes at the offset now, so
+    the flag is True and the timing test in test_eer_parallel.py is
+    what keeps it honest.
     """
     if not oc.has_codec("eer"):
         pytest.skip("eer not built here")
-    assert oc.get_codec("eer").chunked is False
+    codec = oc.get_codec("eer")
+    assert codec.chunked is True
+    from opencodecs._eer_reader import EerReader
+    assert "__getitem__" in EerReader.__dict__, (
+        "chunked=True with the inherited walking __getitem__ is the "
+        "exact contradiction this file was written for")
 
 
 def test_gif_offers_indexing_without_claiming_it_is_cheap():

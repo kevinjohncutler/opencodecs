@@ -3,9 +3,15 @@
 Every correctness test passes either way, so nothing else in this suite
 can tell the difference. What it costs is that any caller decoding
 frames on a thread pool -- multi-frame DICOM, a tile fan-out, a batch
-of files -- pays the pool's overhead to take turns. jpeg2k, mozjpeg and
-charls all did this, and all three measured 0.94x to 1.00x on eight
-threads before the fix.
+of files -- pays the pool's overhead to take turns.
+
+Five codecs did this and none of them looked different from the ones
+that did not: jpeg2k, mozjpeg, charls, zfp and openjph, all measuring
+0.94x to 1.12x where their neighbours reached 3.7x to 3.9x on the same
+four threads. openjph is the one worth remembering: its .pxd already
+declared the shim functions ``nogil``, which means "safe to call
+without the GIL" and not "called without the GIL", so reading the
+declaration rather than measuring would have cleared it.
 
 The threshold is deliberately far below the ~7x these actually reach.
 This is a regression guard against a nogil block being dropped, not a
@@ -63,11 +69,19 @@ def gray16():
     return np.random.default_rng(1).integers(0, 4000, (512, 512)).astype("u2")
 
 
+@pytest.fixture(scope="module")
+def volume():
+    """zfp is a float-array codec, not an image one."""
+    return np.random.default_rng(2).normal(0, 1, (64, 128, 128)).astype("f4")
+
+
 @needs_cores
 @pytest.mark.parametrize("name,fixture", [
     ("jpeg2k", "gray16"),
     ("jpegls", "gray16"),
     ("mozjpeg", "rgb"),
+    ("htj2k", "rgb"),
+    ("zfp", "volume"),
     ("jpeg", "rgb"),
     ("webp", "rgb"),
 ])
