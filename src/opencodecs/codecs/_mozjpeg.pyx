@@ -248,6 +248,8 @@ def decode(data, *, out=None, scale=None,
         cnp.npy_intp shape[3]
         int ndim
         tuple expected_shape
+        unsigned char* dst_ptr
+        int pitch
 
     s_num, s_den = _resolve_scale(scale, scale_num, scale_denom)
     if (s_num, s_den) != (1, 1):
@@ -268,10 +270,10 @@ def decode(data, *, out=None, scale=None,
     if handle == NULL:
         raise MozJpegError('tjInitDecompress failed')
     try:
-        rc = tjDecompressHeader3(
-            handle, &src[0], srcsize,
-            &full_width, &full_height, &subsamp, &colorspace,
-        )
+        with nogil:
+            rc = tjDecompressHeader3(
+                handle, &src[0], srcsize,
+                &full_width, &full_height, &subsamp, &colorspace)
         if rc < 0:
             err = tjGetErrorStr2(handle).decode('ascii', errors='replace')
             raise MozJpegError(f'tjDecompressHeader3: {err}')
@@ -315,11 +317,19 @@ def decode(data, *, out=None, scale=None,
             out_arr = out
         else:
             out_arr = cnp.PyArray_EMPTY(ndim, shape, cnp.NPY_UINT8, 0)
-        rc = tjDecompress2(
-            handle, &src[0], srcsize,
-            <unsigned char*> cnp.PyArray_DATA(out_arr),
-            width, width * channels, height, pf, 0,
-        )
+        # The Huffman and inverse-DCT passes are the expensive half,
+        # and TurboJPEG touches nothing Python in them: source and
+        # destination are both raw pointers, one into the input buffer
+        # and one into an array this function owns. Holding the GIL
+        # through it made every caller decoding JPEGs on threads
+        # measure 0.99x -- a thread pool paying overhead to take
+        # turns, which is worse than not having one.
+        dst_ptr = <unsigned char*> cnp.PyArray_DATA(out_arr)
+        pitch = width * channels
+        with nogil:
+            rc = tjDecompress2(
+                handle, &src[0], srcsize, dst_ptr,
+                width, pitch, height, pf, 0)
         if rc < 0:
             err = tjGetErrorStr2(handle).decode('ascii', errors='replace')
             raise MozJpegError(f'tjDecompress2: {err}')

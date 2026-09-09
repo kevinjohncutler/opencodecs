@@ -183,6 +183,8 @@ def decode(data, *, out=None) -> np.ndarray:
         cnp.npy_intp shape[3]
         int ndim
         int bps
+        void* dst_ptr
+        size_t dst_bytes
         tuple expected_shape
         object expected_dtype
 
@@ -198,7 +200,8 @@ def decode(data, *, out=None) -> np.ndarray:
     try:
         rc = charls_jpegls_decoder_set_source_buffer(dec, &src[0], srcsize)
         _check(rc, "set_source_buffer")
-        rc = charls_jpegls_decoder_read_header(dec)
+        with nogil:
+            rc = charls_jpegls_decoder_read_header(dec)
         _check(rc, "read_header")
         rc = charls_jpegls_decoder_get_frame_info(dec, &info)
         _check(rc, "get_frame_info")
@@ -248,9 +251,17 @@ def decode(data, *, out=None) -> np.ndarray:
             raise CharlsError(
                 f"output buffer too small ({out_arr.nbytes} < {dst_size})"
             )
-        rc = charls_jpegls_decoder_decode_to_buffer(
-            dec, <void*> cnp.PyArray_DATA(out_arr), out_arr.nbytes, stride,
-        )
+        # The entropy decode is the expensive half and charls touches
+        # nothing Python in it: the destination is a raw pointer into
+        # an array this function owns, and the source buffer was handed
+        # over before. Holding the GIL through it made every caller
+        # decoding JPEG-LS frames on threads measure 0.99x, which is a
+        # thread pool paying overhead to take turns.
+        dst_ptr = <void*> cnp.PyArray_DATA(out_arr)
+        dst_bytes = <size_t> out_arr.nbytes
+        with nogil:
+            rc = charls_jpegls_decoder_decode_to_buffer(
+                dec, dst_ptr, dst_bytes, stride)
         _check(rc, "decode_to_buffer")
         return out_arr
     finally:
