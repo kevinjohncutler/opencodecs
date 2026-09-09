@@ -194,10 +194,17 @@ def test_vsi_ets_partial_parse():
     # table's shape against the file instead -- entries that point
     # inside it, at one plane's worth of bytes each, a whole number of
     # planes apart.
-    assert stack["record_count"] == 4
+    # Was `record_count == 4`, which pinned a truncated read: the SIS
+    # header field is a record COUNT and was being taken for a byte
+    # size, so a 180-record table was read as 180 bytes and the walk
+    # gave up after four entries. 180 = 5 x 18 x 2, the file's three
+    # populated axes, and 180 planes fill it exactly up to the table.
+    assert stack["record_count"] == 180
     plane_bytes = stack["width"] * stack["height"] * 2
     assert stack["plane_stride"] % plane_bytes == 0
     assert stack["plane_stride"] // plane_bytes == 36
+    assert 292 + 180 * plane_bytes == stack["table_offset"], (
+        "the planes should fill the file right up to the trailing table")
 
 
 def test_ets_records_point_at_real_planes():
@@ -286,16 +293,25 @@ def test_ets_record_fields_are_populated():
         pytest.skip("VSI corpus sample not present")
     info = parse_ets(str(ets))
     assert isinstance(info, EtsInfo)
-    assert info.n_records == len(info.records) == 4
+    assert info.n_records == len(info.records) == 180
     assert all(isinstance(r, EtsRecord) for r in info.records)
-    # plane_index counts up in equal steps; that is what makes the
-    # table sparse rather than one entry per plane.
-    idx = [r.plane_index for r in info.records]
-    assert idx == sorted(idx) and idx[0] == 0
-    steps = {b - a for a, b in zip(idx, idx[1:])}
-    assert len(steps) == 1, f"uneven plane_index steps: {idx}"
-    # tag is the constant that used to be reported as a level count.
-    assert len({r.tag for r in info.records}) == 1
+    # Every record carries its own coordinates, and the axis count is
+    # stated per record rather than fixed: this file uses six.
+    assert info.n_dims == 6
+    assert all(len(r.coords) == 6 for r in info.records)
+    # The populated axes multiply out to the record count, which is
+    # what says the table was walked to the end rather than abandoned.
+    populated = [len({r.coords[a] for r in info.records}) for a in range(6)]
+    assert populated == [1, 1, 5, 18, 2, 1], populated
+    assert 5 * 18 * 2 == info.n_records
+    # Every record names one whole uncompressed plane.
+    plane_bytes = info.width * info.height * 2
+    assert {r.size for r in info.records} == {plane_bytes}
+    assert all(r.offset + r.size <= info.file_size for r in info.records)
+    # This file is not a pyramid, and the level check says so rather
+    # than reading the flat last axis as one.
+    assert info.pyramid_ok is False
+    assert info.n_levels == 1
 
 
 def test_parse_ets_rejects_a_file_without_the_magic(tmp_path):
@@ -309,27 +325,31 @@ def test_parse_ets_rejects_a_file_without_the_magic(tmp_path):
     assert info.plane_stride == 0
 
 
-def _synthetic_ets(records, *, width=8, height=4, file_pad=4096):
+def _synthetic_ets(records, *, width=8, height=4, file_pad=4096,
+                   n_dims=4, extent=None):
     """Build a minimal SIS/ETS file with a chosen record table.
 
     The corpus sample is one well-formed file, which cannot exercise
     what happens when the table is not well-formed. Synthesizing lets
     the malformed cases be tested without waiting for a bad file to
-    turn up in the wild -- and a table read at the wrong stride
-    produces exactly this shape of garbage.
+    turn up in the wild.
+
+    ``records`` are ``(coords, offset, size, flag)``. The layout
+    matches the real one: a record states its own axis count first, so
+    its length is ``4 * (n_dims + 5)``, and the SIS header field at
+    offset 40 is the record COUNT rather than a byte size. Both were
+    read the other way round until a tiled file showed otherwise.
     """
     import struct
 
-    from opencodecs._ets import _ETS_TABLE_PREAMBLE, _ETS_TABLE_RECORD
-
-    table = bytearray(b"\x00" * _ETS_TABLE_PREAMBLE)
-    for off, size, plane_index, tag in records:
-        # Only the first 20 bytes of each record are fields we read;
-        # the rest is padding to the stride the real files use. Packing
-        # them back to back instead would build a file the parser is
-        # right to disagree with.
-        rec = struct.pack("<IIIII", off, 0, size, plane_index, tag)
-        table += rec + b"\x00" * (_ETS_TABLE_RECORD - len(rec))
+    table = bytearray()
+    for coords, off, size, flag in records:
+        assert len(coords) == n_dims, "coords must match n_dims"
+        table += struct.pack("<I", n_dims)
+        for c in coords:
+            table += struct.pack("<I", c)
+        table += struct.pack("<Q", off)
+        table += struct.pack("<II", size, flag)
 
     ptr2 = file_pad
     hdr = bytearray(64)
@@ -339,13 +359,16 @@ def _synthetic_ets(records, *, width=8, height=4, file_pad=4096):
     struct.pack_into("<Q", hdr, 16, 64)      # sub-header at 64
     struct.pack_into("<Q", hdr, 24, 228)
     struct.pack_into("<Q", hdr, 32, ptr2)    # table
-    struct.pack_into("<Q", hdr, 40, len(table))
+    struct.pack_into("<Q", hdr, 40, len(records))   # a COUNT
 
     sub = bytearray(228)
     sub[0:4] = b"ETS\x00"
     struct.pack_into("<I", sub, 8, 1)        # n_components
-    struct.pack_into("<I", sub, 28, width)
+    struct.pack_into("<I", sub, 28, width)   # tile size
     struct.pack_into("<I", sub, 32, height)
+    ew, eh = extent or (width, height)
+    struct.pack_into("<I", sub, 188, ew)     # full extent of level 0
+    struct.pack_into("<I", sub, 192, eh)
 
     blob = bytearray(hdr + sub)
     blob += b"\x00" * (ptr2 - len(blob))
@@ -363,8 +386,9 @@ def test_ets_table_walk_stops_at_a_record_pointing_outside_the_file(tmp_path):
     from opencodecs._ets import parse_ets
 
     plane = 8 * 4 * 2
-    good = [(300, plane, 0, 6), (300 + plane, plane, 1, 6)]
-    bad = good + [(1 << 30, plane, 2, 6)]     # way past the end
+    good = [((0, 0, 0, 0), 300, plane, 0),
+            ((1, 0, 0, 0), 300 + plane, plane, 0)]
+    bad = good + [((2, 0, 0, 0), 1 << 30, plane, 0)]   # way past the end
     f = tmp_path / "truncated.ets"
     f.write_bytes(_synthetic_ets(bad))
     info = parse_ets(str(f))
@@ -378,7 +402,9 @@ def test_ets_table_walk_stops_at_a_zero_sized_record(tmp_path):
     from opencodecs._ets import parse_ets
 
     plane = 8 * 4 * 2
-    recs = [(300, plane, 0, 6), (400, 0, 1, 6), (500, plane, 2, 6)]
+    recs = [((0, 0, 0, 0), 300, plane, 0),
+            ((1, 0, 0, 0), 400, 0, 0),        # zero-sized: stop here
+            ((2, 0, 0, 0), 500, plane, 0)]
     f = tmp_path / "zerosize.ets"
     f.write_bytes(_synthetic_ets(recs))
     assert parse_ets(str(f)).n_records == 1

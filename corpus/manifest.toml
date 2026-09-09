@@ -263,6 +263,20 @@ notes = "Real Olympus VSI from the OME mirror. The top-level .vsi file is a TIFF
   path = ".test_data/vsi/_metadataTest_01_/stack1/frame_t_0.ets"
 
 [[dataset]]
+id = "vsi_evident_pyramid"
+name = "VSI: Evident CellSens tiled pyramid (~33 MB)"
+license = "unverified"
+codecs = ["jpeg"]
+homepage = "https://downloads.openmicroscopy.org/images/CellSens/evident/"
+notes = "The pyramidal counterpart to vsi_olympus, which has ONE resolution and so cannot show what a VSI pyramid looks like. This .ets is 8022x9367 in 512x512 JPEG tiles over six levels, and the level axis is the last coordinate of each tile-table record: the tile population of every level equals the grid covering the extent halved that many times, 6 predictions here and 7 more in the sibling stack10000, all exact. That arithmetic is what parse_ets checks before reporting a pyramid at all. Only stack1 is fetched; the file's other stacks are separate IMAGES rather than more levels, and one is enough to exercise the reader."
+  [[dataset.file]]
+  url = "https://downloads.openmicroscopy.org/images/CellSens/evident/Image_V4.1_FL_2D.vsi"
+  path = ".test_data/vsi_pyramid/Image_V4.1_FL_2D.vsi"
+  [[dataset.file]]
+  url = "https://downloads.openmicroscopy.org/images/CellSens/evident/_Image_V4.1_FL_2D_/stack1/frame_t.ets"
+  path = ".test_data/vsi_pyramid/_Image_V4.1_FL_2D_/stack1/frame_t.ets"
+
+[[dataset]]
 id = "oir_olympus"
 name = "OIR sample: Olympus FluoView newer format (~25 MB)"
 license = "unverified"

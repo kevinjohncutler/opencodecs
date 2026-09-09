@@ -125,5 +125,7 @@
   ".test_data/uhdr/pixel6_original_05.jpg": "9db9e5476c9075dfcdb2ba88843c3f81ceba1b515db2ad7cef415828026ba852",
   ".test_data/vsi/_metadataTest_01_/stack1/frame_t_0.ets": "9cca4926768fc1249612e92f7a986b0a82f2314dabf86393a6666c0b50761206",
   ".test_data/vsi/metadataTest_01.vsi": "abefda78a992220e816b809ce07c4f148c7a1a9e3fc6b41de04f13d212a7eebd",
+  ".test_data/vsi_pyramid/Image_V4.1_FL_2D.vsi": "92582ee8a636bd0e55c75820cf5ce13065b098012071bb5c5f2613d0857d0bf9",
+  ".test_data/vsi_pyramid/_Image_V4.1_FL_2D_/stack1/frame_t.ets": "17963eb065bc820eaf1d369a71fea85ff1e03608b6e9582f2f6b3993351d8274",
   ".test_data/webp/lossy_1.webp": "4a5afeaff8483923da964bc7896f02d0283e8bff99b5b8f82a31ae3214dab1d0"
 }

@@ -171,6 +171,10 @@ def open_pyramid(
     * JPEG 2000 (.jp2/.j2k/.jpx/.jpc) → :class:`Jpeg2kPyramidReader`
     * HTJ2K (.jph/.j2c) → :class:`Htj2kPyramidReader`
     * JPEG (.jpg/.jpeg) → :class:`JpegPyramidReader`
+    * VSI / ETS (``.vsi`` or ``.ets``) → :class:`VsiPyramidReader`. A
+      genuine tiled pyramid: ``read_region`` decodes only the tiles the
+      box covers. A ``.vsi`` with several stacks holds several images
+      rather than more levels, so it needs ``stack=``.
     * DICOM whole-slide (a directory or list of instances, or ``.dcm``)
       → :class:`DicomWsiPyramid`. Unlike the others this is a SERIES of
       files: the levels are separate instances sharing a
@@ -226,6 +230,8 @@ def open_pyramid(
             fmt = "jpeg"
         elif path_lower.endswith(".dcm"):
             fmt = "dicom"
+        elif path_lower.endswith((".vsi", ".ets")):
+            fmt = "vsi"
     if fmt in ("tiff", "tif", "btf", "bigtiff", "cog", "ome-tiff"):
         if is_url:
             # Build an HTTPDataSource and feed it through read_at.
@@ -238,6 +244,12 @@ def open_pyramid(
         return CziPyramidReader(src, **opts)
     if fmt in ("imaris", "ims"):
         return ImarisReader(src, **opts)
+    if fmt in ("vsi", "ets", "cellsens"):
+        # A .vsi is an index; the pyramid lives in a sibling .ets. A
+        # file with more than one stack holds more than one IMAGE, not
+        # more levels, so those need stack= rather than a silent pick.
+        from ._vsi_pyramid import VsiPyramidReader
+        return VsiPyramidReader(src, **opts)
     if fmt in ("dicom", "dcm", "wsi"):
         # A whole-slide DICOM pyramid is a SERIES of files, so this one
         # takes a directory or a list rather than a path to "the file".
@@ -259,7 +271,7 @@ def open_pyramid(
     raise ValueError(
         f"open_pyramid: cannot determine format for src={src!r}; pass "
         f"format='tiff'|'omezarr'|'czi'|'imaris'|'jpeg'|'jpeg2k'|'htj2k'"
-        f"|'dicom'"
+        f"|'dicom'|'vsi'"
     )
 
 

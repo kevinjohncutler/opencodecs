@@ -147,11 +147,19 @@ class VsiCodec(Codec):
                         "width": info.width,
                         "height": info.height,
                         "n_components": info.n_components,
-                        # Not a pyramid level count: see _ets.py.
-                        # These are data-block entries, all at one
-                        # resolution in every sample we have.
+                        "tile_width": info.tile_width,
+                        "tile_height": info.tile_height,
+                        # One entry per stored tile. The last
+                        # coordinate axis is the pyramid level when the
+                        # level populations check out against the
+                        # extent; see _ets.py, and pyramid_ok for
+                        # whether they did.
                         "record_count": info.n_records,
+                        "n_dims": info.n_dims,
+                        "table_offset": info.sub_chunk_offsets[1],
                         "plane_stride": info.plane_stride,
+                        "pyramid": info.pyramid_ok,
+                        "n_levels": info.n_levels,
                         "magic_ok": info.magic_ok,
                     })
         out["ets_stacks"] = stacks
