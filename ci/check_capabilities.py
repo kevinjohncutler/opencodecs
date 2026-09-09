@@ -234,14 +234,14 @@ def cmd_sync(args) -> int:
     # Refuse to shrink the file. sync writes what this machine can see,
     # and a machine missing a few optional libraries sees fewer codecs
     # -- 26 of 60 on one here. Rewriting from that would drop 34 rows
-    # and take their judgements and notes with them, which is the part
+    # and take their judgments and notes with them, which is the part
     # no script can regenerate. Only a build that has everything should
     # be rewriting the record of everything.
     dropped = sorted(set(old) - set(actual))
     if dropped and not getattr(args, "allow_shrink", False):
         print(f"refusing to sync: {len(dropped)} codec(s) in "
               f"{MANIFEST.name} did not build here, and rewriting would "
-              f"delete them along with their judgements:")
+              f"delete them along with their judgments:")
         for i in range(0, len(dropped), 8):
             print("  " + " ".join(dropped[i:i + 8]))
         print("Run sync on a build that has them, or pass --allow-shrink "
@@ -326,7 +326,7 @@ def main() -> int:
     sy = sub.add_parser("sync")
     sy.add_argument("--allow-shrink", action="store_true",
                     help="permit dropping codecs this machine did not "
-                         "build (deletes their judgements)")
+                         "build (deletes their judgments)")
     sy.set_defaults(fn=cmd_sync)
     r = sub.add_parser("report")
     r.add_argument("-v", "--verbose", action="store_true")

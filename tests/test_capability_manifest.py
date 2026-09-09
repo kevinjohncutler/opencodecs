@@ -190,7 +190,7 @@ def test_sync_preserves_the_judgments(restore_manifest, tmp_path):
     if r.returncode != 0 and "did not build here" in r.stdout:
         # sync refuses to rewrite the record of every codec from a
         # machine that builds only some: doing so would delete the rows
-        # it cannot see, judgements and all. Nothing to round-trip.
+        # it cannot see, judgments and all. Nothing to round-trip.
         assert MANIFEST.read_text() == before, "a refused sync still wrote"
         pytest.skip("partial build: sync correctly refuses to shrink")
     assert r.returncode == 0, r.stdout + r.stderr
