@@ -20,6 +20,8 @@ import numpy as np
 import pytest
 
 import opencodecs as oc
+
+from _perf import assert_faster, needs_cores
 from opencodecs._dicom import DicomFile
 
 from test_dicom_encodings import _meta, explicit_le
@@ -110,6 +112,7 @@ def test_single_frame_is_unchanged_by_threading(tmp_path):
 
 
 @pytest.mark.perf
+@needs_cores
 def test_threading_actually_helps(encapsulated):
     """The claim in the manifest is a speedup, so measure one.
 
@@ -145,5 +148,4 @@ def test_threading_actually_helps(encapsulated):
     # thread and the fan-out shows 7.4x. That is the test protecting
     # the GIL fix; this one only has to catch the frame pool being
     # removed outright.
-    assert got > 1.2, (
-        f"{got:.2f}x on 8 threads; the per-frame pool looks gone")
+    assert_faster(serial, threaded, "dicom encapsulated frame decode")

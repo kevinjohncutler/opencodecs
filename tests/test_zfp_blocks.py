@@ -24,6 +24,8 @@ import pytest
 
 import opencodecs as oc
 
+from _perf import assert_faster, needs_cores
+
 pytestmark = pytest.mark.skipif(
     not oc.has_codec("zfp"), reason="libzfp not built here")
 
@@ -148,6 +150,7 @@ def test_a_2d_stream_falls_back(codec):
 
 
 @pytest.mark.perf
+@needs_cores
 def test_threading_helps_on_a_large_volume(codec):
     import time
     a = _volume((192, 192, 192), seed=7)
@@ -162,4 +165,4 @@ def test_threading_helps_on_a_large_volume(codec):
             best = min(best, time.perf_counter() - t)
         return best
 
-    assert timed(1) / timed(None) > 1.5
+    assert_faster(timed(1), timed(None), "zfp block decode across threads")

@@ -19,6 +19,8 @@ import pytest
 
 import opencodecs as oc
 
+from _perf import assert_faster, needs_cores
+
 EER = (pathlib.Path(__file__).resolve().parent.parent
        / ".test_data" / "eer" / "empiar10568_falcon4.eer")
 needs_corpus = pytest.mark.skipif(
@@ -112,6 +114,7 @@ def test_sum_range_validation_is_unchanged(reader):
 
 @needs_corpus
 @pytest.mark.perf
+@needs_cores
 def test_threaded_sum_is_faster(reader):
     reader.sum(0, 60, dtype=np.uint32, numthreads=1)
     serial = min(_elapsed(
@@ -120,4 +123,4 @@ def test_threaded_sum_is_faster(reader):
     threaded = min(_elapsed(
         lambda: reader.sum(0, 60, dtype=np.uint32, numthreads=8))
         for _ in range(2))
-    assert serial / threaded > 1.5, f"{serial / threaded:.2f}x on 8 threads"
+    assert_faster(serial, threaded, "eer sum() across 8 threads")

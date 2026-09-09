@@ -20,6 +20,8 @@ import pytest
 
 import opencodecs as oc
 
+from _perf import assert_faster, needs_cores
+
 h5py = pytest.importorskip("h5py")
 
 
@@ -88,6 +90,7 @@ def test_a_single_chunk_stays_serial(tmp_path, arr):
 
 
 @pytest.mark.perf
+@needs_cores
 def test_parallel_read_is_faster(tmp_path):
     big = np.random.default_rng(2).integers(
         0, 4000, (64, 512, 512)).astype("u2")
@@ -105,4 +108,4 @@ def test_parallel_read_is_faster(tmp_path):
             return best
 
         serial, auto = timed(1), timed(None)
-    assert serial / auto > 1.5, f"{serial / auto:.2f}x with the pool"
+    assert_faster(serial, auto, "hdf5 parallel chunk decode")

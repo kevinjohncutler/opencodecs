@@ -18,6 +18,8 @@ import pytest
 
 import opencodecs as oc
 
+from _perf import assert_faster, needs_cores
+
 pytestmark = pytest.mark.skipif(
     not oc.has_codec("bcn"), reason="bcn backend not built here")
 
@@ -119,6 +121,7 @@ def test_out_argument_still_honored(codec):
 
 
 @pytest.mark.perf
+@needs_cores
 def test_threading_helps_on_a_large_surface(codec):
     import time
     w = h = 2048
@@ -133,4 +136,4 @@ def test_threading_helps_on_a_large_surface(codec):
             best = min(best, time.perf_counter() - t)
         return best
 
-    assert timed(1) / timed(None) > 1.5
+    assert_faster(timed(1), timed(None), "bc7 4096x4096 band decode")

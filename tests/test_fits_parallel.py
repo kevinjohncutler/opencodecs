@@ -26,6 +26,8 @@ import pytest
 
 import opencodecs as oc
 
+from _perf import assert_faster, needs_cores
+
 fits = pytest.importorskip("astropy.io.fits")
 
 ALGORITHMS = ["RICE_1", "GZIP_1", "GZIP_2", "PLIO_1", "HCOMPRESS_1"]
@@ -97,6 +99,7 @@ def test_float_quantized_tiles(tmp_path):
 
 
 @pytest.mark.perf
+@needs_cores
 @pytest.mark.parametrize("algo", ["RICE_1", "HCOMPRESS_1"])
 def test_threading_helps(tmp_path, algo):
     import time
@@ -115,4 +118,4 @@ def test_threading_helps(tmp_path, algo):
 
     with codec.open(str(p)) as r:
         r.read(numthreads=1)
-    assert timed(1) / timed(8) > 1.5, f"{algo} did not speed up"
+    assert_faster(timed(1), timed(8), f"fits {algo} tile decode")
