@@ -317,7 +317,6 @@ range_reads = false
 pyramid = false
 http = false
 feasible = "no"
-gaps = []
 note = "frames are sequential LZW carrying disposal state, so frame N really does require the frames before it and chunked is unavailable at any effort. A GIF can now be opened from a URL -- read_src fetches one, so about thirty codecs that could not open a URL at all now can -- but that is a whole-file GET and stays recorded as such. Ranges would move exactly the same bytes for a format where the last frame depends on every frame before it, and claiming http here would put a tick against a saving that does not exist. This follows the convention _pyramid_bytes already set for the whole-codestream decoders."
 
 [[codec]]
@@ -552,15 +551,14 @@ note = "all four, and none of them needed new parsing. A .npy is a short ASCII h
 [[codec]]
 name = "oib"
 multi_frame = true
-chunked = false
+chunked = true
 streaming_decode = true
 parallel_decode = false
-range_reads = false
+range_reads = true
 pyramid = false
 http = true
-feasible = "gap"
-gaps = ["chunked", "range_reads"]
-note = "OIB is an OLE compound file whose directory gives every stream's sector chain, so a plane is addressable without reading the whole archive; _ole2 already walks those chains."
+feasible = "done"
+note = "OIB is an OLE compound file whose directory gives every stream's sector chain, so a plane is addressable without reading the whole archive, and _ole2 already walked those chains. Two corrections. range_reads was recorded as missing and was there: the offset arithmetic lives in _ole2.py, which the manifest attributes by filename and so could not see, and opening a 26 MB OIB over the range-serving test server moves 0.168 MB in 12 requests. chunked was a real gap and is now closed: the reader assembled the whole experiment and sliced it, and read_index() reads only the streams behind one index. Axis 0 is not necessarily one frame -- FluoView order is (T?, C?, Z?, H, W) with singletons collapsed, so on a 2-channel 6-slice file index 0 is six streams -- and it moves 12.8 MB against 25.4 MB for the whole file. The flag describes the native reader, which open() returns by default; the oiffile delegate, for the OIF directory variant, has no per-frame entry point and says so itself."
 
 [[codec]]
 name = "oir"
@@ -713,12 +711,12 @@ multi_frame = true
 chunked = true
 streaming_decode = true
 parallel_decode = false
-range_reads = false
+range_reads = true
 pyramid = false
-http = false
+http = true
 feasible = "gap"
-gaps = ["pyramid", "range_reads", "http"]
-note = "the pyramid is feasible for whole-slide VSI in principle, but it is blocked on a sample to check against rather than on effort, and that distinction is the point of this entry. The one VSI in the corpus has no pyramid at all: its ETS trailer is a table of four entries naming blocks of identically sized 260x216 planes, 144 in total at one resolution, and the top-level .vsi page is that same size. The parser used to report level_count=6 from that trailer, which was a misreading of a constant repeated in every record -- a test asserted the 6, so it pinned the parser's own output rather than anything about the file. Both are fixed. Writing a pyramid reader from this file alone would be guessing. Range reads and HTTP are unblocked: the plane offsets are already parsed."
+gaps = ["pyramid"]
+note = "the pyramid is feasible for whole-slide VSI in principle, but it is blocked on a sample to check against rather than on effort, and that distinction is the point of this entry. The one VSI in the corpus has no pyramid at all: its ETS trailer is a table of four entries naming blocks of identically sized 260x216 planes, 144 in total at one resolution, and the top-level .vsi page is that same size. The parser used to report level_count=6 from that trailer, which was a misreading of a constant repeated in every record -- a test asserted the 6, so it pinned the parser's own output rather than anything about the file. Both are fixed. Writing a pyramid reader from this file alone would be guessing. Range reads and HTTP were recorded as gaps and were already there: the offset arithmetic lives in _ets.py, which the manifest attributes by filename and so could not see. Measured over the range-serving test server, parse_ets moves 65.7 kB of a 20.23 MB .ets in 2 requests, and opening the .vsi index itself moves 65.5 kB of 109.7 kB. The pyramid stays a gap, and stays blocked on a sample rather than on effort. Note that a VSI over HTTP gives the thumbnail index only: the .ets stack lives in a sibling directory found by globbing, and HTTP has no directory listing to glob, so a remote caller has to be given the .ets URLs."
 
 [[codec]]
 name = "webp"

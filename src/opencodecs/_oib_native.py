@@ -248,18 +248,66 @@ class OibFileParser:
         arr = TiffCodec().decode(tiff_bytes)
         return np.squeeze(arr)
 
+    def _index_of(self, c: int, z: int, t: int) -> tuple[int, ...]:
+        """Where frame (c, z, t) sits in the assembled array.
+
+        FluoView order is (T?, C?, Z?, H, W) with singleton axes
+        collapsed, so which coordinate is axis 0 depends on the file.
+        One definition, used by both the bulk read and the per-index
+        read, so the two cannot disagree about layout.
+        """
+        L = self.layout
+        idx = []
+        if L.n_t > 1: idx.append(t)
+        if L.n_channels > 1: idx.append(c)
+        if L.n_z > 1: idx.append(z)
+        return tuple(idx)
+
     def read_all(self) -> np.ndarray:
         """Decode every frame, assemble the full (T?, C?, Z?, H, W)
         ndarray (FluoView axis order)."""
         L = self.layout
         out = np.empty(L.shape, dtype=L.dtype)
-        for (c, z, t), stream in L.frames.items():
-            frame = self.read_frame(c, z, t)
-            idx = []
-            if L.n_t > 1: idx.append(t)
-            if L.n_channels > 1: idx.append(c)
-            if L.n_z > 1: idx.append(z)
-            out[tuple(idx)] = frame
+        for (c, z, t) in L.frames:
+            out[self._index_of(c, z, t)] = self.read_frame(c, z, t)
+        return out
+
+    def read_index(self, index: int) -> np.ndarray:
+        """The slice of the assembled array at axis 0 == ``index``.
+
+        Reads only the streams that belong to it. An OIB is an OLE2
+        compound file and every frame is its own TIFF stream at its own
+        sector chain, so this costs those streams and no others -- the
+        format has always allowed it, and the reader used to assemble
+        the whole experiment and slice the result.
+
+        Note that axis 0 need not be one frame: a (channels=2, z=6, H,
+        W) file has six streams behind index 0, and this reads exactly
+        those six.
+        """
+        L = self.layout
+        shape = L.shape
+        if len(shape) < 3:
+            if index != 0:
+                raise IndexError("OIB: this file holds a single plane")
+            return self.read_all()
+        n = int(shape[0])
+        if index < 0:
+            index += n
+        if not 0 <= index < n:
+            raise IndexError(f"OIB: index {index} out of range for {n}")
+        out = np.empty(shape[1:], dtype=L.dtype)
+        found = False
+        for (c, z, t) in L.frames:
+            where = self._index_of(c, z, t)
+            if where[0] != index:
+                continue
+            out[where[1:]] = self.read_frame(c, z, t)
+            found = True
+        if not found:
+            raise IndexError(
+                f"OIB: no streams at index {index}; the layout claims "
+                f"{n} but the container has {len(L.frames)} frames")
         return out
 
     def close(self) -> None:
@@ -350,15 +398,19 @@ class OibNativeReader(Reader):
         # the old rule answered 6, and iter_frames walked off the end
         # of an axis of length 2.
         self.n_frames = int(self.shape[0]) if len(self.shape) >= 3 else 1
-        self.is_chunked = False
+        # Every frame is its own TIFF stream at its own OLE2 sector
+        # chain, so index N costs the streams behind index N.
+        self.is_chunked = True
 
     def iter_frames(self) -> Iterator[np.ndarray]:
-        full = self._parser.read_all()
-        if full.ndim < 3:
-            yield full
+        if len(self.shape) < 3:
+            yield self._parser.read_all()
             return
         for i in range(self.n_frames):
-            yield full[i]
+            yield self._parser.read_index(i)
+
+    def __getitem__(self, idx) -> np.ndarray:
+        return self._parser.read_index(int(idx))
 
     def read(self) -> np.ndarray:
         return self._parser.read_all()

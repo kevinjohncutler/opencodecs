@@ -141,10 +141,27 @@ def derive() -> dict[str, dict]:
     # offset over HTTP just as much as constructing the data source is.
     http_files |= _grep("h5_source")
 
+    # Readers whose offset arithmetic lives in a helper module named
+    # after the CONTAINER rather than the codec. Matching files by the
+    # codec's name cannot see these, so both were recorded as lacking
+    # range reads while doing them: measured over the range-serving
+    # test server, parse_ets moves 65.7 kB of a 20.23 MB .ets, and
+    # opening a 26 MB OIB moves 0.168 MB in 12 requests.
+    #
+    # An explicit table rather than a looser pattern, because the
+    # looser pattern is how this file has been wrong before: a codec
+    # that merely NAMES a helper in a docstring would start claiming
+    # the helper's capabilities.
+    DELEGATES = {
+        "vsi": ("src/opencodecs/_ets.py",),      # the .ets companion stack
+        "oib": ("src/opencodecs/_ole2.py",),     # OLE2 sector chains
+    }
+
     def files_for(name: str) -> set[str]:
         # as_posix(), to match git grep's output on Windows.
-        return {p.relative_to(ROOT).as_posix() for p in src.rglob(f"*{name}*")
-                if p.suffix in (".py", ".pyx")}
+        own = {p.relative_to(ROOT).as_posix() for p in src.rglob(f"*{name}*")
+               if p.suffix in (".py", ".pyx")}
+        return own | set(DELEGATES.get(name, ()))
 
     out = {}
     for info in oc.list_codecs():
