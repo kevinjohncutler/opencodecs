@@ -72,20 +72,11 @@ _MODE_ALIASES = {
 }
 
 
-def _pack_header(dtype_enum, ndim, shape5):
-    return _struct.pack(_HEADER_FMT, _HEADER_MAGIC,
-                        int(dtype_enum) & 0xff, int(ndim) & 0xff,
-                        *[int(s) for s in shape5])
-
-
-def _unpack_header(buf):
-    if len(buf) < _HEADER_LEN:
-        raise Sz3Error("sz3 blob too short to contain header")
-    magic, dtype_enum, ndim, *shape5 = _struct.unpack(_HEADER_FMT,
-                                                      bytes(buf[:_HEADER_LEN]))
-    if magic != _HEADER_MAGIC:
-        raise Sz3Error(f"sz3 blob has wrong magic {magic!r}")
-    return dtype_enum, ndim, shape5
+# Shared with sperr and pcodec, which prefix the same shape of header.
+from opencodecs.core._sidecar_header import make_sidecar_header as \
+    _make_sidecar_header
+_HEADER_LEN, _pack_header, _unpack_header = _make_sidecar_header(
+    _HEADER_MAGIC, 5, Sz3Error, "sz3")
 
 
 def encode(arr, *,

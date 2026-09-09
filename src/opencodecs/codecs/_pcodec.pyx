@@ -82,20 +82,11 @@ _PCO_ERROR_MSG = {
 }
 
 
-def _pack_header(dtype_enum, ndim, shape8):
-    return _struct.pack(_HEADER_FMT, _HEADER_MAGIC,
-                        int(dtype_enum) & 0xff, int(ndim) & 0xff,
-                        *[int(s) for s in shape8])
-
-
-def _unpack_header(buf):
-    if len(buf) < _HEADER_LEN:
-        raise PcodecError("pcodec blob too short to contain header")
-    magic, dtype_enum, ndim, *shape8 = _struct.unpack(_HEADER_FMT,
-                                                     bytes(buf[:_HEADER_LEN]))
-    if magic != _HEADER_MAGIC:
-        raise PcodecError(f"pcodec blob has wrong magic {magic!r}")
-    return dtype_enum, ndim, shape8
+# Shared with sz3 and sperr; pcodec reserves eight dimension slots.
+from opencodecs.core._sidecar_header import make_sidecar_header as \
+    _make_sidecar_header
+_HEADER_LEN, _pack_header, _unpack_header = _make_sidecar_header(
+    _HEADER_MAGIC, 8, PcodecError, "pcodec")
 
 
 def encode(arr, *, level: int = 8, max_page_n: int = 0) -> bytes:

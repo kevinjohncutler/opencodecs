@@ -35,12 +35,22 @@ class HdfReader(Reader):
     can be navigated via ``r.dataset_names`` and ``r.select(name)``.
     """
 
-    def __init__(self, path: str | Path, dataset: str | None = None):
+    def __init__(self, path: "str | Path | Any",
+                 dataset: str | None = None):
         if not _HAVE_H5PY:  # pragma: no cover - h5py-missing branch
             raise ImportError(
                 "h5py is required for HDF5 support: pip install h5py")
-        self._path = str(path)
-        self._h5 = h5py.File(self._path, "r")
+        # A file-like goes to h5py untouched. str()-ing it turned a
+        # BytesIO into its repr and h5py then looked for a file by that
+        # name, which is why the codec above used to write every
+        # in-memory source to disk instead.
+        if isinstance(path, (str, Path)):
+            self._path = str(path)
+            src = self._path
+        else:
+            self._path = getattr(path, "name", repr(path))
+            src = path
+        self._h5 = h5py.File(src, "r")
         self._dataset_names = _list_image_datasets(self._h5)
         if dataset is None:
             if not self._dataset_names:
@@ -300,20 +310,15 @@ class HdfCodec(Codec):
     def open(self, src: Any, *, dataset: str | None = None, **opts) -> Reader:
         if isinstance(src, (str, Path)):
             return HdfReader(src, dataset=dataset)
-        # bytes -> dump to a temp file because h5py needs a real file handle
-        # for the most common access patterns.
-        import tempfile, os
-        if isinstance(src, (bytes, bytearray, memoryview)):
-            fd, tmp = tempfile.mkstemp(suffix=".h5")
-            os.write(fd, bytes(src))
-            os.close(fd)
-            return HdfReader(tmp, dataset=dataset)
-        if hasattr(src, "read"):
-            data = src.read()
-            fd, tmp = tempfile.mkstemp(suffix=".h5")
-            os.write(fd, data)
-            os.close(fd)
-            return HdfReader(tmp, dataset=dataset)
+        if isinstance(src, (bytes, bytearray, memoryview)) or hasattr(src, "read"):
+            # h5py opens a file-like directly. This used to write every
+            # non-path source to a temp file, explaining that "h5py
+            # needs a real file handle for the most common access
+            # patterns" -- which is not so, and which the emd and
+            # imaris readers had already been contradicting in their
+            # own copies of this helper for as long as they existed.
+            from ._h5_common import h5_source
+            return HdfReader(h5_source(src), dataset=dataset)
         raise TypeError(f"unsupported HDF5 source: {type(src).__name__}")
 
 

@@ -33,19 +33,7 @@ from .core.codec import ArrayReader
 
 
 
-def _h5_source(src):
-    """What h5py can open, from what a codec is handed.
-
-    h5py takes a path or a file-like object but not raw bytes: given
-    those it treats them as a filename and raises FileNotFoundError with
-    the binary printed as the name, which reads like a missing file
-    rather than an unsupported argument. Since it does accept a
-    file-like, wrapping is both the clearer error and the working one.
-    """
-    if isinstance(src, (bytes, bytearray, memoryview)):
-        import io
-        return io.BytesIO(bytes(src))
-    return src
+from ._h5_common import h5_source as _h5_source
 
 class EmdError(Exception):
     """Raised for files that are not EMD, or that use an unknown layout."""

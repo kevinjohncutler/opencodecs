@@ -66,23 +66,22 @@ _MODE_ALIASES = {
 }
 
 
+# Shared with sz3 and pcodec. Sperr's callers pass the three volume
+# dimensions positionally rather than as a sequence, so the thin
+# wrappers below keep that signature over the shared implementation.
+from opencodecs.core._sidecar_header import make_sidecar_header as \
+    _make_sidecar_header
+_HEADER_LEN, _sidecar_pack, _sidecar_unpack = _make_sidecar_header(
+    _HEADER_MAGIC, 5, SperrError, "sperr")
+
+
 def _pack_header(int is_float, int ndim, dimx, dimy, dimz):
-    return _struct.pack(
-        _HEADER_FMT, _HEADER_MAGIC,
-        int(is_float) & 0xff, int(ndim) & 0xff,
-        int(dimx), int(dimy), int(dimz), 0, 0,
-    )
+    return _sidecar_pack(is_float, ndim, (dimx, dimy, dimz))
 
 
 def _unpack_header(buf):
-    if len(buf) < _HEADER_LEN:
-        raise SperrError("sperr blob too short to contain header")
-    magic, is_float, ndim, dimx, dimy, dimz, _r4, _r5 = _struct.unpack(
-        _HEADER_FMT, bytes(buf[:_HEADER_LEN]),
-    )
-    if magic != _HEADER_MAGIC:
-        raise SperrError(f"sperr blob has wrong magic {magic!r}")
-    return is_float, ndim, dimx, dimy, dimz
+    is_float, ndim, dims = _sidecar_unpack(buf)
+    return is_float, ndim, dims[0], dims[1], dims[2]
 
 
 def encode(arr, *,
