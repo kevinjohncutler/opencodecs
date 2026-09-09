@@ -21,6 +21,14 @@ awkward:
   encodes its element type in the same recursive type language used for
   structs, so the parser has to evaluate that rather than look it up.
 
+What the tree buys, once walked, is random access: every image entry
+carries an absolute file offset and a length, so a plane is a seek and
+a read. This reader takes that literally -- it never holds the file. The
+tag walk goes through a sliding window (small forward reads, so one
+fetch serves hundreds), and image data is read at its own offset,
+which is what lets a .dm4 be opened over HTTP by range request instead
+of by downloading it.
+
 Reference: the DM3/DM4 tag structure as documented by the community
 (Greg Jefferis's dm3 notes and the ImageJ DM3 reader description); no
 code is derived from any implementation.
@@ -34,7 +42,7 @@ from typing import Any
 
 import numpy as np
 
-from .core._io_helpers import read_src as _read_src
+from .core.io import coerce_data_source
 from .core.codec import ArrayReader
 
 # Simple tag types, from the DM type language.
@@ -66,14 +74,52 @@ class DmError(Exception):
 class DmFile(ArrayReader):
     """Reader for one .dm3 / .dm4 file."""
 
+    #: How much to pull per window miss. The tag tree is walked in
+    #: small forward steps, so one fetch serves hundreds of them; the
+    #: number only matters over HTTP, where it is the request count.
+    _WINDOW = 1 << 17
+
     def __init__(self, src: Any):
-        self._raw = _read_src(src)
-        if len(self._raw) < 16:
+        self._ds, self._owns, self._size = coerce_data_source(src)
+        self._win_start = 0
+        self._win = b""
+        if self._size < 16:
             raise DmError("dm: file is too short to hold a header")
         self.version, self._little = self._parse_header()
         self._long = 8 if self.version == 4 else 4
         self.tags: dict[str, Any] = {}
         self._parse_group(self._header_size(), self.tags, "")
+
+    def _at(self, off: int, n: int) -> bytes:
+        """``n`` bytes at ``off``, through a sliding window.
+
+        The tag walk asks for two, four and eight bytes at a time in
+        forward order, so serving those from the source directly would
+        turn one file into thousands of reads -- and over HTTP, into
+        thousands of requests. One window fetch covers the whole run.
+
+        A request larger than the window is the image itself, and goes
+        straight to the source: there is no reuse to buy by caching it,
+        and buffering it would reintroduce the whole-file read this
+        exists to avoid.
+        """
+        if off < 0 or n < 0 or off + n > self._size:
+            raise DmError(
+                f"dm: read of {n} bytes at {off} runs past the end of a "
+                f"{self._size}-byte file")
+        if n > self._WINDOW:
+            return self._ds.read_at(off, n)
+        rel = off - self._win_start
+        if rel < 0 or rel + n > len(self._win):
+            start = off
+            self._win = self._ds.read_at(start, min(self._WINDOW,
+                                                    self._size - start))
+            self._win_start = start
+            rel = 0
+            if rel + n > len(self._win):
+                raise DmError(
+                    f"dm: truncated file; wanted {n} bytes at {off}")
+        return self._win[rel:rel + n]
 
     def _header_size(self) -> int:
         # version (4) + root length + byte order (4). dm4 widened only
@@ -82,7 +128,7 @@ class DmFile(ArrayReader):
         return 12 if self.version == 3 else 16
 
     def _parse_header(self) -> tuple[int, bool]:
-        version = struct.unpack_from(">i", self._raw, 0)[0]
+        version = struct.unpack_from(">i", self._at(0, 4), 0)[0]
         if version not in (3, 4):
             raise DmError(
                 f"dm: version {version} is not 3 or 4; this is not a "
@@ -90,13 +136,15 @@ class DmFile(ArrayReader):
         # The byte-order flag sits after version and root length, whose
         # width is what changed between the two versions.
         off = 8 if version == 3 else 12
-        little = struct.unpack_from(">i", self._raw, off)[0] == 1
+        little = struct.unpack_from(">i", self._at(off, 4), 0)[0] == 1
         return version, little
 
     # -- tag tree ----------------------------------------------------
 
     def _u(self, fmt: str, off: int):
-        return struct.unpack_from(">" + fmt, self._raw, off)[0]
+        fmt = ">" + fmt
+        return struct.unpack_from(fmt, self._at(off, struct.calcsize(fmt)),
+                                  0)[0]
 
     def _count(self, off: int) -> tuple[int, int]:
         """Read a tag count or length, 32-bit in dm3 and 64-bit in dm4."""
@@ -105,17 +153,16 @@ class DmFile(ArrayReader):
         return self._u("q", off), off + 8
 
     def _parse_group(self, off: int, out: dict, prefix: str) -> int:
-        raw = self._raw
         off += 2                                  # sorted, open
         n, off = self._count(off)
         for _ in range(n):
-            if off + 3 > len(raw):
+            if off + 3 > self._size:
                 break
-            kind = raw[off]
+            kind = self._at(off, 1)[0]
             off += 1
             label_len = self._u("H", off)
             off += 2
-            label = raw[off:off + label_len].decode("latin-1")
+            label = self._at(off, label_len).decode("latin-1")
             off += label_len
             if self.version == 4:
                 off += 8                          # total bytes in this entry
@@ -129,8 +176,7 @@ class DmFile(ArrayReader):
         return off
 
     def _parse_entry(self, off: int, out: dict, name: str) -> int:
-        raw = self._raw
-        if raw[off:off + 4] != b"%%%%":
+        if self._at(off, 4) != b"%%%%":
             raise DmError(f"dm: expected %%%% marker at offset {off}")
         off += 4
         ntypes, off = self._count(off)
@@ -164,11 +210,11 @@ class DmFile(ArrayReader):
         if t in _SIMPLE:
             fmt, size = _SIMPLE[t]
             endian = "<" if self._little else ">"
-            v = struct.unpack_from(endian + fmt, self._raw, off)[0]
+            v = struct.unpack_from(endian + fmt, self._at(off, size), 0)[0]
             return v, off + size
         if t == T_STRING:
             length = types[i + 1]
-            s = self._raw[off:off + length * 2].decode("utf-16-le", "replace")
+            s = self._at(off, length * 2).decode("utf-16-le", "replace")
             return s, off + length * 2
         if t == T_STRUCT:
             # struct: namelen, nfields, then (fieldnamelen, fieldtype)*
@@ -200,7 +246,8 @@ class DmFile(ArrayReader):
             # than a copy so opening a file does not materialize it.
             if nbytes > 4096:
                 return _ArrayRef(off, length, dt), off + nbytes
-            arr = np.frombuffer(self._raw, dtype=dt, count=length, offset=off)
+            arr = np.frombuffer(self._at(off, nbytes), dtype=dt,
+                                count=length)
             return arr, off + nbytes
         raise DmError(f"dm: unsupported tag type {t}")
 
@@ -301,11 +348,14 @@ class DmFile(ArrayReader):
 
         if isinstance(data, _ArrayRef):
             need = count * dt.itemsize
-            if data.offset + need > len(self._raw):
+            if data.offset + need > self._size:
                 raise DmError(
                     f"dm: truncated image data; {shape} needs {need} bytes")
-            arr = np.frombuffer(self._raw, dtype=dt, count=count,
-                                offset=data.offset)
+            # One read of exactly this image. The tag tree gave its
+            # absolute offset, so the other images in the file, and the
+            # thumbnail, never move.
+            arr = np.frombuffer(self._ds.read_at(data.offset, need),
+                                dtype=dt, count=count)
         else:
             arr = np.asarray(data)
             if arr.dtype != dt:
@@ -354,7 +404,10 @@ class DmFile(ArrayReader):
         return np.dtype(data.dtype)
 
     def close(self) -> None:
-        self._raw = b""
+        self._win = b""
+        if self._owns and self._ds is not None:
+            self._ds.close()
+        self._ds = None
 
     def __enter__(self) -> "DmFile":
         return self

@@ -21,7 +21,13 @@ class DmCodec(Codec):
     can_encode = False
     can_decode = True
     multi_frame = True
-    streaming_decode = False
+    # The tag tree carries an absolute offset and length for every
+    # image, so opening a file reads the tree and nothing else, and one
+    # image is one read at its own offset. Iterating therefore yields
+    # without materializing the file, and reaching image N does not
+    # cost images 0..N-1.
+    streaming_decode = True
+    chunked = True
     parallel_decode = False
 
     supported_dtypes = (

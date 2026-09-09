@@ -256,15 +256,14 @@ note = "the 64-byte header does give per-segment offsets, but the segments are b
 [[codec]]
 name = "dm"
 multi_frame = true
-chunked = false
-streaming_decode = false
+chunked = true
+streaming_decode = true
 parallel_decode = false
-range_reads = false
+range_reads = true
 pyramid = false
-http = false
-feasible = "gap"
-gaps = ["streaming_decode", "range_reads", "http", "chunked"]
-note = "DM3 and DM4 tags carry absolute offsets to uncompressed image data, so a plane is an offset and a length. Nothing in the format requires reading the whole file; the reader simply does."
+http = true
+feasible = "done"
+note = "DM3 and DM4 tags carry absolute offsets to uncompressed image data, so a plane is an offset and a length, and the reader now takes that literally: the tag walk goes through a 128 KB sliding window and image data is read at its own offset. Against a range-serving test server on an 8.39 MB dm4, opening and reading the shape moved 0.197 MB in 3 requests, and the full read moved 8.585 MB. The corpus fixtures are 32 KB and 50 KB, both under the window, so the byte-savings tests build their own file."
 
 [[codec]]
 name = "eer"
