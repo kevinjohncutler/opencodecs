@@ -20,8 +20,16 @@ class NrrdCodec(Codec):
     has_delegate = False
     can_encode = False
     can_decode = True
-    multi_frame = False
-    streaming_decode = False
+    # A 3-D NRRD is a stack of slices and ArrayReader already reports
+    # them through n_frames, exactly as for MRC and NIfTI, both of
+    # which say so. This said False while iterating really did yield
+    # frames.
+    multi_frame = True
+    # _frame() reads one slice at its own offset for the raw encoding,
+    # so iterating does not materialize the volume first, and slice N
+    # does not cost slices 0..N-1.
+    streaming_decode = True
+    chunked = True
     parallel_decode = False
 
     supported_dtypes = (

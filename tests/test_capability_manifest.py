@@ -133,9 +133,22 @@ def test_verify_catches_a_gap_that_is_already_built(restore_manifest):
 
 
 def test_verify_catches_a_verdict_that_contradicts_its_gaps(restore_manifest):
-    _need("zstd")
+    """feasible=gap with nothing listed is a worklist entry with no work.
+
+    Finds a codec that currently HAS gaps rather than naming one. This
+    used to say zstd, which was true until zstd's last gap was resolved
+    and the test then silently asserted nothing -- removing an absent
+    gaps line from a feasible="no" entry is not a contradiction, so
+    verify passed and the test failed for the right reason.
+    """
+    import tomllib
+    rows = tomllib.loads(MANIFEST.read_text())["codec"]
+    victim = next((r["name"] for r in rows if r.get("feasible") == "gap"), None)
+    if victim is None:
+        pytest.skip("no codec currently lists a gap to remove")
+    _need(victim)
     s = MANIFEST.read_text()
-    block, end = _block_bounds(s, "zstd")
+    block, end = _block_bounds(s, victim)
     seg = s[block:end]
     seg = seg[:seg.index("gaps = [")] + seg[seg.index("note = "):]
     MANIFEST.write_text(s[:block] + seg + s[end:])

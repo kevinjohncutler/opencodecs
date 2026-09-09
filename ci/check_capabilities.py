@@ -227,6 +227,32 @@ def cmd_verify(args) -> int:
                       f"code already has it")
                 bad += 1
 
+    # streaming_decode means "iter_frames yields without materializing
+    # the whole thing", so it presupposes something to iterate. Every
+    # codec that sets it has multi_frame too -- 17 of 17, no exception
+    # -- and the invariant is worth enforcing rather than observing,
+    # because the failure it prevents is quiet: a byte compressor
+    # claiming to stream would be recording an incremental
+    # decompression API that no caller can reach through iter_frames.
+    #
+    # The same reasoning is why a single-image or byte codec must not
+    # carry streaming_decode as a GAP either. A gap is a worklist
+    # entry, and this one cannot be worked: there is no frame axis to
+    # yield along. The adjacent capability those formats do have --
+    # incremental decompression, row-at-a-time decode -- is real and
+    # belongs in the note, not in a column that means something else.
+    for name, caps in sorted(actual.items()):
+        if caps["streaming_decode"] and not caps["multi_frame"]:
+            print(f"  BAD         {name}: streaming_decode without "
+                  f"multi_frame; there is no frame axis to stream along")
+            bad += 1
+        if "streaming_decode" in (recorded.get(name, {}).get("gaps") or []) \
+                and not caps["multi_frame"]:
+            print(f"  BAD         {name}: lists streaming_decode as a gap, "
+                  f"but has no frames to iterate; say so in the note "
+                  f"instead")
+            bad += 1
+
     print(f"{len(actual)} codecs built here; {bad} discrepancy(ies)")
     return 1 if bad else 0
 

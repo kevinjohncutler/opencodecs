@@ -124,9 +124,8 @@ parallel_decode = false
 range_reads = false
 pyramid = false
 http = false
-feasible = "gap"
-gaps = ["streaming_decode"]
-note = "an uncompressed BMP is a header plus fixed-stride rows, so rows can be produced as bytes arrive and row N is computable arithmetic. The RLE4 and RLE8 variants are sequential and would not get this."
+feasible = "no"
+note = "an uncompressed BMP is a header plus fixed-stride rows, so rows can be produced as bytes arrive and row N is computable arithmetic. The RLE4 and RLE8 variants are sequential and would not get this. streaming_decode is not a gap here and has been dropped from the list: the flag means iter_frames yields without materializing the whole thing, and this format has no frame axis to yield along. Every codec that sets it is multi_frame, 17 of 17, and the checker now enforces that. The incremental API described above is real and is a different capability from the one this column measures."
 
 [[codec]]
 name = "brotli"
@@ -137,9 +136,8 @@ parallel_decode = false
 range_reads = false
 pyramid = false
 http = false
-feasible = "gap"
-gaps = ["streaming_decode"]
-note = "BrotliDecoderDecompressStream decodes incrementally. A brotli stream carries no block index, so seeking into one is unavailable at any amount of effort."
+feasible = "no"
+note = "BrotliDecoderDecompressStream decodes incrementally. A brotli stream carries no block index, so seeking into one is unavailable at any amount of effort. streaming_decode is not a gap here and has been dropped from the list: the flag means iter_frames yields without materializing the whole thing, and this format has no frame axis to yield along. Every codec that sets it is multi_frame, 17 of 17, and the checker now enforces that. The incremental API described above is real and is a different capability from the one this column measures."
 
 [[codec]]
 name = "brunsli"
@@ -174,9 +172,8 @@ parallel_decode = false
 range_reads = false
 pyramid = false
 http = false
-feasible = "gap"
-gaps = ["streaming_decode"]
-note = "BZ2_bzDecompress is incremental. bzip2's 900k blocks are independently decodable in principle, which is how bzip2recover works, but finding their boundaries means scanning the whole stream, so random access is not worth claiming."
+feasible = "no"
+note = "BZ2_bzDecompress is incremental. bzip2's 900k blocks are independently decodable in principle, which is how bzip2recover works, but finding their boundaries means scanning the whole stream, so random access is not worth claiming. streaming_decode is not a gap here and has been dropped from the list: the flag means iter_frames yields without materializing the whole thing, and this format has no frame axis to yield along. Every codec that sets it is multi_frame, 17 of 17, and the checker now enforces that. The incremental API described above is real and is a different capability from the one this column measures."
 
 [[codec]]
 name = "cms"
@@ -211,9 +208,8 @@ parallel_decode = false
 range_reads = false
 pyramid = false
 http = false
-feasible = "gap"
-gaps = ["streaming_decode"]
-note = "libdeflate is one-shot by design and ships no streaming API, so this means adding a zlib inflate path beside it rather than setting a flag. A raw deflate stream has no index, so seeking is out regardless."
+feasible = "no"
+note = "libdeflate is one-shot by design and ships no streaming API, so this means adding a zlib inflate path beside it rather than setting a flag. A raw deflate stream has no index, so seeking is out regardless. streaming_decode is not a gap here and has been dropped from the list: the flag means iter_frames yields without materializing the whole thing, and this format has no frame axis to yield along. Every codec that sets it is multi_frame, 17 of 17, and the checker now enforces that. The incremental API described above is real and is a different capability from the one this column measures."
 
 [[codec]]
 name = "delta"
@@ -334,9 +330,8 @@ parallel_decode = false
 range_reads = false
 pyramid = false
 http = false
-feasible = "gap"
-gaps = ["streaming_decode"]
-note = "gzip is the streaming case by construction, which is what gzip(1) does; the binding is one-shot. Random access needs an index built by a full pass, so it is not part of the format."
+feasible = "no"
+note = "gzip is the streaming case by construction, which is what gzip(1) does; the binding is one-shot. Random access needs an index built by a full pass, so it is not part of the format. streaming_decode is not a gap here and has been dropped from the list: the flag means iter_frames yields without materializing the whole thing, and this format has no frame axis to yield along. Every codec that sets it is multi_frame, 17 of 17, and the checker now enforces that. The incremental API described above is real and is a different capability from the one this column measures."
 
 [[codec]]
 name = "hdf5"
@@ -384,9 +379,8 @@ parallel_decode = false
 range_reads = false
 pyramid = true
 http = false
-feasible = "gap"
-gaps = ["streaming_decode"]
-note = "DCT-scaled decode is built: scale=1/2, 1/4 and 1/8 come straight out of a smaller inverse DCT, and JpegPyramidReader exposes them as levels. Be clear about what that buys, though -- the Huffman pass still reads every coefficient, so a 1/8 decode measured 1.3x faster than full on noisy content and 2.0x on photo-like; the win is a 192 KB output instead of 12 MB, not fast JPEG. jpeg_read_scanlines would still add row-at-a-time streaming. Restart markers could drive parallel strips, but libjpeg-turbo exposes no entry point."
+feasible = "no"
+note = "DCT-scaled decode is built: scale=1/2, 1/4 and 1/8 come straight out of a smaller inverse DCT, and JpegPyramidReader exposes them as levels. Be clear about what that buys, though -- the Huffman pass still reads every coefficient, so a 1/8 decode measured 1.3x faster than full on noisy content and 2.0x on photo-like; the win is a 192 KB output instead of 12 MB, not fast JPEG. jpeg_read_scanlines would still add row-at-a-time streaming. Restart markers could drive parallel strips, but libjpeg-turbo exposes no entry point. streaming_decode is not a gap here and has been dropped from the list: the flag means iter_frames yields without materializing the whole thing, and this format has no frame axis to yield along. Every codec that sets it is multi_frame, 17 of 17, and the checker now enforces that. The incremental API described above is real and is a different capability from the one this column measures."
 
 [[codec]]
 name = "jpeg2k"
@@ -457,9 +451,8 @@ parallel_decode = false
 range_reads = false
 pyramid = false
 http = false
-feasible = "gap"
-gaps = ["streaming_decode"]
-note = "LZ4F has a streaming decompressor. Per-block random access would need LZ4F_blockIndependent plus an index the frame format has nowhere to store, so it is unavailable without inventing a sidecar."
+feasible = "no"
+note = "LZ4F has a streaming decompressor. Per-block random access would need LZ4F_blockIndependent plus an index the frame format has nowhere to store, so it is unavailable without inventing a sidecar. streaming_decode is not a gap here and has been dropped from the list: the flag means iter_frames yields without materializing the whole thing, and this format has no frame axis to yield along. Every codec that sets it is multi_frame, 17 of 17, and the checker now enforces that. The incremental API described above is real and is a different capability from the one this column measures."
 
 [[codec]]
 name = "lzma"
@@ -471,8 +464,8 @@ range_reads = false
 pyramid = false
 http = false
 feasible = "gap"
-gaps = ["streaming_decode", "chunked"]
-note = ".xz carries a block index in its footer and liblzma exposes it through lzma_index, so seeking to a block is genuinely in the format. Raw LZMA1 streams have no index and stay whole-file."
+gaps = ["chunked"]
+note = ".xz carries a block index in its footer and liblzma exposes it through lzma_index, so seeking to a block is genuinely in the format. Raw LZMA1 streams have no index and stay whole-file. streaming_decode is not a gap here and has been dropped from the list: the flag means iter_frames yields without materializing the whole thing, and this format has no frame axis to yield along. Every codec that sets it is multi_frame, 17 of 17, and the checker now enforces that. The incremental API described above is real and is a different capability from the one this column measures."
 
 [[codec]]
 name = "mozjpeg"
@@ -483,9 +476,8 @@ parallel_decode = false
 range_reads = false
 pyramid = true
 http = false
-feasible = "gap"
-gaps = ["streaming_decode"]
-note = "same DCT scaling as jpeg, reached through TurboJPEG v2, which infers the factor from the destination size instead of taking it directly; the outputs are byte-identical to the jpeg codec at every supported ratio, and a test pins that. Scanline streaming is still unbuilt."
+feasible = "no"
+note = "same DCT scaling as jpeg, reached through TurboJPEG v2, which infers the factor from the destination size instead of taking it directly; the outputs are byte-identical to the jpeg codec at every supported ratio, and a test pins that. Scanline streaming is still unbuilt. streaming_decode is not a gap here and has been dropped from the list: the flag means iter_frames yields without materializing the whole thing, and this format has no frame axis to yield along. Every codec that sets it is multi_frame, 17 of 17, and the checker now enforces that. The incremental API described above is real and is a different capability from the one this column measures."
 
 [[codec]]
 name = "mrc"
@@ -537,16 +529,15 @@ note = "the identity codec, which exists so a container can say 'stored'. The co
 
 [[codec]]
 name = "nrrd"
-multi_frame = false
-chunked = false
-streaming_decode = false
+multi_frame = true
+chunked = true
+streaming_decode = true
 parallel_decode = false
 range_reads = true
 pyramid = false
 http = true
-feasible = "gap"
-gaps = ["streaming_decode", "chunked"]
-note = "raw and detached NRRD put the data contiguously at a known offset, so slices are seeks, and the reader already reads at offsets over HTTP through core.open_read_at. The gzip and bzip2 encodings are single streams and stay whole-file."
+feasible = "done"
+note = "raw and detached NRRD put the data contiguously at a known offset, so slices are seeks, and the reader already reads at offsets over HTTP through core.io.coerce_data_source (open_read_at, which this note used to name, was folded into it and deleted). Both gaps are closed: _frame() reads slice N at its own offset for the raw encoding, so iterating no longer materializes the volume first and slice N does not cost slices 0..N-1. Over the range-serving test server one slice of a 2 MB volume moves one slice. multi_frame said False while iterating really did yield frames, and is now True to match MRC and NIfTI, which are the same shape of format. The gzip and bzip2 encodings are single streams with no byte position for slice N, so they fall back to reading the volume and slicing it: the same answer at the same cost as before."
 
 [[codec]]
 name = "numpy"
@@ -619,9 +610,8 @@ parallel_decode = false
 range_reads = false
 pyramid = false
 http = false
-feasible = "gap"
-gaps = ["streaming_decode"]
-note = "libspng has SPNG_DECODE_PROGRESSIVE with spng_decode_row and a spng_set_png_stream read callback, so rows can come out as bytes arrive. PNG has no tiles, so there is nothing to seek to, and Adam7 interlace gives seven passes rather than a resolution pyramid."
+feasible = "no"
+note = "libspng has SPNG_DECODE_PROGRESSIVE with spng_decode_row and a spng_set_png_stream read callback, so rows can come out as bytes arrive. PNG has no tiles, so there is nothing to seek to, and Adam7 interlace gives seven passes rather than a resolution pyramid. streaming_decode is not a gap here and has been dropped from the list: the flag means iter_frames yields without materializing the whole thing, and this format has no frame axis to yield along. Every codec that sets it is multi_frame, 17 of 17, and the checker now enforces that. The incremental API described above is real and is a different capability from the one this column measures."
 
 [[codec]]
 name = "qoi"
@@ -668,9 +658,8 @@ parallel_decode = false
 range_reads = false
 pyramid = false
 http = false
-feasible = "gap"
-gaps = ["streaming_decode"]
-note = "Radiance .hdr is RLE per scanline, so rows can be produced as they arrive. There is no scanline offset table, so they cannot be seeked to."
+feasible = "no"
+note = "Radiance .hdr is RLE per scanline, so rows can be produced as they arrive. There is no scanline offset table, so they cannot be seeked to. streaming_decode is not a gap here and has been dropped from the list: the flag means iter_frames yields without materializing the whole thing, and this format has no frame axis to yield along. Every codec that sets it is multi_frame, 17 of 17, and the checker now enforces that. The incremental API described above is real and is a different capability from the one this column measures."
 
 [[codec]]
 name = "snappy"
@@ -681,9 +670,8 @@ parallel_decode = false
 range_reads = false
 pyramid = false
 http = false
-feasible = "gap"
-gaps = ["streaming_decode"]
-note = "the framing format is a sequence of self-contained chunks and decodes incrementally; the raw format we read and write is one-shot and has no index to seek with."
+feasible = "no"
+note = "the framing format is a sequence of self-contained chunks and decodes incrementally; the raw format we read and write is one-shot and has no index to seek with. streaming_decode is not a gap here and has been dropped from the list: the flag means iter_frames yields without materializing the whole thing, and this format has no frame axis to yield along. Every codec that sets it is multi_frame, 17 of 17, and the checker now enforces that. The incremental API described above is real and is a different capability from the one this column measures."
 
 [[codec]]
 name = "sperr"
@@ -694,9 +682,8 @@ parallel_decode = false
 range_reads = false
 pyramid = false
 http = false
-feasible = "gap"
-gaps = ["streaming_decode"]
-note = "SPERR's bitstream is embedded, and SPERR3D_Stream_Tools exposes progressive_read and progressive_truncate: a prefix of the file decodes to a lower-quality version of the whole volume. That is quality progression rather than a tile index, so it buys early preview, not random access."
+feasible = "no"
+note = "SPERR's bitstream is embedded, and SPERR3D_Stream_Tools exposes progressive_read and progressive_truncate: a prefix of the file decodes to a lower-quality version of the whole volume. That is quality progression rather than a tile index, so it buys early preview, not random access. streaming_decode is not a gap here and has been dropped from the list: the flag means iter_frames yields without materializing the whole thing, and this format has no frame axis to yield along. Every codec that sets it is multi_frame, 17 of 17, and the checker now enforces that. The incremental API described above is real and is a different capability from the one this column measures."
 
 [[codec]]
 name = "sz3"
@@ -745,8 +732,8 @@ range_reads = false
 pyramid = false
 http = false
 feasible = "gap"
-gaps = ["streaming_decode", "multi_frame"]
-note = "WebPIAppend decodes incrementally as bytes arrive, and WebPAnimDecoder reads animated WebP, which we do not read at all today. libwebp's threading is an encoder setting (WebPConfig.thread_level), so decode stays on one core: measured 1.00x."
+gaps = ["multi_frame"]
+note = "WebPIAppend decodes incrementally as bytes arrive, and WebPAnimDecoder reads animated WebP, which we do not read at all today. libwebp's threading is an encoder setting (WebPConfig.thread_level), so decode stays on one core: measured 1.00x. streaming_decode is not a gap here and has been dropped from the list: the flag means iter_frames yields without materializing the whole thing, and this format has no frame axis to yield along. Every codec that sets it is multi_frame, 17 of 17, and the checker now enforces that. The incremental API described above is real and is a different capability from the one this column measures."
 
 [[codec]]
 name = "xor"
@@ -782,6 +769,5 @@ parallel_decode = false
 range_reads = false
 pyramid = false
 http = false
-feasible = "gap"
-gaps = ["streaming_decode"]
-note = "ZSTD_decompressStream decodes without holding the whole frame. Random access into one frame is not possible: there is no index, and the seekable format is a separate container rather than a mode."
+feasible = "no"
+note = "ZSTD_decompressStream decodes without holding the whole frame. Random access into one frame is not possible: there is no index, and the seekable format is a separate container rather than a mode. streaming_decode is not a gap here and has been dropped from the list: the flag means iter_frames yields without materializing the whole thing, and this format has no frame axis to yield along. Every codec that sets it is multi_frame, 17 of 17, and the checker now enforces that. The incremental API described above is real and is a different capability from the one this column measures."

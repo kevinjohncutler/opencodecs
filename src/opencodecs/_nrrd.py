@@ -232,6 +232,75 @@ class NrrdFile(ArrayReader):
         # which reverses the axes a second time.
         return arr.reshape(shape)
 
+    # -- one slice, at its own offset --------------------------------
+
+    #: Encodings whose samples sit contiguously at a computable offset.
+    #: The rest are single compressed streams or whitespace-delimited
+    #: text, and neither has a byte position for slice N.
+    _ADDRESSABLE = ("raw", "")
+
+    @property
+    def is_slice_addressable(self) -> bool:
+        """True when a slice can be read without the rest of the volume."""
+        return self.encoding in self._ADDRESSABLE
+
+    def _frame(self, index: int) -> np.ndarray:
+        """Slice ``index`` along the slowest axis.
+
+        ArrayReader routes iter_frames() and __getitem__ through this
+        when it exists, so defining it is what stops iterating a volume
+        from materializing it first. ``sizes`` lists the fastest axis
+        first and ``shape`` is its reverse, so ``shape`` is C-ordered
+        and the slowest axis is axis 0: one slice is one contiguous run
+        of bytes, exactly as in MRC.
+
+        The compressed and text encodings have no byte position for
+        slice N, so they fall back to reading the volume and slicing
+        it. That is the same answer, at the same cost as before.
+        """
+        shape = self.shape
+        if len(shape) < 3:
+            if index != 0:
+                raise IndexError(
+                    f"nrrd: a {len(shape)}-D NRRD has one frame")
+            return self.asarray()
+        n = shape[0]
+        if not -n <= index < n:
+            raise IndexError(f"nrrd: slice {index} out of range for {n}")
+        if index < 0:
+            index += n
+        if not self.is_slice_addressable:
+            return self.asarray()[index]
+
+        dtype = self.dtype
+        inner = 1
+        for d in shape[1:]:
+            inner *= d
+        nbytes = inner * dtype.itemsize
+        detached = self.detached_data_file
+        if detached is None:
+            raw = self._read_at(self._data_offset + index * nbytes, nbytes)
+        else:
+            if self._path is None:
+                raise NrrdError(
+                    f"nrrd: header points at a detached data file "
+                    f"{detached!r}, which cannot be resolved because the "
+                    f"NRRD was read from bytes rather than a path")
+            target = (self._path.parent / detached).resolve()
+            try:
+                with open(target, "rb") as fh:
+                    fh.seek(index * nbytes)
+                    raw = fh.read(nbytes)
+            except FileNotFoundError:
+                raise NrrdError(
+                    f"nrrd: detached data file {detached!r} not found next "
+                    f"to the header") from None
+        if len(raw) < nbytes:
+            raise NrrdError(
+                f"nrrd: truncated data; slice {index} needs {nbytes} bytes, "
+                f"{len(raw)} available")
+        return np.frombuffer(raw, dtype=dtype, count=inner).reshape(shape[1:])
+
     def close(self) -> None:
         closer = getattr(self, "_close", None)
         if closer is not None:
