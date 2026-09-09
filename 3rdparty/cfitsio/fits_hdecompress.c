@@ -38,6 +38,20 @@ The following modifications have been made to the original code:
 #include <limits.h>
 #include "fitsio2.h"
 
+/* opencodecs: the three file-scope variables below are per-decode bit
+   reader state, not shared configuration, and cfitsio never intended
+   two decodes to overlap. Decoding the tiles of one compressed FITS
+   HDU on a thread pool does exactly that, and they corrupt each
+   other's bit position: fits_hdecompress returns status=414
+   ("bad format code") on every tile but the first. Marking them
+   thread-local gives each thread its own reader and leaves
+   single-threaded behavior identical. */
+#if defined(_MSC_VER)
+#  define OC_THREAD_LOCAL __declspec(thread)
+#else
+#  define OC_THREAD_LOCAL __thread
+#endif
+
 /* WDP added test to see if min and max are already defined */
 #ifndef min
 #define min(a,b)        (((a)<(b))?(a):(b))
@@ -46,7 +60,7 @@ The following modifications have been made to the original code:
 #define max(a,b)        (((a)>(b))?(a):(b))
 #endif
 
-static long nextchar;
+static OC_THREAD_LOCAL long nextchar;
 
 static int decode(unsigned char *infile, int *a, int na, int *nx, int *ny, int *scale);
 static int decode64(unsigned char *infile, LONGLONG *a, int na, int *nx, int *ny, int *scale);
@@ -2487,8 +2501,8 @@ static void qread(unsigned char *file, char buffer[], int n)
 
 /* THE BIT BUFFER */
 
-static int buffer2;			/* Bits waiting to be input	*/
-static int bits_to_go;			/* Number of bits still in buffer */
+static OC_THREAD_LOCAL int buffer2;			/* Bits waiting to be input	*/
+static OC_THREAD_LOCAL int bits_to_go;			/* Number of bits still in buffer */
 
 /* INITIALIZE BIT INPUT */
 

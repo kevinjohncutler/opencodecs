@@ -39,6 +39,8 @@ from typing import Any
 
 import numpy as np
 
+from .core.parallel import resolve_workers, run_batched
+
 from .codecs._rcomp import decode_raw as _rice_decode_raw, RcompError
 
 
@@ -152,12 +154,20 @@ def decompress_image(
     data_offset: int,
     data_size: int,
     header: dict[str, Any],
+    numthreads: int | None = None,
 ) -> np.ndarray:
     """Decode a compressed-image BINTABLE HDU.
 
     ``parent`` is the FitsStream whose ``_read(offset, n)`` gives bytes
     at any offset; ``data_offset`` and ``data_size`` are the BINTABLE
     HDU's data-block bounds (the rest of this function reads from there).
+
+    Tiles are decoded across threads. The whole BINTABLE and heap are
+    read in one block before any tile is touched, so there is no I/O to
+    serialize, and each tile writes a rectangle of the output that no
+    other tile writes to. RICE_1, HCOMPRESS_1 and PLIO_1 all go through
+    Cython decoders that release the GIL; GZIP_1 goes through zlib,
+    which does too.
     """
     zbitpix = int(header["ZBITPIX"])
     znaxis = int(header["ZNAXIS"])
@@ -305,7 +315,7 @@ def decompress_image(
         bytes_per_pixel = 4
         tile_dtype = np.dtype(">i4")
 
-    for row_idx in range(n_naxis2):
+    def _tile(row_idx: int) -> None:
         # tile (tr, tc) — row-major: tr = row_idx // n_tile_cols
         tr = row_idx // n_tile_cols
         tc = row_idx % n_tile_cols
@@ -448,4 +458,13 @@ def decompress_image(
             out[y0:y1, x0:x1] = float_tile.reshape(tile_h, tile_w)
         else:
             out[y0:y1, x0:x1] = tile_arr.reshape(tile_h, tile_w)
+
+    workers = resolve_workers(
+        numthreads, n_naxis2,
+        # NOCOMPRESS tiles are a reshape and a copy, so a file made
+        # entirely of them has nothing to divide. Any other ZCMPTYPE
+        # does, and a mixed file is dominated by the compressed ones.
+        has_decode_work=ztype not in ("NOCOMPRESS",),
+        output_bytes=out.nbytes)
+    run_batched(_tile, range(n_naxis2), workers, name="fits")
     return out

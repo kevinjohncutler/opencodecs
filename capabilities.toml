@@ -294,13 +294,12 @@ name = "fits"
 multi_frame = true
 chunked = true
 streaming_decode = true
-parallel_decode = false
+parallel_decode = true
 range_reads = true
 pyramid = false
 http = true
-feasible = "gap"
-gaps = ["parallel_decode"]
-note = "chunked was recorded as missing and was there, for the same reason as dicom: the flag was never set and inherited False. An HDU is a seek -- headers are walked, only the requested HDU's data is read -- and on a 24-HDU 12.7 MB file the last one moves 5.2% of the file over HTTP. Tiles within a compressed HDU still decode independently, so threading them is the remaining work. FITS has no resolution levels, so there is no pyramid."
+feasible = "done"
+note = "chunked was recorded as missing and was there, for the same reason as dicom: the flag was never set and inherited False. An HDU is a seek -- headers are walked, only the requested HDU's data is read -- and on a 24-HDU 12.7 MB file the last one moves 5.2% of the file over HTTP. Tiles within a compressed HDU decode independently and now decode across threads: on 4096x4096 with 256x256 tiles, HCOMPRESS_1 goes 603.3 ms to 86.7, RICE_1 106.5 to 19.2, GZIP_1 86.5 to 20.6, GZIP_2 89.8 to 21.9, PLIO_1 46.2 to 18.5, all bit-identical to astropy. One of the five was not safe to thread: cfitsio's fits_hdecompress keeps its bit-reader position in three file-scope variables, so overlapping HCOMPRESS_1 tiles corrupted each other and returned status=414. The vendored copy marks those thread-local. FITS has no resolution levels, so there is no pyramid."
 
 [[codec]]
 name = "floatpred"
