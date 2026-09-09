@@ -82,7 +82,30 @@ class AvifCodec(Codec):
 
     def decode(self, src: Any, *, numthreads: int | None = None,
                out=None, **opts) -> np.ndarray:
-        return _avif_decode(_read_src(src), numthreads=numthreads, out=out)
+        """Decode a still, or every image of a sequence.
+
+        A sequence decodes to a ``(frames, H, W, C)`` stack, matching
+        `gif` and `webp` here and matching what imagecodecs returns for
+        the same file. This used to return the first image and say
+        nothing about the rest, which is the thing reading sequences
+        was meant to fix.
+
+        A still is untouched: same shape, same single-image path, and
+        `out=` still writes into the caller's buffer. That option has
+        no meaning for a stack whose frame count is not known until the
+        container is parsed, so it is refused there rather than
+        silently ignored.
+        """
+        data = _read_src(src)
+        if _avif_frame_count(data) <= 1:
+            return _avif_decode(data, numthreads=numthreads, out=out)
+        if out is not None:
+            raise ValueError(
+                "avif decode: out= cannot take a multi-image sequence; "
+                "decode without it, or use open() and write the frames "
+                "where you want them")
+        with AvifReader(data, numthreads=numthreads) as r:
+            return np.stack([r.frame(i) for i in range(r.n_frames)])
 
     def frame_count(self, src: Any) -> int:
         """How many images the file holds; 1 for a plain still.

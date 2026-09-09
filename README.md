@@ -146,7 +146,7 @@ Quick guidance:
 | `jpeg2k` | ✓ | ✓ | gray / RGB / RGBA, 8/16-bit, lossless + lossy | OpenJPEG | `.jp2`, `.j2k`, `.jpx`, `.jpc` |
 | `htj2k` | ✓ | ✓ | gray / RGB / RGBA, 8/16-bit, lossless + lossy | OpenJPH 0.31.0 (source-built) | `.j2c` |
 | `jpegls` | ✓ | ✓ | gray / RGB / RGBA, 2-16 bit, lossless + near-lossless | system CharLS | `.jls` |
-| `avif` | ✓ | ✓ | RGB / RGBA, lossy + lossless (YUV444+identity); **image sequences** | libavif | `.avif` |
+| `avif` | ✓ | ✓ | RGB / RGBA, lossy + lossless (YUV444+identity); **image sequences** (decode to a frame stack, like `gif`) | libavif | `.avif` |
 | `heif` | ✓ | ✓ | RGB / RGBA, lossless + lossy (HEVC); **every top-level image**, not just the primary | libheif (+ aomenc) | `.heif`, `.heic` |
 | `jxl` | ✓ | ✓ | gray / RGB / RGBA, P3, HDR, multi-frame | vendored libjxl 0.11.2 | `.jxl` |
 | `bcdec` | — | ✓ | BC1-7 / DXT / BPTC GPU textures; band decode + threaded | vendored bcdec.h | `.dds` |

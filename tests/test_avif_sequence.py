@@ -143,7 +143,33 @@ def test_alpha_survives_a_sequence(codec):
         assert np.array_equal(np.stack(list(r.iter_frames())), expected)
 
 
-def test_decode_still_returns_the_primary_image(codec, sequence):
-    """The old entry point must be unchanged for existing callers."""
+def test_decode_returns_the_whole_sequence(codec, sequence):
+    """A sequence decodes to a stack, matching gif, webp and imagecodecs.
+
+    This used to return the first image and say nothing about the rest,
+    which is the thing reading sequences was meant to fix. It was
+    changed after the same mistake surfaced in webp, where the corpus
+    parity test caught it.
+    """
     blob, expected = sequence
-    assert np.array_equal(codec.decode(blob), expected[0])
+    got = codec.decode(blob)
+    assert got.shape == expected.shape
+    assert np.array_equal(got, expected)
+
+
+def test_decode_of_a_still_is_unchanged(codec, frames):
+    """The single-image path keeps its shape and its out= support."""
+    still = codec.encode(frames[0])
+    got = codec.decode(still)
+    assert got.shape == frames[0].shape
+    out = np.empty(got.shape, dtype=got.dtype)
+    assert codec.decode(still, out=out) is out
+    assert np.array_equal(out, got)
+
+
+def test_out_is_refused_for_a_sequence(codec, sequence):
+    """A caller's buffer cannot hold a frame count nobody knew yet, so
+    say so rather than filling it with the first frame."""
+    blob, expected = sequence
+    with pytest.raises(ValueError, match="out="):
+        codec.decode(blob, out=np.empty(expected.shape[1:], dtype="u1"))
