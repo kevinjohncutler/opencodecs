@@ -35,9 +35,20 @@ def frames():
 
 @pytest.fixture(scope="module")
 def sequence(frames):
-    blob = imagecodecs.avif_encode(frames, numthreads=1)
+    """imagecodecs writes the fixture -- when its build can.
+
+    Encoding a 4-D stack as a sequence is newer than some imagecodecs
+    releases. The WebP equivalent of this fixture broke CI on exactly
+    that, so this one skips rather than errors when the installed
+    reference library cannot do it.
+    """
+    try:
+        blob = imagecodecs.avif_encode(frames, numthreads=1)
+    except (ValueError, TypeError) as exc:
+        pytest.skip(f"this imagecodecs cannot encode an AVIF sequence: {exc}")
     expected = np.asarray(imagecodecs.avif_decode(blob, index=None))
-    assert expected.shape == frames.shape, "imagecodecs did not write a sequence"
+    if expected.shape != frames.shape:
+        pytest.skip("this imagecodecs did not write a multi-frame AVIF")
     return blob, expected
 
 
@@ -120,7 +131,10 @@ def test_duration_is_reported(codec, sequence):
 def test_alpha_survives_a_sequence(codec):
     rgba = np.random.default_rng(3).integers(
         0, 255, (4, 32, 40, 4)).astype("u1")
-    blob = imagecodecs.avif_encode(rgba, numthreads=1)
+    try:
+        blob = imagecodecs.avif_encode(rgba, numthreads=1)
+    except (ValueError, TypeError) as exc:
+        pytest.skip(f"this imagecodecs cannot encode an AVIF sequence: {exc}")
     expected = np.asarray(imagecodecs.avif_decode(blob, index=None))
     if expected.shape[-1] != 4:
         pytest.skip("imagecodecs dropped alpha writing this sequence")

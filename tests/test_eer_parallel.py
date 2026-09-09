@@ -111,7 +111,7 @@ def test_sum_range_validation_is_unchanged(reader):
 
 
 @needs_corpus
-@pytest.mark.slow
+@pytest.mark.perf
 def test_threaded_sum_is_faster(reader):
     reader.sum(0, 60, dtype=np.uint32, numthreads=1)
     serial = min(_elapsed(

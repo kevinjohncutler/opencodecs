@@ -9,6 +9,7 @@ cases that separate a correct fast path from a plausible one.
 """
 import gzip
 import os
+import random
 
 import pytest
 
@@ -20,25 +21,43 @@ def codec():
     return oc.get_codec("gzip")
 
 
-@pytest.mark.parametrize("payloads", [
-    (b"aa" * 99, b"bb" * 99),          # equal lengths, different bytes
-    (b"xy" * 50, b"xy" * 50),          # identical members: same crc AND size
-    (b"q",) * 5,                       # several identical, all tiny
-    (b"first", b"", b"third"),         # an empty member in the middle
-    (os.urandom(1 << 16), os.urandom(3)),
+# Payloads are BUILT inside each test, never passed as parameters.
+# A bytes object used as a parametrize argument becomes the test's id,
+# so os.urandom(1 << 20) put a megabyte of raw binary in the node id
+# and errored on Windows before the test ran. Parametrize on a name.
+def _payloads(kind):
+    rng = random.Random(0)
+    return {
+        "equal-length-different-bytes": (b"aa" * 99, b"bb" * 99),
+        "identical-members":            (b"xy" * 50, b"xy" * 50),
+        "five-identical-tiny":          (b"q",) * 5,
+        "empty-member-in-the-middle":   (b"first", b"", b"third"),
+        "random-64k-then-3":            (rng.randbytes(1 << 16),
+                                         rng.randbytes(3)),
+    }[kind]
+
+
+@pytest.mark.parametrize("kind", [
+    "equal-length-different-bytes",
+    "identical-members",              # same crc AND size
+    "five-identical-tiny",
+    "empty-member-in-the-middle",
+    "random-64k-then-3",
 ])
-def test_concatenated_members_decode_whole(codec, payloads):
+def test_concatenated_members_decode_whole(codec, kind):
+    payloads = _payloads(kind)
     blob = b"".join(gzip.compress(p, 1) for p in payloads)
     assert codec.decode(blob) == b"".join(payloads)
 
 
-@pytest.mark.parametrize("payload", [
-    b"",
-    b"z",
-    b"\x00" * 4096,
-    os.urandom(1 << 20),
-])
-def test_single_member_round_trips(codec, payload):
+@pytest.mark.parametrize("kind", ["empty", "one-byte", "4k-zeros", "1M-random"])
+def test_single_member_round_trips(codec, kind):
+    payload = {
+        "empty": b"",
+        "one-byte": b"z",
+        "4k-zeros": b"\x00" * 4096,
+        "1M-random": random.Random(1).randbytes(1 << 20),
+    }[kind]
     assert codec.decode(gzip.compress(payload, 1)) == payload
     assert codec.decode(codec.encode(payload)) == payload
 

@@ -30,7 +30,7 @@ import pytest
 
 import opencodecs as oc
 
-pytestmark = pytest.mark.slow
+pytestmark = pytest.mark.perf
 
 CORES = os.cpu_count() or 1
 needs_cores = pytest.mark.skipif(

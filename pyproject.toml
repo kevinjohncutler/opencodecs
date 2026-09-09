@@ -69,6 +69,12 @@ test = [
     "h5py",
     "numcodecs",
     "zarr",
+    # tomllib is 3.11+. Two test modules read the manifests and fall
+    # back to tomli, and without it declared that fallback SKIPPED on
+    # 3.10 rather than running -- so the capability-manifest and
+    # corpus-manifest guards quietly did not guard on the oldest
+    # supported interpreter, which is where they are most useful.
+    'tomli; python_version < "3.11"',
 ]
 
 [tool.setuptools.packages.find]
@@ -88,6 +94,13 @@ markers = [
     # IDR OME-Zarr). Skip cleanly when the network is unreachable. Run
     # with ``pytest -m slow`` or skip with ``-m "not slow"``.
     "slow: live-archive smoke tests (hit real public endpoints)",
+    # Measurement guards: a decode that must actually use more than one
+    # core, a region read that must not decode the whole level. These
+    # were tagged `slow` at first, which quietly made `-m "not slow"`
+    # -- the documented way to skip the network -- also drop every
+    # performance guard. They are separate because they answer
+    # different questions and one is not a reason to skip the other.
+    "perf: timing and byte-count guards (no network)",
 ]
 
 

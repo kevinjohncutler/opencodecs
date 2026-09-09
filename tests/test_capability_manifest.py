@@ -24,6 +24,19 @@ SCRIPT = ROOT / "ci" / "check_capabilities.py"
 MANIFEST = ROOT / "capabilities.toml"
 
 
+def _tomllib():
+    """tomllib is 3.11+; the 3.10 runners need tomli.
+
+    tests/test_corpus_manifest.py already had this fallback and I did
+    not reuse it, which is what broke both 3.10 jobs.
+    """
+    try:
+        import tomllib
+        return tomllib
+    except ModuleNotFoundError:
+        return pytest.importorskip("tomli")
+
+
 def _run(*args):
     return subprocess.run([sys.executable, str(SCRIPT), *args],
                           capture_output=True, text=True, cwd=ROOT)
@@ -141,7 +154,7 @@ def test_verify_catches_a_verdict_that_contradicts_its_gaps(restore_manifest):
     gaps line from a feasible="no" entry is not a contradiction, so
     verify passed and the test failed for the right reason.
     """
-    import tomllib
+    tomllib = _tomllib()
     rows = tomllib.loads(MANIFEST.read_text())["codec"]
     victim = next((r["name"] for r in rows if r.get("feasible") == "gap"), None)
     if victim is None:
@@ -179,7 +192,7 @@ def test_verify_catches_an_invented_capability(restore_manifest):
     the string replace matched nothing and the manifest was written
     back unchanged.
     """
-    import tomllib
+    tomllib = _tomllib()
     rows = tomllib.loads(MANIFEST.read_text())["codec"]
     victim = next((r for r in rows if r.get("gaps")), None)
     if victim is None:

@@ -96,7 +96,7 @@ def test_float_quantized_tiles(tmp_path):
     assert np.allclose(got, expected, rtol=1e-5, atol=1e-5)
 
 
-@pytest.mark.slow
+@pytest.mark.perf
 @pytest.mark.parametrize("algo", ["RICE_1", "HCOMPRESS_1"])
 def test_threading_helps(tmp_path, algo):
     import time

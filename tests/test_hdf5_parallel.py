@@ -87,7 +87,7 @@ def test_a_single_chunk_stays_serial(tmp_path, arr):
         assert np.array_equal(r.read(), arr)
 
 
-@pytest.mark.slow
+@pytest.mark.perf
 def test_parallel_read_is_faster(tmp_path):
     big = np.random.default_rng(2).integers(
         0, 4000, (64, 512, 512)).astype("u2")

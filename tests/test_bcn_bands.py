@@ -118,7 +118,7 @@ def test_out_argument_still_honored(codec):
                                             height=h, numthreads=1))
 
 
-@pytest.mark.slow
+@pytest.mark.perf
 def test_threading_helps_on_a_large_surface(codec):
     import time
     w = h = 2048

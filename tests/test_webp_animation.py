@@ -19,6 +19,8 @@ than pretending otherwise.
 
 from __future__ import annotations
 
+import pathlib
+
 import numpy as np
 import pytest
 
@@ -44,9 +46,23 @@ def frames():
 
 @pytest.fixture(scope="module")
 def animation(frames):
-    blob = imagecodecs.webp_encode(frames, lossless=True)
+    """imagecodecs writes the fixture -- when its build can.
+
+    Encoding a 4-D stack as an animation is newer than some
+    imagecodecs releases: older ones raise "invalid data shape,
+    strides, or dtype" from _webp.pyx. That is a property of the
+    installed reference library, not of this package, so it skips.
+    The corpus test at the bottom of this file covers the real case
+    with a file libwebp itself wrote, and does not depend on the
+    reference encoder at all.
+    """
+    try:
+        blob = imagecodecs.webp_encode(frames, lossless=True)
+    except (ValueError, TypeError) as exc:
+        pytest.skip(f"this imagecodecs cannot encode a WebP animation: {exc}")
     ref = np.asarray(imagecodecs.webp_decode(blob, index=None))
-    assert ref.shape[0] == N, "imagecodecs did not write an animation"
+    if ref.ndim != 4 or ref.shape[0] != N:
+        pytest.skip("this imagecodecs did not write a multi-frame WebP")
     return blob, ref
 
 
@@ -110,19 +126,19 @@ def test_read_stacks_an_animation_and_not_a_still(codec, animation, frames):
         assert np.array_equal(r.read(), codec.decode(still))
 
 
-def test_decode_returns_the_first_frame_of_an_animation(codec, animation):
+def test_decode_returns_every_frame_of_an_animation(codec, animation):
     """This used to raise "WebP decode failed".
 
-    The plain decoder cannot read an animation container, so the old
-    behavior was an unexplained error rather than a wrong answer.
-    Returning the first frame matches what the AVIF and HEIF codecs do
-    for a multi-image file.
+    An animation decodes to the whole stack, which is what `gif` has
+    always returned for a time sequence and what imagecodecs returns
+    for the same file. Returning frame 0 would silently discard the
+    rest -- the exact complaint that motivated reading animations.
     """
     blob, ref = animation
     got = codec.decode(blob)
-    assert got.shape[:2] == ref.shape[1:3]
+    assert got.ndim == 4 and got.shape[0] == len(ref)
     with codec.open(blob) as r:
-        assert np.array_equal(got, r[0])
+        assert np.array_equal(got, np.stack(list(r.iter_frames())))
 
 
 def test_decode_of_a_still_is_unchanged(codec, frames):
@@ -151,8 +167,52 @@ def test_chunked_is_false_and_the_reader_says_so(codec, animation):
 def test_an_alpha_animation_survives(codec):
     rgba = np.random.default_rng(4).integers(
         0, 255, (3, 24, 32, 4)).astype("u1")
-    blob = imagecodecs.webp_encode(rgba, lossless=True)
+    try:
+        blob = imagecodecs.webp_encode(rgba, lossless=True)
+    except (ValueError, TypeError) as exc:
+        pytest.skip(f"this imagecodecs cannot encode a WebP animation: {exc}")
     ref = np.asarray(imagecodecs.webp_decode(blob, index=None))
     with codec.open(blob) as r:
         assert r.shape[-1] == 4
         assert np.array_equal(np.stack(list(r.iter_frames())), _as_rgba(ref))
+
+
+# --------------------------------------------------------------------
+# A real animated WebP, written by libwebp rather than by imagecodecs.
+# --------------------------------------------------------------------
+
+CORPUS = pathlib.Path(__file__).resolve().parent.parent / ".test_data"
+BANANA = CORPUS / "webp" / "animated_alpha_banana.webp"
+needs_corpus = pytest.mark.skipif(
+    not BANANA.is_file(),
+    reason="fetch the webp_google corpus entry first")
+
+
+@needs_corpus
+def test_a_third_party_animation_reads(codec):
+    """The fixtures above are written by imagecodecs, which links the
+    same libwebp we do. This one comes from the webmproject downloads,
+    so it carries a real encoder's choices: VP8X, 8 frames, and an
+    alpha channel that changes between them."""
+    data = BANANA.read_bytes()
+    assert data[12:16] == b"VP8X", "expected the extended (alpha/anim) form"
+    assert codec.frame_count(data) == 8
+    with codec.open(data) as r:
+        assert r.n_frames == 8
+        assert r.shape == (1050, 990, 4)
+        frames = list(r.iter_frames())
+    # Every frame differs, and the alpha is genuinely per-frame rather
+    # than a constant plane bolted on.
+    assert len({f.tobytes() for f in frames}) == 8
+    assert len({int(f[..., 3].sum()) for f in frames}) > 1
+    assert frames[0][..., 3].min() == 0 and frames[0][..., 3].max() == 255
+
+
+@needs_corpus
+def test_decode_of_the_third_party_animation_is_the_whole_stack(codec):
+    """And agrees with imagecodecs on the same file, frame for frame."""
+    data = BANANA.read_bytes()
+    got = codec.decode(data)
+    assert got.shape == (8, 1050, 990, 4)
+    ref = np.asarray(imagecodecs.webp_decode(data))
+    assert np.array_equal(got, ref)

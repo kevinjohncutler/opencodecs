@@ -147,7 +147,7 @@ def test_a_2d_stream_falls_back(codec):
     assert np.array_equal(codec.decode(blob), codec.decode(blob, numthreads=1))
 
 
-@pytest.mark.slow
+@pytest.mark.perf
 def test_threading_helps_on_a_large_volume(codec):
     import time
     a = _volume((192, 192, 192), seed=7)
