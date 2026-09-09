@@ -27,7 +27,12 @@ from webp cimport (
     WebPGetFeatures, WebPBitstreamFeatures,
     WebPDecodeRGBInto, WebPDecodeRGBAInto,
     VP8_STATUS_OK,
+    WebPData, WebPAnimInfo, WebPAnimDecoder, WebPAnimDecoderOptions,
+    WebPAnimDecoderOptionsInit, WebPAnimDecoderNew, WebPAnimDecoderGetInfo,
+    WebPAnimDecoderGetNext, WebPAnimDecoderReset, WebPAnimDecoderDelete,
+    MODE_RGBA,
 )
+from libc.string cimport memcpy
 
 cnp.import_array()
 
@@ -238,6 +243,97 @@ def decode(data, *, out=None) -> np.ndarray:
     if dec_ptr == NULL:
         raise WebpError('WebP decode failed')
     return out_arr
+
+
+def frame_count(data) -> int:
+    """How many frames an animated WebP holds; 1 for a still.
+
+    Reads the animation header only. A still has no ANIM chunk, so
+    WebPAnimDecoderNew refuses it and the answer is 1 without decoding
+    anything.
+    """
+    cdef:
+        const uint8_t[::1] src
+        WebPData wd
+        WebPAnimDecoder* dec = NULL
+        WebPAnimInfo info
+
+    src = data if isinstance(data, (bytes, bytearray)) else bytes(data)
+    wd.bytes = &src[0]
+    wd.size = <size_t> src.shape[0]
+    dec = WebPAnimDecoderNew(&wd, NULL)
+    if dec == NULL:
+        return 1                       # not an animation
+    try:
+        if not WebPAnimDecoderGetInfo(dec, &info):
+            return 1
+        return int(info.frame_count)
+    finally:
+        WebPAnimDecoderDelete(dec)
+
+
+def decode_animation(data, *, numthreads: int | None = None):
+    """Every frame of an animated WebP, as a list of RGBA arrays.
+
+    Frames are stored as sub-rectangles with disposal and blending
+    rules, so frame N genuinely depends on the frames before it.
+    WebPAnimDecoderGetNext reflects that: it hands back a fully
+    reconstructed canvas and only moves forward. Decoding them all in
+    one forward pass is therefore the cheap way to get any of them, and
+    is why this returns the sequence rather than offering random
+    access -- see the note on webp in capabilities.toml.
+
+    Returns ``(frames, timestamps_ms, loop_count)``. Timestamps are the
+    END of each frame's display, which is what libwebp reports.
+    """
+    cdef:
+        const uint8_t[::1] src
+        WebPData wd
+        WebPAnimDecoderOptions opts
+        WebPAnimDecoder* dec = NULL
+        WebPAnimInfo info
+        uint8_t* buf = NULL
+        int timestamp = 0
+        cnp.ndarray frame
+        cnp.npy_intp shape[3]
+        size_t nbytes
+
+    src = data if isinstance(data, (bytes, bytearray)) else bytes(data)
+    wd.bytes = &src[0]
+    wd.size = <size_t> src.shape[0]
+
+    if not WebPAnimDecoderOptionsInit(&opts):
+        raise WebpError('WebPAnimDecoderOptionsInit failed (ABI mismatch)')
+    opts.color_mode = MODE_RGBA
+    opts.use_threads = 0 if (numthreads is not None and numthreads <= 1) else 1
+
+    dec = WebPAnimDecoderNew(&wd, &opts)
+    if dec == NULL:
+        raise WebpError(
+            'WebPAnimDecoderNew failed; this is not an animated WebP')
+    try:
+        if not WebPAnimDecoderGetInfo(dec, &info):
+            raise WebpError('WebPAnimDecoderGetInfo failed')
+        shape[0] = <cnp.npy_intp> info.canvas_height
+        shape[1] = <cnp.npy_intp> info.canvas_width
+        shape[2] = 4
+        nbytes = <size_t> info.canvas_width * info.canvas_height * 4
+        frames = []
+        stamps = []
+        while WebPAnimDecoderGetNext(dec, &buf, &timestamp):
+            # buf is owned by the decoder and is overwritten by the
+            # next GetNext, so each frame is copied out here.
+            frame = cnp.PyArray_EMPTY(3, shape, cnp.NPY_UINT8, 0)
+            memcpy(cnp.PyArray_DATA(frame), buf, nbytes)
+            frames.append(frame)
+            stamps.append(int(timestamp))
+        if len(frames) != info.frame_count:
+            raise WebpError(
+                f'animated WebP: header says {info.frame_count} frames, '
+                f'decoded {len(frames)}')
+        return frames, stamps, int(info.loop_count)
+    finally:
+        WebPAnimDecoderDelete(dec)
 
 
 def check_signature(data) -> bool:

@@ -85,3 +85,44 @@ cdef extern from "webp_shim.h" nogil:
         uint8_t** out_ptr, size_t* out_size,
     )
     void oc_webp_free(void* ptr)
+
+
+cdef extern from 'webp/demux.h' nogil:
+    # Animated WebP. The frames are stored as sub-rectangles with
+    # disposal and blending rules, so a frame genuinely depends on the
+    # ones before it: WebPAnimDecoderGetNext hands back a fully
+    # reconstructed CANVAS and only moves forward, with Reset to
+    # rewind. That is why webp gets multi_frame and streaming_decode
+    # but not chunked, the same shape as GIF.
+    ctypedef struct WebPData:
+        const uint8_t* bytes
+        size_t size
+
+    ctypedef struct WebPAnimInfo:
+        unsigned int canvas_width
+        unsigned int canvas_height
+        unsigned int loop_count
+        unsigned int bgcolor
+        unsigned int frame_count
+
+    ctypedef struct WebPAnimDecoderOptions:
+        int color_mode
+        int use_threads
+
+    ctypedef struct WebPAnimDecoder:
+        pass
+
+    # The public names are `static inline` wrappers in demux.h that add
+    # the ABI version; declaring them here lets the C compiler resolve
+    # them from the header rather than hardcoding a version constant
+    # that would then silently drift from the linked library.
+    int WebPAnimDecoderOptionsInit(WebPAnimDecoderOptions*)
+    WebPAnimDecoder* WebPAnimDecoderNew(
+        const WebPData*, const WebPAnimDecoderOptions*)
+    int WebPAnimDecoderGetInfo(const WebPAnimDecoder*, WebPAnimInfo*)
+    int WebPAnimDecoderHasMoreFrames(const WebPAnimDecoder*)
+    int WebPAnimDecoderGetNext(WebPAnimDecoder*, uint8_t** buf, int* timestamp)
+    void WebPAnimDecoderReset(WebPAnimDecoder*)
+    void WebPAnimDecoderDelete(WebPAnimDecoder*)
+
+    int MODE_RGBA

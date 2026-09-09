@@ -1598,7 +1598,15 @@ extensions = [
             *_resolve_include_dirs("webp/encode.h"),
         ],
         library_dirs=_lib_dirs_for_probes(),
-        libraries=[_libname("webp", "libwebp")],
+        # webpdemux carries WebPAnimDecoder, which is how an animated
+        # WebP is read. It is a separate library from libwebp but not
+        # an optional one: libwebp's CMakeLists adds the webpdemux
+        # target and lists it in INSTALLED_LIBRARIES unconditionally,
+        # so the -DWEBP_BUILD_WEBPMUX=OFF that bench/build_codec_libs.sh
+        # passes does not affect it (that flag gates the webpmux tool
+        # and libwebpmux, which we do not link).
+        libraries=[_libname("webp", "libwebp"),
+                   _libname("webpdemux", "libwebpdemux")],
         define_macros=[("NPY_NO_DEPRECATED_API", "NPY_1_7_API_VERSION")],
         language="c",
     ),
