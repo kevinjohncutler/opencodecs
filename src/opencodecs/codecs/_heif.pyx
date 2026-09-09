@@ -9,7 +9,7 @@
 """Native HEIF / HEIC codec via libheif (system; depends on libde265 / x265)."""
 
 from cpython.bytes cimport PyBytes_FromStringAndSize, PyBytes_AsString
-from libc.stdlib cimport realloc, free
+from libc.stdlib cimport malloc, realloc, free
 from libc.string cimport memcpy
 from libc.stdint cimport uint8_t, uint16_t
 
@@ -21,6 +21,9 @@ from heif cimport (
     heif_error_code, heif_chroma,
     heif_context_read_from_memory_without_copy,
     heif_context_get_primary_image_handle,
+    heif_context_get_number_of_top_level_images,
+    heif_context_get_list_of_top_level_image_IDs,
+    heif_context_get_image_handle, heif_item_id,
     heif_image_handle, heif_image_handle_release,
     heif_image_handle_get_width, heif_image_handle_get_height,
     heif_image_handle_has_alpha_channel,
@@ -70,7 +73,42 @@ cdef _ensure_init():
         _heif_initialized = True
 
 
-def decode(data, *, numthreads: int | None = None, out=None) -> np.ndarray:
+def frame_count(data) -> int:
+    """How many top-level images the file holds; 1 for a plain still.
+
+    Reads the container's metadata only -- no image is decoded to
+    answer this.
+    """
+    cdef:
+        const uint8_t[::1] src
+        size_t srcsize
+        heif_context* ctx = NULL
+        heif_error err
+        int n
+
+    _ensure_init()
+    if isinstance(data, (bytes, bytearray)):
+        src = data
+    else:
+        src = bytes(data)
+    srcsize = <size_t> src.shape[0]
+    ctx = heif_context_alloc()
+    if ctx == NULL:
+        raise HeifError('heif_context_alloc failed')
+    try:
+        err = heif_context_read_from_memory_without_copy(
+            ctx, &src[0], srcsize, NULL)
+        if err.code != 0:
+            raise HeifError(
+                f'heif_context_read_from_memory: {err.message.decode()}')
+        n = heif_context_get_number_of_top_level_images(ctx)
+        return int(n)
+    finally:
+        heif_context_free(ctx)
+
+
+def decode(data, *, numthreads: int | None = None, out=None,
+           index=None) -> np.ndarray:
     """Decode HEIF/HEIC bytes to a numpy array.
 
     Returns uint8 for 8-bit HEIFs, uint16 for 10/12-bit HEIFs (values
@@ -109,6 +147,10 @@ def decode(data, *, numthreads: int | None = None, out=None) -> np.ndarray:
         size_t row_bytes_out
         tuple expected_shape
         object expected_dtype
+        int n_top
+        int idx
+        heif_item_id* ids = NULL
+        heif_item_id wanted
 
     _ensure_init()
 
@@ -132,10 +174,38 @@ def decode(data, *, numthreads: int | None = None, out=None) -> np.ndarray:
             raise HeifError(
                 f'heif_context_read_from_memory: {err.message.decode()}')
 
-        err = heif_context_get_primary_image_handle(ctx, &handle)
-        if err.code != 0:
-            raise HeifError(
-                f'get_primary_image_handle: {err.message.decode()}')
+        if index is None:
+            err = heif_context_get_primary_image_handle(ctx, &handle)
+            if err.code != 0:
+                raise HeifError(
+                    f'get_primary_image_handle: {err.message.decode()}')
+        else:
+            # A HEIF holds a set of top-level images, one of which is
+            # primary. A burst, a Live Photo's stills, a depth capture:
+            # all put more than one there, and decoding only the
+            # primary drops the rest silently. The IDs are item ids
+            # rather than positions, so the list has to be fetched to
+            # turn "image 2" into one.
+            n_top = heif_context_get_number_of_top_level_images(ctx)
+            idx = int(index)
+            if idx < 0:
+                idx += n_top
+            if not 0 <= idx < n_top:
+                raise IndexError(
+                    f'heif: image {index} out of range for {n_top}')
+            ids = <heif_item_id*> malloc(n_top * sizeof(heif_item_id))
+            if ids == NULL:
+                raise MemoryError('heif: could not allocate the image id list')
+            try:
+                heif_context_get_list_of_top_level_image_IDs(ctx, ids, n_top)
+                wanted = ids[idx]
+            finally:
+                free(ids)
+                ids = NULL
+            err = heif_context_get_image_handle(ctx, wanted, &handle)
+            if err.code != 0:
+                raise HeifError(
+                    f'get_image_handle({idx}): {err.message.decode()}')
 
         width = heif_image_handle_get_width(handle)
         height = heif_image_handle_get_height(handle)

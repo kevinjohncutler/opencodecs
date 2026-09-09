@@ -70,6 +70,17 @@ cdef extern from 'heif_shim.h' nogil:
         const void* options)
     heif_error heif_context_get_primary_image_handle(
         heif_context*, heif_image_handle**)
+
+    # A HEIF file is a set of top-level images, of which one is
+    # primary. A burst, a Live Photo's stills and a depth-plus-color
+    # capture all put more than one there, and reading only the
+    # primary silently drops the rest.
+    ctypedef unsigned int heif_item_id
+    int heif_context_get_number_of_top_level_images(heif_context*)
+    int heif_context_get_list_of_top_level_image_IDs(
+        heif_context*, heif_item_id* ids, int count)
+    heif_error heif_context_get_image_handle(
+        heif_context*, heif_item_id, heif_image_handle**)
     heif_error heif_decode_image(
         const heif_image_handle*, heif_image** out,
         heif_colorspace colorspace, heif_chroma chroma,

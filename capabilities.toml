@@ -346,16 +346,15 @@ note = "chunks are independent and the B-tree already gives their offsets, so mu
 
 [[codec]]
 name = "heif"
-multi_frame = false
-chunked = false
-streaming_decode = false
+multi_frame = true
+chunked = true
+streaming_decode = true
 parallel_decode = false
 range_reads = false
 pyramid = false
 http = false
-feasible = "gap"
-gaps = ["multi_frame", "chunked"]
-note = "HEIF grid images are tiles with their own item offsets, and HEIF holds image sequences; we decode only the primary image. Threading is already requested via heif_context_set_max_decoding_threads, but an untiled image measures 1.00x from one core to eight, so parallel_decode is false on purpose."
+feasible = "done"
+note = "A HEIF holds a SET of top-level images -- a burst, a Live Photo's stills, a depth-plus-color capture -- and we decoded only the primary, dropping the rest with nothing said. decode(index=) and open() now address them by item id out of the container's own list, so image N costs the metadata parse and image N. Getting a fixture was the work: nothing available writes a multi-image HEIF (imagecodecs ships no heif_encode and our encoder takes one image), so the test drives libheif itself through ctypes, which also keeps the reference outside the code under test. HEIF grid images, a separate feature where one top-level image is assembled from tiles with their own item offsets, are still read whole. Threading is already requested via heif_context_set_max_decoding_threads, but an untiled image measures 1.00x from one core to eight, so parallel_decode is false on purpose."
 
 [[codec]]
 name = "htj2k"
