@@ -233,13 +233,13 @@ name = "dicom"
 multi_frame = true
 chunked = true
 streaming_decode = true
-parallel_decode = false
+parallel_decode = true
 range_reads = true
 pyramid = false
 http = true
 feasible = "gap"
-gaps = ["parallel_decode", "pyramid"]
-note = "chunked was recorded as missing and was there: the Basic Offset Table gives per-frame offsets, the reader uses them, and the codec simply never set the flag, inheriting False from the base class. Measured on a 60-frame 31.5 MB file, r[59] takes 0.07 ms against 4.34 ms for read(), and over HTTP it moves 1.9% of the file. Frames decode independently, so threading them needs no format work. VL Whole Slide Microscopy DICOM is genuinely pyramidal, which is real but is a reader of its own rather than a missing switch."
+gaps = ["pyramid"]
+note = "chunked was recorded as missing and was there: the Basic Offset Table gives per-frame offsets, the reader uses them, and the codec simply never set the flag, inheriting False from the base class. Measured on a 60-frame 31.5 MB file, r[59] takes 0.07 ms against 4.34 ms for read(), and over HTTP it moves 1.9% of the file. Frames decode independently, and asarray() now threads them: 48 encapsulated JPEG 2000 frames go 121.6 ms serial to 66.1 ms on 8. The 1.86x rather than 8x is because openjpeg runs its own T1 threads at numthreads=1, so the baseline is not serial; with openjpeg pinned to one thread the frame fan-out measures 7.42x. Getting any of it at all needed a fix in jpeg2k rather than in dicom -- opj_decode held the GIL, so the first honest measurement of the frame pool was 0.94x. VL Whole Slide Microscopy DICOM is genuinely pyramidal, which is real but is a reader of its own rather than a missing switch."
 
 [[codec]]
 name = "dicomrle"

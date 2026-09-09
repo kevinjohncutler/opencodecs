@@ -229,11 +229,21 @@ def decode(data, *, numthreads: int | None = None, reduce: int = 0,
             if _opj_n > 1:
                 opj_codec_set_threads(codec, _opj_n)
 
-        ok = opj_read_header(stream, codec, &image)
+        # Released for the whole entropy-decode. openjpeg touches
+        # nothing Python here -- the stream callbacks it calls back
+        # into are all `noexcept nogil` over a raw buffer -- and
+        # holding the GIL through it makes every caller that decodes
+        # frames on threads measure exactly 1.00x. DICOM is the one
+        # that surfaced it: 24 independent J2K frames on 8 threads ran
+        # at 0.94x serial, which is a thread pool paying overhead to
+        # take turns.
+        with nogil:
+            ok = opj_read_header(stream, codec, &image)
         if not ok or image == NULL:
             raise Jpeg2kError('opj_read_header failed')
 
-        ok = opj_decode(codec, stream, image)
+        with nogil:
+            ok = opj_decode(codec, stream, image)
         if not ok:
             if reduce:
                 raise Jpeg2kError(
@@ -241,7 +251,8 @@ def decode(data, *, numthreads: int | None = None, reduce: int = 0,
                     f'codestream may have fewer decomposition levels '
                     f'than that (decode_info reports the usable range)')
             raise Jpeg2kError('opj_decode failed')
-        opj_end_decompress(codec, stream)
+        with nogil:
+            opj_end_decompress(codec, stream)
 
         result = _image_to_ndarray(image, out)
         return result
@@ -279,6 +290,7 @@ def decode_region(data, y0: int, y1: int, x0: int, x1: int, *,
         mem_buffer_read rdbuf
         int codec_format
         int _opj_n
+        OPJ_BOOL ok
         OPJ_INT32 rx0, ry0, rx1, ry1
 
     if reduce < 0:
@@ -332,7 +344,9 @@ def decode_region(data, y0: int, y1: int, x0: int, x1: int, *,
             if _opj_n > 1:
                 opj_codec_set_threads(codec, _opj_n)
 
-        if not opj_read_header(stream, codec, &image) or image == NULL:
+        with nogil:
+            ok = opj_read_header(stream, codec, &image)
+        if not ok or image == NULL:
             raise Jpeg2kError('opj_read_header failed')
 
         # set_decode_area takes coordinates on the full-resolution
@@ -350,9 +364,12 @@ def decode_region(data, y0: int, y1: int, x0: int, x1: int, *,
             raise Jpeg2kError(
                 f'opj_set_decode_area failed for y[{y0}:{y1}] '
                 f'x[{x0}:{x1}] at reduce={reduce}')
-        if not opj_decode(codec, stream, image):
+        with nogil:
+            ok = opj_decode(codec, stream, image)
+            if ok:
+                opj_end_decompress(codec, stream)
+        if not ok:
             raise Jpeg2kError('opj_decode failed for the requested region')
-        opj_end_decompress(codec, stream)
         return _image_to_ndarray(image, None)
     finally:
         if image != NULL:
@@ -379,6 +396,8 @@ def decode_tile(data, tile_index: int, *, numthreads: int | None = None):
         mem_buffer_read rdbuf
         int codec_format
         int _opj_n
+        OPJ_BOOL ok
+        OPJ_UINT32 _tile
 
     if tile_index < 0:
         raise ValueError(f'tile_index must be >= 0, got {tile_index}')
@@ -427,10 +446,16 @@ def decode_tile(data, tile_index: int, *, numthreads: int | None = None):
             if _opj_n > 1:
                 opj_codec_set_threads(codec, _opj_n)
 
-        if not opj_read_header(stream, codec, &image) or image == NULL:
+        with nogil:
+            ok = opj_read_header(stream, codec, &image)
+        if not ok or image == NULL:
             raise Jpeg2kError('opj_read_header failed')
-        if not opj_get_decoded_tile(codec, stream, image,
-                                    <OPJ_UINT32> tile_index):
+        # Coerced out here: inside nogil, casting a Python int is
+        # "Coercion from Python not allowed without the GIL".
+        _tile = <OPJ_UINT32> tile_index
+        with nogil:
+            ok = opj_get_decoded_tile(codec, stream, image, _tile)
+        if not ok:
             raise Jpeg2kError(
                 f'opj_get_decoded_tile({tile_index}) failed; the '
                 f'codestream may have fewer tiles than that')

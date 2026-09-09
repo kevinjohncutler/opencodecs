@@ -32,6 +32,7 @@ from typing import Any, Iterator
 import numpy as np
 
 from .core.io import coerce_data_source as _coerce_data_source
+from .core.parallel import resolve_workers, run_batched
 from .core._io_helpers import read_src as _read_src
 from .core.codec import ArrayReader
 
@@ -560,19 +561,42 @@ class DicomFile(ArrayReader):
             pixel_representation=self.pixel_representation,
         )
 
-    def asarray(self, *, rescale: bool = False) -> np.ndarray:
+    def asarray(self, *, rescale: bool = False,
+                numthreads: int | None = None) -> np.ndarray:
         """Decode every frame.
 
         ``rescale`` applies Rescale Slope and Intercept, which is what
         turns stored values into Hounsfield units on a CT. Off by
         default because it changes the dtype to float and most callers
         of a codec want the stored values.
+
+        Frames are independent -- each encapsulated frame is its own
+        codestream, and each native frame is its own run of bytes at a
+        known offset -- so they decode across threads with no format
+        work at all. ``numthreads`` is a budget; see
+        core.parallel.resolve_workers for what None decides and why an
+        explicit count is not honored when there is no decoding to do.
         """
         n = self.n_frames
         if n == 1:
             out = self.frame(0)
         else:
-            out = np.stack([self.frame(i) for i in range(n)])
+            first = self.frame(0)
+            out = np.empty((n, *first.shape), dtype=first.dtype)
+            out[0] = first
+            rest = list(range(1, n))
+            workers = resolve_workers(
+                numthreads, len(rest),
+                # Native Pixel Data is a plain buffer: a "decode" is a
+                # frombuffer and a reshape, and threading a memcpy
+                # cannot pay. Only encapsulated frames have work.
+                has_decode_work=self._encapsulated,
+                output_bytes=out.nbytes)
+
+            def _one(i: int) -> None:
+                out[i] = self.frame(i)
+
+            run_batched(_one, rest, workers, name="dicom")
         if rescale:
             slope, inter = self.rescale
             if slope != 1.0 or inter != 0.0:
@@ -583,8 +607,8 @@ class DicomFile(ArrayReader):
     _frame = frame
     is_chunked = True
 
-    def read(self) -> np.ndarray:
-        return self.asarray()
+    def read(self, *, numthreads: int | None = None) -> np.ndarray:
+        return self.asarray(numthreads=numthreads)
 
     def close(self) -> None:
         self._raw = b""

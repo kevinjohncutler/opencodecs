@@ -38,7 +38,17 @@ class DicomCodec(Codec):
     # manifest recorded a capability the reader had all along.
     chunked = True
     streaming_decode = True
-    parallel_decode = False
+    # Frames are independent -- each encapsulated frame is its own
+    # codestream, each native frame its own run of bytes at a known
+    # offset -- so asarray() decodes them across threads. Measured on
+    # 48 encapsulated JPEG 2000 frames: 121.6 ms serial, 66.1 ms on 8.
+    #
+    # That is 1.86x rather than 8x for a reason worth recording: at
+    # numthreads=1 openjpeg is already running its own T1 threads, so
+    # the serial baseline is not serial. With openjpeg pinned to one
+    # thread the frame fan-out measures 7.42x, which is what the
+    # threading itself is worth.
+    parallel_decode = True
 
     supported_dtypes = (np.uint8, np.int8, np.uint16, np.int16,
                         np.uint32, np.int32)
