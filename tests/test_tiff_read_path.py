@@ -84,7 +84,11 @@ def test_both_byte_orders_survive_every_byte_stream_codec(
                          byteorder=byteorder)
     except Exception as exc:                                  # noqa: BLE001
         pytest.skip(f"tifffile cannot write {compression}/{byteorder}: {exc}")
-    p = tmp_path / f"be_{byteorder}_{np.dtype(dtype).name}.tif"
+    # "<" and ">" are legal in a numpy byteorder and illegal in a
+    # Windows filename, so name the file after what they mean. This
+    # failed 96 times on Windows and nowhere else.
+    tag = "le" if byteorder == "<" else "be"
+    p = tmp_path / f"order_{tag}_{np.dtype(dtype).name}.tif"
     p.write_bytes(buf.getvalue())
     with oc.get_codec("tiff").open(str(p)) as r:
         np.testing.assert_array_equal(r.read(), arr)
