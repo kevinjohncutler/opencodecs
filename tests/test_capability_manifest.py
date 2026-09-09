@@ -170,12 +170,28 @@ def test_verify_catches_a_judgment_with_no_reason(restore_manifest):
 
 
 def test_verify_catches_an_invented_capability(restore_manifest):
-    _need("zstd")
+    """A gaps entry naming something that is not a capability.
+
+    Finds a codec that currently HAS gaps rather than naming one and a
+    gap it happens to list. This used to say zstd and
+    gaps = ["streaming_decode"], both of which stopped being true as
+    the sweep closed entries -- and it then asserted nothing, because
+    the string replace matched nothing and the manifest was written
+    back unchanged.
+    """
+    import tomllib
+    rows = tomllib.loads(MANIFEST.read_text())["codec"]
+    victim = next((r for r in rows if r.get("gaps")), None)
+    if victim is None:
+        pytest.skip("no codec currently lists a gap to corrupt")
+    _need(victim["name"])
     s = MANIFEST.read_text()
-    s2 = s.replace('gaps = ["streaming_decode"]',
-                   'gaps = ["streaming_decode", "telepathy"]', 1)
-    assert s2 != s
-    MANIFEST.write_text(s2)
+    start, end = _block_bounds(s, victim["name"])
+    listed = ", ".join(f'"{g}"' for g in victim["gaps"])
+    block = s[start:end].replace(f"gaps = [{listed}]",
+                                 f'gaps = [{listed}, "telepathy"]', 1)
+    assert block != s[start:end], "did not find the gaps line to corrupt"
+    MANIFEST.write_text(s[:start] + block + s[end:])
     r = _run("verify")
     assert r.returncode != 0
     assert "is not a capability" in r.stdout
