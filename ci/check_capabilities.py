@@ -71,7 +71,19 @@ def _grep(pattern: str, extended: bool = False) -> set[str]:
         cmd.append("-E")
     cmd += [pattern, "--", "src/opencodecs"]
     r = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True)
-    return set(r.stdout.split())
+    # git grep exits 1 for "no matches" and >1 for real trouble. Reading
+    # an error as "nothing matched" would mark every file-derived
+    # capability False and report the whole manifest as drifted, which
+    # is a confusing way to learn that git is unhappy.
+    if r.returncode > 1:
+        raise RuntimeError(
+            f"git grep failed ({r.returncode}) for {pattern!r}: "
+            f"{r.stderr.strip()[:200]}")
+    # Forward slashes, always: git prints them on every platform, and
+    # the paths these are compared against come from pathlib, which on
+    # Windows prints backslashes. The two sets then never intersect and
+    # every file-derived flag reads False.
+    return {line.replace("\\", "/") for line in r.stdout.split()}
 
 
 def derive() -> dict[str, dict]:
@@ -125,7 +137,8 @@ def derive() -> dict[str, dict]:
     http_files |= _grep("coerce_data_source")
 
     def files_for(name: str) -> set[str]:
-        return {str(p.relative_to(ROOT)) for p in src.rglob(f"*{name}*")
+        # as_posix(), to match git grep's output on Windows.
+        return {p.relative_to(ROOT).as_posix() for p in src.rglob(f"*{name}*")
                 if p.suffix in (".py", ".pyx")}
 
     out = {}
@@ -151,13 +164,23 @@ def cmd_verify(args) -> int:
     bad = 0
 
     missing = sorted(set(actual) - set(recorded))
-    extra = sorted(set(recorded) - set(actual))
+    unbuilt = sorted(set(recorded) - set(actual))
     for n in missing:
+        # A codec that built but is not recorded is always an error:
+        # it means the manifest was not updated when it was added.
         print(f"  UNRECORDED  {n} is registered but not in capabilities.toml")
         bad += 1
-    for n in extra:
-        print(f"  STALE       {n} is in capabilities.toml but not registered")
-        bad += 1
+    if unbuilt:
+        # Recorded but not registered here. Usually just a platform
+        # that could not build those optional codecs -- CI builds 53 of
+        # 60 -- and failing on that made the manifest unusable anywhere
+        # but a full local build. Reported, and only fatal under
+        # --strict, which is for a machine known to build everything.
+        print(f"  {len(unbuilt)} codec(s) recorded but not built here: "
+              + " ".join(unbuilt))
+        if args.strict:
+            print("  (--strict: treating those as stale entries)")
+            bad += len(unbuilt)
 
     for name in sorted(set(recorded) & set(actual)):
         for field in DERIVED:
@@ -199,7 +222,7 @@ def cmd_verify(args) -> int:
                       f"code already has it")
                 bad += 1
 
-    print(f"{len(actual)} codecs; {bad} discrepancy(ies)")
+    print(f"{len(actual)} codecs built here; {bad} discrepancy(ies)")
     return 1 if bad else 0
 
 
@@ -207,6 +230,23 @@ def cmd_sync(args) -> int:
     """Rewrite the derived fields, carrying `feasible` and notes across."""
     actual = derive()
     old = {c["name"]: c for c in (_load() if MANIFEST.is_file() else [])}
+
+    # Refuse to shrink the file. sync writes what this machine can see,
+    # and a machine missing a few optional libraries sees fewer codecs
+    # -- 26 of 60 on one here. Rewriting from that would drop 34 rows
+    # and take their judgements and notes with them, which is the part
+    # no script can regenerate. Only a build that has everything should
+    # be rewriting the record of everything.
+    dropped = sorted(set(old) - set(actual))
+    if dropped and not getattr(args, "allow_shrink", False):
+        print(f"refusing to sync: {len(dropped)} codec(s) in "
+              f"{MANIFEST.name} did not build here, and rewriting would "
+              f"delete them along with their judgements:")
+        for i in range(0, len(dropped), 8):
+            print("  " + " ".join(dropped[i:i + 8]))
+        print("Run sync on a build that has them, or pass --allow-shrink "
+              "if they are genuinely gone.")
+        return 1
 
     head = MANIFEST.read_text().split("schema = 1", 1)[0] if MANIFEST.is_file() \
         else ""
@@ -278,8 +318,16 @@ def cmd_report(args) -> int:
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__)
     sub = p.add_subparsers(required=True, dest="cmd")
-    sub.add_parser("verify").set_defaults(fn=cmd_verify)
-    sub.add_parser("sync").set_defaults(fn=cmd_sync)
+    v = sub.add_parser("verify")
+    v.add_argument("--strict", action="store_true",
+                   help="also fail when the manifest records a codec this "
+                        "machine did not build (for a full local build)")
+    v.set_defaults(fn=cmd_verify)
+    sy = sub.add_parser("sync")
+    sy.add_argument("--allow-shrink", action="store_true",
+                    help="permit dropping codecs this machine did not "
+                         "build (deletes their judgements)")
+    sy.set_defaults(fn=cmd_sync)
     r = sub.add_parser("report")
     r.add_argument("-v", "--verbose", action="store_true")
     r.set_defaults(fn=cmd_report)
