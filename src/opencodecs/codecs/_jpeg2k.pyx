@@ -17,6 +17,8 @@ import numpy as np
 cimport numpy as cnp
 
 from openjpeg cimport (
+    opj_set_decode_area,
+    opj_get_decoded_tile,
     OPJ_BOOL, OPJ_INT32, OPJ_UINT32, OPJ_SIZE_T, OPJ_OFF_T,
     CODEC_FORMAT, COLOR_SPACE,
     OPJ_CODEC_J2K, OPJ_CODEC_JP2,
@@ -243,6 +245,196 @@ def decode(data, *, numthreads: int | None = None, reduce: int = 0,
 
         result = _image_to_ndarray(image, out)
         return result
+    finally:
+        if image != NULL:
+            opj_image_destroy(image)
+        if codec != NULL:
+            opj_destroy_codec(codec)
+        opj_stream_destroy(stream)
+
+
+def decode_region(data, y0: int, y1: int, x0: int, x1: int, *,
+                  reduce: int = 0, numthreads: int | None = None):
+    """Decode the rectangle ``[y0:y1, x0:x1]`` and nothing else.
+
+    JPEG 2000 stores tiles and resolution levels precisely so a viewer
+    can take a window out of a large image without expanding it, and
+    ``opj_set_decode_area`` is how openjpeg exposes that. Combined with
+    ``reduce`` this is the pair a tile server wants: the right region
+    at the right zoom.
+
+    Coordinates are in the FULL-resolution image, matching how
+    ``read_region`` works elsewhere in this package, and stay that way
+    when ``reduce`` is non-zero: openjpeg applies the reduction to
+    them itself, so a 512-wide window at ``reduce=1`` returns 256
+    pixels. A caller picks a window once and changes only the zoom.
+    """
+    cdef:
+        const uint8_t[::1] src
+        OPJ_SIZE_T srcsize
+        opj_codec_t* codec = NULL
+        opj_image_t* image = NULL
+        opj_stream_t* stream = NULL
+        opj_dparameters_t dparams
+        mem_buffer_read rdbuf
+        int codec_format
+        int _opj_n
+        OPJ_INT32 rx0, ry0, rx1, ry1
+
+    if reduce < 0:
+        raise ValueError(f'reduce must be >= 0, got {reduce}')
+    if y1 <= y0 or x1 <= x0:
+        raise ValueError(
+            f'empty region: y[{y0}:{y1}] x[{x0}:{x1}]')
+
+    if isinstance(data, (bytes, bytearray)):
+        src = data
+    else:
+        src = bytes(data)
+    srcsize = <OPJ_SIZE_T> src.shape[0]
+    if srcsize < 12:
+        raise Jpeg2kError('input too short')
+
+    if (src[0] == 0xFF and src[1] == 0x4F and
+            src[2] == 0xFF and src[3] == 0x51):
+        codec_format = OPJ_CODEC_J2K
+    else:
+        codec_format = OPJ_CODEC_JP2
+
+    rdbuf.data = &src[0]
+    rdbuf.size = srcsize
+    rdbuf.offset = 0
+
+    stream = opj_stream_default_create(1)
+    if stream == NULL:
+        raise Jpeg2kError('opj_stream_default_create failed')
+    try:
+        opj_stream_set_user_data(stream, &rdbuf, NULL)
+        opj_stream_set_user_data_length(stream, <OPJ_UINT32> srcsize)
+        opj_stream_set_read_function(stream, _read_cb)
+        opj_stream_set_skip_function(stream, _skip_read_cb)
+        opj_stream_set_seek_function(stream, _seek_read_cb)
+
+        codec = opj_create_decompress(<CODEC_FORMAT> codec_format)
+        if codec == NULL:
+            raise Jpeg2kError('opj_create_decompress failed')
+        opj_set_default_decoder_parameters(&dparams)
+        dparams.cp_reduce = <OPJ_UINT32> reduce
+        if not opj_setup_decoder(codec, &dparams):
+            raise Jpeg2kError('opj_setup_decoder failed')
+
+        if opj_has_thread_support():
+            if numthreads is None:
+                _opj_n = opj_get_num_cpus() // 2
+                if _opj_n < 1: _opj_n = 1
+            else:
+                _opj_n = int(numthreads)
+            if _opj_n > 1:
+                opj_codec_set_threads(codec, _opj_n)
+
+        if not opj_read_header(stream, codec, &image) or image == NULL:
+            raise Jpeg2kError('opj_read_header failed')
+
+        # set_decode_area takes coordinates on the full-resolution
+        # reference grid -- openjpeg's own words are "in image
+        # coordinates" -- and applies cp_reduce to them itself. An
+        # earlier version shifted them first, which halved the region
+        # twice: asking for a 512-wide window at reduce=1 returned 128
+        # pixels instead of 256. Pass them through.
+        rx0 = <OPJ_INT32> x0
+        ry0 = <OPJ_INT32> y0
+        rx1 = <OPJ_INT32> x1
+        ry1 = <OPJ_INT32> y1
+
+        if not opj_set_decode_area(codec, image, rx0, ry0, rx1, ry1):
+            raise Jpeg2kError(
+                f'opj_set_decode_area failed for y[{y0}:{y1}] '
+                f'x[{x0}:{x1}] at reduce={reduce}')
+        if not opj_decode(codec, stream, image):
+            raise Jpeg2kError('opj_decode failed for the requested region')
+        opj_end_decompress(codec, stream)
+        return _image_to_ndarray(image, None)
+    finally:
+        if image != NULL:
+            opj_image_destroy(image)
+        if codec != NULL:
+            opj_destroy_codec(codec)
+        opj_stream_destroy(stream)
+
+
+def decode_tile(data, tile_index: int, *, numthreads: int | None = None):
+    """Decode one tile of a tiled codestream, by index.
+
+    The other half of the same capability: ``decode_region`` is for a
+    caller with a viewport, this is for one walking the tile grid.
+    Tiles are numbered in raster order.
+    """
+    cdef:
+        const uint8_t[::1] src
+        OPJ_SIZE_T srcsize
+        opj_codec_t* codec = NULL
+        opj_image_t* image = NULL
+        opj_stream_t* stream = NULL
+        opj_dparameters_t dparams
+        mem_buffer_read rdbuf
+        int codec_format
+        int _opj_n
+
+    if tile_index < 0:
+        raise ValueError(f'tile_index must be >= 0, got {tile_index}')
+
+    if isinstance(data, (bytes, bytearray)):
+        src = data
+    else:
+        src = bytes(data)
+    srcsize = <OPJ_SIZE_T> src.shape[0]
+    if srcsize < 12:
+        raise Jpeg2kError('input too short')
+
+    if (src[0] == 0xFF and src[1] == 0x4F and
+            src[2] == 0xFF and src[3] == 0x51):
+        codec_format = OPJ_CODEC_J2K
+    else:
+        codec_format = OPJ_CODEC_JP2
+
+    rdbuf.data = &src[0]
+    rdbuf.size = srcsize
+    rdbuf.offset = 0
+
+    stream = opj_stream_default_create(1)
+    if stream == NULL:
+        raise Jpeg2kError('opj_stream_default_create failed')
+    try:
+        opj_stream_set_user_data(stream, &rdbuf, NULL)
+        opj_stream_set_user_data_length(stream, <OPJ_UINT32> srcsize)
+        opj_stream_set_read_function(stream, _read_cb)
+        opj_stream_set_skip_function(stream, _skip_read_cb)
+        opj_stream_set_seek_function(stream, _seek_read_cb)
+
+        codec = opj_create_decompress(<CODEC_FORMAT> codec_format)
+        if codec == NULL:
+            raise Jpeg2kError('opj_create_decompress failed')
+        opj_set_default_decoder_parameters(&dparams)
+        if not opj_setup_decoder(codec, &dparams):
+            raise Jpeg2kError('opj_setup_decoder failed')
+
+        if opj_has_thread_support():
+            if numthreads is None:
+                _opj_n = opj_get_num_cpus() // 2
+                if _opj_n < 1: _opj_n = 1
+            else:
+                _opj_n = int(numthreads)
+            if _opj_n > 1:
+                opj_codec_set_threads(codec, _opj_n)
+
+        if not opj_read_header(stream, codec, &image) or image == NULL:
+            raise Jpeg2kError('opj_read_header failed')
+        if not opj_get_decoded_tile(codec, stream, image,
+                                    <OPJ_UINT32> tile_index):
+            raise Jpeg2kError(
+                f'opj_get_decoded_tile({tile_index}) failed; the '
+                f'codestream may have fewer tiles than that')
+        return _image_to_ndarray(image, None)
     finally:
         if image != NULL:
             opj_image_destroy(image)

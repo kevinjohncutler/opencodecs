@@ -396,15 +396,14 @@ note = "DCT-scaled decode is built: scale=1/2, 1/4 and 1/8 come straight out of 
 [[codec]]
 name = "jpeg2k"
 multi_frame = false
-chunked = false
+chunked = true
 streaming_decode = false
 parallel_decode = true
 range_reads = false
 pyramid = true
 http = false
-feasible = "gap"
-gaps = ["chunked"]
-note = "reduced-resolution decode is built and it is the real thing: cp_reduce skips the finest subbands before they are entropy-decoded, so a 256x256 overview of a 2048x2048 codestream takes 2.3 ms against 211 ms for a full decode -- about 90x. Jpeg2kPyramidReader exposes the levels and decode_info reports their shapes from headers alone. opj_get_decoded_tile would still give single-tile reads. Threading was already wired: measured 6.6x."
+feasible = "done"
+note = "everything JPEG 2000 offers here is built. Reduced-resolution decode skips the finest subbands before they are entropy-decoded -- a 256x256 overview of a 2048x2048 codestream takes 2.3 ms against 211 ms for a full decode. decode_region takes a window through opj_set_decode_area (a 128x128 window of a 1024x1024 image is 13x cheaper than the whole), and decode_tile takes one tile of a tiled codestream, also 13x. The two compose: region coordinates stay on the full-resolution grid at every reduce level, so a caller picks a window once and changes only the zoom. Threading was already wired at 6.6x. Note neither this encoder nor imagecodecs writes TILED codestreams, so the tile path is tested against one made by openjpeg's own CLI and skipped where that is absent."
 
 [[codec]]
 name = "jpegls"

@@ -149,6 +149,22 @@ cdef extern from 'openjpeg.h' nogil:
     OPJ_BOOL opj_codec_set_threads(opj_codec_t* p_codec, int num_threads)
     void opj_destroy_codec(opj_codec_t* p_codec)
 
+    # Decode a rectangle rather than the whole image. openjpeg's own
+    # note: for a single-tile image several set_decode_area/decode
+    # cycles are allowed and "bring performance improvements when
+    # reading an image by chunks".
+    OPJ_BOOL opj_set_decode_area(
+        opj_codec_t* p_codec, opj_image_t* p_image,
+        OPJ_INT32 p_start_x, OPJ_INT32 p_start_y,
+        OPJ_INT32 p_end_x, OPJ_INT32 p_end_y,
+    )
+
+    # Decode one tile by index, for callers walking the tile grid.
+    OPJ_BOOL opj_get_decoded_tile(
+        opj_codec_t* p_codec, opj_stream_t* p_stream,
+        opj_image_t* p_image, OPJ_UINT32 tile_index,
+    )
+
     void opj_set_default_decoder_parameters(opj_dparameters_t* parameters)
     void opj_set_default_encoder_parameters(opj_cparameters_t* parameters)
     OPJ_BOOL opj_setup_decoder(
