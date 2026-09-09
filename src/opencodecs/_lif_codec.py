@@ -89,7 +89,9 @@ class LifReader(Reader):
             f"u{(self._image.bit_depth[0] + 7) // 8}"
         )
         self.n_frames = self.n_images
-        self.is_chunked = False
+        # readlif indexes images directly, so reaching image N
+        # does not cost images 0..N-1.
+        self.is_chunked = True
 
     def _resolve_image(self, image: int | str) -> int:
         if isinstance(image, (int, np.integer)):
@@ -129,8 +131,21 @@ class LifReader(Reader):
         navigates BETWEEN images; for plane-level iteration inside a
         single image, materialize with ``read()`` and slice."""
         for i in range(self.n_images):
-            self.image(i)
-            yield self.read()
+            yield self[i]
+
+    def __getitem__(self, idx) -> np.ndarray:
+        """Image ``idx``, without walking the ones before it.
+
+        readlif indexes images directly, so this costs one image.
+        Unlike image() it does not move the reader's current image:
+        r[3] should not change what r.read() returns next.
+        """
+        i = int(idx)
+        if i < 0:
+            i += self.n_images
+        if not 0 <= i < self.n_images:
+            raise IndexError(idx)
+        return _image_to_array(self._lif.get_image(i))
 
     def read(self) -> np.ndarray:
         return _image_to_array(self._image)
@@ -173,7 +188,11 @@ class LifCodec(Codec):
     can_encode = False
     can_decode = True
     multi_frame = True
-    chunked = False
+    # The XML header carries each image's memory-block offset and
+    # length, so an image is a seek and a read. Both readers now expose
+    # that through __getitem__; before, indexing fell through to
+    # Reader's default, which walks iter_frames().
+    chunked = True
     streaming_decode = True
     parallel_decode = False
 

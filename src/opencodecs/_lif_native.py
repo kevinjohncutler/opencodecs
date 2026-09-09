@@ -366,7 +366,9 @@ class LifNativeReader(Reader):
         self.dtype = self._image.dtype
         self.n_images = len(self._parser.images)
         self.n_frames = self.n_images
-        self.is_chunked = False
+        # Every image's block offset and length come from the
+        # XML header, so reaching image N costs image N.
+        self.is_chunked = True
 
     def _compute_shape(self) -> tuple[int, ...]:
         # Mirror the layout of LifFileParser.array_for_image.
@@ -400,8 +402,28 @@ class LifNativeReader(Reader):
 
     def iter_frames(self) -> Iterator[np.ndarray]:
         for i in range(self.n_images):
-            self.image(i)
-            yield self.read()
+            yield self[i]
+
+    def __getitem__(self, idx) -> np.ndarray:
+        """Image ``idx``, read at its own memory block.
+
+        The XML header gives every image's block offset and length, so
+        this is a seek and a read whatever idx is. It was already true
+        of array_for_image; what was missing was a __getitem__ to reach
+        it, so indexing fell through to Reader's default, which walks
+        iter_frames().
+
+        Deliberately does NOT move the reader's current image the way
+        image() does. r[3] should not change what r.read() returns
+        next, and iterating used to do exactly that -- iter_frames left
+        the reader pointing at the last image.
+        """
+        i = int(idx)
+        if i < 0:
+            i += self.n_images
+        if not 0 <= i < self.n_images:
+            raise IndexError(idx)
+        return self._parser.array_for_image(self._parser.images[i])
 
     def read(self) -> np.ndarray:
         return self._parser.array_for_image(self._image)

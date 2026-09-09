@@ -439,15 +439,14 @@ note = "LERC's blocks are entropy-coded back to back with no offset table, and L
 [[codec]]
 name = "lif"
 multi_frame = true
-chunked = false
+chunked = true
 streaming_decode = true
 parallel_decode = false
 range_reads = true
 pyramid = false
 http = true
-feasible = "gap"
-gaps = ["chunked"]
-note = "LIF's XML header gives each plane's absolute offset and length, so a plane is a seek. The format stores no resolution levels, so there is no pyramid to expose."
+feasible = "done"
+note = "LIF's XML header gives each plane's absolute offset and length, so a plane is a seek, and array_for_image was already doing exactly that. What was missing was a __getitem__ to reach it, so indexing fell through to Reader's default, which walks iter_frames(). Both readers index directly now, and neither moves the reader's current image the way image() does -- iterating used to leave it pointing at the last one. The only LIF in the corpus holds a single image, so the guard is structural rather than a timing measurement. The format stores no resolution levels, so there is no pyramid to expose."
 
 [[codec]]
 name = "lz4"
@@ -509,9 +508,8 @@ parallel_decode = false
 range_reads = true
 pyramid = false
 http = true
-feasible = "gap"
-gaps = ["parallel_decode"]
-note = "chunks are independent, so decoding them across threads needs no format work. ND2 stores no resolution levels."
+feasible = "no"
+note = "chunks are independent in principle, and the measurement says there is nothing here to divide. The reader delegates to the nd2 package, and the only ND2 in the corpus is uncompressed: 13 frames of 600x800 uint16 read in 1.3 ms, which is a memcpy at memory bandwidth, and per-frame threading measured 0.99x on 8. ND2 does have compressed variants where this would pay, and nd2 cannot write one, so there is no fixture to justify the claim on. Marked no rather than gap: the blocker is a sample, not effort. ND2 stores no resolution levels."
 
 [[codec]]
 name = "nifti"
@@ -773,7 +771,7 @@ pyramid = false
 http = false
 feasible = "gap"
 gaps = ["chunked", "parallel_decode"]
-note = "in fixed-rate mode every 4^d block occupies the same number of bits, so a block's position is arithmetic and zfp_decode_block_* is the per-block entry point: true random access, which is what fixed-rate mode exists for. The variable-rate modes cannot do this, so it would be a fixed-rate-only path."
+note = "in fixed-rate mode every 4^d block occupies the same number of bits, so a block's position is arithmetic and zfp_decode_block_* is the per-block entry point: true random access, which is what fixed-rate mode exists for. The variable-rate modes cannot do this, so it would be a fixed-rate-only path. The decode released its GIL in this pass, which was worth 1.00x to 7.38x for a caller decoding many zfp chunks at once and is what a chunked-array reader actually does. That is not the same as splitting one stream, which is what parallel_decode means here: zfp offers that through zfp_stream_set_execution with ZFP_EXEC_OMP, so it needs OpenMP compiled into the vendored build on three platforms plus fixed-rate-only gating. Real, but a build-system change rather than a codec one."
 
 [[codec]]
 name = "zstd"
