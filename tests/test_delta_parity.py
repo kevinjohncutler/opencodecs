@@ -4,7 +4,7 @@ delta / floatpred / xor were pure numpy, which the kernel audit missed
 because it only looked at nogil functions. Racing them found decode
 running 5.5x slower than imagecodecs -- np.cumsum carries per-element
 dispatch a specialized loop does not, and a prefix sum is serial either
-way, so this was never about vectorising.
+way, so this was never about vectorizing.
 
 The correctness half matters more than the speed half: the kernel does
 modular arithmetic on eight integer types, and wraparound is what the

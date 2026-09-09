@@ -16,7 +16,7 @@ Bindings via ``ctypes`` rather than Cython:
 * Avoids adding a new Cython module + pxd + setup.py library detect
   for one transform codec.
 * Falls back to a clean ImportError when liblcms2 isn't present;
-  users who don't need cms aren't penalised.
+  users who don't need cms aren't penalized.
 
 The library is loaded lazily — the first call to ``CmsCodec.decode``
 (or any module-level helper) opens ``liblcms2`` via dlopen. The
@@ -416,7 +416,7 @@ def srgb_to_display_p3_uint8(arr, *, out=None) -> np.ndarray:
     Returns
     -------
     np.ndarray
-        ``(H, W, 3|4)`` uint8 in the Display-P3 colour space.
+        ``(H, W, 3|4)`` uint8 in the Display-P3 color space.
     """
     arr = np.asarray(arr)
     if arr.dtype != np.uint8:

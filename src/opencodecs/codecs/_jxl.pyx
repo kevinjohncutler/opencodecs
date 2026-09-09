@@ -1573,7 +1573,7 @@ cdef class JxlWriter:
                 self._lossless = self._distance == 0.0
         else:
             # Default to lossless to match ``imagecodecs.jpegxl_encode``'s
-            # default behaviour (distance=0 / lossless). Pareto-better-
+            # default behavior (distance=0 / lossless). Pareto-better-
             # or-equal policy — see docs/codec_api_conventions.md.
             self._distance = 0.0
             self._lossless = bool(lossless) if lossless is not None else True

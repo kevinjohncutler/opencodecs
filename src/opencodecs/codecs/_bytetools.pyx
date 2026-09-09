@@ -11,7 +11,7 @@
 Used by the CZI reader (and potentially other parsers) to undo the
 "byte-plane" shuffling that compressors apply before zstd. Doing this
 in Cython with nogil is ~50× faster than numpy's transpose+copy AND
-runs in parallel across threads (vs the GIL-serialised numpy path).
+runs in parallel across threads (vs the GIL-serialized numpy path).
 """
 
 from cpython.bytes cimport PyBytes_FromStringAndSize, PyBytes_AsString

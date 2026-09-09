@@ -4,7 +4,7 @@
 Tracks the two perf wins that landed in 2026-05-17:
   1. libdeflate IDAT accumulator path (one-shot compress instead of
      per-scanline deflate()),
-  2. libspng filter_sum split (per-filter specialised functions so
+  2. libspng filter_sum split (per-filter specialized functions so
      the compiler autovectorizes each branch).
 
 Runs five representative workloads end-to-end (no cheating with

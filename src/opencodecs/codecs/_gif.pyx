@@ -841,7 +841,7 @@ cdef class GifReader:
             raise GifError("GifReader is closed")
 
         for i in range(self.n_frames):
-            # Pre-fill via vectorised numpy (NOT a Python-level
+            # Pre-fill via vectorized numpy (NOT a Python-level
             # element-by-element loop, which would be 25-30x slower on
             # a 2 MP frame). np.zeros is essentially free for the
             # common all-zero background; otherwise np.full broadcasts

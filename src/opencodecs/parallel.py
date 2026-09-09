@@ -18,7 +18,7 @@ from __future__ import annotations
 import os
 import sys
 
-# fcntl is POSIX-only; on Windows the F_NOCACHE optimisation below is
+# fcntl is POSIX-only; on Windows the F_NOCACHE optimization below is
 # a no-op anyway, so we silently fall back when the module is absent.
 try:
     import fcntl as _fcntl

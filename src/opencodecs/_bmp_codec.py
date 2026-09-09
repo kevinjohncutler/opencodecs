@@ -42,7 +42,7 @@ from .core._optional_backend import import_or_stubs
 # slower than imagecodecs because every encode paid two unavoidable
 # MB-sized memcpys (ndarray.tobytes() + final concat). The Cython
 # path writes directly into a PyBytes_FromStringAndSize buffer with
-# a tight RGB->BGR loop that autovectorises on both NEON and SSE.
+# a tight RGB->BGR loop that autovectorizes on both NEON and SSE.
 _bmp_encode, _bmp_decode_bgr24, _bmp_decode_bgra32, _HAVE_BMP_ENCODE = import_or_stubs(
     "opencodecs.codecs._bmp",
     "encode", "decode_bgr24_to_rgb", "decode_bgra32_to_rgba",
@@ -393,7 +393,7 @@ def _decode(data: bytes) -> np.ndarray:
             return _unpack_32_bitfields(px, masks, alpha_mask)
         if _HAVE_BMP_ENCODE:
             # 32-bit BI_RGB has a 0xFF reserved byte in alpha slot — we
-            # mimic imagecodecs behaviour: return (H, W, 3) RGB rather
+            # mimic imagecodecs behavior: return (H, W, 3) RGB rather
             # than RGBX. Decode to RGBA via the Cython path, then drop
             # the alpha channel.
             rgba = _bmp_decode_bgra32(pix_data, width, height, int(top_down))

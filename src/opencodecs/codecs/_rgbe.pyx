@@ -16,7 +16,7 @@ format consumed by Blender, Mitsuba, and every other Radiance-aware
 imaging tool. Decoder accepts that format and returns an
 ``(H, W, 3) float32`` array.
 
-For Pareto-default behaviour we always emit RLE-compressed pixels
+For Pareto-default behavior we always emit RLE-compressed pixels
 when a header is written: RLE is ~1.4-2× smaller than raw on real
 HDR photographic data, decoding is essentially free, and the
 Radiance reference tools assume RLE inside a header'd file.
@@ -227,7 +227,7 @@ def decode(data, *, out=None):
 
 
 def check_signature(data) -> bool:
-    """Recognise a Radiance HDR header magic word."""
+    """Recognize a Radiance HDR header magic word."""
     cdef bytes head
     if isinstance(data, (bytes, bytearray)):
         head = bytes(data[:11])

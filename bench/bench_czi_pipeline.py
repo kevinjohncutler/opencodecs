@@ -2,10 +2,10 @@
 
 The lab's actual workflow opens hundreds of CZIs per FOV per day. A
 single-file benchmark answers "is the codec fast?" — this one answers
-"does the persistent thread pool actually amortise across files?"
+"does the persistent thread pool actually amortize across files?"
 
 If the pool is being torn down per-call, we'd see a flat per-file cost
-matching the single-file benchmark plus some overhead. If amortisation
+matching the single-file benchmark plus some overhead. If amortization
 works, the per-file cost should be lower than the single-file number
 when reads are back-to-back.
 

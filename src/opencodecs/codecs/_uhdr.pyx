@@ -286,7 +286,7 @@ import cython
 # (notably tile-scan RGB compositing) get a 3-4x wall-clock win on a 2k²
 # float HDR encode. Key wins over numpy / libuhdr-internal:
 #   - sRGB EOTF via a 256-entry LUT (no per-element pow(2.4))
-#   - sRGB OETF via a 4097-bin LUT (auto-vectorisable gather on NEON/AVX2)
+#   - sRGB OETF via a 4097-bin LUT (auto-vectorizable gather on NEON/AVX2)
 #   - branchless gain = hdr / max(sdr, eps), all in registers
 #   - log2 + pow via cross-platform polynomial fits (_fast_log2/_fast_pow),
 #     no libc / no Apple Accelerate intrinsics
@@ -337,7 +337,7 @@ def _srgb_eotf_lut_np():
 
 cdef extern from *:
     """
-    /* Polynomial log2/pow -- IEEE-754 bit math, fully vectorisable
+    /* Polynomial log2/pow -- IEEE-754 bit math, fully vectorizable
        under -O3 (NEON, SSE2, AVX2). Cross-platform: no libc, no
        SIMD intrinsics, no Apple-specific code. Accuracy is ~3e-3
        RMSE in log2 units, well within the 1/256 quantization
@@ -386,7 +386,7 @@ cdef bint _SRGB_OETF_U8_LUT_INIT = False
 
 cdef void _init_srgb_oetf_u8_lut() noexcept nogil:
     """sRGB OETF + quantize LUT: linear [0, 1] sampled at 4097 bins → uint8.
-    Replaces the per-pixel pow with a single gather — auto-vectorisable
+    Replaces the per-pixel pow with a single gather — auto-vectorizable
     on NEON (vqtbl) and AVX2/AVX512 (vgather)."""
     global _SRGB_OETF_U8_LUT_INIT
     cdef int i
@@ -461,9 +461,9 @@ cdef void _gain_map_kernel(const float* hdr_lin,   # (N*3,) HDR linear, 1.0=peak
     """Fused kernel: sRGB EOTF(SDR) -> gain ratio -> log2 normalize -> gamma -> uint8.
 
     Uses ``_fast_log2`` (polynomial, 5 ops) instead of libc ``log2f``
-    (function call, no vectorisation). With -O3 -ffast-math the inner
+    (function call, no vectorization). With -O3 -ffast-math the inner
     loop compiles to a tight NEON / AVX2 sequence that beats numpy's
-    vectorised log2 (numpy can't fuse: it needs to materialise
+    vectorized log2 (numpy can't fuse: it needs to materialize
     intermediate arrays between sRGB EOTF, divide, log2, normalize,
     quantize -- 5 memory passes vs 1 here).
     """
@@ -777,7 +777,7 @@ def compute_sdr_base_u8(hdr_lin_p3, peak=None, *, numthreads=None):
     ----------
     hdr_lin_p3 : ndarray
         ``(H, W, 3)`` float linear-light Display-P3 (or any linear RGB
-        actually -- this kernel is colour-blind, it just does per-channel
+        actually -- this kernel is color-blind, it just does per-channel
         peak-normalize + sRGB OETF).
     peak : float, optional
         Pre-computed peak value. ``None`` (default) computes the per-image
@@ -857,9 +857,9 @@ def compute_sdr_base_u8(hdr_lin_p3, peak=None, *, numthreads=None):
 #      LUT + polynomial exp2 for the boost factor) into fp32 RGB;
 #   4. casts fp32 → fp16 via numpy (hardware F16C/NEON).
 #
-# Two wins over libuhdr's path: parallelised JPEG decode + fused/no-alloc
+# Two wins over libuhdr's path: parallelized JPEG decode + fused/no-alloc
 # gain application. Output matches libuhdr's decoded fp16 RGBA to within
-# the quantisation noise of an 8-bit gain map round-trip.
+# the quantization noise of an 8-bit gain map round-trip.
 
 cdef void _apply_gainmap_kernel(
     const uint8_t* sdr_u8,         # (H*W*sdr_ch,) base raster
@@ -885,7 +885,7 @@ cdef void _apply_gainmap_kernel(
     SDR base unchanged, 1 returns the full-HDR raster the encoder
     targeted. Uses _SRGB_EOTF_LUT for sdr_u8 → sdr_lin (256-entry
     float32 LUT) and _fast_exp2 for the boost factor; both
-    auto-vectorise under -O3 -ffast-math.
+    auto-vectorize under -O3 -ffast-math.
     """
     cdef Py_ssize_t i
     cdef int c, gi
@@ -1451,7 +1451,7 @@ def encode(hdr,
         linear-light; the meaning of ``1.0`` is set by ``sdr_white_nits``
         below.
     gamut : str or int
-        Source colour gamut: ``'display-p3'`` (default), ``'rec2020'``,
+        Source color gamut: ``'display-p3'`` (default), ``'rec2020'``,
         or ``'bt709'``. Accepts the integer enum directly too.
     transfer : str or int
         Source transfer function. With float input pass ``'linear'``
@@ -1483,7 +1483,7 @@ def encode(hdr,
         Encoding gamma of the gain map. 1.0 = linear (default).
     multi_channel_gainmap : bool
         If True (default) emit a per-RGB gain map; if False, a single
-        luminance-only gain map (smaller file, less colour fidelity).
+        luminance-only gain map (smaller file, less color fidelity).
     preset : str
         ``'best'`` (default, quality-tuned) or ``'realtime'`` (faster).
     target_display_peak_nits : float
@@ -1637,7 +1637,7 @@ def encode(hdr,
         # Release the GIL around the long-running encode call so
         # batch encoders (e.g. ThreadPoolExecutor over many scenes)
         # actually parallelize across cores. Without this the GIL
-        # serialises ~150 ms encodes on a 20-core machine, capping
+        # serializes ~150 ms encodes on a 20-core machine, capping
         # speedup to ~1.3x. ``uhdr_encode`` is declared ``nogil``
         # in the pxd (libuhdr is C, does no Python callbacks) so
         # this is safe.

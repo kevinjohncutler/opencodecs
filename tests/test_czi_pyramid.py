@@ -148,7 +148,7 @@ class _StubCzi:
         self.entries = list(entries)
         self.is_pyramidal = any(e.is_pyramid for e in entries)
         # The first entry's dims drive the level-grouping axes lookup;
-        # mirror CziReader's behaviour.
+        # mirror CziReader's behavior.
         self._ref = entries[0] if entries else None
 
     def scale_factors_per_level(self, axes=("Y", "X")):

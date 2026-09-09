@@ -1,7 +1,7 @@
 """RcompCodec — Rice compression for FITS astronomy data.
 
 Rice coding (a special case of Golomb-Rice) is a lightweight entropy
-coder optimised for streams of signed integers concentrated near
+coder optimized for streams of signed integers concentrated near
 zero. It's the canonical compression for FITS BINTABLE columns and
 the ``RICE_1`` tile-compression algorithm in compressed FITS images.
 

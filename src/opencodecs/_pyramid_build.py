@@ -7,7 +7,7 @@ canonical flow. The helpers here exist for the convenience case where
 you have a single full-resolution array and just want a default
 pyramid written, accepting the size cost.
 
-Default behaviour is **conservative**: levels stop being added once an
+Default behavior is **conservative**: levels stop being added once an
 axis would drop below ``min_size`` (512 px by default) — so a 1024×1024
 input produces only 2 levels (1024 + 512), not 11. Pass an explicit
 ``levels=N`` to override.

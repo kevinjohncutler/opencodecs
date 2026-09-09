@@ -559,7 +559,7 @@ class TiffWriter(Writer):
 
         # Pre-encode all segments. We need byte counts up-front to lay
         # out the IFD before writing data. For very large pages this
-        # buffers everything in RAM; for streaming-friendly behaviour
+        # buffers everything in RAM; for streaming-friendly behavior
         # callers should switch to ``start_page`` (v2; not yet wired).
         offsets: list[int] = []
         byte_counts: list[int] = []

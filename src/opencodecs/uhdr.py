@@ -657,7 +657,7 @@ def decode_native(data, *, parallel=True, dtype=None,
         Output HDR dtype. ``None`` (default) → ``float16`` to match
         :func:`decode`'s ``hdr_fp16`` convention. Pass ``np.float32``
         if you want to skip the fp16 cast (saves ~2 ms on a 2k² raster
-        and avoids the ~5e-4 fp16-quantisation error).
+        and avoids the ~5e-4 fp16-quantization error).
     display_boost : float, optional
         Target display headroom. ``None`` (default) requests the
         encoded raster's full HDR (``hdr_capacity_max``). Pass 1.0 to
@@ -718,7 +718,7 @@ def decode_native(data, *, parallel=True, dtype=None,
         sdr_u8 = _decode(base_jpeg)
         gain_u8 = _decode(gainmap_jpeg)
 
-    # imagecodecs returns (H, W) grayscale or (H, W, 3) RGB. Normalise
+    # imagecodecs returns (H, W) grayscale or (H, W, 3) RGB. Normalize
     # to a 3-D array with the channel axis last; the kernel expects
     # that shape.
     if sdr_u8.ndim == 2:

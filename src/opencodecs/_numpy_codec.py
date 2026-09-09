@@ -3,7 +3,7 @@
 The ``.npy`` format is a thin, self-describing wrapper around raw
 array bytes: a magic number, version, and a Python-literal header
 naming dtype/shape/fortran-order, followed by the array data. It's
-the only ndarray serialisation format that is both numpy-native and
+the only ndarray serialization format that is both numpy-native and
 specified well enough to share across libraries.
 
 Useful as:

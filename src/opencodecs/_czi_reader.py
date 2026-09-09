@@ -318,7 +318,7 @@ class CziReader(Reader):
 
         CZI parsing does scattered slice access through the directory
         and sub-block headers; per-slice Range requests would issue
-        ~1000 round-trips per file, so we always materialise the file
+        ~1000 round-trips per file, so we always materialize the file
         before parsing.
 
         ``max_workers`` (default ``1``) controls the download pattern:

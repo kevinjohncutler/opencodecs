@@ -16,7 +16,7 @@ row reversal with optional RGB→BGR channel swap. In Cython we can:
     so there's no ``bytearray`` zero-init and no final ``bytes(out)``
     cast — both unavoidable copies in pure Python.
   * Write the channel swap in a tight inner loop that the C compiler
-    fully autovectorises (clang on arm64 generates NEON 16-byte
+    fully autovectorizes (clang on arm64 generates NEON 16-byte
     permutes; gcc/clang on x86 generates SSE2/AVX2).
 
 Net result: encode time goes from ~0.5 ms (pure-Python) to ~0.05 ms
@@ -242,7 +242,7 @@ def decode_bgr24_to_rgb(const uint8_t[::1] src, int width, int height,
     view of the pixel-data region starting at the first row. Handles
     the bottom-up row flip + BGR->RGB channel swap in a tight C
     loop with linearly-incrementing dst/src pointers, which clang
-    autovectorises to NEON ``vld3.u8``/``vst3.u8`` (3-channel
+    autovectorizes to NEON ``vld3.u8``/``vst3.u8`` (3-channel
     deinterleave/interleave) on arm64.
     """
     cdef:

@@ -46,7 +46,7 @@ Don't invent additional public methods — anything else belongs on the
 ## `signature(head)`
 
 Receives the first ~16 bytes of a file and returns `True` if this
-codec recognises the magic. Used by `oc.codec_for_bytes`. Keep this
+codec recognizes the magic. Used by `oc.codec_for_bytes`. Keep this
 cheap and side-effect-free — it's tried against every registered
 codec at dispatch time.
 

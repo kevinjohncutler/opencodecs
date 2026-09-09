@@ -26,7 +26,7 @@ Use it for tight feedback loops on libspng / libdeflate edits.
 ## How baselines work
 
 Setpoints live in `bench/perf_baseline.<machine>.json` — one file per
-architecture because compilers autovectorise to different widths
+architecture because compilers autovectorize to different widths
 (NEON 128b on arm64, SSE2 128b / AVX2 256b on x86_64). The committed
 baselines were captured 2026-05-17 on:
 
@@ -41,7 +41,7 @@ more than +30% above its recorded value. 30% is intentionally loose:
 
 * normal build-to-build / CI-runner jitter is <5%
 * the kinds of regressions we want to catch (whole fast-path goes
-  dark, wrong library gets linked, an autovectorisation pattern
+  dark, wrong library gets linked, an autovectorization pattern
   breaks) move ratios by 2-3×
 
 So a regression that trips `--check` is real, not noise.

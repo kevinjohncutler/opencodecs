@@ -116,7 +116,7 @@ class Nd2Codec(Codec):
 
     ``open(src)`` tries native first, falls back to the delegate on
     NotImplementedError. So users get HTTP range reads + zero
-    delegate-dep behaviour transparently when the file is in a
+    delegate-dep behavior transparently when the file is in a
     supported configuration, and full coverage when it isn't.
     """
 

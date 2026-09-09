@@ -8,7 +8,7 @@ runtime.
 
 Codec adapter modules (``opencodecs/_<name>_codec.py``) and Python-side
 surfaces (``opencodecs.jxl``, ``opencodecs.parallel``) all need to
-import from a possibly-missing extension. This helper standardises the
+import from a possibly-missing extension. This helper standardizes the
 "try, fall back to clear-error stubs" idiom so:
 
 * ``import opencodecs`` never raises on a platform where one or more

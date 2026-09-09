@@ -218,8 +218,8 @@ class DeltaCodec(Codec):
         # Decode is a prefix sum, and np.cumsum is 5.5x slower than a
         # plain C loop on this shape (34.6 ms against 6.3 ms on 17 MB of
         # uint8) because of its per-element dispatch. A prefix sum is
-        # serial either way, so this is not about vectorising -- it is
-        # the same specialisation argument as libspng's filter_scanline,
+        # serial either way, so this is not about vectorizing -- it is
+        # the same specialization argument as libspng's filter_scanline,
         # applied to a numpy call.
         kern = _delta_decode_kernel()
         if kern is not None and arr.dtype.kind in "iu" and \

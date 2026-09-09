@@ -94,7 +94,7 @@ class EerReader(Reader):
         Pass ``weights`` to apply a per-frame dose curve — useful when
         the detector dose-rate varies across the acquisition (e.g. a
         beam-induced-motion correction that down-weights early
-        high-drift frames, or a temporal-binning scheme that emphasises
+        high-drift frames, or a temporal-binning scheme that emphasizes
         frames at the peak of the exposure). ``weights[k]`` multiplies
         the k-th frame inside the requested range. Passing weights
         forces a float accumulator so partial contributions don't get

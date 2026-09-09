@@ -38,7 +38,7 @@ class NoneCodec(Codec):
     supports_color = False
 
     def signature(self, head: bytes) -> bool:
-        # No way to recognise an unframed byte stream; treat everything
+        # No way to recognize an unframed byte stream; treat everything
         # as not-ours so the dispatcher never auto-routes here.
         return False
 

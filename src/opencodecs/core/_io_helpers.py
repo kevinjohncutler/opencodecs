@@ -8,7 +8,7 @@ Every codec adapter accepts the same union of source/dest types:
   * file-like objects with ``.read()`` / ``.write()``
   * ``str`` / ``pathlib.Path``                       — disk path
 
-Centralising this here means one place to fix bugs (like the missing
+Centralizing this here means one place to fix bugs (like the missing
 ndarray case the comprehensive edge-case tests turned up).
 """
 

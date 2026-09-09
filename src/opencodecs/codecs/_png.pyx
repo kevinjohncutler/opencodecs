@@ -419,7 +419,7 @@ def encode(data, *, level: int | None = None,
             # PNG iCCP profile-name field is up to 79 bytes ASCII.
             _name = (iccprofile_name or "ICC profile")
             _icc_name_keep = _name.encode("ascii", errors="replace")[:79]
-            # Zero the struct (Cython initialises but be explicit) and
+            # Zero the struct (Cython initializes but be explicit) and
             # populate the fields libspng expects.
             for i in range(80):
                 iccp.profile_name[i] = 0

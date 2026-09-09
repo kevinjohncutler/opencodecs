@@ -133,7 +133,7 @@ def decode(data, *, out=None):
 
     Accepts any buffer-protocol object (bytes, bytearray, memoryview,
     mmap, numpy uint8). For mmap-backed memoryviews this is a true
-    zero-copy path — no bytes() materialisation before the codec call.
+    zero-copy path — no bytes() materialization before the codec call.
 
     Parameters
     ----------

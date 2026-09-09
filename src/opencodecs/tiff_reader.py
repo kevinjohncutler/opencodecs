@@ -71,7 +71,7 @@ def _read_one_page_parallel(
     that shape, write decoded segments in, then reshape to ``page.shape``.
     """
     # ``init_decode`` was added in tifffile 2024.5; older versions
-    # initialise lazily inside ``decode``. Tolerate either.
+    # initialize lazily inside ``decode``. Tolerate either.
     if hasattr(page, "init_decode"):
         page.init_decode()
     decode = page.decode

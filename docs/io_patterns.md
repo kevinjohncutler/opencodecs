@@ -10,7 +10,7 @@ is below; rationale and measured numbers follow.
    `BufferedReader` are both very good — fight them at your peril.
 2. **Parallel decode is independent of parallel I/O.** Most workloads
    want one stream of I/O feeding many CPU-bound decoders. Don't
-   parallelise the I/O unless you've measured it.
+   parallelize the I/O unless you've measured it.
 3. **mmap is "let the kernel prefetch" with extra steps.** Use it when
    the file fits in address space and you'll touch most bytes; let the
    kernel decide what to read ahead.
@@ -101,7 +101,7 @@ nogil-byteshuffle + persistent-pool combination.
   rows that are 8 MB apart in memory, so the copy is full-cache-miss
   per byte — ~9.6 ms per sub-block. A 30-line tight C loop in
   `_bytetools.pyx` brings that down to ~0.2 ms (memory-bandwidth
-  limited) AND releases the GIL so the work parallelises across decode
+  limited) AND releases the GIL so the work parallelizes across decode
   threads — which the numpy version couldn't because it holds the GIL.
   This single change took us from being 1.4× behind aicspylibczi to
   ~5% ahead on local-disk warm cache.
@@ -112,7 +112,7 @@ nogil-byteshuffle + persistent-pool combination.
   that scales with array bytes; in tight loops where you know the
   dimensions and dtype, hand-written Cython matches or beats it
   trivially. The win is doubled when the loop can be `nogil` so it
-  parallelises across worker threads.
+  parallelizes across worker threads.
 
 * **Persistent module-level thread pool.** The CZI reader originally
   used `with ThreadPoolExecutor(...) as ex:` per `read()` call.
@@ -130,9 +130,9 @@ nogil-byteshuffle + persistent-pool combination.
   the reader repeatedly on the same file, common in pipelines) that's
   exactly the wrong hint — every call re-fetches from the SMB server.
   We removed the `madvise(MADV_SEQUENTIAL)` call from `CziReader`.
-  Default kernel behaviour is fine for files that fit in RAM, which is
+  Default kernel behavior is fine for files that fit in RAM, which is
   ≥ 99% of the lab's CZI files. The hint *is* useful for one-shot
-  reads of files larger than RAM, but that's not what we're optimising
+  reads of files larger than RAM, but that's not what we're optimizing
   for.
 
 ### Didn't work (negative results worth keeping)
@@ -220,5 +220,5 @@ Empirical rules from the benchmarks:
   ThreadPoolExecutor: dispatch overhead dominates.
 
 Default to a single-threaded implementation, then measure, then
-parallelise only if the workload has independent chunks taking ≥ 1 ms
+parallelize only if the workload has independent chunks taking ≥ 1 ms
 each.

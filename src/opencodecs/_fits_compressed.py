@@ -126,7 +126,7 @@ def _gzip_decompress(data: bytes) -> bytes:
     """Decompress a gzip OR zlib stream. cfitsio uses gzip for
     ZCMPTYPE='GZIP_1'; some writers tag plain zlib the same way."""
     # ``wbits=31`` accepts gzip; falling back to zlib (wbits=15) handles
-    # the rarer case of zlib-headered tiles labelled GZIP_1.
+    # the rarer case of zlib-headered tiles labeled GZIP_1.
     try:
         return zlib.decompress(data, wbits=31)
     except zlib.error:

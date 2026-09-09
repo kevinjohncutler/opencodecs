@@ -117,7 +117,7 @@ def test_decode_full_roundtrip():
     assert rec.shape[:2] == hdr.shape[:2]
     assert rec.shape[2] in (3, 4)
     # Coarse sanity: per-channel mean tracks the input. Ultra-HDR is
-    # double-lossy (JPEG base + quantised gain map), so the budget has
+    # double-lossy (JPEG base + quantized gain map), so the budget has
     # to be generous — exact-equal is a much stricter contract than
     # the codec was designed to deliver. We just confirm the output
     # isn't pinned to 0 / constant / wildly off.
@@ -127,7 +127,7 @@ def test_decode_full_roundtrip():
     # All channels actually have signal (not NaN, not zero).
     assert np.all(np.isfinite(out_mean))
     assert np.all(out_mean > 0.05 * in_mean)
-    # And within a factor of 4x of input (HDR signals re-quantised
+    # And within a factor of 4x of input (HDR signals re-quantized
     # through the gain-map round-trip can lose / gain ~2x depending
     # on the encoder's content-boost choice).
     ratio = out_mean / np.maximum(in_mean, 1e-6)
@@ -241,7 +241,7 @@ def test_encode_native_roundtrip_matches_libuhdr():
         np.float32)
     # Mean per-channel ratio should be within 2x in either direction
     # (both encoders normalize by ~peak, so they share the same coarse
-    # scale; q95 + 8-bit gain-map quantisation contributes the residual).
+    # scale; q95 + 8-bit gain-map quantization contributes the residual).
     mn = rec_n.mean(axis=(0, 1))
     mr = rec_r.mean(axis=(0, 1))
     assert np.all(np.isfinite(mn)) and np.all(np.isfinite(mr))
@@ -324,7 +324,7 @@ def test_decode_native_returns_expected_keys():
 def test_decode_native_matches_libuhdr_at_sdr_boost():
     """At display_boost=1.0 decode_native should match libuhdr's
     default decode (also display_boost=1.0) within JPEG-q95 + 8-bit
-    gain-quantisation noise."""
+    gain-quantization noise."""
     hdr = _synthetic_hdr_rgb(64, 64)
     data = encode_native(hdr, quality=95)
 

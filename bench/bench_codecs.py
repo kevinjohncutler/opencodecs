@@ -24,7 +24,7 @@ When a real perf change lands intentionally, re-record it with
 
 Per-architecture baselines live in
 ``bench/perf_baseline.<machine>.json``. ``arm64`` / ``x86_64`` are
-captured separately because the compiler autovectorises to
+captured separately because the compiler autovectorizes to
 different widths (NEON 128b / SSE2 128b / AVX2 256b).
 
 Usage::
@@ -372,7 +372,7 @@ def _bench_one(w: Workload, n: int) -> dict:
 
 def _machine_tag() -> str:
     """A short tag used to namespace the baseline file. Distinguishes
-    arm64 from x86_64 so the per-architecture autovectorisation
+    arm64 from x86_64 so the per-architecture autovectorization
     differences don't trip --check."""
     m = platform.machine().lower()
     if m in ("arm64", "aarch64"):

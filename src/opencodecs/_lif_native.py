@@ -98,7 +98,7 @@ class LifMemoryBlock:
 class LifImage:
     """One LIF image element. Maps the XML Element to a memory block,
     plus the axis ordering / stride / channel info needed to reshape
-    the block's bytes into a labelled ndarray."""
+    the block's bytes into a labeled ndarray."""
     name: str
     memblock_id: str
     dtype: np.dtype
