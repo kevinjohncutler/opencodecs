@@ -107,6 +107,14 @@ out-of-band metadata.
 | `aec` | ✓ | ✓ | ✓ | — | system libaec (CCSDS 121.0-B-2) | `.aec` |
 | `lerc` | ✓ | ✓ | ✓ | `max_z_error` | system liblerc (Esri) | `.lerc` |
 | `zfp` | ✓ | ✓ | ✓ (reversible) | rate / precision / accuracy | system libzfp | `.zfp` |
+
+In fixed-rate mode `zfp` blocks are individually addressable, so
+`decode_block(data, n)` reads one 4x4x4 block without touching the rest
+(0.0010 ms against 0.209 ms for the whole stream) and a full decode
+splits the block grid across threads (110 ms → 30 ms on a 67 MB volume).
+The variable-rate modes have no computable block position and fall back
+to a whole-stream decode.
+
 | `sz3` | ✓ | ✓ | — | abs / rel / psnr / norm | source-built SZ3 | `.sz3` |
 | `pcodec` | ✓ | ✓ | ✓ | — | source-built pcodec (Rust) | `.pco` |
 
@@ -134,14 +142,14 @@ Quick guidance:
 | `png` | ✓ | ✓ | gray / RGB / RGBA, 8/16-bit | vendored libspng + libdeflate | `.png` |
 | `jpeg` | ✓ | ✓ | gray / RGB | libjpeg-turbo (TJ v3) | `.jpg`, `.jpeg` |
 | `mozjpeg` | ✓ | ✓ | gray / RGB, 8/12-bit | system mozjpeg (TJ v2) | `.jpg` |
-| `webp` | ✓ | ✓ | RGB / RGBA, lossy + lossless | system libwebp | `.webp` |
+| `webp` | ✓ | ✓ | RGB / RGBA, lossy + lossless; **animated** | system libwebp (+ libwebpdemux) | `.webp` |
 | `jpeg2k` | ✓ | ✓ | gray / RGB / RGBA, 8/16-bit, lossless + lossy | OpenJPEG | `.jp2`, `.j2k`, `.jpx`, `.jpc` |
 | `htj2k` | ✓ | ✓ | gray / RGB / RGBA, 8/16-bit, lossless + lossy | OpenJPH 0.31.0 (source-built) | `.j2c` |
 | `jpegls` | ✓ | ✓ | gray / RGB / RGBA, 2-16 bit, lossless + near-lossless | system CharLS | `.jls` |
-| `avif` | ✓ | ✓ | RGB / RGBA, lossy + lossless (YUV444+identity) | libavif | `.avif` |
-| `heif` | ✓ | ✓ | RGB / RGBA, lossless + lossy (HEVC) | libheif (+ aomenc) | `.heif`, `.heic` |
+| `avif` | ✓ | ✓ | RGB / RGBA, lossy + lossless (YUV444+identity); **image sequences** | libavif | `.avif` |
+| `heif` | ✓ | ✓ | RGB / RGBA, lossless + lossy (HEVC); **every top-level image**, not just the primary | libheif (+ aomenc) | `.heif`, `.heic` |
 | `jxl` | ✓ | ✓ | gray / RGB / RGBA, P3, HDR, multi-frame | vendored libjxl 0.11.2 | `.jxl` |
-| `bcdec` | — | ✓ | BC1-7 / DXT / BPTC GPU textures | vendored bcdec.h | `.dds` |
+| `bcdec` | — | ✓ | BC1-7 / DXT / BPTC GPU textures; band decode + threaded | vendored bcdec.h | `.dds` |
 | `rgbe` | ✓ | ✓ | float32 RGB HDR (Radiance) | vendored rgbe.c | `.hdr` |
 | `ultrahdr` | ✓ | ✓ | float16 / uint8 / uint16 RGBA HDR + SDR | system libultrahdr 1.4.x | `.jpg` (gainmap) |
 
@@ -181,9 +189,10 @@ BT.2100 HDR; `uint8` returns the SDR-tonemapped base JPEG.
 | `nifti` | ✓ | ✓ | NIfTI-1 / NIfTI-2 (neuroimaging volumes) | Read both, write NIfTI-1. Both header versions and byte orders; transparent gzip, since almost every NIfTI in the wild is `.nii.gz`; scl_slope/scl_inter applied when they change anything and skipped when they do not, so an unscaled integer volume stays integer. |
 | `n5` | ✓ | — | N5 (Janelia / Saalfeld chunked arrays) | Read-only, via `opencodecs.N5Array`. Local directory, http(s) URL or a fetch callable, so an N5 on S3 reads like one on disk. raw/gzip/bzip2/xz plus blosc, lz4 and zstd through our own codecs; column-major dimensions reversed to C order; big-endian per-block headers; absent blocks read as zeros the way sparse datasets expect. |
 | `imaris` | ✓ | — | Imaris `.ims` (Bitplane, HDF5-based) | Read-only, via `opencodecs.ImarisReader` and `open_pyramid`. Resolution pyramid, timepoints and channels; crops the padding Imaris leaves in the stored array using each level's own ImageSize attributes; decodes the character-array attribute convention. Needs `h5py`. |
-| `dicom` | ✓ | — | DICOM files (`.dcm`) | Read-only, via `opencodecs.DicomFile`. Explicit and implicit VR, big-endian, deflated; native and encapsulated Pixel Data; multi-frame. Frames route through the same transfer-syntax dispatch DICOMweb uses, so JPEG, JPEG-LS, JPEG 2000, HTJ2K and RLE all work. Reconciles a codestream's signedness with Pixel Representation. |
+| `dicom` | ✓ | — | DICOM files (`.dcm`) | Read-only, via `opencodecs.DicomFile`. Explicit and implicit VR, big-endian, deflated; native and encapsulated Pixel Data; multi-frame. Frames route through the same transfer-syntax dispatch DICOMweb uses, so JPEG, JPEG-LS, JPEG 2000, HTJ2K and RLE all work. Reconciles a codestream's signedness with Pixel Representation. Frames are indexed by the Basic Offset Table and decode across threads. VL Whole Slide Microscopy series read as pyramids through `open_pyramid(dir, format="dicom")`. |
 | `nrrd` | ✓ | — | NRRD / NHDR (3D Slicer, ITK) | Read-only, via `opencodecs.NrrdFile`. raw, gzip, bzip2, ascii and hex encodings; both byte orders; detached `.nhdr` + `.raw` pairs; `sizes` is fastest-axis-first so the numpy shape is reversed. |
 | `dm` | ✓ | — | Gatan Digital Micrograph (`.dm3`, `.dm4`) | Read-only, via `opencodecs.DmFile`. Walks the tag tree; big-endian structure with little-endian samples; dm4's 64-bit counts; 2-D and 3-D stacks. The embedded thumbnail is identified from the file's own Thumbnails group and skipped, so image 0 is the acquisition. |
+| `vsi` | ✓ | — | Olympus / Evident CellSens (`.vsi` + `.ets`) | Read-only. The `.vsi` is an index; the pixels are in sibling `_NAME_/stackN/frame_t*.ets` files, each holding one image as a tiled JPEG pyramid. `open_pyramid` decodes only the tiles a region covers: a 256x256 window of an 8022x9367 slide moves 0.5 MB of a 32.6 MB file over HTTP. Separate stacks are separate images, so a multi-stack `.vsi` needs `stack=`. Clean-room parser, no GPL reader consulted. |
 | `emd` | ✓ | — | EMD (Berkeley/NCEM and Thermo Velox) | Read-only, via `opencodecs.EmdFile`. Two conventions share the extension, so the schema is detected from the structure rather than the filename. Berkeley `dimN` axis vectors are returned alongside the array; Velox JSON metadata is decoded. Arrays come back in stored order, so hyperspy's are the transpose. |
 
 #### TIFF writer specifics
@@ -317,6 +326,27 @@ oc.codec_for_bytes(head) -> Codec | None
 `src` and `dest` accept paths, file-like objects, bytes, and
 memoryview / mmap slices (zero-copy through the codec).
 
+Any of these accept an `http(s)` URL wherever they accept a path.
+Formats that can reach storage by offset fetch only the bytes they
+need by Range request; the whole-codestream formats fetch once, which
+is the honest thing when every byte is needed anyway.
+
+Which is which is not a list to keep in your head, or in this README
+where it would rot: `capabilities.toml` records it per codec and
+`ci/check_capabilities.py verify` re-derives every entry from the code
+on each CI run, so it cannot quietly stop being true.
+
+```python
+import tomllib
+caps = tomllib.load(open("capabilities.toml", "rb"))["codec"]
+[c["name"] for c in caps if c["http"]]      # range-backed over HTTP
+[c["name"] for c in caps if c["pyramid"]]   # codecs with a pyramid reader
+```
+
+The manifest covers the codec registry, so the reader-only backends
+(Imaris, OME-Zarr, NDTiff, N5) are not in it; they are listed in the
+tables above and reached through `open_pyramid` / their own classes.
+
 ### Codec registry
 
 ```python
@@ -391,6 +421,25 @@ The pyramid reader auto-detects the best level for the requested
 region, fetches only the intersecting TIFF tiles via HTTP Range,
 and assembles the output in-memory. Works the same on local files,
 NFS, SMB, S3, or any range-capable HTTP server.
+
+`open_pyramid` dispatches on extension for TIFF/COG/SVS, OME-Zarr,
+CZI, Imaris, JPEG, JPEG 2000 and HTJ2K, and two whole-slide formats
+whose pyramid is not one file:
+
+```python
+# Olympus / Evident CellSens. The .vsi is an index; the tiles live in
+# a sibling _NAME_/stackN/frame_t*.ets. Only the tiles the box covers
+# are decoded.
+with oc.open_pyramid("slide.vsi") as p:
+    p.shapes            # ((9367, 8022, 3), (4684, 4011, 3), ... 6 levels)
+    tile = p.read_region(0, y=(1000, 1256), x=(2000, 2256))
+
+# DICOM VL Whole Slide Microscopy. A slide is a SERIES of instances,
+# one per resolution, so this takes a directory rather than a file --
+# no extension can imply that, hence the explicit format=.
+with oc.open_pyramid("study/slide_dir", format="dicom") as p:
+    overview = p.read_region(p.best_level_for(max_pixels_y=1024))
+```
 
 ### 2. Convert a multi-level pyramid to OME-Zarr v3 sharded
 
