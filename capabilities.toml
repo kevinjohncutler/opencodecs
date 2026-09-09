@@ -229,11 +229,10 @@ chunked = true
 streaming_decode = true
 parallel_decode = true
 range_reads = true
-pyramid = false
+pyramid = true
 http = true
-feasible = "gap"
-gaps = ["pyramid"]
-note = "chunked was recorded as missing and was there: the Basic Offset Table gives per-frame offsets, the reader uses them, and the codec simply never set the flag, inheriting False from the base class. Measured on a 60-frame 31.5 MB file, r[59] takes 0.07 ms against 4.34 ms for read(), and over HTTP it moves 1.9% of the file. Frames decode independently, and asarray() now threads them: 48 encapsulated JPEG 2000 frames go 121.6 ms serial to 66.1 ms on 8. The 1.86x rather than 8x is because openjpeg runs its own T1 threads at numthreads=1, so the baseline is not serial; with openjpeg pinned to one thread the frame fan-out measures 7.42x. Getting any of it at all needed a fix in jpeg2k rather than in dicom -- opj_decode held the GIL, so the first honest measurement of the frame pool was 0.94x. VL Whole Slide Microscopy DICOM is genuinely pyramidal, which is real but is a reader of its own rather than a missing switch."
+feasible = "done"
+note = "chunked was recorded as missing and was there: the Basic Offset Table gives per-frame offsets, the reader uses them, and the codec simply never set the flag, inheriting False from the base class. Measured on a 60-frame 31.5 MB file, r[59] takes 0.07 ms against 4.34 ms for read(), and over HTTP it moves 1.9% of the file. Frames decode independently, and asarray() now threads them: 48 encapsulated JPEG 2000 frames go 121.6 ms serial to 66.1 ms on 8. The 1.86x rather than 8x is because openjpeg runs its own T1 threads at numthreads=1, so the baseline is not serial; with openjpeg pinned to one thread the frame fan-out measures 7.42x. Getting any of it at all needed a fix in jpeg2k rather than in dicom -- opj_decode held the GIL, so the first honest measurement of the frame pool was 0.94x. VL Whole Slide Microscopy DICOM is genuinely pyramidal, and it was a reader of its own rather than a missing switch: a slide is a SERIES of instances describing the same physical area at different pixel extents, sharing a SeriesInstanceUID and an Imaged Volume and distinguished by Total Pixel Matrix Columns / Rows. Nothing inside any one instance says which level it is, so DicomWsiPyramid takes a directory or a list rather than a path, and orders levels by extent because the standard does not require the files to be named or ordered usefully. It refuses a directory holding two series rather than building a pyramid out of two slides. read_region crops the chosen level rather than fetching intersecting tiles: a WSI instance IS tiled, but which tile covers which part of the slide lives in the Per-Frame Functional Groups, which this does not parse -- the saving is in level selection, which is real. pydicom writes the fixtures, so the tags are spelled the way the reference implementation spells them. One fix fell out of it: the Imaged Volume tags are FL, and the reader had only a decimal-string float helper, so they read back as None."
 
 [[codec]]
 name = "dicomrle"
@@ -460,9 +459,8 @@ parallel_decode = false
 range_reads = false
 pyramid = false
 http = false
-feasible = "gap"
-gaps = ["chunked"]
-note = ".xz carries a block index in its footer and liblzma exposes it through lzma_index, so seeking to a block is genuinely in the format. Raw LZMA1 streams have no index and stay whole-file. streaming_decode is not a gap here and has been dropped from the list: the flag means iter_frames yields without materializing the whole thing, and this format has no frame axis to yield along. Every codec that sets it is multi_frame, 17 of 17, and the checker now enforces that. The incremental API described above is real and is a different capability from the one this column measures."
+feasible = "no"
+note = ".xz carries a block index in its footer and liblzma exposes it through lzma_index, so seeking to a block is genuinely in the format. Raw LZMA1 streams have no index and stay whole-file. Recorded as a no rather than a gap, with what it would actually take, because two of the three obstacles are not effort. It needs a liblzma binding: the stdlib lzma module exposes none of lzma_index_buffer_decode, lzma_index_iter_locate or lzma_block_decoder, so this is a new C extension. It needs xz added to bench/build_codec_libs.sh for three platforms, since the script does not build it today and lzma.h is not guaranteed present. And there is no fixture: the stdlib writes single-block .xz, multi-block needs lzma_stream_encoder_mt which it does not expose, and there is no xz CLI here, so the capability could be written and not tested. Nothing in this package produces a multi-block .xz either -- our own encoder writes one block -- so the only caller would be someone bringing their own file. streaming_decode is not a gap here and has been dropped from the list: the flag means iter_frames yields without materializing the whole thing, and this format has no frame axis to yield along. Every codec that sets it is multi_frame, 17 of 17, and the checker now enforces that. The incremental API described above is real and is a different capability from the one this column measures."
 
 [[codec]]
 name = "mozjpeg"

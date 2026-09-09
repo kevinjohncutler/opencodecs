@@ -171,6 +171,12 @@ def open_pyramid(
     * JPEG 2000 (.jp2/.j2k/.jpx/.jpc) → :class:`Jpeg2kPyramidReader`
     * HTJ2K (.jph/.j2c) → :class:`Htj2kPyramidReader`
     * JPEG (.jpg/.jpeg) → :class:`JpegPyramidReader`
+    * DICOM whole-slide (a directory or list of instances, or ``.dcm``)
+      → :class:`DicomWsiPyramid`. Unlike the others this is a SERIES of
+      files: the levels are separate instances sharing a
+      SeriesInstanceUID, and nothing inside any one of them says which
+      level it is. A directory has to be asked for with
+      ``format="dicom"``, since no extension implies one.
 
     The last three are a different kind of pyramid: those formats store
     one image and decode a smaller one out of it, rather than storing
@@ -218,6 +224,8 @@ def open_pyramid(
             fmt = "htj2k"
         elif path_lower.endswith((".jpg", ".jpeg")):
             fmt = "jpeg"
+        elif path_lower.endswith(".dcm"):
+            fmt = "dicom"
     if fmt in ("tiff", "tif", "btf", "bigtiff", "cog", "ome-tiff"):
         if is_url:
             # Build an HTTPDataSource and feed it through read_at.
@@ -230,6 +238,13 @@ def open_pyramid(
         return CziPyramidReader(src, **opts)
     if fmt in ("imaris", "ims"):
         return ImarisReader(src, **opts)
+    if fmt in ("dicom", "dcm", "wsi"):
+        # A whole-slide DICOM pyramid is a SERIES of files, so this one
+        # takes a directory or a list rather than a path to "the file".
+        # No extension can imply that, which is why a directory has to
+        # be asked for by format=.
+        from ._dicom_pyramid import DicomWsiPyramid
+        return DicomWsiPyramid(src, **opts)
     # Single-codestream pyramids. These formats store one image and
     # decode a smaller one out of it, so the reader is handed bytes
     # rather than a seekable source -- there is nothing to seek to.
@@ -244,6 +259,7 @@ def open_pyramid(
     raise ValueError(
         f"open_pyramid: cannot determine format for src={src!r}; pass "
         f"format='tiff'|'omezarr'|'czi'|'imaris'|'jpeg'|'jpeg2k'|'htj2k'"
+        f"|'dicom'"
     )
 
 

@@ -74,6 +74,19 @@ TAG_RESCALE_INTERCEPT = (0x0028, 0x1052)
 TAG_RESCALE_SLOPE = (0x0028, 0x1053)
 TAG_PIXEL_DATA = (0x7FE0, 0x0010)
 
+# VL Whole Slide Microscopy. A slide is a SERIES of instances, one per
+# resolution level, all sharing a SeriesInstanceUID and describing the
+# same physical area at different pixel extents.
+TAG_SOP_CLASS_UID = (0x0008, 0x0016)
+TAG_SERIES_INSTANCE_UID = (0x0020, 0x000E)
+TAG_TOTAL_PIXEL_MATRIX_COLUMNS = (0x0048, 0x0006)
+TAG_TOTAL_PIXEL_MATRIX_ROWS = (0x0048, 0x0007)
+TAG_IMAGED_VOLUME_WIDTH = (0x0048, 0x0001)
+TAG_IMAGED_VOLUME_HEIGHT = (0x0048, 0x0002)
+
+#: The SOP Class that says "this is a whole-slide image".
+SOP_CLASS_VL_WHOLE_SLIDE = "1.2.840.10008.5.1.4.1.1.77.1.6"
+
 # Implicit VR carries no type, so the reader has to know one. A full
 # data dictionary is not needed: only the tags above are interpreted,
 # and guessing instead is actively wrong. Columns 48 stored as US is
@@ -602,6 +615,71 @@ class DicomFile(ArrayReader):
             if slope != 1.0 or inter != 0.0:
                 out = out * np.float32(slope) + np.float32(inter)
         return out
+
+    # -- whole-slide microscopy -------------------------------------
+
+    @property
+    def sop_class_uid(self) -> str | None:
+        return self._str(TAG_SOP_CLASS_UID)
+
+    @property
+    def series_instance_uid(self) -> str | None:
+        return self._str(TAG_SERIES_INSTANCE_UID)
+
+    @property
+    def is_whole_slide(self) -> bool:
+        """True for VL Whole Slide Microscopy Image Storage."""
+        return self.sop_class_uid == SOP_CLASS_VL_WHOLE_SLIDE
+
+    @property
+    def total_pixel_matrix(self) -> tuple[int, int] | None:
+        """``(rows, columns)`` of the whole slide at this level.
+
+        Not the same as Rows/Columns, which on a tiled WSI instance are
+        the size of ONE tile. This is the extent the level covers, and
+        it is what makes one instance a pyramid level rather than an
+        image.
+        """
+        r = self._int(TAG_TOTAL_PIXEL_MATRIX_ROWS)
+        c = self._int(TAG_TOTAL_PIXEL_MATRIX_COLUMNS)
+        if r is None or c is None:
+            return None
+        return int(r), int(c)
+
+    def _real(self, tag) -> float | None:
+        """A float that may be stored binary (FL/FD) or as text (DS).
+
+        The Imaged Volume tags are FL, so _float -- which decodes ascii
+        and calls float() -- returns None on them. Most numeric DICOM
+        tags this reader touches are decimal strings, which is why that
+        was the only float helper until now.
+        """
+        el = self._ds.get(tag)
+        if el is None or not el.value:
+            return None
+        vr = el.vr or _IMPLICIT_VR.get(tag, b"")
+        v = el.value
+        try:
+            if vr == b"FL" and len(v) >= 4:
+                return float(struct.unpack(self._bo + "f", v[:4])[0])
+            if vr == b"FD" and len(v) >= 8:
+                return float(struct.unpack(self._bo + "d", v[:8])[0])
+            return float(v.decode("ascii", "replace").strip().rstrip("\x00"))
+        except (ValueError, struct.error):
+            return None
+
+    @property
+    def imaged_volume(self) -> tuple[float, float] | None:
+        """``(height, width)`` of the imaged area in millimetres.
+
+        Shared by every level of a slide, which is what lets levels be
+        recognized as views of the same thing.
+        """
+        h = self._real(TAG_IMAGED_VOLUME_HEIGHT)
+        w = self._real(TAG_IMAGED_VOLUME_WIDTH)
+        if h is None or w is None:
+            return None
+        return h, w
 
     # The Reader contract: one frame at a time, by offset.
     _frame = frame
