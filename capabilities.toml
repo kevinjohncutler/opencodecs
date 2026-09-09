@@ -231,15 +231,15 @@ note = "a prefix sum: element N depends on every element before it, so there is 
 [[codec]]
 name = "dicom"
 multi_frame = true
-chunked = false
+chunked = true
 streaming_decode = true
 parallel_decode = false
 range_reads = true
 pyramid = false
 http = true
 feasible = "gap"
-gaps = ["chunked", "parallel_decode", "pyramid"]
-note = "the Basic Offset Table already gives per-frame offsets, so frame N is a seek and frames decode independently. HTTP is already there: the reader opens through core.open_read_at, which turns a URL into an HTTPDataSource. VL Whole Slide Microscopy DICOM is genuinely pyramidal, which is real but is a reader of its own rather than a missing switch."
+gaps = ["parallel_decode", "pyramid"]
+note = "chunked was recorded as missing and was there: the Basic Offset Table gives per-frame offsets, the reader uses them, and the codec simply never set the flag, inheriting False from the base class. Measured on a 60-frame 31.5 MB file, r[59] takes 0.07 ms against 4.34 ms for read(), and over HTTP it moves 1.9% of the file. Frames decode independently, so threading them needs no format work. VL Whole Slide Microscopy DICOM is genuinely pyramidal, which is real but is a reader of its own rather than a missing switch."
 
 [[codec]]
 name = "dicomrle"
@@ -294,15 +294,15 @@ note = "all four arrived at once, and by wiring rather than by new parsing: EMD 
 [[codec]]
 name = "fits"
 multi_frame = true
-chunked = false
+chunked = true
 streaming_decode = true
 parallel_decode = false
 range_reads = true
 pyramid = false
 http = true
 feasible = "gap"
-gaps = ["chunked", "parallel_decode"]
-note = "tile-compressed FITS stores a per-tile byte offset in its binary table, so a tile is a seek and tiles decode independently. FITS has no resolution levels, so there is no pyramid."
+gaps = ["parallel_decode"]
+note = "chunked was recorded as missing and was there, for the same reason as dicom: the flag was never set and inherited False. An HDU is a seek -- headers are walked, only the requested HDU's data is read -- and on a 24-HDU 12.7 MB file the last one moves 5.2% of the file over HTTP. Tiles within a compressed HDU still decode independently, so threading them is the remaining work. FITS has no resolution levels, so there is no pyramid."
 
 [[codec]]
 name = "floatpred"

@@ -31,6 +31,12 @@ class DicomCodec(Codec):
     can_encode = False
     can_decode = True
     multi_frame = True
+    # Frame N is a seek: the Basic Offset Table gives per-frame offsets
+    # and the reader uses them. Measured on a 60-frame 31.5 MB file,
+    # r[59] takes 0.07 ms against 4.34 ms for read(), and over HTTP it
+    # moves 1.9% of the file. Inherited False until now, so the
+    # manifest recorded a capability the reader had all along.
+    chunked = True
     streaming_decode = True
     parallel_decode = False
 

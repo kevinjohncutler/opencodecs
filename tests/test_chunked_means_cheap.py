@@ -155,3 +155,91 @@ def test_indexing_is_flat_across_frames(name, tmp_path):
         f"{name}: frame {n - 1} took {last * 1e3:.1f} ms against "
         f"{first * 1e3:.1f} ms for frame 0, which is walking, not "
         f"random access")
+
+    # Flat is necessary and not sufficient. A reader that decodes the
+    # whole file for EVERY frame is perfectly flat, and the first
+    # version of this test would have passed it. FITS caught that: all
+    # three timings came out equal, which reads as O(1) and is the
+    # signature of the opposite. Bytes moved is the check that cannot
+    # be argued with, and it lives in the per-format tests where a
+    # range server is set up.
+
+
+@pytest.mark.parametrize("name", ["dicom", "fits"])
+def test_one_frame_over_http_moves_one_frame(name, tmp_path):
+    """The measurement that settles it: bytes off the wire.
+
+    Both of these declared chunked = False by inheriting it, while
+    their readers had per-frame offsets and used them. Locally that is
+    hard to see -- a reader that loads everything and slices returns
+    correct data quickly enough to look fine, and for FITS ``read()``
+    returns a single HDU so it is not even a useful baseline. Over a
+    range server, fetching the last frame either moves a frame's worth
+    or it moves the file.
+    """
+    import pathlib as _p
+    import sys as _sys
+
+    _sys.path.insert(0, str(_p.Path(__file__).resolve().parent))
+    try:
+        from _range_http_server import range_http_server
+    except ImportError:
+        pytest.skip("range test server helper unavailable")
+    if not oc.has_codec(name):
+        pytest.skip(f"{name} not built here")
+
+    side, n = 256, 16
+    if name == "fits":
+        afits = pytest.importorskip("astropy.io.fits")
+        hdus = [afits.PrimaryHDU(np.zeros((side, side), np.int16))]
+        for i in range(n - 1):
+            hdus.append(afits.ImageHDU(
+                np.full((side, side), i, np.int16), name=f"IM{i}"))
+        path = tmp_path / "many.fits"
+        afits.HDUList(hdus).writeto(path, overwrite=True)
+    else:
+        pydicom = pytest.importorskip("pydicom")
+        from pydicom.dataset import Dataset, FileMetaDataset
+
+        frames = np.stack(
+            [np.full((side, side), i, np.uint16) for i in range(n)])
+        ds = Dataset()
+        ds.file_meta = FileMetaDataset()
+        ds.file_meta.TransferSyntaxUID = pydicom.uid.ExplicitVRLittleEndian
+        ds.file_meta.MediaStorageSOPClassUID = pydicom.uid.MRImageStorage
+        ds.file_meta.MediaStorageSOPInstanceUID = pydicom.uid.generate_uid()
+        ds.SOPClassUID = pydicom.uid.MRImageStorage
+        ds.SOPInstanceUID = ds.file_meta.MediaStorageSOPInstanceUID
+        ds.Rows, ds.Columns = side, side
+        ds.NumberOfFrames = n
+        ds.SamplesPerPixel = 1
+        ds.PhotometricInterpretation = "MONOCHROME2"
+        ds.BitsAllocated = ds.BitsStored = 16
+        ds.HighBit = 15
+        ds.PixelRepresentation = 0
+        ds.PixelData = frames.tobytes()
+        ds.is_little_endian = True
+        ds.is_implicit_VR = False
+        path = tmp_path / "many.dcm"
+        try:
+            ds.save_as(path, enforce_file_format=True)
+        except TypeError:                                     # older pydicom
+            ds.save_as(path, write_like_original=False)
+
+    size = path.stat().st_size
+    codec = oc.get_codec(name)
+    with codec.open(str(path)) as r:
+        total = r.n_frames or 1
+        local = np.asarray(r[total - 1])
+
+    with range_http_server(tmp_path) as s:
+        base, tracker = s if isinstance(s, tuple) else (s, None)
+        before = tracker.bytes_served if tracker else 0
+        with codec.open(f"{base}/{path.name}") as r:
+            got = np.asarray(r[total - 1])
+        assert np.array_equal(got, local), "remote frame differs from local"
+        if tracker is not None:
+            moved = tracker.bytes_served - before
+            assert moved < size / 3, (
+                f"{name}: fetching frame {total - 1} moved {moved} of "
+                f"{size} bytes; that is the file, not a frame")
