@@ -564,14 +564,13 @@ note = "OIB is an OLE compound file whose directory gives every stream's sector 
 name = "oir"
 multi_frame = true
 chunked = true
-streaming_decode = false
+streaming_decode = true
 parallel_decode = false
 range_reads = true
 pyramid = false
 http = true
-feasible = "gap"
-gaps = ["streaming_decode"]
-note = "HTTP arrived by unification rather than by being built for OIR: the reader coerces its source through core.io.coerce_data_source, which turns an http(s) URL into an HTTPDataSource, and OIR already read at offsets. Verified against a range-serving test server -- opening and fully reading a 25.96 MB file moved 16.86 MB in 198 range requests, byte-identical to the local read. Streaming decode is what is left."
+feasible = "done"
+note = "HTTP arrived by unification rather than by being built for OIR: the reader coerces its source through core.io.coerce_data_source, which turns an http(s) URL into an HTTPDataSource, and OIR already read at offsets. Verified against a range-serving test server -- opening and fully reading a 25.96 MB file moved 16.86 MB in 198 range requests, byte-identical to the local read. Streaming decode was recorded as missing and was there, the fourth capability in this manifest to be: iter_frames() decodes one plane at a time, reading only that plane's three payload ranges. Measured on a 32-plane 512x512 z-stack, iterating peaks at 1.29 MB against 17.06 MB for read(), for a 16.78 MB result. Nothing in the suite could have caught the flag being wrong either way, because it is a memory property and every correctness test passes regardless; there is now a test that measures it."
 
 [[codec]]
 name = "packints"

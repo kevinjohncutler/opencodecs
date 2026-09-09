@@ -273,7 +273,13 @@ class OirCodec(Codec):
     can_decode = True
     multi_frame = True
     chunked = True
-    streaming_decode = False
+    # iter_frames() decodes one plane at a time, reading only that
+    # plane's three payload ranges, so it never holds the stack.
+    # Measured on a 32-plane 512x512 z-stack: iterating peaks at
+    # 1.29 MB against 17.06 MB for read(), for a 16.78 MB result.
+    # This was true before the flag said so -- the fourth capability
+    # in this manifest that existed and was recorded as absent.
+    streaming_decode = True
     parallel_decode = False
 
     supported_dtypes = (np.uint8, np.uint16)
