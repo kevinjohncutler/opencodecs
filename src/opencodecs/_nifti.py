@@ -30,6 +30,7 @@ from typing import Any
 import numpy as np
 
 from .core._io_helpers import read_src as _read_src
+from .core.io import coerce_data_source
 from .core.codec import ArrayReader
 
 NIFTI1_HEADER_SIZE = 348
@@ -75,18 +76,97 @@ def _maybe_gunzip(raw: bytes) -> bytes:
 class NiftiStream(ArrayReader):
     """Reader over one NIfTI-1 or NIfTI-2 file.
 
-    Unlike the MRC and TIFF readers this holds the file in memory, because
-    the dominant on-disk form is gzip and a gzip member has no usable
-    random access: reaching the last slice means inflating everything
-    before it. For an uncompressed ``.nii`` the whole-file read is one
-    syscall anyway.
+    A gzipped NIfTI is held in memory, because a gzip member has no
+    usable random access: reaching the last slice means inflating
+    everything before it. An uncompressed ``.nii`` is not held -- it is
+    a header followed by a contiguous volume, so a slice is an offset
+    and a length, and over HTTP that is the difference between moving
+    a slice and moving the study.
+
+    ``slice_at`` reads along the LAST axis, which is the contiguous one
+    here: NIfTI stores the first dimension fastest, so the shape it
+    reports is Fortran-ordered and a z-slice occupies one run of bytes.
     """
 
     def __init__(self, src: Any):
-        self._raw = _maybe_gunzip(_read_src(src))
-        if len(self._raw) < 4:
-            raise NiftiError("NIfTI: file is too short to hold a header")
-        self._header = self._parse_header(self._raw)
+        self._ds = None
+        self._owns = False
+        self._raw = None
+
+        ds, owns, size = coerce_data_source(src)
+        head = ds.read_at(0, 2)
+        if head[:2] == b"\x1f\x8b":
+            # gzip: no random access inside a member, so read it all
+            # and inflate, exactly as before.
+            try:
+                self._raw = _maybe_gunzip(ds.read_at(0, size))
+            finally:
+                if owns:
+                    ds.close()
+        else:
+            self._ds, self._owns = ds, owns
+            self._file_size = size
+
+        if self._raw is not None:
+            if len(self._raw) < 4:
+                raise NiftiError("NIfTI: file is too short to hold a header")
+            self._header = self._parse_header(self._raw)
+        else:
+            hdr = self._ds.read_at(0, 544)
+            if len(hdr) < 4:
+                raise NiftiError("NIfTI: file is too short to hold a header")
+            self._header = self._parse_header(hdr)
+
+    # -- offset reads, for the uncompressed case ---------------------
+
+    @property
+    def is_memory_resident(self) -> bool:
+        """True when the file had to be inflated to be read at all."""
+        return self._raw is not None
+
+    def _bytes_at(self, offset: int, n: int) -> bytes:
+        if self._raw is not None:
+            return self._raw[offset:offset + n]
+        return self._ds.read_at(offset, n)
+
+    def slice_at(self, index: int) -> np.ndarray:
+        """One slice along the last axis, read at its own offset.
+
+        The last axis is the contiguous one because NIfTI stores the
+        first dimension fastest. For a gzipped file this still works
+        and simply slices the inflated buffer -- correctness does not
+        depend on which path the constructor took.
+        """
+        h = self._header
+        if not h["single_file"]:
+            raise NiftiError(
+                "NIfTI: this is the header of a .hdr/.img pair; the "
+                "voxels live in the .img file")
+        shape = h["shape"]
+        if len(shape) < 2:
+            raise NiftiError("NIfTI: a 1-D volume has no slices")
+        n = shape[-1]
+        if not -n <= index < n:
+            raise IndexError(f"NIfTI: slice {index} out of range for {n}")
+        if index < 0:
+            index += n
+        inner = 1
+        for d in shape[:-1]:
+            inner *= d
+        itemsize = self.dtype.itemsize
+        nbytes = inner * itemsize
+        raw = self._bytes_at(h["vox_offset"] + index * nbytes, nbytes)
+        if len(raw) < nbytes:
+            raise NiftiError(
+                f"NIfTI: truncated file; slice {index} needs {nbytes} "
+                f"bytes, got {len(raw)}")
+        arr = np.frombuffer(raw, dtype=self.dtype)
+        # Fortran order within the slice, same as the whole volume.
+        arr = arr.reshape(shape[:-1], order="F")
+        if self.has_scaling:
+            arr = (arr * np.float32(h["scl_slope"])
+                   + np.float32(h["scl_inter"]))
+        return arr
 
     # -- header ------------------------------------------------------
 
@@ -230,13 +310,19 @@ class NiftiStream(ArrayReader):
             count *= d
         itemsize = self.dtype.itemsize
         need = offset + count * itemsize
-        if len(self._raw) < need:
+        have = len(self._raw) if self._raw is not None else self._file_size
+        if have < need:
             raise NiftiError(
                 f"NIfTI: truncated file; needs {need} bytes for "
-                f"{h['shape']} at offset {offset}, have {len(self._raw)}")
+                f"{h['shape']} at offset {offset}, have {have}")
 
-        arr = np.frombuffer(self._raw, dtype=self.dtype,
-                            count=count, offset=offset)
+        if self._raw is not None:
+            arr = np.frombuffer(self._raw, dtype=self.dtype,
+                                count=count, offset=offset)
+        else:
+            arr = np.frombuffer(
+                self._bytes_at(offset, count * itemsize), dtype=self.dtype,
+                count=count)
         # NIfTI stores the first dimension fastest, which is Fortran
         # order for the shape as reported.
         arr = arr.reshape(h["shape"], order="F")
@@ -247,6 +333,9 @@ class NiftiStream(ArrayReader):
 
     def close(self) -> None:
         self._raw = b""
+        if self._owns and self._ds is not None:
+            self._ds.close()
+        self._ds = None
 
     def __enter__(self) -> "NiftiStream":
         return self

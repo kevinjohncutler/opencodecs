@@ -24,7 +24,7 @@ from typing import Any
 
 import numpy as np
 
-from .core.codec import Codec
+from .core.codec import Codec, Reader
 from .core._io_helpers import read_src as _read_src, write_dest as _write_dest
 
 
@@ -39,8 +39,13 @@ class NumpyCodec(Codec):
     has_delegate = False
     can_encode = True
     can_decode = True
-    multi_frame = False
-    streaming_decode = False
+    multi_frame = True
+    # A .npy is a short header and then the raw buffer in C order, so
+    # a plane along axis 0 is an offset and a length. NpyFile reads it
+    # that way, which is what makes opening a 4 GB array over HTTP
+    # cost one small range request.
+    chunked = True
+    streaming_decode = True
     parallel_decode = False
 
     # Every numpy dtype is supported (it's literal raw bytes plus a
@@ -53,6 +58,11 @@ class NumpyCodec(Codec):
         np.complex64, np.complex128,
     )
     supports_color = True
+
+    def open(self, src: Any, **opts) -> "Reader":
+        """A reader that fetches planes rather than the whole array."""
+        from ._numpy_reader import NpyFile
+        return NpyFile(src)
 
     def signature(self, head: bytes) -> bool:
         # ``.npy`` files start with the 6-byte magic ``\x93NUMPY``

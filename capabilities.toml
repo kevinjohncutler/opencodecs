@@ -426,9 +426,8 @@ parallel_decode = true
 range_reads = false
 pyramid = false
 http = false
-feasible = "gap"
-gaps = ["pyramid"]
-note = "JXL's progressive DC is an 8x downsampled image sitting inside the bitstream, reachable through JxlDecoderSetProgressiveDetail(kDC) with JXL_DEC_FRAME_PROGRESSION -- a preview from the first few kilobytes. http is false deliberately: jxl.open_http issues one whole-file GET because libjxl wants the whole stream, which is not a range read. Decode threads already: measured 4.8x."
+feasible = "no"
+note = "the pyramid this entry used to promise does not exist, and the note that promised it was wrong. JXL progressive DC is real and the decoder here already drives it: decode(downsample=8) subscribes to FRAME_PROGRESSION, flushes at the DC pass and skips the rest. Measured on 2048x2048 it is 67.8 ms against 43.9 ms to decode fully and slice -- slower, because libjxl reshapes its pipeline to support flushing -- and the result is a slightly WORSE thumbnail (6.15 against 5.28 mean absolute error versus a box downscale). Truncating the stream shows why the preview is not early either: nothing decodes until 50% of the bytes are present, with or without the encoder's progressive flag, and wiring PROGRESSIVE_DC into the encoder grew streams 31% without moving any of those numbers (tried, measured, reverted). A pyramid whose levels cost more than the whole image and look worse is not a capability. downsample= stays, correct and documented; ds=2 and ds=4 already fall back to decode-and-slice for the same reason."
 
 [[codec]]
 name = "lerc"
@@ -522,15 +521,14 @@ note = "chunks are independent, so decoding them across threads needs no format 
 [[codec]]
 name = "nifti"
 multi_frame = true
-chunked = false
-streaming_decode = false
+chunked = true
+streaming_decode = true
 parallel_decode = false
-range_reads = false
+range_reads = true
 pyramid = false
-http = false
-feasible = "gap"
-gaps = ["streaming_decode", "chunked", "range_reads", "http"]
-note = "an uncompressed .nii is a 348-byte header and a contiguous volume, so a slice is an offset -- which is exactly how browser neuroimaging viewers fetch data. A .nii.gz is one deflate stream and gets none of it."
+http = true
+feasible = "done"
+note = "all four, for the uncompressed case, which is the case where they mean anything. A plain .nii is a 348- or 540-byte header and then a contiguous volume, so slice_at() reads one slice at its own offset: 1.6% of the file over a range server. The contiguous slice is along the LAST axis, not the first, because NIfTI stores the first dimension fastest and the shape it reports is Fortran-ordered -- the opposite of MRC's convention. A .nii.gz is still read whole and inflated and always will be, since a gzip member has no random access; the reader reports which path it took through is_memory_resident rather than leaving a caller to guess why a read was slow."
 
 [[codec]]
 name = "none"
@@ -559,16 +557,15 @@ note = "raw and detached NRRD put the data contiguously at a known offset, so sl
 
 [[codec]]
 name = "numpy"
-multi_frame = false
-chunked = false
-streaming_decode = false
+multi_frame = true
+chunked = true
+streaming_decode = true
 parallel_decode = false
-range_reads = false
+range_reads = true
 pyramid = false
-http = false
-feasible = "gap"
-gaps = ["streaming_decode", "chunked", "range_reads", "http"]
-note = ".npy is a short header followed by a contiguous C-order buffer, so a slice is an offset and a length -- what np.load(mmap_mode=) exploits locally, and nothing stops the same arithmetic driving range requests."
+http = true
+feasible = "done"
+note = "all four, and none of them needed new parsing. A .npy is a short ASCII header and then the raw buffer in C order, so a plane along axis 0 is an offset and a length -- NpyFile reads it that way through the shared DataSource, which is what gives range reads and HTTP for free. Measured on a 34 MB array served by range: opening it moves 65 KB and reading one plane moves exactly that plane, 1.6% of the file. Fortran-ordered files are read whole and sliced on purpose: in column-major layout a leading-axis plane is strided across the entire buffer, so a per-plane read would be a read of everything with extra steps, and plane() refuses rather than pretending."
 
 [[codec]]
 name = "oib"

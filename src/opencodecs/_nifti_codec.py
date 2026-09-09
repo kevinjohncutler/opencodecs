@@ -25,7 +25,15 @@ class NiftiCodec(Codec):
     can_encode = True
     can_decode = True
     multi_frame = True
-    streaming_decode = False
+    # An uncompressed .nii is a header and then a contiguous volume, so
+    # slice_at() reads one slice at its own offset -- 1.6% of a 2.1 MB
+    # file over HTTP. NIfTI stores the first dimension fastest, so the
+    # contiguous slice is along the LAST axis, not the first. A .nii.gz
+    # is still read whole and inflated, because a gzip member has no
+    # random access; the reader says which it did through
+    # is_memory_resident.
+    chunked = True
+    streaming_decode = True
     parallel_decode = False
 
     supported_dtypes = (
