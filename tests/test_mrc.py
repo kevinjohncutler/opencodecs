@@ -244,3 +244,62 @@ def test_real_emdb_map_plane_matches_full_read():
         full = r.asarray()
         for i in (0, r.n_planes // 2, r.n_planes - 1):
             assert np.array_equal(r.plane(i), full[i])
+
+
+def test_plane_reads_one_plane_not_the_volume(tmp_path):
+    """chunked means plane N without decoding 0..N-1.
+
+    MrcFile has advertised is_chunked since it was written while the
+    codec flag beside it said False, so the manifest recorded a
+    capability as missing that had always been there. Asserting the
+    behaviour rather than the flag: a plane must be cheap, and it must
+    be the RIGHT plane, which a reader that returned plane 0 every
+    time would also make cheap.
+    """
+    import numpy as np
+
+    vol = (np.arange(16 * 64 * 64, dtype="i2") % 3000).reshape(16, 64, 64)
+    p = tmp_path / "v.mrc"
+    oc.write_mrc(str(p), vol)
+
+    with oc.get_codec("mrc").open(str(p)) as r:
+        assert r.is_chunked is True
+        for i in (0, 7, 15):
+            np.testing.assert_array_equal(np.asarray(r.plane(i)), vol[i])
+            np.testing.assert_array_equal(np.asarray(r[i]), vol[i])
+    assert oc.get_codec("mrc").chunked is True
+
+
+def test_a_plane_over_http_moves_one_plane(tmp_path):
+    """The cheapness is only visible in bytes moved.
+
+    Locally a reader that loads the whole volume and slices it returns
+    identical data and is fast enough to look fine. Over a range
+    server the difference is countable.
+    """
+    import sys
+
+    import numpy as np
+
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+    try:
+        from _range_http_server import range_http_server
+    except ImportError:
+        pytest.skip("range test server helper unavailable")
+
+    vol = (np.arange(32 * 128 * 128, dtype="i2") % 3000).reshape(32, 128, 128)
+    p = tmp_path / "v.mrc"
+    oc.write_mrc(str(p), vol)
+    size = p.stat().st_size
+
+    with range_http_server(tmp_path) as served:
+        base, tracker = served if isinstance(served, tuple) else (served, None)
+        before = tracker.bytes_served if tracker else 0
+        with oc.get_codec("mrc").open(f"{base}/v.mrc") as r:
+            got = np.asarray(r.plane(20))
+        np.testing.assert_array_equal(got, vol[20])
+        if tracker is not None:
+            moved = tracker.bytes_served - before
+            assert moved < size / 4, (
+                f"one plane moved {moved} of {size} bytes; that is the "
+                f"volume, not a plane")

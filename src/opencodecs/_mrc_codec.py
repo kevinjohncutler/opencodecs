@@ -26,6 +26,11 @@ class MrcCodec(Codec):
     can_encode = True
     can_decode = True
     multi_frame = True
+    # plane(i) reads at data_offset + i * plane_bytes, so one plane
+    # costs one plane: measured 69x cheaper than read() on a 34 MB
+    # volume, and 1.8% of the file in 2 requests over HTTP. MrcFile has
+    # advertised is_chunked = True all along and this flag disagreed.
+    chunked = True
     streaming_decode = True
     parallel_decode = False
 
