@@ -8,7 +8,7 @@
   "3rdparty/bitshuffle/iochain.c": "7115af0b2c435d10086faf7198403e9eb5e7df9f85abf8fde9a7fac3ecf024ba",
   "3rdparty/bitshuffle/iochain.h": "cf3254b6a1d4ca6f0e5bbb472a316a84bf1bae355b242cca70adaef34b5319ac",
   "3rdparty/cfitsio/fits_hcompress.c": "35340bc4a73746032dabd2380044bbde3758805c817fcda7d8dd36e9312572f8",
-  "3rdparty/cfitsio/fits_hdecompress.c": "c60408a0118083dbcfa14a44d5ab6f8f487bc400d03889eb17c4e592ec6f4318",
+  "3rdparty/cfitsio/fits_hdecompress.c": "ece6701d9a37594f75a13e11fed431fd8565df3b1ca9278dbf6c836674014d66",
   "3rdparty/cfitsio/fits_hdecompress_api.h": "2d4fbe5b0555865e1a5378ab14d9bac86613e5d1b72fffd0a19597b182e37646",
   "3rdparty/cfitsio/fitsio2.h": "97930b8d1c2ea9909243566dd2ed80deb1e45119417e18781974805e9b934a6e",
   "3rdparty/cfitsio/pliocomp.c": "0120e71dbcbc428cbbe71eb4e79c72f7786f307ae0f63ac17e086cb64e1d4218",
