@@ -56,16 +56,15 @@ note = "libaec is handed one HDF5/szip chunk at a time, so the container has alr
 
 [[codec]]
 name = "avif"
-multi_frame = false
-chunked = false
-streaming_decode = false
+multi_frame = true
+chunked = true
+streaming_decode = true
 parallel_decode = true
 range_reads = false
 pyramid = false
 http = false
-feasible = "gap"
-gaps = ["multi_frame", "chunked"]
-note = "libavif reads image sequences and progressive layers through avifDecoderNextImage and imageCount, neither of which we call, and AVIF grid images are tiles with their own item offsets. Decode already threads: measured 7.6x going from one core to eight."
+feasible = "done"
+note = "libavif reads image sequences and progressive layers through avifDecoderNthImage and imageCount, and open() now does: one decoder is held across frames, so the container is parsed once and a frame is a lookup in the sample table that parse built rather than another parse. Verified against imagecodecs, which links its own libavif and both writes the fixture and supplies the expected values -- round-tripping through our own encoder would let a symmetric bug pass. Frames are bit-identical, including out of order, which is the case a forward-only decoder would fail. A still is a one-frame sequence rather than a special case, and decode() is unchanged for existing callers. Decode already threads: measured 7.6x going from one core to eight."
 
 [[codec]]
 name = "b2nd"

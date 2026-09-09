@@ -29,6 +29,8 @@ from avif cimport (
     avifEncoder, avifEncoderCreate, avifEncoderDestroy, avifEncoderWrite,
     avifEncoderSetCodecSpecificOption,
     avifDecoder, avifDecoderCreate, avifDecoderDestroy, avifDecoderReadMemory,
+    avifDecoderSetIOMemory, avifDecoderParse,
+    avifDecoderNextImage, avifDecoderNthImage,
     avifRWData, avifRWDataFree,
     avifResultToString,
     avifImageSetProfileICC,
@@ -481,6 +483,148 @@ def decode(data, *, numthreads: int | None = None, out=None) -> np.ndarray:
     finally:
         avifImageDestroy(image)
         avifDecoderDestroy(decoder)
+
+
+cdef class AvifSequence:
+    """An open AVIF decoder, for files that hold more than one image.
+
+    AVIF carries image sequences (the same machinery as AV1 video) and
+    progressive layers, both reached through avifDecoderNthImage. We
+    only ever decoded the primary image, so an animated AVIF read back
+    as its first frame with no indication that the rest existed.
+
+    The decoder is kept open across frames deliberately. Re-reading the
+    file per frame would re-parse the container every time and turn
+    reading N frames into N parses; here the parse happens once and a
+    frame is a seek in the already-built sample table.
+
+    Two ownership rules the C API imposes, both load-bearing:
+    avifDecoderSetIOMemory does not copy, so ``_buf`` holds the input
+    alive for the decoder's life; and ``decoder.image`` is owned by the
+    decoder and its contents are replaced by the next NthImage call, so
+    every frame is copied out before returning.
+    """
+    cdef avifDecoder* _decoder
+    cdef object _buf
+    cdef readonly int n_frames
+    cdef readonly int width
+    cdef readonly int height
+    cdef readonly int depth
+    cdef readonly bint has_alpha
+    cdef readonly double duration
+
+    def __cinit__(self, data, numthreads: int | None = None):
+        cdef const uint8_t[::1] src
+        cdef size_t srcsize
+        cdef int rc
+
+        self._decoder = NULL
+        # Held for the decoder's lifetime: SetIOMemory borrows it.
+        self._buf = data if isinstance(data, bytes) else bytes(data)
+        src = self._buf
+        srcsize = <size_t> src.shape[0]
+
+        self._decoder = avifDecoderCreate()
+        if self._decoder == NULL:
+            raise AvifError('avifDecoderCreate failed')
+        if numthreads is None or numthreads <= 0:
+            import os as _os
+            self._decoder.maxThreads = _os.cpu_count() or 4
+        else:
+            self._decoder.maxThreads = int(numthreads)
+
+        rc = avifDecoderSetIOMemory(self._decoder, &src[0], srcsize)
+        if rc != AVIF_RESULT_OK:
+            raise AvifError(
+                f'avifDecoderSetIOMemory: {avifResultToString(rc).decode()}')
+        with nogil:
+            rc = avifDecoderParse(self._decoder)
+        if rc != AVIF_RESULT_OK:
+            raise AvifError(
+                f'avifDecoderParse: {avifResultToString(rc).decode()}')
+
+        self.n_frames = self._decoder.imageCount
+        self.width = <int> self._decoder.image.width
+        self.height = <int> self._decoder.image.height
+        self.depth = <int> self._decoder.image.depth
+        # alphaPresent is the field to read before any frame is
+        # decoded; image.alphaPlane does not exist yet at this point.
+        self.has_alpha = self._decoder.alphaPresent != 0
+        self.duration = (
+            <double> self._decoder.durationInTimescales
+            / <double> self._decoder.timescale
+        ) if self._decoder.timescale else 0.0
+
+    def __dealloc__(self):
+        if self._decoder != NULL:
+            avifDecoderDestroy(self._decoder)
+            self._decoder = NULL
+
+    def frame(self, int index):
+        """Decode frame ``index`` and copy it out as an ndarray."""
+        cdef int rc
+        cdef unsigned int idx
+        cdef avifRGBImage rgb
+        cdef cnp.ndarray out_arr
+        cdef cnp.npy_intp shape[3]
+        cdef int channels, dtype_bytes, y
+        cdef size_t row_bytes_out
+        cdef avifImage* image
+
+        if index < 0:
+            index += self.n_frames
+        if not 0 <= index < self.n_frames:
+            raise IndexError(
+                f'avif: frame {index} out of range for {self.n_frames}')
+        idx = <unsigned int> index
+        with nogil:
+            rc = avifDecoderNthImage(self._decoder, idx)
+        if rc != AVIF_RESULT_OK:
+            raise AvifError(
+                f'avifDecoderNthImage({index}): '
+                f'{avifResultToString(rc).decode()}')
+
+        image = self._decoder.image
+        dtype_bytes = 1 if image.depth <= 8 else 2
+        avifRGBImageSetDefaults(&rgb, image)
+        channels = 4 if image.alphaPlane != NULL else 3
+        rgb.format = (AVIF_RGB_FORMAT_RGBA if channels == 4
+                      else AVIF_RGB_FORMAT_RGB)
+        rgb.depth = <unsigned int> image.depth
+        rc = avifRGBImageAllocatePixels(&rgb)
+        if rc != AVIF_RESULT_OK:
+            raise AvifError(
+                f'avifRGBImageAllocatePixels: '
+                f'{avifResultToString(rc).decode()}')
+        try:
+            with nogil:
+                rc = avifImageYUVToRGB(image, &rgb)
+            if rc != AVIF_RESULT_OK:
+                raise AvifError(
+                    f'avifImageYUVToRGB: {avifResultToString(rc).decode()}')
+            shape[0] = image.height
+            shape[1] = image.width
+            shape[2] = channels
+            out_arr = cnp.PyArray_EMPTY(
+                3, shape,
+                cnp.NPY_UINT8 if dtype_bytes == 1 else cnp.NPY_UINT16, 0)
+            row_bytes_out = <size_t>(image.width * channels * dtype_bytes)
+            for y in range(image.height):
+                memcpy(
+                    <uint8_t*> cnp.PyArray_DATA(out_arr) + y * row_bytes_out,
+                    rgb.pixels + y * rgb.rowBytes, row_bytes_out)
+            return out_arr
+        finally:
+            avifRGBImageFreePixels(&rgb)
+
+
+def frame_count(data) -> int:
+    """How many images an AVIF holds; 1 for a plain still.
+
+    Parses the container and nothing else, so this does not pay for a
+    frame decode just to answer the question.
+    """
+    return AvifSequence(data, numthreads=1).n_frames
 
 
 def read_icc_profile(data) -> bytes | None:

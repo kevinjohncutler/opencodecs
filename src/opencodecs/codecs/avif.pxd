@@ -106,6 +106,18 @@ cdef extern from 'avif/avif.h' nogil:
 
     ctypedef struct avifDecoder:
         int maxThreads
+        # Sequence outputs, valid after avifDecoderParse(). imageCount
+        # is 1 for a plain still, so it doubles as "is this a
+        # sequence". `image` is owned by the decoder and its contents
+        # are replaced by the next NextImage/NthImage call, which is
+        # why the reader copies out of it rather than holding it.
+        avifImage* image
+        int imageIndex
+        int imageCount
+        unsigned long long timescale
+        unsigned long long durationInTimescales
+        int repetitionCount
+        int alphaPresent
         # ...
 
     avifDecoder* avifDecoderCreate()
@@ -114,5 +126,15 @@ cdef extern from 'avif/avif.h' nogil:
         avifDecoder* decoder, avifImage* image,
         const uint8_t* data, size_t size,
     )
+
+    # Sequence path: point the decoder at the buffer once, parse the
+    # container once, then pull frames. SetIOMemory does NOT copy, so
+    # the caller has to keep the bytes alive for the decoder's life.
+    avifResult avifDecoderSetIOMemory(
+        avifDecoder* decoder, const uint8_t* data, size_t size)
+    avifResult avifDecoderParse(avifDecoder* decoder)
+    avifResult avifDecoderNextImage(avifDecoder* decoder)
+    avifResult avifDecoderNthImage(
+        avifDecoder* decoder, unsigned int frameIndex)
 
     const char* avifResultToString(avifResult result)
