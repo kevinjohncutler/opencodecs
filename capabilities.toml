@@ -82,15 +82,14 @@ note = "both are built. decode_slice() pulls an n-dimensional sub-box, decompres
 [[codec]]
 name = "bcn"
 multi_frame = false
-chunked = false
+chunked = true
 streaming_decode = false
-parallel_decode = false
+parallel_decode = true
 range_reads = false
 pyramid = false
 http = false
-feasible = "gap"
-gaps = ["chunked", "parallel_decode"]
-note = "every 4x4 block is independently decodable at a fixed byte offset, which is the whole point of block compression: a sub-rectangle is a block range and the blocks have no dependencies at all. We decode the entire surface in one pass."
+feasible = "done"
+note = "every 4x4 block is independently decodable at a fixed byte offset, which is the whole point of block compression: a sub-rectangle is a block range and the blocks have no dependencies at all. Both are now taken, from the same primitive: a band of block rows is a contiguous slice of the input and decodes as a surface of that height, so there is no offset arithmetic. decode() splits BC1/2/3/7 into bands across threads (4096x4096 BC7: 69.8 ms to 6.2 ms, 11.7x; BC3 6.9x, BC1 5.4x, all bit-identical), and decode_rows() decodes one band alone (64 rows of that BC7 texture: 1.11 ms). The single-channel and float variants, BC4/BC5/BC6H, go through their own decoders and are not covered."
 
 [[codec]]
 name = "bitshuffle"

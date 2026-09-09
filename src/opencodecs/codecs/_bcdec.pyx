@@ -104,9 +104,19 @@ cdef _resolve_out(out, tuple expected_shape, object expected_dtype, str fmt_name
 cdef _decode_rgba_blocks(
     const uint8_t* src, Py_ssize_t src_len, int width, int height,
     int block_bytes, int fmt_id, object out,
+    int by0=-1, int by1=-1,
 ):
     """Decompress an array of BCn blocks into (H, W, 4) uint8 RGBA.
-    fmt_id picks the block-decode function: 1=BC1, 2=BC2, 3=BC3, 7=BC7."""
+
+    fmt_id picks the block-decode function: 1=BC1, 2=BC2, 3=BC3, 7=BC7.
+
+    ``by0``/``by1`` restrict the work to a range of BLOCK rows, leaving
+    the rest of ``out`` untouched. That is what makes a BCn surface
+    divisible: every 4x4 block sits at a computed offset and depends on
+    nothing else, so a band of block rows reads a contiguous run of the
+    input and writes a contiguous band of the output. Two threads on
+    two bands cannot meet. Defaults decode everything.
+    """
     cdef int n_blocks_x = width // 4
     cdef int n_blocks_y = height // 4
     cdef Py_ssize_t expected = <Py_ssize_t> n_blocks_x * n_blocks_y * block_bytes
@@ -125,11 +135,18 @@ cdef _decode_rgba_blocks(
     cdef const uint8_t* block_p
     cdef uint8_t* tile_p
 
+    if by0 < 0:
+        by0 = 0
+    if by1 < 0 or by1 > n_blocks_y:
+        by1 = n_blocks_y
+    if by0 > by1:
+        raise ValueError(f"BC decode: empty block-row range [{by0}:{by1})")
+
     with nogil:
-        for by in range(n_blocks_y):
+        for by in range(by0, by1):
             for bx in range(n_blocks_x):
-                block_p = src + (by * n_blocks_x + bx) * block_bytes
-                tile_p = dst + (by * 4) * pitch + (bx * 4) * 4
+                block_p = src + (<Py_ssize_t> by * n_blocks_x + bx) * block_bytes
+                tile_p = dst + (<Py_ssize_t> by * 4) * pitch + (bx * 4) * 4
                 if fmt_id == 1:
                     bcdec_bc1(block_p, tile_p, pitch)
                 elif fmt_id == 2:
@@ -139,6 +156,31 @@ cdef _decode_rgba_blocks(
                 else:  # fmt_id == 7
                     bcdec_bc7(block_p, tile_p, pitch)
     return out_arr
+
+
+_RGBA_BLOCK_BYTES = {
+    1: BCDEC_BC1_BLOCK_SIZE, 2: BCDEC_BC2_BLOCK_SIZE,
+    3: BCDEC_BC3_BLOCK_SIZE, 7: BCDEC_BC7_BLOCK_SIZE,
+}
+
+
+def decode_block_rows(data, *, int width, int height, int fmt_id,
+                      out, int by0, int by1):
+    """Decode block rows ``[by0, by1)`` of an RGBA BCn surface into ``out``.
+
+    The entry point the threaded and sub-rectangle paths are built on.
+    ``out`` is required: a band is not a whole image, so there is
+    nothing sensible to allocate and return.
+    """
+    cdef const uint8_t[::1] buf
+    if fmt_id not in _RGBA_BLOCK_BYTES:
+        raise ValueError(f"decode_block_rows: fmt_id {fmt_id} is not an "
+                         f"RGBA BC format (1, 2, 3 or 7)")
+    _check_block_geometry(width, height, f"BC{fmt_id}")
+    buf = data if isinstance(data, (bytes, bytearray)) else bytes(data)
+    return _decode_rgba_blocks(&buf[0], buf.shape[0], width, height,
+                               _RGBA_BLOCK_BYTES[fmt_id], fmt_id, out,
+                               by0, by1)
 
 
 def decode_bc1(data, *, width: int, height: int, out=None) -> np.ndarray:
