@@ -68,13 +68,20 @@ class WebpCodec(Codec):
         return _write_dest(encoded, dest)
 
     def decode(self, src: Any, **opts) -> np.ndarray:
-        """Decode a still WebP, or the first frame of an animation.
+        """Decode a still WebP, or every frame of an animation.
 
-        The plain decoder cannot read an animation container at all --
-        it failed with "WebP decode failed", which told a caller
-        nothing about why. Falling back to the animation path gives the
-        first frame, which is what the AVIF and HEIF codecs return for
-        a multi-image file, so the three agree.
+        The plain decoder cannot read an animation container at all: it
+        failed with the bare message "WebP decode failed", which told a
+        caller nothing about why.
+
+        An animation decodes to a ``(frames, H, W, 4)`` stack, not to
+        its first frame. That is this package's existing convention for
+        a time sequence -- ``gif`` has always returned the stack -- and
+        it is what imagecodecs returns for the same file. Returning
+        frame 0 would silently discard the rest, which is the exact
+        complaint that motivated reading animations in the first place.
+
+        A still is unchanged and still returns ``(H, W, C)``.
         """
         data = _read_src(src)
         try:
@@ -83,7 +90,7 @@ class WebpCodec(Codec):
             if _webp_frame_count(data) <= 1:
                 raise
             frames, _, _ = _webp_decode_animation(data)
-            return frames[0]
+            return np.stack(frames)
 
     def frame_count(self, src: Any) -> int:
         """Frames in an animated WebP; 1 for a still.
