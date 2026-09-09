@@ -317,9 +317,11 @@ mkdir -p .test_data/webp .test_data/gif
 fetch \
     "https://www.gstatic.com/webp/gallery/1.webp" \
     ".test_data/webp/lossy_1.webp" || true
+# gallery3 (lossy-with-alpha) now 404s at every path tried; this is an
+# animated VP8X with a real per-frame alpha channel instead.
 fetch \
-    "https://www.gstatic.com/webp/gallery3/1.webp" \
-    ".test_data/webp/lossy_alpha_1.webp" || true
+    "https://storage.googleapis.com/downloads.webmproject.org/webp/images/dancing_banana2.lossless.webp" \
+    ".test_data/webp/animated_alpha_banana.webp" || true
 
 # ----- GIF: public-domain animated GIF (Wikipedia rotating earth) -----
 fetch \

@@ -99,10 +99,79 @@ name = "Kodak24: 24-image photographic codec benchmark set (~10 MB)"
 license = "unverified"
 codecs = ["png", "jpeg", "jxl", "avif", "webp", "heif", "mozjpeg", "brunsli"]
 homepage = "https://r0k.us/graphics/kodak/"
-notes = "THE standard image-codec quality bench set. Same images used in every JPEG / WebP / AVIF / JXL paper for the last 30 years. Lets us measure lossy-codec quality + speed on real photos, not random data."
+notes = "THE standard image-codec quality bench set. Same images used in every JPEG / WebP / AVIF / JXL paper for the last 30 years. Lets us measure lossy-codec quality + speed on real photos, not random data. Listed as 24 explicit files rather than a kodim${i} pattern: the shell fetcher expanded that, corpus.py could not, so these were unfetchable and unverifiable through the manifest and reported as missing while sitting on disk."
   [[dataset.file]]
-  url = "https://r0k.us/graphics/kodak/kodak/kodim${i}.png"
-  path = ".test_data/png/kodak24/kodim${i}.png"
+  url = "https://r0k.us/graphics/kodak/kodak/kodim01.png"
+  path = ".test_data/png/kodak24/kodim01.png"
+  [[dataset.file]]
+  url = "https://r0k.us/graphics/kodak/kodak/kodim02.png"
+  path = ".test_data/png/kodak24/kodim02.png"
+  [[dataset.file]]
+  url = "https://r0k.us/graphics/kodak/kodak/kodim03.png"
+  path = ".test_data/png/kodak24/kodim03.png"
+  [[dataset.file]]
+  url = "https://r0k.us/graphics/kodak/kodak/kodim04.png"
+  path = ".test_data/png/kodak24/kodim04.png"
+  [[dataset.file]]
+  url = "https://r0k.us/graphics/kodak/kodak/kodim05.png"
+  path = ".test_data/png/kodak24/kodim05.png"
+  [[dataset.file]]
+  url = "https://r0k.us/graphics/kodak/kodak/kodim06.png"
+  path = ".test_data/png/kodak24/kodim06.png"
+  [[dataset.file]]
+  url = "https://r0k.us/graphics/kodak/kodak/kodim07.png"
+  path = ".test_data/png/kodak24/kodim07.png"
+  [[dataset.file]]
+  url = "https://r0k.us/graphics/kodak/kodak/kodim08.png"
+  path = ".test_data/png/kodak24/kodim08.png"
+  [[dataset.file]]
+  url = "https://r0k.us/graphics/kodak/kodak/kodim09.png"
+  path = ".test_data/png/kodak24/kodim09.png"
+  [[dataset.file]]
+  url = "https://r0k.us/graphics/kodak/kodak/kodim10.png"
+  path = ".test_data/png/kodak24/kodim10.png"
+  [[dataset.file]]
+  url = "https://r0k.us/graphics/kodak/kodak/kodim11.png"
+  path = ".test_data/png/kodak24/kodim11.png"
+  [[dataset.file]]
+  url = "https://r0k.us/graphics/kodak/kodak/kodim12.png"
+  path = ".test_data/png/kodak24/kodim12.png"
+  [[dataset.file]]
+  url = "https://r0k.us/graphics/kodak/kodak/kodim13.png"
+  path = ".test_data/png/kodak24/kodim13.png"
+  [[dataset.file]]
+  url = "https://r0k.us/graphics/kodak/kodak/kodim14.png"
+  path = ".test_data/png/kodak24/kodim14.png"
+  [[dataset.file]]
+  url = "https://r0k.us/graphics/kodak/kodak/kodim15.png"
+  path = ".test_data/png/kodak24/kodim15.png"
+  [[dataset.file]]
+  url = "https://r0k.us/graphics/kodak/kodak/kodim16.png"
+  path = ".test_data/png/kodak24/kodim16.png"
+  [[dataset.file]]
+  url = "https://r0k.us/graphics/kodak/kodak/kodim17.png"
+  path = ".test_data/png/kodak24/kodim17.png"
+  [[dataset.file]]
+  url = "https://r0k.us/graphics/kodak/kodak/kodim18.png"
+  path = ".test_data/png/kodak24/kodim18.png"
+  [[dataset.file]]
+  url = "https://r0k.us/graphics/kodak/kodak/kodim19.png"
+  path = ".test_data/png/kodak24/kodim19.png"
+  [[dataset.file]]
+  url = "https://r0k.us/graphics/kodak/kodak/kodim20.png"
+  path = ".test_data/png/kodak24/kodim20.png"
+  [[dataset.file]]
+  url = "https://r0k.us/graphics/kodak/kodak/kodim21.png"
+  path = ".test_data/png/kodak24/kodim21.png"
+  [[dataset.file]]
+  url = "https://r0k.us/graphics/kodak/kodak/kodim22.png"
+  path = ".test_data/png/kodak24/kodim22.png"
+  [[dataset.file]]
+  url = "https://r0k.us/graphics/kodak/kodak/kodim23.png"
+  path = ".test_data/png/kodak24/kodim23.png"
+  [[dataset.file]]
+  url = "https://r0k.us/graphics/kodak/kodak/kodim24.png"
+  path = ".test_data/png/kodak24/kodim24.png"
 
 [[dataset]]
 id = "dicom_emri_small"
@@ -310,9 +379,14 @@ homepage = "https://developers.google.com/speed/webp/gallery"
   [[dataset.file]]
   url = "https://www.gstatic.com/webp/gallery/1.webp"
   path = ".test_data/webp/lossy_1.webp"
+  # gallery3 (Google's lossy-with-alpha gallery) now 404s at every path
+  # tried, so this is an animated VP8X with a real alpha channel from
+  # the webmproject downloads instead. It covers more than the entry it
+  # replaces: 8 frames, alpha 0..255 varying per frame, written by
+  # libwebp itself rather than by us or by imagecodecs.
   [[dataset.file]]
-  url = "https://www.gstatic.com/webp/gallery3/1.webp"
-  path = ".test_data/webp/lossy_alpha_1.webp"
+  url = "https://storage.googleapis.com/downloads.webmproject.org/webp/images/dancing_banana2.lossless.webp"
+  path = ".test_data/webp/animated_alpha_banana.webp"
 
 [[dataset]]
 id = "gif_wikipedia"
@@ -352,6 +426,10 @@ notes = "float32 particle coordinates and velocities, 2869440 elements per field
 id = "qoi_benchmark"
 name = "QOI benchmark suite (~1.1 GB, opt-in)"
 license = "unverified"
+# Deliberately not part of a default fetch. Without this flag `coverage`
+# reports qoi as a codec whose fixture is missing, which reads as an
+# oversight rather than a 1.1 GB choice.
+optional = true
 codecs = ["qoi", "png"]
 homepage = "https://qoiformat.org/benchmark/"
 notes = "The reference QOI benchmark set. Large enough to be opt-in rather than part of a default fetch; it is the corpus every QOI speed and ratio claim is quoted against."

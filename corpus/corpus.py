@@ -81,26 +81,61 @@ def cmd_list(args) -> int:
 NO_FILE_FORMAT = {"bytetools"}
 
 
+def _dataset_is_present(ds) -> bool:
+    """Are this dataset's files actually on disk?
+
+    The manifest says which codec a dataset exercises; that is a
+    declaration. Whether the bytes were ever fetched is a different
+    question, and reporting the first as if it answered the second is
+    how "every codec has a fixture" ends up meaning "every codec is
+    mentioned". qoi was exactly that: declared by qoi_benchmark, whose
+    tarball is not downloaded.
+    """
+    files = ds.get("file", [])
+    if not files:
+        return False
+    return all((ROOT / f["path"]).exists() for f in files)
+
+
 def cmd_coverage(args) -> int:
     compiled = _compiled_codecs()
     covered: dict[str, list[str]] = {}
+    present: dict[str, list[str]] = {}
     for ds in _load_manifest():
+        here = _dataset_is_present(ds)
         for c in ds.get("codecs", []):
             covered.setdefault(c, []).append(ds["id"])
+            if here:
+                present.setdefault(c, []).append(ds["id"])
     formats = compiled - NO_FILE_FORMAT
     have = sorted(c for c in formats if c in covered)
     missing = sorted(formats - set(covered))
+    declared_only = sorted(c for c in have if c not in present)
     print(f"{len(have)} of {len(formats)} compiled codecs that define a file\n"
           f"format have a native fixture, meaning a file in that format\n"
           f"produced by somebody else.\n")
     print("native fixture:")
     for c in have:
-        print(f"  {c:<14} {', '.join(covered[c])}")
+        mark = "" if c in present else "   (declared, NOT downloaded)"
+        print(f"  {c:<14} {', '.join(covered[c])}{mark}")
     print("\nno native fixture:")
     for c in missing:
         print(f"  {c}")
     if not missing:
         print("  (none)")
+    if declared_only:
+        opt = {d["id"] for d in _load_manifest() if d.get("optional")}
+        hard = [c for c in declared_only
+                if not set(covered[c]) <= opt]
+        soft = [c for c in declared_only if c not in hard]
+        if hard:
+            print("\ndeclared but not on disk -- `corpus.py fetch <id>`:")
+            for c in hard:
+                print(f"  {c:<14} {', '.join(covered[c])}")
+        if soft:
+            print("\ncovered only by an opt-in dataset (a size choice, not a gap):")
+            for c in soft:
+                print(f"  {c:<14} {', '.join(covered[c])}")
     exempt = sorted(compiled & NO_FILE_FORMAT)
     if exempt:
         print("\nno file format of their own, so a native fixture does not apply:")
