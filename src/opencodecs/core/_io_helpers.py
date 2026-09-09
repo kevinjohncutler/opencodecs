@@ -25,7 +25,20 @@ def read_src(src: Any) -> bytes:
 
     Accepts the buffer protocol (bytes / bytearray / memoryview / mmap),
     numpy arrays (uses .tobytes()), file-like objects with ``.read()``,
-    and strings / paths (treated as disk files).
+    strings / paths (treated as disk files), and http(s) URLs.
+
+    A URL is fetched in FULL rather than by range, and that is the
+    honest thing for the codecs that reach storage through here: they
+    want a complete codestream, so there is nothing to skip. Coercing
+    through a range-reading data source instead would move the same
+    bytes while putting an `http` tick in the capability manifest
+    against formats that cannot use it -- the same reasoning, and the
+    same helper, as `_pyramid_bytes`. Formats that CAN read at offsets
+    take a data source rather than bytes and never come through here.
+
+    Before this, a URL fell through to ``Path(src).read_bytes()`` and
+    failed as a missing file, so about thirty codecs could not open one
+    at all.
     """
     if isinstance(src, np.ndarray):
         # Caller is responsible for remembering shape + dtype if they
@@ -33,6 +46,9 @@ def read_src(src: Any) -> bytes:
         return src.tobytes()
     if isinstance(src, (bytes, bytearray, memoryview)):
         return bytes(src)
+    if isinstance(src, str) and src.startswith(("http://", "https://")):
+        from .._tiff_http import http_fetch_all
+        return http_fetch_all(src)
     if hasattr(src, "read"):
         return src.read()
     return Path(src).read_bytes()

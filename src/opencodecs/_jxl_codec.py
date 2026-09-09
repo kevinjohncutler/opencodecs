@@ -14,6 +14,7 @@ from typing import Any, Iterator
 
 import numpy as np
 
+from .core._io_helpers import read_src as _read_src
 from .core.codec import Codec, Reader, Writer
 from .core._optional_backend import import_or_stubs
 
@@ -157,6 +158,16 @@ class JpegXLCodec(Codec):
         return _jxl_encode(arr, dest=dest, **opts)
 
     def decode(self, src: Any, **opts) -> np.ndarray:
+        """Decode a JXL codestream.
+
+        A path or file-like is passed straight through, because the
+        extension has a streaming path that avoids reading a large file
+        into memory first. A URL is fetched here instead: libjxl needs
+        the whole codestream, and the extension would otherwise try to
+        open the URL as a filename.
+        """
+        if isinstance(src, str) and src.startswith(("http://", "https://")):
+            src = _read_src(src)
         return _jxl_decode(src, **opts)
 
     def writer(self, dest: Any = None, **opts):

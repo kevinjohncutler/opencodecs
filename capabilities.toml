@@ -316,9 +316,9 @@ parallel_decode = false
 range_reads = false
 pyramid = false
 http = false
-feasible = "gap"
-gaps = ["range_reads", "http"]
-note = "frames are sequential LZW carrying disposal state, so frame N really does require the frames before it and chunked is unavailable at any effort. Fetching the file itself by ranges still is."
+feasible = "no"
+gaps = []
+note = "frames are sequential LZW carrying disposal state, so frame N really does require the frames before it and chunked is unavailable at any effort. A GIF can now be opened from a URL -- read_src fetches one, so about thirty codecs that could not open a URL at all now can -- but that is a whole-file GET and stays recorded as such. Ranges would move exactly the same bytes for a format where the last frame depends on every frame before it, and claiming http here would put a tick against a saving that does not exist. This follows the convention _pyramid_bytes already set for the whole-codestream decoders."
 
 [[codec]]
 name = "gzip"

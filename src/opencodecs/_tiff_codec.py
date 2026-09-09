@@ -938,6 +938,19 @@ class TiffStream(Reader):
     # ----- I/O ----
 
     def _open_read_at(self, src: Any) -> Callable[[int, int], bytes]:
+        if isinstance(src, str) and src.startswith(("http://", "https://")):
+            # TIFF has read tiles by range request for a long time --
+            # that is what _tiff_http is for -- but only when a caller
+            # constructed the data source themselves. Handing the same
+            # URL to open() or decode() fell into the branch below and
+            # tried to open it as a filename. One line, and the
+            # range-reading path was already there.
+            from .core.io import coerce_data_source
+            ds, owns, _ = coerce_data_source(src)
+            if owns:
+                self._owns_fd = True
+                self._fd = ds
+            return ds.read_at
         if isinstance(src, (str, os.PathLike)):
             f = open(src, "rb")
             self._owns_fd = True
