@@ -334,7 +334,12 @@ class OirNativeReader(Reader):
             self._n_planes, self._plane_height, self._plane_width)
         self.dtype = np.dtype("<u2")
         self.n_frames = self._n_planes
-        self.is_chunked = False
+        # Indexing works and is O(1): this reader overrides
+        # __getitem__ and seeks to the plane, measured flat from the
+        # first frame to the 32nd. Saying False here made
+        # Reader.__getitem__'s guard the only thing standing between a
+        # caller and a capability the reader has.
+        self.is_chunked = True
 
     def _decode_plane(self, i: int) -> np.ndarray:
         ra, rb, rc = self._body[i*3:i*3+3]

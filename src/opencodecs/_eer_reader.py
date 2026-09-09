@@ -166,7 +166,14 @@ class EerCodec(Codec):
     can_encode = False
     can_decode = True
     multi_frame = True
-    chunked = True
+    # Not chunked in the sense this flag means. Indexing works, but
+    # through the base Reader's default __getitem__, which walks
+    # iter_frames() to get there: measured 6.71 ms for frame 0 and
+    # 1218 ms for frame 720 of 721. EER frames ARE independent
+    # electron-event bitstreams, so real random access is buildable --
+    # it is simply not built, which makes this a gap rather than a
+    # limit.
+    chunked = False
     streaming_decode = True
     parallel_decode = False
 

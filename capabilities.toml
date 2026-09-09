@@ -269,15 +269,15 @@ note = "DM3 and DM4 tags carry absolute offsets to uncompressed image data, so a
 [[codec]]
 name = "eer"
 multi_frame = true
-chunked = true
+chunked = false
 streaming_decode = true
 parallel_decode = false
 range_reads = true
 pyramid = false
 http = true
 feasible = "gap"
-gaps = ["parallel_decode"]
-note = "EER frames are independent electron-event bitstreams, so decoding them across threads needs no format work. There are no resolution levels, so there is no pyramid to expose."
+gaps = ["chunked", "parallel_decode"]
+note = "EER frames are independent electron-event bitstreams, so both gaps are buildable and neither is built. chunked was recorded as done and was not: indexing worked, but through the base Reader's default __getitem__, which walks iter_frames() to get there -- measured 6.71 ms for frame 0 and 1218 ms for frame 720 of 721. A flag that says \"indexing is offered\" is not the same as one that says \"indexing is cheap\", and this codec had the second set from the first. Frames decode independently, so threading them needs no format work either. There are no resolution levels, so there is no pyramid."
 
 [[codec]]
 name = "emd"

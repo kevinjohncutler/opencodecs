@@ -252,7 +252,7 @@ def test_plane_reads_one_plane_not_the_volume(tmp_path):
     MrcFile has advertised is_chunked since it was written while the
     codec flag beside it said False, so the manifest recorded a
     capability as missing that had always been there. Asserting the
-    behaviour rather than the flag: a plane must be cheap, and it must
+    behavior rather than the flag: a plane must be cheap, and it must
     be the RIGHT plane, which a reader that returned plane 0 every
     time would also make cheap.
     """

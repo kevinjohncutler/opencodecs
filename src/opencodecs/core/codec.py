@@ -46,7 +46,14 @@ class Reader(ABC):
     color: dict | None = None
     icc_profile: bytes | None = None
     n_frames: int | None = None  # None when unknown
-    is_chunked: bool = False  # True when [idx] random access is available
+    # True when ``[idx]`` works at all. NOT the same question as the
+    # codec-level ``chunked`` flag, which asks whether indexing is
+    # CHEAP -- frame N without decoding 0..N-1. GIF sets this True and
+    # that one False, correctly: you can index it, but disposal state
+    # means the reader replays from frame 0 to get there. A reader with
+    # this True and the default __getitem__ below is in that position
+    # by construction, because the default walks iter_frames().
+    is_chunked: bool = False
 
     @abstractmethod
     def iter_frames(self) -> Iterator[np.ndarray]:
@@ -190,7 +197,13 @@ class Codec(ABC):
     can_encode: bool = False
     can_decode: bool = False
     multi_frame: bool = False    # supports stacks / animations
-    chunked: bool = False        # supports random-access chunks
+    # Random-access chunks that are actually cheap: fetching chunk N
+    # must not decode 0..N-1. Distinct from Reader.is_chunked, which
+    # only says indexing is offered. Setting this True when the reader
+    # walks is how the capability manifest ends up promising something
+    # that is technically true and practically absent -- eer did, at
+    # 1218 ms for the last of 721 frames against 6.71 ms for the first.
+    chunked: bool = False
     streaming_decode: bool = False  # iter_frames yields without full materialization
     parallel_decode: bool = False   # multi-chunk parallel decode supported
 
