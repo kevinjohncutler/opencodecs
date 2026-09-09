@@ -98,7 +98,8 @@ def derive() -> dict[str, dict]:
     # without ever spelling the call itself, and the narrower pattern
     # recorded that as a `false`.
     range_capable = _grep(
-        "coerce_data_source\\|read_at(\\|read_at=\\|read_many(")
+        "coerce_data_source\\|read_at(\\|read_at=\\|read_many("
+        "\\|h5_source")
     # A file counts as a pyramid backend when it DEFINES or RE-EXPORTS
     # one, not when it mentions the name. _jpeg2k.pyx refers to
     # Jpeg2kPyramidReader in a docstring to point callers at it, and
@@ -135,6 +136,10 @@ def derive() -> dict[str, dict]:
     http_files = {f for f in _grep("HTTPDataSource")
                   if f in range_capable or f not in whole_file_get}
     http_files |= _grep("coerce_data_source")
+    # h5_source turns an http(s) URL into a range-reading file-like for
+    # the HDF5-backed readers, so calling it is reaching storage by
+    # offset over HTTP just as much as constructing the data source is.
+    http_files |= _grep("h5_source")
 
     def files_for(name: str) -> set[str]:
         # as_posix(), to match git grep's output on Windows.

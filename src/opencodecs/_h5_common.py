@@ -13,6 +13,9 @@ from typing import Any
 def h5_source(src: Any) -> Any:
     """What h5py can open, from what a codec is handed.
 
+    An http(s) URL becomes a range-reading file-like, so h5py fetches
+    only the chunks a slice touches.
+
     h5py takes a path or a file-like object but not raw bytes: given
     those it treats them as a filename and raises FileNotFoundError
     with the binary printed as the name, which reads like a missing
@@ -25,6 +28,14 @@ def h5_source(src: Any) -> Any:
     real file handle for the most common access patterns", which was
     not true and cost a full copy of every in-memory source.
     """
+    if isinstance(src, str) and src.startswith(("http://", "https://")):
+        # h5py drives its reads through the file-like, so an HDF5 over
+        # HTTP fetches the chunks a slice touches and nothing else.
+        # _hdf5_http has had this since before EMD and Imaris existed;
+        # they just never reached it, because each opened h5py itself.
+        from ._hdf5_http import _HTTPFileLike
+        from ._tiff_http import HTTPDataSource
+        return _HTTPFileLike(HTTPDataSource(src))
     if isinstance(src, (bytes, bytearray, memoryview)):
         return io.BytesIO(bytes(src))
     return src

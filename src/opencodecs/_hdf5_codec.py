@@ -308,6 +308,12 @@ class HdfCodec(Codec):
             return reader.read()
 
     def open(self, src: Any, *, dataset: str | None = None, **opts) -> Reader:
+        # URL before path: a str starting with http(s) is not a
+        # filename, and checking isinstance(str) first sent it to
+        # h5py as one.
+        if isinstance(src, str) and src.startswith(("http://", "https://")):
+            from ._h5_common import h5_source
+            return HdfReader(h5_source(src), dataset=dataset)
         if isinstance(src, (str, Path)):
             return HdfReader(src, dataset=dataset)
         if isinstance(src, (bytes, bytearray, memoryview)) or hasattr(src, "read"):

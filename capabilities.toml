@@ -282,15 +282,14 @@ note = "EER frames are independent electron-event bitstreams, so decoding them a
 [[codec]]
 name = "emd"
 multi_frame = true
-chunked = false
-streaming_decode = false
+chunked = true
+streaming_decode = true
 parallel_decode = false
-range_reads = false
+range_reads = true
 pyramid = false
-http = false
-feasible = "gap"
-gaps = ["streaming_decode", "chunked", "range_reads", "http"]
-note = "EMD is HDF5, and the hdf5 backend here already streams, reads chunks and serves over range requests; the emd reader does not go through it. A wiring gap, not a format limit."
+http = true
+feasible = "done"
+note = "all four arrived at once, and by wiring rather than by new parsing: EMD is HDF5, and every HDF5-backed reader here now reaches h5py through the shared h5_source, which turns an http(s) URL into a range-reading file-like. Reading one dataset out of a 16.8 MB remote file moved 0.09 MB in 10 requests, byte-identical to the local read. chunked and streaming_decode were never missing so much as unrecorded: the reader has advertised is_chunked all along, and pulling the small dataset from a 134 MB file takes 0.35 ms against 15.9 ms for the big one, so a frame costs its own size."
 
 [[codec]]
 name = "fits"
