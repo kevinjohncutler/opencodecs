@@ -27,6 +27,7 @@ from typing import Any, Callable, Iterator
 import numpy as np
 
 from .core.codec import Codec, Reader
+from .core.parallel import resolve_workers, run_batched
 from .core._optional_backend import import_or_stubs
 
 (
@@ -114,53 +115,24 @@ def _get_decoder(modname: str):
 _TIFF_PARALLEL_MIN_SEGMENTS = 4
 _TIFF_MAX_WORKERS = 16
 
-# Don't start a worker for less than this much output. A fixed cap is
-# wrong at both ends, and measurably so: on a 9 MB image the whole
-# decode is a few milliseconds and 16 threads lose to 8 on pool
-# overhead, while on a 72 MB image 16 threads are 12x serial and 8 are
-# only 7x. Sizing the pool by how much work there actually is gets
-# both, where any single constant gives up one of them.
-_TIFF_MIN_BYTES_PER_WORKER = 1 << 20
-
 
 def _resolve_tiff_workers(numthreads: int | None, n_segments: int,
                           has_decode_work: bool = True,
                           output_bytes: int | None = None) -> int:
-    """How many threads to decode ``n_segments`` segments with.
+    """TIFF's segment count and thresholds, on the shared policy.
 
-    ``None`` means "decide": scale with the CPU count but never exceed
-    the number of segments, and stay serial when there is too little to
-    divide. An explicit number is honored as given, so a caller can pin
-    it -- including to 1 for a reproducible serial run.
-
-    ``has_decode_work`` is false for uncompressed segments, and there
-    the answer is 1 no matter what was asked for. A thread count is a
-    budget -- "use up to N" -- not an instruction to spend it, and
-    spending it here cannot pay: an uncompressed tile's "decode" is a
-    reshape and a memcpy, so the work is memory-bandwidth-bound and
-    already runs at about 5 GB/s on one core. Measured on a 144-tile
-    3072x3072 uncompressed TIFF, the whole read is 1.8 ms serial;
-    creating the pool is a visible fraction of that, and 4 threads
-    took 3.6 ms. The same file in LZW goes 5.9x faster on 8.
-
-    Honoring the number literally would mean quietly doing what the
-    caller asked twice as slowly, which is a worse answer than
-    declining and saying why.
+    The reasoning this used to carry lives in core.parallel now, where
+    the other formats that fan out over independent pieces can reach
+    it. What stays here is what is actually about TIFF: the segment
+    count, and that "a handful" means four strips.
     """
-    if not has_decode_work:
-        return 1
-    if numthreads is not None:
-        n = int(numthreads)
-        if n <= 1:
-            return 1
-        return min(n, max(1, n_segments))
-    if n_segments < _TIFF_PARALLEL_MIN_SEGMENTS:
-        return 1
-    cap = min(os.cpu_count() or 1, n_segments, _TIFF_MAX_WORKERS)
-    if output_bytes is not None:
-        # Enough work per worker to be worth its own existence.
-        cap = min(cap, output_bytes // _TIFF_MIN_BYTES_PER_WORKER)
-    return max(1, cap)
+    return resolve_workers(
+        numthreads, n_segments,
+        has_decode_work=has_decode_work,
+        output_bytes=output_bytes,
+        min_items=_TIFF_PARALLEL_MIN_SEGMENTS,
+        max_workers=_TIFF_MAX_WORKERS,
+    )
 
 
 # numpy writes native order as "=" and single-byte types as "|", so a
@@ -887,32 +859,7 @@ class TiffPage:
         if workers > 1 and prefetched is None:
             import threading
             read_lock = threading.Lock()
-        if workers > 1:
-            from concurrent.futures import ThreadPoolExecutor
-            # One task per WORKER, not per segment. ThreadPoolExecutor
-            # ignores map()'s chunksize (it is a process-pool knob), so
-            # a 144-tile image meant 144 futures, each with its own
-            # lock traffic and GIL round-trip, to wrap work that for an
-            # uncompressed tile is a reshape and a memcpy. That
-            # overhead alone is what made threading measure SLOWER than
-            # serial there. Contiguous batches also keep each worker
-            # writing to a contiguous band of `out`.
-            step = (len(tasks) + workers - 1) // workers
-            batches = [tasks[i:i + step]
-                       for i in range(0, len(tasks), step)]
-
-            def _run_batch(batch):
-                for t in batch:
-                    _do_segment(*t)
-
-            with ThreadPoolExecutor(max_workers=workers) as ex:
-                # Consume the iterator so a worker's exception is
-                # raised here rather than silently discarded.
-                for _ in ex.map(_run_batch, batches):
-                    pass
-        else:
-            for t in tasks:
-                _do_segment(*t)
+        run_batched(lambda t: _do_segment(*t), tasks, workers, name="tiff")
         return out
 
 
