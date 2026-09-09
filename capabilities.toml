@@ -744,15 +744,14 @@ note = "out[i] depends on out[i-dist], the same serial chain as delta. There is 
 [[codec]]
 name = "zfp"
 multi_frame = false
-chunked = false
+chunked = true
 streaming_decode = false
-parallel_decode = false
+parallel_decode = true
 range_reads = false
 pyramid = false
 http = false
-feasible = "gap"
-gaps = ["chunked", "parallel_decode"]
-note = "in fixed-rate mode every 4^d block occupies the same number of bits, so a block's position is arithmetic and zfp_decode_block_* is the per-block entry point: true random access, which is what fixed-rate mode exists for. The variable-rate modes cannot do this, so it would be a fixed-rate-only path. The decode released its GIL in this pass, which was worth 1.00x to 7.38x for a caller decoding many zfp chunks at once and is what a chunked-array reader actually does. That is not the same as splitting one stream, which is what parallel_decode means here: zfp offers that through zfp_stream_set_execution with ZFP_EXEC_OMP, so it needs OpenMP compiled into the vendored build on three platforms plus fixed-rate-only gating. Real, but a build-system change rather than a codec one."
+feasible = "done"
+note = "in fixed-rate mode every 4^d block occupies the same number of bits, so a block's position is arithmetic and zfp_decode_block_* is the per-block entry point: true random access, which is what fixed-rate mode exists for. The variable-rate modes cannot do this, so it would be a fixed-rate-only path. The decode released its GIL in this pass, which was worth 1.00x to 7.38x for a caller decoding many zfp chunks at once and is what a chunked-array reader actually does. Splitting one stream is what parallel_decode means here, and that judgment was wrong: it does NOT need OpenMP. zfp_decode_block_float_3 plus a bitstream seek reaches block N directly, so a thread per block range does it with the library as it already ships, and the ZFP_EXEC_OMP route can stay unbuilt. Both gaps close together. One block costs 0.0010 ms against 0.2094 ms for a full decode of the same stream, 216x; the threaded full decode goes 110.3 ms to 30.0 ms end to end on a 67 MB volume, or 114.0 to 8.2 ms for the block decode alone before the assembly copy. Bit-identical, including shapes whose dimensions are not multiples of 4, where the encoder pads the edge blocks and the padding has to be trimmed against the extent in the header. The variable-rate modes fall back to zfp_decompress and decode_block refuses them by name."
 
 [[codec]]
 name = "zstd"

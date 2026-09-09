@@ -37,6 +37,8 @@ from zfp cimport (
     zfp_stream_set_bit_stream, zfp_stream_set_reversible,
     zfp_stream_set_rate, zfp_stream_set_precision, zfp_stream_set_accuracy,
     zfp_compress, zfp_decompress, zfp_write_header, zfp_read_header,
+    zfp_stream_rate, zfp_decode_block_float_3,
+    zfp_decode_block_double_3, stream_rtell, stream_rseek,
     ZFP_HEADER_FULL,
     bitstream, stream_open, stream_close, stream_size,
 )
@@ -193,6 +195,294 @@ def encode(arr, *,
     # export alive across the slice copy.
     del dst_mv
     return out[:out_size]
+
+
+def decode_block(data, index: int, *, out=None):
+    """Decode one 4x4x4 block of a 3-D fixed-rate stream, by index.
+
+    This is the random access fixed-rate mode exists for. Every block
+    occupies the same number of bits, so block N begins at a computed
+    bit offset and reaching it is a seek: no block before it is
+    touched. The variable-rate modes (precision, accuracy, reversible)
+    pack blocks at whatever size they need, so there is no arithmetic
+    to do and this refuses them by name rather than returning
+    something wrong.
+
+    Blocks are numbered in the order zfp stores them, which is
+    x-fastest over the block grid: block index
+    ``(kb * nby + jb) * nbx + ib`` covers the 4x4x4 cube at block
+    coordinates (ib, jb, kb).
+
+    Returns a (4, 4, 4) array. Blocks on the far edge of an array whose
+    dimensions are not multiples of 4 are padded by the encoder, so the
+    padding comes back too; the caller knows the real extent from
+    ``decode_info``.
+    """
+    cdef:
+        const uint8_t[::1] src
+        Py_ssize_t srcsize
+        zfp_field* field = NULL
+        zfp_stream* zstream = NULL
+        bitstream* bs = NULL
+        cnp.ndarray out_arr
+        double rate
+        unsigned long long base_offset, block_bits
+        int ndim
+        size_t nbx, nby, nbz, nblocks
+        int is_double
+        size_t got
+
+    try:
+        src = data
+    except (TypeError, ValueError, BufferError):
+        src = bytes(data)
+    srcsize = src.shape[0]
+    if srcsize == 0:
+        raise ZfpError("empty zfp stream")
+
+    bs = stream_open(<void*> &src[0], <size_t> srcsize)
+    if bs == NULL:
+        raise ZfpError("stream_open returned NULL")
+    zstream = zfp_stream_open(bs)
+    if zstream == NULL:
+        stream_close(bs)
+        raise ZfpError("zfp_stream_open returned NULL")
+    field = zfp_field_alloc()
+    if field == NULL:
+        zfp_stream_close(zstream)
+        stream_close(bs)
+        raise ZfpError("zfp_field_alloc returned NULL")
+    try:
+        if zfp_read_header(zstream, field, ZFP_HEADER_FULL) == 0:
+            raise ZfpError("zfp_read_header failed (full header missing)")
+        ndim = _ndim_from_field(field)
+        if ndim != 3:
+            raise ZfpError(
+                f"zfp decode_block: only 3-D streams are supported, "
+                f"this one is {ndim}-D")
+        if field.type == zfp_type_float:
+            is_double = 0
+        elif field.type == zfp_type_double:
+            is_double = 1
+        else:
+            raise ZfpError(
+                "zfp decode_block: only float and double streams are "
+                "supported")
+
+        # Fixed-rate is the only mode where a block has a computable
+        # position. zfp_stream_rate returns 0 for the others.
+        rate = zfp_stream_rate(zstream, 3)
+        if rate <= 0:
+            raise ZfpError(
+                "zfp decode_block: this stream is not fixed-rate, so "
+                "blocks have no computable position; re-encode with "
+                "rate= to get random access")
+        # bits per block = rate (bits/value) * 4**3 values.
+        block_bits = <unsigned long long>(rate * 64.0 + 0.5)
+
+        nbx = (<size_t> field.nx + 3) // 4
+        nby = (<size_t> field.ny + 3) // 4 if field.ny else 1
+        nbz = (<size_t> field.nz + 3) // 4 if field.nz else 1
+        nblocks = nbx * nby * nbz
+        idx = int(index)
+        if idx < 0:
+            idx += <Py_ssize_t> nblocks
+        if not 0 <= idx < <Py_ssize_t> nblocks:
+            raise IndexError(
+                f"zfp: block {index} out of range for {nblocks}")
+
+        # Where block 0 starts: whatever the header consumed.
+        base_offset = stream_rtell(bs)
+
+        if out is not None:
+            if not isinstance(out, np.ndarray):
+                raise ZfpError("zfp decode_block: out= must be an ndarray")
+            if out.shape != (4, 4, 4):
+                raise ZfpError(
+                    f"zfp decode_block: out= shape {out.shape} is not (4, 4, 4)")
+            expected = np.float64 if is_double else np.float32
+            if out.dtype != expected:
+                raise ZfpError(
+                    f"zfp decode_block: out= dtype {out.dtype} does not "
+                    f"match the stream's {np.dtype(expected)}")
+            if not out.flags['C_CONTIGUOUS']:
+                raise ZfpError("zfp decode_block: out= must be C-contiguous")
+            out_arr = out
+        else:
+            out_arr = np.empty(
+                (4, 4, 4), dtype=np.float64 if is_double else np.float32)
+
+        stream_rseek(bs, base_offset + <unsigned long long> idx * block_bits)
+        with nogil:
+            if is_double:
+                got = zfp_decode_block_double_3(
+                    zstream, <double*> cnp.PyArray_DATA(out_arr))
+            else:
+                got = zfp_decode_block_float_3(
+                    zstream, <float*> cnp.PyArray_DATA(out_arr))
+        if got == 0:
+            raise ZfpError(f"zfp_decode_block returned 0 for block {idx}")
+        return out_arr
+    finally:
+        if field != NULL:
+            zfp_field_free(field)
+        if zstream != NULL:
+            zfp_stream_close(zstream)
+        if bs != NULL:
+            stream_close(bs)
+
+
+def decode_block_range(data, start: int, stop: int, out):
+    """Decode blocks ``[start, stop)`` into ``out``, shaped (n, 4, 4, 4).
+
+    The entry point the threaded decode is built on. One stream is
+    opened for the whole range and seeked once, so a run of blocks
+    costs one header parse rather than one per block.
+
+    Threads each call this on their own range with their own stream: a
+    zfp_stream carries a read position, so two threads cannot share
+    one. The header parse per thread is the price, and it is a few
+    dozen bytes against however many blocks the range holds.
+    """
+    cdef:
+        const uint8_t[::1] src
+        Py_ssize_t srcsize
+        zfp_field* field = NULL
+        zfp_stream* zstream = NULL
+        bitstream* bs = NULL
+        cnp.ndarray out_arr
+        double rate
+        unsigned long long base_offset, block_bits
+        int is_double
+        Py_ssize_t i, n
+        float* fp
+        double* dp
+        size_t got = 1
+
+    try:
+        src = data
+    except (TypeError, ValueError, BufferError):
+        src = bytes(data)
+    srcsize = src.shape[0]
+    if srcsize == 0:
+        raise ZfpError("empty zfp stream")
+    if stop <= start:
+        raise ValueError(f"zfp: empty block range [{start}:{stop})")
+    n = stop - start
+    if not isinstance(out, np.ndarray) or out.shape != (n, 4, 4, 4):
+        raise ZfpError(
+            f"zfp decode_block_range: out= must be an ndarray of shape "
+            f"({n}, 4, 4, 4)")
+    if not out.flags['C_CONTIGUOUS']:
+        raise ZfpError("zfp decode_block_range: out= must be C-contiguous")
+    out_arr = out
+
+    bs = stream_open(<void*> &src[0], <size_t> srcsize)
+    zstream = zfp_stream_open(bs)
+    field = zfp_field_alloc()
+    try:
+        if zfp_read_header(zstream, field, ZFP_HEADER_FULL) == 0:
+            raise ZfpError("zfp_read_header failed (full header missing)")
+        if _ndim_from_field(field) != 3:
+            raise ZfpError("zfp decode_block_range: only 3-D streams")
+        if field.type == zfp_type_float:
+            is_double = 0
+        elif field.type == zfp_type_double:
+            is_double = 1
+        else:
+            raise ZfpError("zfp decode_block_range: only float and double")
+        if out_arr.dtype != (np.float64 if is_double else np.float32):
+            raise ZfpError(
+                f"zfp decode_block_range: out= dtype {out_arr.dtype} does "
+                f"not match the stream")
+        rate = zfp_stream_rate(zstream, 3)
+        if rate <= 0:
+            raise ZfpError(
+                "zfp decode_block_range: this stream is not fixed-rate")
+        block_bits = <unsigned long long>(rate * 64.0 + 0.5)
+        base_offset = stream_rtell(bs)
+        stream_rseek(
+            bs, base_offset + <unsigned long long> start * block_bits)
+        if is_double:
+            dp = <double*> cnp.PyArray_DATA(out_arr)
+            with nogil:
+                for i in range(n):
+                    got = zfp_decode_block_double_3(zstream, dp + i * 64)
+                    if got == 0:
+                        break
+        else:
+            fp = <float*> cnp.PyArray_DATA(out_arr)
+            with nogil:
+                for i in range(n):
+                    got = zfp_decode_block_float_3(zstream, fp + i * 64)
+                    if got == 0:
+                        break
+        if got == 0:
+            raise ZfpError(
+                f"zfp_decode_block returned 0 inside [{start}:{stop})")
+        return out_arr
+    finally:
+        if field != NULL:
+            zfp_field_free(field)
+        if zstream != NULL:
+            zfp_stream_close(zstream)
+        if bs != NULL:
+            stream_close(bs)
+
+
+def block_grid(data) -> dict:
+    """Block geometry of a stream, without decoding anything.
+
+    Returns the block counts per axis, the total, whether the stream is
+    fixed-rate (the only mode with addressable blocks) and its rate.
+    """
+    cdef:
+        const uint8_t[::1] src
+        Py_ssize_t srcsize
+        zfp_field* field = NULL
+        zfp_stream* zstream = NULL
+        bitstream* bs = NULL
+        double rate
+        int ndim
+
+    try:
+        src = data
+    except (TypeError, ValueError, BufferError):
+        src = bytes(data)
+    srcsize = src.shape[0]
+    if srcsize == 0:
+        raise ZfpError("empty zfp stream")
+    bs = stream_open(<void*> &src[0], <size_t> srcsize)
+    zstream = zfp_stream_open(bs)
+    field = zfp_field_alloc()
+    try:
+        if zfp_read_header(zstream, field, ZFP_HEADER_FULL) == 0:
+            raise ZfpError("zfp_read_header failed (full header missing)")
+        ndim = _ndim_from_field(field)
+        rate = zfp_stream_rate(zstream, ndim)
+        nbx = (int(field.nx) + 3) // 4
+        nby = ((int(field.ny) + 3) // 4) if field.ny else 1
+        nbz = ((int(field.nz) + 3) // 4) if field.nz else 1
+        # The real extent, so a caller assembling from blocks can trim
+        # the padding the encoder added to the edge blocks. Reported
+        # slowest-axis-first to match what decode() returns.
+        shape = tuple(int(v) for v in (field.nz, field.ny, field.nx)
+                      if v)[-ndim:] if ndim else ()
+        return {
+            'ndim': ndim,
+            'shape': shape,
+            'blocks': (nbz, nby, nbx),
+            'n_blocks': nbx * nby * nbz,
+            'fixed_rate': rate > 0,
+            'rate': float(rate),
+        }
+    finally:
+        if field != NULL:
+            zfp_field_free(field)
+        if zstream != NULL:
+            zfp_stream_close(zstream)
+        if bs != NULL:
+            stream_close(bs)
 
 
 def decode(data, *, out=None) -> 'np.ndarray':

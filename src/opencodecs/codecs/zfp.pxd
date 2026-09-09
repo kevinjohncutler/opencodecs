@@ -12,6 +12,11 @@ cdef extern from "zfp/bitstream.h" nogil:
     bitstream* stream_open(void* buffer, size_t bytes)
     void stream_close(bitstream* stream)
     size_t stream_size(const bitstream* stream)
+    # Bit-level positioning. In fixed-rate mode every block occupies
+    # the same number of bits, so block N starts at a computed offset
+    # and seeking there is the whole of random access.
+    unsigned long long stream_rtell(const bitstream* stream)
+    void stream_rseek(bitstream* stream, unsigned long long offset)
 
 
 cdef extern from "zfp.h" nogil:
@@ -62,6 +67,13 @@ cdef extern from "zfp.h" nogil:
                                    const zfp_field* field)
     void zfp_stream_set_bit_stream(zfp_stream* stream, bitstream* bs)
     void zfp_stream_rewind(zfp_stream* stream)
+    double zfp_stream_rate(const zfp_stream* stream, unsigned int dims)
+    # Per-block decode. One function per (type, dimensionality); we
+    # bind the 3-D float and double pair, which is what fixed-rate zfp
+    # is used for in practice, and refuse the rest by name rather than
+    # decoding something else.
+    size_t zfp_decode_block_float_3(zfp_stream* stream, float* block)
+    size_t zfp_decode_block_double_3(zfp_stream* stream, double* block)
     int zfp_stream_set_reversible(zfp_stream* stream)
     double zfp_stream_set_rate(zfp_stream* stream, double rate, zfp_type type,
                                unsigned int dims, int wra)
