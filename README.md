@@ -491,10 +491,12 @@ prefix = jxl.thumbnail_bytes("scan.jxl")
 pip install opencodecs
 ```
 
-Wheels are published for CPython 3.10–3.13 on macOS (arm64),
-Linux (x86_64 + aarch64), and Windows (amd64). Each wheel
-bundles libjxl, libavif, libheif, libwebp, libdeflate,
-c-blosc2, and friends — no system dependencies needed.
+Wheels are published for CPython 3.10 to 3.13 on macOS 15+ (arm64),
+Linux (x86_64 + aarch64, manylinux_2_28), and Windows (amd64). Every
+platform ships the same 39 compiled extensions, bundling libjxl,
+libavif, libheif, libwebp, libdeflate, c-blosc2, CharLS and friends,
+so no system dependencies are needed. Intel Macs and macOS releases
+older than 15 install from the sdist instead.
 
 For a source install, system development headers, or to build a
 tuned local libjxl, see [INSTALL.md](INSTALL.md). Wheel publishing
@@ -517,29 +519,36 @@ build).
 
 ## Status
 
-- **v0.1.1** on PyPI (May 2026). Core API stable; **1066 tests passing**
-  on Mac M1 Ultra + Linux x86_64/aarch64 + Windows VM
-- Native readers + writers for the common scientific containers
-  (TIFF, BigTIFF, OME-TIFF, CZI, NDTiff, HDF5, JXL, FITS,
-  OME-Zarr v2 + v3 sharded)
-- Cross-platform bench coverage: Mac arm64 (canonical), Windows 11 LTSC
-  (libvirt VM), Linux x86_64 (Threadripper-class)
+- **v0.2.0** on PyPI (September 2026). Every wheel carries the same 39
+  compiled extensions, and `ci/check_wheel_contents.py` fails the
+  release build if one goes missing.
+- About 3,000 tests locally, including a 40-dataset conformance corpus;
+  CI runs the corpus-independent suite on macOS, Linux and Windows for
+  Python 3.10 and 3.13.
+- Native readers and writers for the common scientific containers
+  (TIFF, BigTIFF, OME-TIFF, CZI, NDTiff, HDF5, JXL, FITS, OME-Zarr v2 +
+  v3 sharded), and pyramid readers for TIFF/COG/SVS, OME-Zarr, CZI,
+  Imaris, DICOM VL Whole Slide Microscopy and Olympus VSI/ETS
+- Every reader takes a path, bytes, memoryview, mmap, open file or
+  `http(s)` URL; remote reads go through `HTTPDataSource` range requests
+  with a covering cache and adaptive read-ahead
+- Multi-frame AVIF, animated WebP and GIF decode to a frame stack; HEIF
+  exposes every top-level image
 - Compression backend auto-detect (libdeflate → zlib-ng-compat → stdlib)
-- Cloud I/O primitives (`HTTPDataSource` with covering-cache + adaptive
-  read-ahead) wired into TIFF / HDF5 / DICOMweb / CZI / FITS / Zarr v3
-  readers
 - `tifffile_patch` opt-in shim reroutes tifffile's codec dispatch through
   opencodecs for users who want only a partial swap
+- `capabilities.toml` records what each codec actually supports, checked
+  against the built extensions, with no open gaps
 
 Deferred work (see [`docs/TODO_DEFERRED.md`](docs/TODO_DEFERRED.md)):
 
-- **Windows wheels currently miss `_sz3`, `_pcodec`, `_sperr`, `_brunsli`**
-  — toolchain mismatch (conda's bash picks GCC over MSVC for CMake);
-  v0.1.2 will restore them. macOS + Linux wheels have the full set.
-- CCITT Fax3/Fax4 encode — legacy fax; zero scientific users
-- JPEG-XR — abandoned format outside niche DICOM
-- libspng `filter_sum` SIMD — off the bench-tracked workload (`h2h_png_4mp_rgb`
-  is at 1.14× already); filter-bound PNG-encode users could see another 2-3×
+- CCITT Fax3/Fax4 encode: legacy fax, zero scientific users
+- JPEG-XR: abandoned format outside niche DICOM
+- libspng `filter_sum` SIMD: off the bench-tracked workload
+  (`h2h_png_4mp_rgb` is at 1.14× already); filter-bound PNG-encode users
+  could see another 2-3×
+
+See [CHANGES.rst](CHANGES.rst) for release history.
 
 ## License
 
