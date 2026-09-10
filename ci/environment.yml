@@ -27,6 +27,16 @@ dependencies:
   - libaec
   - lerc
   - zfp
+  # Codecs the README advertises that no wheel through 0.1.13 actually
+  # shipped, because these four libs were absent from every CI install
+  # path. setup.py's header probe dropped the extension and
+  # ``pytest.importorskip`` made the 56 tests covering them disappear,
+  # so both the build and the suite stayed green while jpegls, snappy,
+  # gif and deflate(backend="isal") were missing from the artifact.
+  - giflib
+  - snappy
+  - charls
+  - isa-l
   # lcms2 needed at TEST time on Windows. opencodecs._cms_codec does a
   # ctypes.CDLL("lcms2.dll") at first use; without the conda package the
   # DLL isn't on PATH and 8 test_phase7_cms.py tests fail with ImportError.

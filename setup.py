@@ -517,6 +517,27 @@ def _lib_dirs_for_probes() -> list[str]:
     return out
 
 
+def _lib_link_name(*stems: str) -> str | None:
+    """Return the first of ``stems`` that has a real library file under
+    one of the probe lib dirs, i.e. the name to hand ``libraries=``.
+
+    Upstreams do not agree on a name across platforms, and conda-forge
+    follows each upstream. ISA-L is the case that bit us: the package
+    installs ``libisal.so`` / ``libisal.dylib`` on POSIX but
+    ``isa-l.lib`` on Windows, so the hardcoded ``["isal"]`` could never
+    link on a Windows wheel build no matter which prefix it searched.
+    """
+    for d in map(Path, _lib_dirs_for_probes()):
+        for stem in stems:
+            if sys.platform == "win32":
+                names = (f"{stem}.lib",)
+            else:
+                names = (f"lib{stem}.dylib", f"lib{stem}.so", f"lib{stem}.a")
+            if any((d / n).exists() for n in names):
+                return stem
+    return None
+
+
 def _user_cache_rpath_args() -> list[str]:
     """Return ``-Wl,-rpath,...`` linker flags for every per-user cache
     lib dir that currently exists. Add these to an Extension's
@@ -580,19 +601,33 @@ def _maybe_build_ext_simple(
         hdr = prefix / "include" / probe_header
         if not hdr.exists():
             continue
-        # Find matching dylib/so.
+        # Find the matching library. Search every layout a prefix can
+        # use, not just <prefix>/lib: AlmaLinux CMake installs to lib64,
+        # conda-on-Windows to Library/lib, Debian to lib/<multiarch>.
+        # Windows has no lib-prefix convention and conda-forge sometimes
+        # carries the soversion in the import-lib name (charls.lib vs
+        # charls-2.lib), so match by pattern and link whatever stem is
+        # actually there.
+        if sys.platform == "win32":
+            patterns = (f"{libname}.lib", f"lib{libname}.lib",
+                        f"{libname}-*.lib")
+        else:
+            patterns = tuple(f"lib{libname}.{ext}"
+                             for ext in ("dylib", "so", "so.0"))
+        libdir = None
         dlib = None
-        for ext in ("dylib", "so", "so.0"):
-            cand = prefix / "lib" / f"lib{libname}.{ext}"
-            if cand.exists():
-                dlib = cand
-                break
-        if dlib is None:
-            for ext in ("so", "so.0"):
-                cand = prefix / "lib" / "x86_64-linux-gnu" / f"lib{libname}.{ext}"
-                if cand.exists():
-                    dlib = cand
+        for sub in ("lib", "lib64", "Library/lib",
+                    "lib/x86_64-linux-gnu", "lib/aarch64-linux-gnu"):
+            d = prefix / sub
+            if not d.is_dir():
+                continue
+            for pat in patterns:
+                hits = sorted(d.glob(pat))
+                if hits:
+                    libdir, dlib = d, hits[0]
                     break
+            if dlib is not None:
+                break
         if dlib is None:
             continue
         # Match the zlib-ng-compat pattern: pass dylib by abs path on
@@ -600,7 +635,14 @@ def _maybe_build_ext_simple(
         extra_link_args = (
             [str(dlib)] if sys.platform == "darwin" else []
         )
-        libs = [] if sys.platform == "darwin" else [libname]
+        if sys.platform == "darwin":
+            libs = []
+        elif sys.platform == "win32":
+            # MSVC links the import lib by stem, which may carry a
+            # soversion the header name does not (charls-2.lib).
+            libs = [dlib.stem]
+        else:
+            libs = [libname]
         # rpath for the per-user cache dir is baked by the post-build
         # loop at the end of the file (``_user_cache_rpath_args``).
         # When ``prefix`` is a non-cache location (homebrew /opt,
@@ -614,7 +656,7 @@ def _maybe_build_ext_simple(
                 numpy.get_include(),
                 str(prefix / "include"),
             ],
-            library_dirs=[str(prefix / "lib")],
+            library_dirs=[str(libdir)],
             libraries=libs,
             extra_link_args=extra_link_args,
             define_macros=(define_macros or []) + [
@@ -1501,6 +1543,14 @@ extensions = [
         prefixes=[
             str(_OC_USER_CACHE / "libs"),
             str(_OC_USER_CACHE / "CharLS"),
+            # The CI prefixes, which this list used to omit: conda's
+            # $CONDA_PREFIX (Windows wheels plus every tests.yml job)
+            # and $OPENCODECS_CODEC_LIBS_PREFIX (/cibw-jxl-prefix, where
+            # build_codec_libs.sh --only=CharLS installs on Linux).
+            # Without them the probe only ever matched on a dev machine,
+            # so _charls was absent from every wheel through 0.1.13
+            # while the README advertised jpegls as supported.
+            *(str(_p) for _p in _PROBE_PREFIXES),
             "/opt/homebrew/opt/charls",
             "/usr/local/opt/charls",
             "/usr/local", "/usr",
@@ -1533,7 +1583,8 @@ extensions = [
                 *_resolve_include_dirs("isa-l/igzip_lib.h"),
             ],
             library_dirs=_lib_dirs_for_probes(),
-            libraries=["isal"],
+            # conda-forge ships isa-l.lib on Windows, libisal.* on POSIX.
+            libraries=[_lib_link_name("isal", "isa-l") or "isal"],
             define_macros=[("NPY_NO_DEPRECATED_API", "NPY_1_7_API_VERSION")],
             language="c",
         )]

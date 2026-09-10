@@ -395,6 +395,58 @@ placeholder that only the shell fetcher could expand. Licences: 26 of
 record what was checked and why it did not resolve, rather than a bare
 "unverified".
 
+**Fix: four advertised codecs were in none of the wheels we published**
+
+``jpegls`` (CharLS), ``snappy``, ``gif`` and ``deflate(backend="isal")``
+are listed in the README as supported. Reading the published 0.1.13
+wheels back shows ``_charls``, ``_isal`` and ``_snappy`` missing on all
+four platforms and ``_gif`` present only on macOS, where giflib happens
+to arrive as somebody else's Homebrew dependency.
+
+The cause was that giflib, snappy, CharLS and isa-l appear in no CI
+install path at all: not ``ci/environment.yml``, which drives every
+tests.yml job and the Windows wheels, not the manylinux ``dnf`` list,
+not the macOS ``brew`` line. setup.py's header probe then dropped each
+extension, and nothing failed. ``pytest.importorskip`` at the top of
+``test_charls.py``, ``test_gif.py``, ``test_isal.py`` and
+``test_snappy.py`` removed 56 tests from the run, and
+``test_optional_backend.py``, one of the two files the wheel smoke test
+executes, exists precisely to pass when a backend is absent. The build
+and the suite were both green the entire time.
+
+All four are now installed everywhere wheels and tests are built:
+conda-forge for tests.yml and the Windows wheels, brew on macOS,
+``dnf`` for snappy/giflib/isa-l on manylinux with CharLS source-built
+beside the other Tier 1 libs, as neither AlmaLinux 8 nor EPEL 8
+packages it. ``snappy-devel`` and ``giflib-devel`` live in PowerTools,
+so that repo is enabled explicitly. All four are added to
+``ci/check_wheel_contents.py``'s ``MUST_SHIP_ALL_PLATFORMS``, which
+fails the build rather than publishing a wheel that quietly lost a
+codec, the way v0.1.2 lost ``_sperr`` and ``_brunsli`` on Windows.
+
+Two build bugs surfaced only once the libraries were actually present,
+both found on a Windows host before pushing. ``_isal`` did not compile
+at all under MSVC: ``isal_shim.c`` and the verbatim C block in
+``_isal.pyx`` both name ``ssize_t``, which is POSIX. Cython rewrites a
+``cdef ssize_t`` to ``Py_ssize_t``, which is why ``_tiff``, ``_jxl``
+and ``_eer`` were fine, but a ``cdef extern from *`` body is copied
+through untouched and the shim includes no Python headers. Adding
+isa-l to the conda environment without this fix would have turned every
+Windows job red rather than merely dropping the codec. The shim now
+carries the same ``HAVE_SSIZE_T`` guard ``3rdparty/rgbe/rgbe.h``
+already used.
+
+The other was ``_maybe_build_ext_simple``, the CharLS resolver, which
+searched neither ``$CONDA_PREFIX`` nor ``$OPENCODECS_CODEC_LIBS_PREFIX``
+and so could only ever match on a developer's machine. It also looked
+only in ``<prefix>/lib``, missing AlmaLinux's ``lib64`` and
+conda-on-Windows's ``Library/lib``, and had no Windows import-library
+pattern at all. conda-forge names that file ``charls-2-x64.lib``, so
+the link name is now taken from whatever is on disk. ``_isal`` had the
+same shape of bug in a simpler form: a hardcoded ``libraries=["isal"]``
+that is correct on POSIX and wrong on Windows, where the package ships
+``isa-l.lib``; a new ``_lib_link_name`` probe picks the right one.
+
 0.1.13 (2026-06-04)
 -------------------
 

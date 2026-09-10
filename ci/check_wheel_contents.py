@@ -63,6 +63,17 @@ MUST_SHIP_ALL_PLATFORMS = {
     "_rcomp",
     "_bcdec",
     "_bytetools",
+    # Advertised in the README since well before 0.1.13 and shipped in
+    # none of its wheels (_gif reached macOS only, by way of a brew
+    # dependency nobody asked for). Their libraries were absent from
+    # every CI install path, so setup.py's header probe dropped the
+    # extension and pytest.importorskip removed the tests that would
+    # have noticed. Listed here now so the next silent drop fails the
+    # build instead of shipping.
+    "_charls",
+    "_gif",
+    "_isal",
+    "_snappy",
 }
 
 

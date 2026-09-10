@@ -174,6 +174,13 @@ before-all = [
     "dnf install -y libpng-devel || true",
     "dnf install -y openjpeg2-devel || true",
     "dnf install -y libdeflate-devel || true",
+    # snappy-devel and giflib-devel are in PowerTools, which is not
+    # enabled by default. The repo is named `powertools` on AlmaLinux 8
+    # and `crb` from 9 on; try both so this survives a base-image bump.
+    "dnf config-manager --set-enabled powertools || dnf config-manager --set-enabled crb || true",
+    "dnf install -y snappy-devel || true",
+    "dnf install -y giflib-devel || true",
+    "dnf install -y isa-l-devel || true",
     # Rust toolchain for pcodec's cdylib (cargo). Use rustup so we get a
     # version newer than the AlmaLinux 8 repo's; pcodec needs edition 2021.
     "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable",
@@ -187,7 +194,7 @@ before-all = [
     # bench/build_codec_libs.sh into the cached /cibw-jxl-prefix mount.
     # Skips encoders (aom, x265) — wheel ships decode-only AVIF/HEIF to
     # keep build < 12 min cold + avoid GPL x265.
-    "bash -c 'PATH=$HOME/.cargo/bin:$PATH bash bench/build_codec_libs.sh --only=libjpeg-turbo,c-blosc2,libde265,dav1d,libavif,libheif,libaec,lerc,zfp,SZ3,pcodec,SPERR,brunsli,mozjpeg,libultrahdr,openjph'",
+    "bash -c 'PATH=$HOME/.cargo/bin:$PATH bash bench/build_codec_libs.sh --only=libjpeg-turbo,c-blosc2,libde265,dav1d,libavif,libheif,libaec,lerc,zfp,SZ3,pcodec,SPERR,brunsli,mozjpeg,libultrahdr,openjph,CharLS'",
     "bash bench/build_libjxl.sh",
 ]
 # Don't set OPENCODECS_*_PREFIX here — build_wheels.yml's
@@ -207,7 +214,7 @@ before-all = [
     # mozjpeg removed from this brew install — the formula ships libjpeg
     # only, not libturbojpeg, so the _mozjpeg probe couldn't find what it
     # needed. Source-build via build_codec_libs.sh produces both libs.
-    "brew install jpeg-xl libavif libheif webp libpng jpeg-turbo openjpeg zstd brotli c-blosc2 lz4 libdeflate libaec liblerc zfp rust cmake ninja libultrahdr",
+    "brew install jpeg-xl libavif libheif webp libpng jpeg-turbo openjpeg zstd brotli c-blosc2 lz4 libdeflate libaec liblerc zfp rust cmake ninja libultrahdr giflib snappy charls isa-l",
     "bash bench/build_codec_libs.sh --only=SZ3,pcodec,SPERR,brunsli,mozjpeg,openjph",
 ]
 # macos-latest is now macOS 15 (Sequoia) on arm64. Homebrew formulas are

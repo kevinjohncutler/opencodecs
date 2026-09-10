@@ -14,6 +14,18 @@
 
 #include <stdint.h>
 #include <stddef.h>
+
+/* Same guard as 3rdparty/rgbe/rgbe.h: ssize_t is POSIX, and this file
+   includes no Python headers, so on MSVC it has to be typedef'd here. */
+#ifndef HAVE_SSIZE_T
+#if defined(_MSC_VER)
+#include <BaseTsd.h>
+typedef SSIZE_T ssize_t;
+#define HAVE_SSIZE_T 1
+#else
+#include <sys/types.h>
+#endif
+#endif
 #include <string.h>
 #include <stdlib.h>
 

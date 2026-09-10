@@ -29,9 +29,12 @@ cdef extern from *:
     """
     #include <stddef.h>
     #include <stdint.h>
-    extern ssize_t opencodecs_isal_zlib_encode(
+    /* Py_ssize_t, not ssize_t: this block is copied into the generated C
+       verbatim, and MSVC has no ssize_t. isal_shim.c defines these with
+       the matching width via its own HAVE_SSIZE_T guard. */
+    extern Py_ssize_t opencodecs_isal_zlib_encode(
         const uint8_t*, size_t, uint8_t*, size_t, int);
-    extern ssize_t opencodecs_isal_zlib_decode(
+    extern Py_ssize_t opencodecs_isal_zlib_decode(
         const uint8_t*, size_t, uint8_t*, size_t);
     """
     Py_ssize_t opencodecs_isal_zlib_encode(
