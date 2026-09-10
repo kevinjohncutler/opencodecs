@@ -10,8 +10,8 @@ Versions follow the same ``YYYY.M.D`` cadence as upstream when we
 publish; the entries below cluster work by date rather than by
 release because most of it has shipped continuously to ``main``.
 
-Unreleased
-----------
+0.2.0 (2026-09-09)
+------------------
 
 **AVIF: tile-parallel encoding, chroma layout, encoder backend**
 
@@ -262,6 +262,138 @@ The ``.pyx`` implementations, the pure-Python package and the test
 suite were checked and are not derived: the longest shared run of
 non-comment lines between any ``.pyx`` file and its imagecodecs
 namesake is six lines of ``opj_*`` call boilerplate in ``_jpeg2k.pyx``.
+
+
+**Reading multi-image files: AVIF sequences, HEIF sets, animated WebP**
+
+AVIF carries image sequences and HEIF carries sets of top-level images
+(a burst, a Live Photo's stills, a depth map beside its color image);
+both were decoded as a single picture. Animated WebP was not read at
+all -- ``decode`` failed with the bare message "WebP decode failed",
+which told a caller nothing. ``open()`` now returns a frame-oriented
+reader for all three, and ``frame_count()`` answers from the container
+without decoding.
+
+**Breaking:** ``avif.decode()`` on a SEQUENCE now returns every frame,
+shaped ``(frames, H, W, C)``, rather than the first image. ``webp``
+does the same for an animation. That matches ``gif``, which has always
+returned the stack for a time sequence, and matches what imagecodecs
+returns for the same files. A still is unchanged, ``out=`` on a still
+is unchanged, and ``out=`` on a sequence is refused rather than
+silently filled with frame 0. If you relied on one frame, use
+``open()`` and index it.
+
+``heif`` deliberately does not follow: a HEIF is a SET with a
+standard-designated primary image, not a time sequence, and its members
+need not share a shape, so ``read()`` there returns a list when they
+differ.
+
+**Whole-slide pyramids: DICOM VL Whole Slide Microscopy, and VSI/ETS**
+
+Two formats whose pyramid is not one file. A DICOM slide is a SERIES of
+instances sharing a SeriesInstanceUID and distinguished by Total Pixel
+Matrix Columns/Rows, so ``open_pyramid(directory, format="dicom")``
+takes a directory or a list, orders levels by extent rather than by
+filename, and refuses a directory holding two series instead of
+building a pyramid from two slides.
+
+VSI was recorded for months as blocked on a sample. It was not: the
+pyramid lives inside each ``.ets``, indexed by the LAST coordinate of
+each tile-table record, and two header fields had been misread. The
+field taken for the table's byte size is a record COUNT (a 413-record
+table read as 413 bytes gives up after 11 entries), and a record is
+self-describing rather than fixed-width, ``4 * (ndims + 5)`` bytes. The
+level axis is derived and then verified: ``parse_ets`` reports a
+pyramid only when the tile population of every level equals the grid
+covering the extent halved that many times, which the untiled corpus
+file fails, so it still reports one level. ``read_region`` decodes only
+the tiles a box covers -- a 256x256 window of an 8022x9367 slide moves
+0.5 MB of a 32.6 MB file over HTTP.
+
+**Five codecs were holding the GIL through their decode**
+
+``jpeg2k``, ``mozjpeg``, ``charls``, ``zfp`` and ``openjph`` called
+their library's decode without releasing the GIL, so every threaded
+caller paid a thread pool's overhead to take turns. All measured 0.94x
+to 1.12x on eight threads before, and about 7x after. Nothing else
+could have caught it: a codec that serializes every threaded caller
+passes every correctness test it has. ``openjph`` is the instructive
+one, because its ``.pxd`` already declared the shim functions
+``nogil`` -- which means "safe to call without the GIL", not "called
+without it" -- so reading the declaration would have cleared it.
+``tests/test_decode_releases_gil.py`` measures each codec so the next
+one added gets asked the same question.
+
+**Parallel decode where the pieces were already independent**
+
+FITS compressed-image tiles (HCOMPRESS_1 603 -> 87 ms, RICE_1 107 -> 19
+ms), HDF5 chunks (134 -> 13 ms, via a parallel path that was already
+written and simply never called), DICOM frames, EER frame accumulation
+(1124 -> 214 ms, bit-identical), BCn bands (BC7 4096x4096, 70 -> 6 ms),
+and zfp blocks (110 -> 30 ms end to end). ``core/parallel.py`` holds
+the one policy they share: how many workers to spend, and contiguous
+batching per worker rather than one future per piece.
+
+One of those needed a fix in a vendored library rather than in the
+codec. cfitsio's ``fits_hdecompress`` keeps its bit-reader position in
+three file-scope variables, so overlapping HCOMPRESS_1 tiles corrupted
+each other and returned status 414, a FORMAT error for a CONCURRENCY
+bug. The vendored copy marks them thread-local; single-threaded
+behavior is byte-identical.
+
+**Reading at offsets instead of swallowing files**
+
+``dm`` walks its tag tree through a sliding window and reads image data
+at the absolute offsets the tags already carried, so opening an 8.39 MB
+dm4 moves 0.197 MB. ``nrrd`` reads a slice at its own offset,
+``nifti`` a plane, ``oib`` only the streams behind one index (12.8 MB
+against 25.4 MB over HTTP), and ``lif`` and ``eer`` index at their own
+offsets rather than walking (EER frame 720 of 721: 1200 ms to 1.70 ms).
+There is a native ``.npy`` reader. ``jpeg2k`` gains ``decode_region``
+and ``decode_tile``; ``zfp`` gains ``decode_block`` for fixed-rate
+streams, where one block costs 0.0010 ms against 0.209 ms for the whole
+stream; ``bcn`` gains ``decode_rows``.
+
+``gzip`` allocates its output once from the ISIZE in the trailer rather
+than growing and joining buffers: 148 MB peak to 67 MB for a 67 MB
+result, and 13.0 ms to 6.8 ms.
+
+**Every codec accepts an http(s) URL**
+
+``read_src`` treated a URL as a filename, so about thirty codecs could
+not open one at all, and no per-codec test would have found it because
+each looks correct given a path. Formats that reach storage by offset
+fetch only what they need; the whole-codestream formats fetch once,
+which is the honest thing when every byte is needed anyway. ``tiff``
+and ``jxl`` had range-reading paths that ``open()`` and ``decode()``
+were not routing a URL into.
+
+**Capability manifest: no open gaps**
+
+``capabilities.toml`` went from 47 open capabilities across 31 codecs
+to none: 25 done, 35 recorded as not applicable with reasons.
+Correcting it was as valuable as closing it, because the file was wrong
+in both directions and none of it was visible by reading the code. Five
+capabilities existed and were recorded absent (a flag never set; offset
+arithmetic living in a helper named after the container, which the
+manifest attributes by filename; a memory property no correctness test
+can observe), and one was claimed and absent -- ``eer`` advertised cheap
+random access while indexing walked the file. ``streaming_decode`` also
+presupposes a frame axis, and fifteen byte-compressor and single-image
+codecs carried it as a gap they could never close; the checker now
+enforces that invariant.
+
+**Corpus and tooling**
+
+``corpus.py coverage`` reported what the manifest DECLARED rather than
+what is on disk, so "every codec has a native fixture" meant "every
+codec is mentioned". It checks the disk now, and separates a deliberate
+opt-in (the 1.1 GB QOI set) from an oversight. ``kodak24`` was
+unfetchable through the manifest because its path held a shell
+placeholder that only the shell fetcher could expand. Licences: 26 of
+40 datasets now carry terms with a cited source, and the other 14 each
+record what was checked and why it did not resolve, rather than a bare
+"unverified".
 
 0.1.13 (2026-06-04)
 -------------------

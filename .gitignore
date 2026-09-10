@@ -49,3 +49,8 @@ bench/jxl_gainmap_experiment/
 # on every in-place rebuild that replaces a loaded .so. They are inert
 # and vanish once the handle closes.
 .smbdelete*
+
+# setuptools unpacks the sdist to <name>-<version>/ while building and
+# removes it after. On an SMB working copy that removal can fail with
+# "Resource busy", leaving a full copy of the tree in the repo root.
+opencodecs-*/
