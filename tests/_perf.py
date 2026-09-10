@@ -8,9 +8,12 @@ for DICOM and 1.42x for zfp. In both cases the parallelism was working
 and the number was simply not achievable on that hardware.
 
 So the bar is what a SMALL, LOADED machine can still clear while a
-removed pool cannot: a working fan-out reaches at least ~1.4x on four
-cores, a removed one gives 1.0x or worse. 1.2x sits between them with
-room on both sides.
+removed pool cannot. The estimate that a working fan-out reaches ~1.4x
+on four cores was itself too optimistic: a Windows runner measured zfp
+block decode at 1.19x with the pool plainly present and every other
+cell green, which left 1.2x no room below it at all. A removed pool
+gives 1.0x or worse, so the floor belongs between that and the worst
+WORKING figure we have seen, not between it and the best.
 
 Where a claim really is machine-independent, assert it where it is:
 test_decode_releases_gil.py pins openjpeg to one internal thread, so
@@ -31,19 +34,24 @@ import pytest
 MIN_CORES = 4
 
 #: See the module docstring for why this is not the measured figure.
-MIN_SPEEDUP = 1.2
+MIN_SPEEDUP = 1.1
 
 needs_cores = pytest.mark.skipif(
     (os.cpu_count() or 1) < MIN_CORES,
     reason=f"needs >= {MIN_CORES} cores to tell parallel from serial")
 
 
-def best_of(fn, rounds: int = 3) -> float:
+def best_of(fn, rounds: int = 5) -> float:
     """Fastest of ``rounds`` runs, in seconds.
 
     Fastest rather than mean: on a shared runner the slow tail is other
     tenants, and the question here is whether the work CAN go faster,
     not what it averages under someone else's load.
+
+    Five rounds rather than three: serial and parallel are timed
+    separately, so a slow tail landing in only one of them moves the
+    ratio directly. More rounds make that less likely, which matters
+    more than the couple of seconds it costs across the suite.
     """
     best = float("inf")
     for _ in range(rounds):

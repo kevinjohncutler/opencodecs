@@ -223,6 +223,12 @@ before-all = [
 # MACOSX_DEPLOYMENT_TARGET=15.0 lines the wheel tag up with the brew libs;
 # Macs older than 15 fall back to the sdist (or to source-built libs via
 # bench/build_codec_libs.sh once that lands in the wheel pipeline).
+#
+# This number only holds because build_wheels.yml pins the runner to
+# macos-15. On macos-latest the bottles follow the image: once it moved
+# to macOS 26 every bundled dylib carried a 26.0 minimum and delocate
+# rejected the wheel. Raise this only together with the runner, and only
+# on purpose -- it is the oldest macOS our wheels support.
 environment = { MACOSX_DEPLOYMENT_TARGET = "15.0" }
 
 [tool.cibuildwheel.windows]

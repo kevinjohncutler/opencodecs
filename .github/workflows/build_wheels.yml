@@ -47,7 +47,15 @@ jobs:
           - {os: ubuntu-latest, archs_linux: "x86_64"}
           - {os: ubuntu-24.04-arm, archs_linux: "aarch64"}
           - {os: windows-latest, archs_windows: "AMD64"}
-          - {os: macos-latest, archs_macos: "arm64"}
+          # macos-15, NOT macos-latest. Homebrew bottles are built per
+          # OS, so the deployment target of every dylib delocate bundles
+          # is decided by whichever image GitHub currently calls latest.
+          # When latest moved to macOS 26 the bottles became 26.0 and
+          # delocate refused the macosx_15_0 wheel outright. Chasing that
+          # by raising MACOSX_DEPLOYMENT_TARGET is a ratchet: it would
+          # drop every user below the newest macOS each time the image
+          # rolls. Pinning keeps the floor a decision we make.
+          - {os: macos-15, archs_macos: "arm64"}
     steps:
       - uses: actions/checkout@v4
         with:
