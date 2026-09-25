@@ -21,6 +21,7 @@ import pytest
 
 import opencodecs as oc
 from opencodecs import CziWriter, CziPyramidWriter, CziPyramidReader
+from opencodecs._czi_writer import CziWriterError
 
 
 def _czifile_exposes_the_pyramid_api() -> bool:
@@ -302,8 +303,10 @@ def test_pyramid_writer_rejects_mixed_dtypes(tmp_path):
     out = tmp_path / "bad.czi"
     w = CziPyramidWriter(out)
     w.write_level(base)
-    w.write_level(half)
-    with pytest.raises(Exception):
+    try:
+        with pytest.raises(CziWriterError, match="share dtype"):
+            w.write_level(half)
+    finally:
         w.close()
 
 
@@ -312,3 +315,36 @@ def test_writer_rejects_3d_input(tmp_path):
     with pytest.raises(Exception):
         with CziWriter(out) as w:
             w.write(np.zeros((4, 16, 16), dtype=np.uint8))
+
+
+@pytest.mark.parametrize('writer_cls', [CziWriter, CziPyramidWriter])
+def test_incremental_writer_releases_pixels_and_preserves_submitted_values(tmp_path, writer_cls):
+    import weakref
+    path = tmp_path / 'incremental.czi'
+    writer = writer_cls(path)
+    first = np.full((64, 96), 7, dtype='u1')
+    ref = weakref.ref(first)
+    writer.write_frame(first)
+    first.fill(99)
+    del first
+    assert ref() is None
+    first_size = path.stat().st_size
+    second = np.full((32, 48) if writer_cls is CziPyramidWriter else (64, 96), 8, dtype='u1')
+    writer.write_frame(second)
+    second.fill(99)
+    assert path.stat().st_size > first_size
+    writer.close()
+    with oc.get_codec('czi').open(path) as reader:
+        assert [int(frame[0, 0]) for frame in reader] == [7, 8]
+
+
+def test_incremental_writer_closes_on_context_error(tmp_path):
+    writer = CziWriter(tmp_path / 'failed.czi')
+    with pytest.raises(RuntimeError, match='acquisition failed'):
+        with writer:
+            writer.write_frame(np.ones((8, 12), dtype='u1'))
+            raise RuntimeError('acquisition failed')
+    assert writer._file is None
+    writer.close()
+    with pytest.raises(CziWriterError, match='closed'):
+        writer.write_frame(np.ones((8, 12), dtype='u1'))

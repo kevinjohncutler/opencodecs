@@ -184,6 +184,118 @@ class PyramidReader(ABC):
         the bbox and assemble them into the output array.
         """
 
+    # ---- Batched regions (shared planner) -----
+    #
+    # A backend opts in by implementing the four hooks below. Tile ids are
+    # backend-specific but must sort in the backend's composition order,
+    # because the planner decodes the union of a batch's tiles once, in
+    # sorted order, and pastes each into every output it intersects; that
+    # is what keeps per-box results identical to read_region's.
+
+    def _region_tiles(self, level, y0, y1, x0, x1):
+        """Ids of the storage units covering the box, or NotImplementedError."""
+        raise NotImplementedError
+
+    def _decode_region_tiles(self, level, tile_ids):
+        """Yield ``(tile_id, decoded)`` for ``tile_ids`` in the given order."""
+        raise NotImplementedError
+
+    def _paste_region_tile(self, level, tile_id, tile, out, y0, y1, x0, x1):
+        """Place one decoded tile's intersection with the box into ``out``."""
+        raise NotImplementedError
+
+    def _region_tile_bytes(self, level, tile_id) -> int:
+        """Decoded size of one tile, for batch budgeting. Zero if unknown."""
+        return 0
+
+    def _new_region_output(self, level, y0, y1, x0, x1) -> np.ndarray:
+        """Zero-filled output for a box; uncovered pixels stay zero."""
+        return np.zeros((y1 - y0, x1 - x0) + tuple(level.shape[2:]),
+                        dtype=level.dtype)
+
+    def iter_regions(self, level: int = 0, boxes=(), *,
+                     max_batch_bytes: int = 64 << 20):
+        """Yield one array per box, in request order, sharing tile work.
+
+        ``boxes`` is an iterable of ``(y, x)`` pairs in the same forms
+        ``read_region`` accepts. Boxes are grouped into batches bounded by
+        ``max_batch_bytes`` of outputs plus newly required decoded tiles;
+        within a batch every required tile is decoded once, however many
+        boxes need it. Adjacent or overlapping requests therefore cost the
+        union of their tiles; disjoint requests cost the same tiles as
+        separate reads plus a small planning pass. Results are yielded
+        batch by batch, so closing the iterator early never retains
+        requests that were not reached. A backend without the batching
+        hooks is served by ``read_region`` per box.
+
+        ``batch_stats`` afterwards holds boxes, requested tiles (with
+        repeats), unique tiles decoded, batches and fallback boxes.
+        """
+        import math
+
+        L = self.levels[level]
+        full_h, full_w = L.shape[0], L.shape[1]
+        stats = {"boxes": 0, "requested_tiles": 0, "unique_tiles": 0,
+                 "batches": 0, "fallback_boxes": 0}
+        self.batch_stats = stats
+        itemsize = np.dtype(L.dtype).itemsize
+        extra = math.prod(L.shape[2:]) if len(L.shape) > 2 else 1
+
+        pending: list = []          # (y0, y1, x0, x1, tile ids)
+        pending_tiles: set = set()
+        pending_bytes = 0
+
+        def flush():
+            stats["batches"] += 1
+            outs = [self._new_region_output(L, y0, y1, x0, x1)
+                    for y0, y1, x0, x1, _ in pending]
+            owners: dict = {}
+            for k, (_, _, _, _, tiles) in enumerate(pending):
+                for t in tiles:
+                    owners.setdefault(t, []).append(k)
+            order = sorted(owners)
+            stats["unique_tiles"] += len(order)
+            for t, tile in self._decode_region_tiles(L, order):
+                for k in owners[t]:
+                    y0, y1, x0, x1, _ = pending[k]
+                    self._paste_region_tile(L, t, tile, outs[k], y0, y1, x0, x1)
+            return outs
+
+        for y, x in boxes:
+            y0, y1 = _normalize_axis(y, full_h)
+            x0, x1 = _normalize_axis(x, full_w)
+            stats["boxes"] += 1
+            try:
+                tiles = list(self._region_tiles(L, y0, y1, x0, x1))
+            except NotImplementedError:
+                if pending:
+                    yield from flush()
+                    pending.clear()
+                    pending_tiles.clear()
+                    pending_bytes = 0
+                stats["fallback_boxes"] += 1
+                yield self._read_region(L, y0, y1, x0, x1)
+                continue
+            stats["requested_tiles"] += len(tiles)
+            cost = (y1 - y0) * (x1 - x0) * extra * itemsize
+            cost += sum(self._region_tile_bytes(L, t)
+                        for t in tiles if t not in pending_tiles)
+            if pending and pending_bytes + cost > max_batch_bytes:
+                yield from flush()
+                pending.clear()
+                pending_tiles.clear()
+                pending_bytes = 0
+            pending.append((y0, y1, x0, x1, tiles))
+            pending_tiles.update(tiles)
+            pending_bytes += cost
+        if pending:
+            yield from flush()
+
+    def read_regions(self, level: int = 0, boxes=(), *,
+                     max_batch_bytes: int = 64 << 20) -> list:
+        """``list(iter_regions(...))``: every box's array, in request order."""
+        return list(self.iter_regions(level, boxes, max_batch_bytes=max_batch_bytes))
+
     # ---- Iteration -----
 
     def iter_levels(self) -> Iterator[PyramidLevel]:

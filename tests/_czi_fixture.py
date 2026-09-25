@@ -49,6 +49,30 @@ _DTYPE_TO_PIXELTYPE = {
     np.dtype("f4"): (2, 1),     # GRAY32_FLOAT
 }
 
+# (dtype, samples per pixel) -> CZI pixel type. The reader derives the sample
+# axis from the pixel type, so a color fixture has to name a color type: a
+# 3-sample array declared GRAY8 produces a sub-block whose stored payload is
+# three times the tile its own directory entry describes.
+_PIXELTYPE_BY_DTYPE_SAMPLES = {
+    (np.dtype("u1"), 1): 0,     # GRAY8
+    (np.dtype("u2"), 1): 1,     # GRAY16
+    (np.dtype("f4"), 1): 2,     # GRAY32_FLOAT
+    (np.dtype("u1"), 3): 3,     # BGR24
+    (np.dtype("u2"), 3): 4,     # BGR48
+    (np.dtype("f4"), 3): 8,     # BGR96_FLOAT
+    (np.dtype("u1"), 4): 9,     # BGRA32
+}
+
+
+def _pixel_type_for(array: np.ndarray, samples: int) -> int:
+    """Pick the CZI pixel type matching this array's dtype and sample count."""
+    try:
+        return _PIXELTYPE_BY_DTYPE_SAMPLES[(array.dtype, samples)]
+    except KeyError:
+        raise ValueError(
+            f"no CZI pixel type for dtype {array.dtype} with {samples} "
+            f"sample(s) per pixel") from None
+
 
 def _pad_segment(payload: bytes, payload_alloc: int | None = None) -> bytes:
     """Wrap ``payload`` in a 32-byte segment header (sid + alloc + used).
@@ -129,6 +153,7 @@ def _build_subblock(
     logical_shape: tuple[int, int] | None = None,
     location: tuple[int, int] = (0, 0),
     pyramid_type: int = 0,
+    extra_dims: list[tuple[bytes, int]] | None = None,
 ) -> tuple[bytes, int]:
     """Build one ZISRAWSUBBLOCK segment payload + return (bytes, storage_size).
 
@@ -151,6 +176,10 @@ def _build_subblock(
         (b"X", start_x, logical_w, 0.0, w),
         (b"Y", start_y, logical_h, 0.0, h),
     ]
+    # Extra dimensions such as C or Z with a single index: size 1, stored 1.
+    # These put the tile on a distinct plane without changing its pixels.
+    for name, start in (extra_dims or []):
+        dims.append((name, start, 1, 0.0, 1))
 
     de_header = struct.pack(
         "<2siqiiBB4si",
@@ -210,11 +239,12 @@ def _build_directory_segment(
     # entry_count + 124 reserved bytes
     body = struct.pack("<I", len(entries)) + b"\x00" * 124
     for e in entries:
+        extra = e.get("extra_dims") or []
         body += struct.pack(
             "<2siqiiBB4si",
             b"DV", e["pixel_type"], e["file_position"], 0,
             e["compression"], e.get("pyramid_type", 0),
-            0, b"\x00\x00\x00\x00", 2,
+            0, b"\x00\x00\x00\x00", 2 + len(extra),
         )
         body += struct.pack(
             "<4siifi", b"X",
@@ -224,6 +254,9 @@ def _build_directory_segment(
             "<4siifi", b"Y",
             e.get("start_y", 0), e["logical_h"], 0.0, e["stored_h"],
         )
+        # Must match the inline entry exactly; the reader parses this copy.
+        for name, start in extra:
+            body += struct.pack("<4siifi", name, start, 1, 0.0, 1)
     return _pad_segment(sid + body)
 
 
@@ -291,7 +324,8 @@ def czi_bytes(
     else:
         raise ValueError(f"unsupported test shape {array.shape}")
 
-    pixel_type, _samples = _DTYPE_TO_PIXELTYPE[array.dtype]
+    samples = frames[0].shape[2] if frames[0].ndim == 3 else 1
+    pixel_type = _pixel_type_for(array, samples)
 
     # Build segments in order to compute their offsets.
     # Order: file_header @ 0 → metadata_segment → sub-blocks → directory.
@@ -376,7 +410,8 @@ def pyramid_czi_bytes(
     if base.ndim != 2:
         raise ValueError("pyramid_czi_bytes: levels must be 2-D")
     logical_h, logical_w = base.shape
-    pixel_type, _samples = _DTYPE_TO_PIXELTYPE[base.dtype]
+    pixel_type = _pixel_type_for(
+        base, base.shape[2] if base.ndim == 3 else 1)
 
     file_header_size = 32 + 88
     file_header_size = (file_header_size + 31) // 32 * 32
@@ -416,6 +451,73 @@ def pyramid_czi_bytes(
         directory_position=directory_position,
         metadata_position=metadata_position,
         file_size=file_size,
+    )
+    out = bytearray()
+    out += file_header
+    out += b"\x00" * (metadata_position - len(file_header))
+    out += metadata_segment
+    for seg in sub_segments:
+        out += seg
+    out += directory_segment
+    return bytes(out)
+
+
+def mosaic_czi_bytes(
+    tiles: list,
+    *,
+    compression: int = 0,
+    hilo: bool = False,
+    metadata_xml: bytes = b"<Metadata/>",
+) -> bytes:
+    """Serialize a single-level mosaic CZI.
+
+    ``tiles`` is a list of ``(array, (start_y, start_x))`` or
+    ``(array, (start_y, start_x), extra_dims)`` where ``extra_dims`` is a
+    list of ``(b"C", index)`` style pairs placing the tile on another plane.
+    Tiles are written in the given order, which is also directory order,
+    so overlap resolution can be tested deterministically. Every tile's
+    logical extent equals its stored extent (no pyramid).
+    """
+    if not tiles:
+        raise ValueError("mosaic_czi_bytes: tiles must be non-empty")
+    first = tiles[0][0]
+    samples = first.shape[2] if first.ndim == 3 else 1
+    pixel_type = _pixel_type_for(first, samples)
+
+    file_header_size = (32 + 88 + 31) // 32 * 32
+    metadata_segment = _build_metadata_segment(metadata_xml)
+    metadata_position = file_header_size
+    cur_offset = metadata_position + len(metadata_segment)
+    sub_segments, sub_meta = [], []
+
+    for spec in tiles:
+        arr, (sy, sx) = spec[0], spec[1]
+        extra = list(spec[2]) if len(spec) > 2 else []
+        if arr.dtype != first.dtype or arr.shape[2:] != first.shape[2:]:
+            raise ValueError("mosaic tiles must share dtype and samples")
+        h, w = arr.shape[:2]
+        seg, _storage = _build_subblock(
+            arr, pixel_type, compression, hilo, cur_offset,
+            logical_shape=(h, w), location=(sy, sx), pyramid_type=0,
+            extra_dims=extra,
+        )
+        sub_segments.append(seg)
+        sub_meta.append({
+            "file_position": cur_offset, "pixel_type": pixel_type,
+            "compression": compression,
+            "stored_w": w, "stored_h": h, "logical_w": w, "logical_h": h,
+            "start_x": sx, "start_y": sy, "pyramid_type": 0,
+            "extra_dims": extra,
+        })
+        cur_offset += len(seg)
+
+    directory_position = cur_offset
+    directory_segment = _build_directory_segment(sub_meta)
+    cur_offset += len(directory_segment)
+    file_header = _build_file_header(
+        directory_position=directory_position,
+        metadata_position=metadata_position,
+        file_size=cur_offset,
     )
     out = bytearray()
     out += file_header

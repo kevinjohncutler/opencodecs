@@ -305,3 +305,59 @@ def test_jxl_single_frame_still_needs_no_flag(tmp_path):
     with oc.writer(str(dest), lossless=True) as w:
         w.write_frame(VOLUME[0])
     assert np.array_equal(oc.read(str(dest)), VOLUME[0])
+
+
+def test_jxl_reused_acquisition_buffer_round_trips(tmp_path):
+    if not oc.has_codec("jxl"):
+        pytest.skip("jxl codec not built")
+    dest = tmp_path / "reused.jxl"
+    arr = np.zeros((32, 48), dtype="u1")
+    with oc.writer(str(dest), animation=True, lossless=True) as writer:
+        for value in (0, 20, 40):
+            arr.fill(value)
+            writer.write_frame(arr)
+        arr.fill(99)
+    with oc.open(str(dest)) as reader:
+        assert [int(frame[0, 0]) for frame in reader] == [0, 20, 40]
+
+
+@pytest.mark.parametrize('name,suffix', [('tiff', '.tif'), ('czi', '.czi')])
+def test_streaming_output_reaches_destination_before_close(tmp_path, name, suffix):
+    if not oc.has_codec(name):
+        pytest.skip(f'{name} codec not built')
+    dest = tmp_path / ('stream' + suffix)
+    opts = {'animation': True, 'lossless': True} if name == 'jxl' else {}
+    writer = oc.writer(str(dest), **opts)
+    try:
+        for value in (0, 20, 40):
+            writer.write_frame(np.full((128, 192), value, dtype='u1'))
+        assert dest.stat().st_size > 0
+    finally:
+        writer.close()
+
+
+def test_gif_catalog_records_frame_output_streaming(tmp_path):
+    if not oc.has_codec('gif'):
+        pytest.skip('gif codec not built')
+    codec = oc.get_codec('gif')
+    assert codec.streaming_encode and codec.streaming_output
+    assert codec.writer_buffering == 'frame'
+    dest = tmp_path / 'buffered.gif'
+    with oc.writer(str(dest)) as writer:
+        writer.write_frame(np.zeros((16, 16), dtype='u1'))
+        assert dest.stat().st_size > 0
+    assert dest.stat().st_size > 0
+
+
+def test_jxl_catalog_records_frame_output_streaming(tmp_path):
+    if not oc.has_codec('jxl'):
+        pytest.skip('jxl codec not built')
+    codec = oc.get_codec('jxl')
+    assert codec.streaming_encode and codec.streaming_output
+    assert codec.writer_buffering == 'frame'
+    dest = tmp_path / 'buffered.jxl'
+    with oc.writer(str(dest), animation=True) as writer:
+        for frame in VOLUME:
+            writer.write_frame(frame)
+        assert dest.stat().st_size > 0
+    assert dest.stat().st_size > 0

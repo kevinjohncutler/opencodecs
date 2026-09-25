@@ -31,6 +31,9 @@ class CziCodec(Codec):
     """
 
     name = "czi"
+    streaming_encode = True
+    streaming_output = True
+    writer_buffering = "frame"
     file_extensions = (".czi",)
 
     has_native = True
@@ -53,17 +56,26 @@ class CziCodec(Codec):
 
     def decode(self, src: Any, **opts) -> np.ndarray:
         """Decode an entire CZI file to a stacked ndarray."""
-        with self._reader(src) as r:
+        source_options = {key: opts.pop(key) for key in
+                          ("range_reads", "timeout", "headers", "max_workers", "chunk_bytes", "size")
+                          if key in opts}
+        with self.open(src, **source_options) as r:
             return r.read(**opts)
 
     def writer(self, dest: Any = None, **opts):
-        """A real streaming CZI writer: one sub-block per frame."""
+        """Write each frame as a sub-block; finalize the directory on close."""
         from ._czi_writer import CziWriter
         if dest is None:
             raise ValueError("czi: writer() needs a destination path")
         return CziWriter(dest, **opts)
 
     def open(self, src: Any, **opts) -> Reader:
+        if isinstance(src, str) and src.startswith(("http://", "https://")):
+            return CziReader.from_http(src, **opts)
+        if hasattr(src, "read_at"):
+            return CziReader(data_source=src, **opts)
+        if opts:
+            raise TypeError(f"unsupported CZI open options: {sorted(opts)}")
         return self._reader(src)
 
     @staticmethod
