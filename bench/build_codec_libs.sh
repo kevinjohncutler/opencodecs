@@ -98,7 +98,7 @@ VERSIONS=(
     "libaec          1.1.6"
     "lerc            4.1.0"
     "zfp             1.0.1"
-    "SZ3             3.3.1"
+    "SZ3             3.3.2"
     "SPERR           0.8.5"
     "pcodec          1.0.2"
     "brunsli         master"

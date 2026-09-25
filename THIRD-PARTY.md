@@ -165,7 +165,7 @@ each library.
 | libaec | 1.1.6 | BSD-2-Clause |
 | lerc | 4.1.0 | Apache-2.0 |
 | zfp | 1.0.1 | BSD-3-Clause |
-| SZ3 | 3.3.1 | BSD-3-Clause |
+| SZ3 | 3.3.2 | BSD-3-Clause |
 | SPERR | 0.8.5 | Apache-2.0 |
 | pcodec | 1.0.2 | Apache-2.0 |
 | brunsli | master | MIT |
