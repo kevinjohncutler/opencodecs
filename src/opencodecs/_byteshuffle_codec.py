@@ -30,6 +30,7 @@ from typing import Any
 import numpy as np
 
 from .core.codec import Codec
+from .core.buffers import byte_output
 from .core._io_helpers import read_src as _read_src, write_dest as _write_dest
 from .codecs._bytetools import (
     byteshuffle_encode as _bs_encode,
@@ -117,7 +118,7 @@ class ByteshuffleCodec(Codec):
                     f"byteshuffle decode: data length {len(buf)} is not "
                     f"a multiple of itemsize {itemsize}")
             n_elements = len(buf) // itemsize
-        return _bs_decode(buf, int(itemsize), int(n_elements), out=out)
+        return _bs_decode(buf, int(itemsize), int(n_elements), out=out if out is None else byte_output(out))
 
 
 __all__ = ["ByteshuffleCodec"]

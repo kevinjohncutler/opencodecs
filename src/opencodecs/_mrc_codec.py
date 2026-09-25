@@ -1,9 +1,4 @@
-"""MrcCodec — Codec adapter for the native MRC / CCP4 map reader.
-
-MRC is a container, not a compression codec, so this exposes decode and
-the ``open(src)`` reader contract and does not encode. Same shape as
-``FitsCodec``: the format's own byte layout is the "compression".
-"""
+"""MRC / CCP4 map adapter with direct volume serialization and lazy reads."""
 
 from __future__ import annotations
 
@@ -79,12 +74,12 @@ class MrcCodec(Codec):
         consumer recovers scale. Statistics are computed and written
         because tools set display contrast from them.
         """
-        from ._mrc_writer import encode_mrc
-        blob = encode_mrc(data, **opts)
+        from ._mrc_writer import encode_mrc, write_mrc
         if dest is None:
-            return blob
-        from .core._io_helpers import write_dest as _write_dest
-        return _write_dest(dest, blob)
+            return encode_mrc(data, **opts)
+        write_mrc(dest, data, **opts)
+        return None
+
 
 
 __all__ = ["MrcCodec"]

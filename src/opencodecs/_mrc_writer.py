@@ -79,42 +79,63 @@ def mrc_header(shape, dtype, *, voxel_size=None, stats=None,
     return bytes(h)
 
 
-def encode_mrc(data: Any, *, voxel_size=None, nstart=(0, 0, 0),
-               ispg: int = 0) -> bytes:
-    """Serialize an array as a complete MRC file."""
-    arr = np.ascontiguousarray(data)
-    if arr.dtype == np.dtype("u1"):
-        # MODE 0 is signed. Widening is the honest choice: reinterpreting
-        # 200 as -56 would round-trip through our own reader and be wrong
-        # in everyone else's.
-        arr = arr.astype("i2")
-    if arr.dtype.byteorder == ">" or (
-            arr.dtype.byteorder == "=" and np.little_endian is False):
-        arr = arr.astype(arr.dtype.newbyteorder("<"))
+def _bounded_statistics(arr):
+    """Merge finite block statistics without a volume-sized mask or copy."""
+    from .core._write_helpers import iter_array_buffers
+    accumulation_dtype = np.complex128 if arr.dtype.kind == "c" else np.float64
+    count = 0
+    mean = moment = 0.0
+    minimum, maximum = np.inf, -np.inf
+    for raw in iter_array_buffers(arr):
+        block = np.frombuffer(raw, dtype=arr.dtype)
+        if arr.dtype.kind == "f":
+            finite = np.isfinite(block)
+            if not finite.all():
+                block = block[finite]
+        n = block.size
+        if not n:
+            continue
+        block_mean = block.mean(dtype=accumulation_dtype).item()
+        block_moment = float(block.var(dtype=accumulation_dtype).real) * n
+        delta = block_mean - mean
+        total = count + n
+        moment += block_moment + abs(delta) ** 2 * count * n / total
+        mean += delta * n / total
+        count = total
+        minimum = float(np.minimum(minimum, float(block.min().real)))
+        maximum = float(np.maximum(maximum, float(block.max().real)))
+    return (minimum, maximum, float(np.real(mean)), (moment / count) ** 0.5) if count else (0.0,) * 4
 
-    if arr.size:
-        finite = arr[np.isfinite(arr)] if arr.dtype.kind == "f" else arr
-        if finite.size:
-            stats = (float(finite.min()), float(finite.max()),
-                     float(finite.mean()), float(finite.std()))
-        else:
-            stats = (0.0, 0.0, 0.0, 0.0)
-    else:
-        stats = (0.0, 0.0, 0.0, 0.0)
 
-    header = mrc_header(arr.shape, arr.dtype, voxel_size=voxel_size,
+def _mrc_parts(data, *, voxel_size=None, nstart=(0, 0, 0), ispg=0):
+    """Prepare a header without materializing the serialized volume."""
+    arr = np.asarray(data)
+    dtype = np.dtype("i2") if arr.dtype == np.dtype("u1") else arr.dtype.newbyteorder("<")
+    # Validate before computing statistics or creating a destination.
+    mrc_header(arr.shape, dtype.newbyteorder("="), voxel_size=voxel_size,
+               nstart=nstart, ispg=ispg)
+    stats = _bounded_statistics(arr)
+    header = mrc_header(arr.shape, dtype.newbyteorder("="), voxel_size=voxel_size,
                         stats=stats, nstart=nstart, ispg=ispg)
-    return header + arr.tobytes()
+    return header, arr, dtype
+
+
+def encode_mrc(data: Any, **kwargs) -> bytes:
+    """Serialize an array as a complete MRC file."""
+    import io
+    dest = io.BytesIO()
+    write_mrc(dest, data, **kwargs)
+    return dest.getvalue()
 
 
 def write_mrc(path: Any, data: Any, **kwargs) -> None:
-    """Write an array to an MRC file."""
-    blob = encode_mrc(data, **kwargs)
-    if hasattr(path, "write"):
-        path.write(blob)
-        return
-    with open(os.fspath(path), "wb") as fh:
-        fh.write(blob)
+    """Write header and bounded pixel blocks without an encoded-volume copy."""
+    from .core._write_helpers import binary_destination, iter_array_buffers, write_all
+    header, arr, dtype = _mrc_parts(data, **kwargs)
+    with binary_destination(path) as dest:
+        write_all(dest, header)
+        for block in iter_array_buffers(arr, dtype=dtype):
+            write_all(dest, block)
 
 
 __all__ = ["encode_mrc", "write_mrc", "mrc_header"]

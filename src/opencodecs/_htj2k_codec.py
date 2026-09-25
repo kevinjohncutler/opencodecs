@@ -73,8 +73,10 @@ class Htj2kCodec(Codec):
         out = _htj2k_encode(data, level=level, num_decomp=int(num_decomp))
         return _write_dest(out, dest)
 
-    def decode(self, src: Any, **opts) -> np.ndarray:
-        return _htj2k_decode(_read_src(src))
+    def decode(self, src: Any, *, reduce: int = 0,
+               ignore_unsupported: bool = False, **opts) -> np.ndarray:
+        return _htj2k_decode(_read_src(src), reduce=reduce,
+                             ignore_unsupported=ignore_unsupported)
 
 
 __all__ = ["Htj2kCodec"]

@@ -27,6 +27,7 @@ time in real DICOM workflows), and the I/O cost dominates.
 from __future__ import annotations
 
 import struct
+import sys
 from typing import Any
 
 import numpy as np
@@ -165,55 +166,42 @@ def _dicomrle_segments_for(arr: np.ndarray) -> list[np.ndarray]:
     raise ValueError(f"dicomrle: unsupported ndim {arr.ndim}")
 
 
-def _assemble_dicomrle_array(
-    segments: list[bytes], shape, dtype: np.dtype
-) -> np.ndarray:
-    """Inverse of :func:`_dicomrle_segments_for`."""
+def _assemble_dicomrle_array(segments, shape, dtype: np.dtype, *, out=None):
+    """Place one byte plane at a time, preserving target byte order."""
     dt = np.dtype(dtype)
-    if len(shape) == 2:
-        h, w = shape
-        if dt.itemsize == 1:
-            if len(segments) != 1:
-                raise ValueError(
-                    f"dicomrle: 8-bit grayscale needs 1 segment, "
-                    f"got {len(segments)}")
-            return np.frombuffer(segments[0], dtype=dt).reshape(h, w).copy()
-        if len(segments) != dt.itemsize:
-            raise ValueError(
-                f"dicomrle: {dt.itemsize}-byte grayscale needs "
-                f"{dt.itemsize} segments, got {len(segments)}")
-        # Reassemble byte-planes (MSB-first) into a host-endian array.
-        u8 = np.empty(h * w * dt.itemsize, dtype=np.uint8).reshape(
-            h, w, dt.itemsize)
-        for i in range(dt.itemsize):
-            u8[..., dt.itemsize - 1 - i] = np.frombuffer(
-                segments[i], dtype=np.uint8).reshape(h, w)
-        return u8.view(dt).reshape(h, w).copy()
-    if len(shape) == 3:
-        h, w, c = shape
-        expected_segs = c * dt.itemsize
-        if len(segments) != expected_segs:
-            raise ValueError(
-                f"dicomrle: {dt.itemsize}-byte × {c}-channel needs "
-                f"{expected_segs} segments, got {len(segments)}")
-        if dt.itemsize == 1:
-            arr = np.empty((h, w, c), dtype=np.uint8)
-            for ch in range(c):
-                arr[..., ch] = np.frombuffer(
-                    segments[ch], dtype=np.uint8).reshape(h, w)
-            return arr
-        u8 = np.empty((h, w, c, dt.itemsize), dtype=np.uint8)
-        idx = 0
-        for ch in range(c):
-            for byte_idx in range(dt.itemsize):
-                u8[..., ch, dt.itemsize - 1 - byte_idx] = np.frombuffer(
-                    segments[idx], dtype=np.uint8).reshape(h, w)
-                idx += 1
-        return u8.view(dt).reshape(h, w, c).copy()
-    raise ValueError(f"dicomrle: unsupported shape {shape}")
+    shape = tuple(shape)
+    if len(shape) not in (2, 3):
+        raise ValueError(f"dicomrle: unsupported shape {shape}")
+    h, w = shape[:2]
+    channels = shape[2] if len(shape) == 3 else 1
+    if out is None:
+        out = np.empty(shape, dtype=dt)
+    elif not isinstance(out, np.ndarray):
+        raise TypeError("dicomrle out must be an ndarray")
+    elif out.shape != shape or out.dtype != dt:
+        raise ValueError("dicomrle out shape/dtype mismatch")
+    elif not out.flags.writeable:
+        raise ValueError("dicomrle out must be writable")
+    if not out.flags.c_contiguous:
+        np.copyto(out, _assemble_dicomrle_array(segments, shape, dt))
+        return out
+    target = out.view(np.uint8).reshape(h, w, channels, dt.itemsize)
+    little = dt.byteorder == "<" or dt.byteorder in ("=", "|") and sys.byteorder == "little"
+    count = 0
+    expected = channels * dt.itemsize
+    for count, segment in enumerate(segments, 1):
+        if count > expected:
+            raise ValueError("dicomrle: too many byte-plane segments")
+        channel, plane = divmod(count - 1, dt.itemsize)
+        byte = dt.itemsize - 1 - plane if little else plane
+        target[..., channel, byte] = np.frombuffer(segment, dtype=np.uint8).reshape(h, w)
+    if count != expected:
+        raise ValueError(f"dicomrle: expected {expected} segments, got {count}")
+    return out
 
 
 def _encode_dicomrle(arr: np.ndarray) -> bytes:
+    arr = np.ascontiguousarray(arr.astype(arr.dtype.newbyteorder("<"), copy=False))
     segments = _dicomrle_segments_for(arr)
     if len(segments) > 15:
         raise ValueError(
@@ -229,12 +217,16 @@ def _encode_dicomrle(arr: np.ndarray) -> bytes:
     return header + b"".join(encoded)
 
 
-def _decode_dicomrle(buf: bytes, shape, dtype: np.dtype) -> np.ndarray:
+def _decode_dicomrle(buf: bytes, shape, dtype: np.dtype, *, out=None) -> np.ndarray:
     if len(buf) < 64:
         raise ValueError("dicomrle: input shorter than 64-byte header")
     fields = struct.unpack("<16I", buf[:64])
     n_segs = fields[0]
+    if not 1 <= n_segs <= 15:
+        raise ValueError("dicomrle: invalid segment count")
     offsets = list(fields[1:1 + n_segs])
+    if offsets[0] < 64 or offsets[-1] > len(buf) or any(a >= b for a, b in zip(offsets, offsets[1:])):
+        raise ValueError("dicomrle: invalid segment offsets")
     # Each segment ends where the next one starts (or at end-of-buffer
     # for the last segment).
     boundaries = offsets + [len(buf)]
@@ -244,12 +236,10 @@ def _decode_dicomrle(buf: bytes, shape, dtype: np.dtype) -> np.ndarray:
     # TIFF strip and far too small for an RLE segment that compressed
     # well -- a 3768-byte plane from a 1.4 KB segment overflowed it.
     plane_bytes = int(shape[0]) * int(shape[1])
-    segments = []
-    for i in range(n_segs):
-        seg_bytes = buf[boundaries[i]:boundaries[i + 1]]
-        decoded = _packbits_decode(seg_bytes, plane_bytes)
-        segments.append(decoded)
-    return _assemble_dicomrle_array(segments, shape, dtype)
+    def segments():
+        for i in range(n_segs):
+            yield _packbits_decode(buf[boundaries[i]:boundaries[i + 1]], plane_bytes)
+    return _assemble_dicomrle_array(segments(), shape, dtype, out=out)
 
 
 class DicomRleCodec(Codec):
@@ -284,18 +274,8 @@ class DicomRleCodec(Codec):
     def decode(self, src: Any, *, shape, dtype, out=None,
                **opts) -> np.ndarray:
         buf = _read_src(src)
-        arr = _decode_dicomrle(buf, shape, np.dtype(dtype))
-        if out is not None:
-            if not isinstance(out, np.ndarray):
-                raise TypeError(
-                    f"dicomrle decode: out= must be an ndarray, "
-                    f"got {type(out).__name__}")
-            if out.shape != arr.shape or out.dtype != arr.dtype:
-                raise ValueError(
-                    "dicomrle decode: out= shape/dtype mismatch")
-            np.copyto(out, arr)
-            return out
-        return arr
+        return _decode_dicomrle(buf, shape, np.dtype(dtype), out=out)
+
 
 
 __all__ = ["DicomRleCodec"]

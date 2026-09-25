@@ -55,7 +55,34 @@ def http_server(sharded_zarr):
         def __init__(self, *a, **kw):
             super().__init__(*a, directory=root, **kw)
 
-    httpd = socketserver.TCPServer(("127.0.0.1", 0), Handler)
+        def do_GET(self):
+            requested = self.headers.get("Range")
+            if not requested:
+                return super().do_GET()
+            from pathlib import Path
+            target = Path(self.translate_path(self.path))
+            if not target.is_file():
+                return self.send_error(404)
+            total = target.stat().st_size
+            left, right = requested.removeprefix("bytes=").split("-")
+            start = max(0, total - int(right)) if not left else int(left)
+            end = total - 1 if not left or not right else min(int(right), total - 1)
+            if start >= total:
+                self.send_response(416)
+                self.send_header("Content-Range", f"bytes */{total}")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            with target.open("rb") as source:
+                source.seek(start)
+                data = source.read(end - start + 1)
+            self.send_response(206)
+            self.send_header("Content-Range", f"bytes {start}-{end}/{total}")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+    httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     port = httpd.server_address[1]
     thr = threading.Thread(target=httpd.serve_forever, daemon=True)
     thr.start()
@@ -63,6 +90,8 @@ def http_server(sharded_zarr):
         yield f"http://127.0.0.1:{port}/{path.name}", img
     finally:
         httpd.shutdown()
+        httpd.server_close()
+        thr.join()
 
 
 def test_fs_store_sharded_read_correctness(sharded_zarr):

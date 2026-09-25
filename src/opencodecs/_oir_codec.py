@@ -52,6 +52,7 @@ import numpy as np
 
 from .core.codec import Codec, Reader
 from .core.io import coerce_data_source
+from ._tiff_http import HTTPDataSource
 
 
 _OIR_MAGIC = b"OLYMPUSRAWFORMAT"
@@ -162,6 +163,16 @@ def _read_oir_info(src: Any) -> dict:
             ds.close()
 
 
+def _plane_payloads(ds, records):
+    """Coalesce remote records while retaining exact local reads."""
+    ranges = [(rec["payload_offset"], rec["payload_size"]) for rec in records]
+    if isinstance(ds, HTTPDataSource):
+        yield from ds.read_many(ranges)
+    else:
+        for offset, size in ranges:
+            yield ds.read_at(offset, size)
+
+
 def _decode_oir_planes(src: Any) -> np.ndarray:
     """Decode an OIR source into a (planes, height, width) uint16 stack.
 
@@ -173,9 +184,9 @@ def _decode_oir_planes(src: Any) -> np.ndarray:
 
     For an HTTP-backed DataSource: opens the file with ~4 KB of
     range reads (header + footer + per-frame headers) then fetches
-    each plane's 3 payloads as 3 contiguous range reads. Total
-    wire bytes = sum of payload sizes (= raw plane bytes) +
-    open overhead — same shape as ND2/OIB's HTTP behavior.
+    each plane's three payloads through the shared range coalescer.
+    Nearby payloads can share one request, including the small
+    intervening record headers. Local sources keep exact payload reads.
     """
     ds, owns, _ = coerce_data_source(src)
     try:
@@ -207,16 +218,26 @@ def _decode_oir_planes(src: Any) -> np.ndarray:
             (n_planes, plane_height, plane_width), dtype="<u2")
         for i in range(n_planes):
             ra, rb, rc = body[i*3:i*3+3]
-            # Three range reads per plane — coalescing isn't a win
-            # because the three records aren't contiguous on disk.
+            if not isinstance(ds, HTTPDataSource):
+                out[i, :a_rows] = np.frombuffer(
+                    ds.read_at(ra["payload_offset"], ra["payload_size"]),
+                    dtype="<u2").reshape(a_rows, plane_width)
+                out[i, a_rows:a_rows+b_rows] = np.frombuffer(
+                    ds.read_at(rb["payload_offset"], rb["payload_size"]),
+                    dtype="<u2").reshape(b_rows, plane_width)
+                out[i, a_rows+b_rows:] = np.frombuffer(
+                    ds.read_at(rc["payload_offset"], rc["payload_size"]),
+                    dtype="<u2").reshape(c_rows, plane_width)
+                continue
+            payloads = _plane_payloads(ds, (ra, rb, rc))
             out[i, :a_rows] = np.frombuffer(
-                ds.read_at(ra["payload_offset"], ra["payload_size"]),
+                next(payloads),
                 dtype="<u2").reshape(a_rows, plane_width)
             out[i, a_rows:a_rows+b_rows] = np.frombuffer(
-                ds.read_at(rb["payload_offset"], rb["payload_size"]),
+                next(payloads),
                 dtype="<u2").reshape(b_rows, plane_width)
             out[i, a_rows+b_rows:] = np.frombuffer(
-                ds.read_at(rc["payload_offset"], rc["payload_size"]),
+                next(payloads),
                 dtype="<u2").reshape(c_rows, plane_width)
         return out
     finally:
@@ -346,6 +367,8 @@ class OirNativeReader(Reader):
         # Reader.__getitem__'s guard the only thing standing between a
         # caller and a capability the reader has.
         self.is_chunked = True
+        if isinstance(self._ds, HTTPDataSource):
+            self._decode_plane = self._decode_plane_remote
 
     def _decode_plane(self, i: int) -> np.ndarray:
         ra, rb, rc = self._body[i*3:i*3+3]
@@ -363,6 +386,17 @@ class OirNativeReader(Reader):
         out[a_rows+b_rows:] = np.frombuffer(
             self._ds.read_at(rc["payload_offset"], rc["payload_size"]),
             dtype="<u2").reshape(c_rows, self._plane_width)
+        return out
+
+    def _decode_plane_remote(self, i: int) -> np.ndarray:
+        records = self._body[i*3:i*3+3]
+        payloads = self._ds.read_many([
+            (rec["payload_offset"], rec["payload_size"]) for rec in records])
+        out = np.empty((self._plane_height, self._plane_width), dtype="<u2")
+        start = 0
+        for blob, rows in zip(payloads, (self._a_rows, self._b_rows, self._c_rows)):
+            out[start:start + rows] = np.frombuffer(blob, dtype="<u2").reshape(rows, self._plane_width)
+            start += rows
         return out
 
     def iter_frames(self):

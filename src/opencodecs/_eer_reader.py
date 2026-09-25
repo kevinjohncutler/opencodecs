@@ -135,6 +135,7 @@ class EerReader(Reader):
         weights: "np.ndarray | None" = None,
         dtype: np.dtype | type = np.uint16,
         numthreads: int | None = None,
+        worker_budget=None,
     ) -> np.ndarray:
         """Accumulate frames ``[start, stop)`` into one count image.
 
@@ -166,10 +167,12 @@ class EerReader(Reader):
             )
 
         if weights is None:
-            out = np.zeros(self.shape, dtype=dtype)
             workers = _resolve_sum_workers(numthreads, stop - start,
-                                           out.nbytes)
+                                           int(np.prod(self.shape)) * np.dtype(dtype).itemsize)
+            if worker_budget is not None:
+                workers = min(workers, worker_budget.workers)
             if workers <= 1:
+                out = np.zeros(self.shape, dtype=dtype)
                 for i in range(start, stop):
                     # Each .frame() returns a fresh uint8 array; add via
                     # broadcasting into the accumulator dtype.
@@ -181,7 +184,7 @@ class EerReader(Reader):
             # decode back its serialization. The extra memory is one
             # frame-sized accumulator per worker, which is what this
             # method already promised not to exceed per frame.
-            return self._sum_threaded(start, stop, dtype, workers)
+            return self._sum_threaded(start, stop, dtype, workers, worker_budget)
 
         w = np.asarray(weights, dtype=np.float64)
         if w.shape != (stop - start,):
@@ -200,9 +203,11 @@ class EerReader(Reader):
             out += self.frame(i) * w[k]
         return out
 
-    def _sum_threaded(self, start: int, stop: int, dtype, workers: int):
+    def _sum_threaded(self, start: int, stop: int, dtype, workers: int, budget=None):
         """Per-worker accumulators, reduced once at the end."""
         import threading
+        from .core.pipeline import WorkerBudget
+        budget = WorkerBudget(workers) if budget is None else budget
 
         idx = list(range(start, stop))
         step = (len(idx) + workers - 1) // workers
@@ -214,12 +219,22 @@ class EerReader(Reader):
             for i in batches[k]:
                 np.add(acc, self.frame(i), out=acc, casting="unsafe")
 
-        threads = [threading.Thread(target=_run, args=(k,))
+        errors = [None] * len(batches)
+        def guarded(k):
+            try:
+                budget.run(_run, k)
+            except BaseException as error:
+                errors[k] = error
+
+        threads = [threading.Thread(target=guarded, args=(k,))
                    for k in range(len(batches))]
         for t in threads:
             t.start()
         for t in threads:
             t.join()
+        for error in errors:
+            if error is not None:
+                raise error
         out = partials[0]
         for acc in partials[1:]:
             np.add(out, acc, out=out, casting="unsafe")

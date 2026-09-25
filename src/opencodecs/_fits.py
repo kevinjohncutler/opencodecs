@@ -24,11 +24,10 @@ Scope of this iteration:
 * Big-endian source bytes (FITS spec mandates big-endian); converted
   to native byte order in the returned ndarray.
 
-Out of scope here (deferred to a follow-up): compressed FITS images
-(``XTENSION='BINTABLE'`` with ``ZIMAGE=T`` + ``ZCMPTYPE='RICE_1'`` /
-``'GZIP_1'`` / ``'PLIO_1'``) and BINTABLE catalog rows. The Rice
-and gzip codecs we already ship would let those work once we add
-the tile-stitching loop on top.
+Compressed image BINTABLEs delegate to ``_fits_compressed``, including
+Rice, gzip, PLIO, and HCOMPRESS tiles. An explicit ``max_pending_bytes``
+bounds fetched payload batches while tiles decode into disjoint output
+regions. General BINTABLE catalog-row access remains outside this reader.
 """
 
 from __future__ import annotations
@@ -238,7 +237,8 @@ class FitsHDU:
             raise ValueError(f"FITS: unsupported BITPIX={bitpix}")
         return _BITPIX_TO_DTYPE[bitpix]
 
-    def asarray(self, *, numthreads: int | None = None) -> np.ndarray:
+    def asarray(self, *, numthreads: int | None = None,
+                max_pending_bytes: int | None = None) -> np.ndarray:
         """Read the HDU's data payload into a numpy ndarray.
 
         ``numthreads`` reaches the tile decode of a compressed-image
@@ -262,6 +262,8 @@ class FitsHDU:
             raw = decompress_image(
                 self._parent, self._data_offset, self._data_size,
                 self.header, numthreads,
+                max_pending_bytes=(self._parent._max_pending_bytes if max_pending_bytes is None
+                                   else max_pending_bytes),
             )
             h = self.header
             bscale = float(h.get("BSCALE", 1.0))
@@ -321,11 +323,13 @@ class FitsStream(Reader):
 
     def __init__(self, src: Any, *,
                  read_at: Callable[[int, int], bytes] | None = None,
-                 numthreads: int | None = None):
+                 numthreads: int | None = None,
+                 max_pending_bytes: int | None = None):
         # Carried so iteration and indexing decode their tiles the same
         # way read() does, rather than only the entry point a caller
         # happened to pass a thread count to.
         self._numthreads = numthreads
+        self._max_pending_bytes = max_pending_bytes
         self._src = src
 
         if read_at is None and callable(src) and not isinstance(
@@ -424,13 +428,14 @@ class FitsStream(Reader):
     def __getitem__(self, idx) -> np.ndarray:
         return self._hdus[idx].asarray(numthreads=self._numthreads)
 
-    def read(self, *, numthreads: int | None = None) -> np.ndarray:
+    def read(self, *, numthreads: int | None = None,
+             max_pending_bytes: int | None = None) -> np.ndarray:
         """Read the primary HDU's image data (or the first data-bearing
         HDU when the primary is header-only)."""
         nt = self._numthreads if numthreads is None else numthreads
         for h in self._hdus:
             if h.header.get("NAXIS", 0):
-                return h.asarray(numthreads=nt)
+                return h.asarray(numthreads=nt, max_pending_bytes=max_pending_bytes)
         raise ValueError("FITS: no image data in this file")
 
 

@@ -28,6 +28,7 @@ import numpy as np
 
 from .core.codec import Codec, Reader
 from .core.parallel import resolve_workers, run_batched
+from .core.pipeline import native_workers
 from .core._optional_backend import import_or_stubs
 
 (
@@ -242,7 +243,7 @@ class TiffPage:
         self.samples_per_pixel = int(_tag(self.tags, TAG_SAMPLES_PER_PIXEL, 1))
         self.planar_config = int(_tag(self.tags, TAG_PLANAR_CONFIG, 1))
 
-        bps_raw = _tag(self.tags, TAG_BITS_PER_SAMPLE, 8)
+        bps_raw = _tag(self.tags, TAG_BITS_PER_SAMPLE, 1)
         if isinstance(bps_raw, (tuple, list)):
             # All channels must have the same width for now. (Mixed-width
             # samples are exotic; deferred until we have a use case.)
@@ -408,6 +409,10 @@ class TiffPage:
         image."""
         if self.bits_per_sample == 1:
             return np.frombuffer(raw_bytes, dtype=np.uint8)
+        if self.predictor == 3:
+            # Predicted bytes are not floats yet. Preserve their exact bits;
+            # numeric endian conversion could alter encoded NaN payloads.
+            return np.frombuffer(raw_bytes, dtype=self.dtype)
         file_dtype = self.dtype.newbyteorder(self._stream._byte_order)
         arr = np.frombuffer(raw_bytes, dtype=file_dtype)
         # Only swap when the orders genuinely differ. numpy spells
@@ -474,9 +479,13 @@ class TiffPage:
         if cmp == CMP_LERC or cmp == CMP_LERC_LEGACY:
             return _get_decoder("opencodecs.codecs._lerc")(raw)
         if cmp == CMP_JXL:
-            return _get_decoder("opencodecs.codecs._jxl")(raw)
+            workers = native_workers(None)
+            options = {} if workers is None else {"numthreads": workers}
+            return _get_decoder("opencodecs.codecs._jxl")(raw, **options)
         if cmp == CMP_JPEG2000:
-            return _get_decoder("opencodecs.codecs._jpeg2k")(raw)
+            workers = native_workers(None)
+            options = {} if workers is None else {"numthreads": workers}
+            return _get_decoder("opencodecs.codecs._jpeg2k")(raw, **options)
         if cmp == CMP_WEBP:
             return _get_decoder("opencodecs.codecs._webp")(raw)
         if cmp == CMP_JPEG:
@@ -575,12 +584,16 @@ class TiffPage:
                 )
             return view if arr.ndim == 3 else view.reshape(arr.shape)
         if self.predictor == 3:
-            # Floating-point predictor (TIFF Tech Note 3).
-            view = arr if arr.ndim == 3 else arr.reshape(arr.shape[0], arr.shape[1], 1)
-            view_u8 = np.ascontiguousarray(view).view(np.uint8) \
-                .reshape(view.shape[0], view.shape[1], view.shape[2] * view.dtype.itemsize)
-            _tiff_undo_floating_point(view_u8, int(view.dtype.itemsize))
-            return view if arr.ndim == 3 else view.reshape(arr.shape)
+            if arr.dtype.kind != "f":
+                raise ValueError("TIFF floating-point predictor requires float samples")
+            # The kernel needs a writable byte view with the actual byte
+            # width of each pixel. Encoded bytes are not float values yet.
+            pixels = np.array(arr, copy=True, order="C")
+            samples = arr.shape[2] if arr.ndim == 3 else 1
+            view = pixels.view(np.uint8).reshape(
+                arr.shape[0], arr.shape[1], samples * arr.dtype.itemsize)
+            _tiff_undo_floating_point(view, arr.dtype.itemsize)
+            return pixels
         raise NotImplementedError(
             f"TIFF predictor {self.predictor} not supported"
         )
@@ -659,6 +672,68 @@ class TiffPage:
             view[write_off:write_off + nbytes] = np.frombuffer(raw, dtype=np.uint8)
             write_off += nbytes
 
+    def _decode_segment_pixels(self, raw, tx: int, ty: int) -> np.ndarray:
+        """Decode, unpack, undo prediction, and crop one stored segment.
+
+        Shared by full-page and region reads so layout handling cannot drift.
+        """
+        is_byte_stream = self.compression in (
+            CMP_NONE, CMP_DEFLATE, CMP_ADOBE_DEFLATE,
+            CMP_ZSTD, CMP_PACKBITS, CMP_LZW,
+        )
+        no_predictor = self.predictor == 1
+        decoded = self._decode_segment(raw)
+        exp_shape = self._segment_shape(tx, ty)
+
+        if is_byte_stream:
+            # decoded is flat; reshape to padded-or-strip shape.
+            if self.bits_per_sample == 1:
+                # Bilevel: decoded bytes are row-packed at 8
+                # px / byte with row-end byte alignment.
+                # Unpack to bool, then crop to exp_shape.
+                seg_h = (exp_shape[0] if not self.is_tiled
+                         else self.tile_height)
+                seg_w = (exp_shape[1] if not self.is_tiled
+                         else self.tile_width)
+                row_bytes = (seg_w + 7) // 8
+                packed = (
+                    np.asarray(decoded).view(np.uint8)
+                    .reshape(seg_h, row_bytes)
+                )
+                bits = np.unpackbits(packed, axis=1,
+                                      bitorder="big")
+                tile = bits[:, :seg_w].astype(np.bool_)
+                if self.is_tiled:
+                    tile = tile[:exp_shape[0], :exp_shape[1]]
+                # tifffile leaves the bool array in raw bit
+                # order (no WhiteIsZero inversion) and lets
+                # the caller interpret photometric.
+                # Match that for interop.
+            elif self.is_tiled:
+                tile = decoded.reshape(self._padded_shape())
+                if not no_predictor:
+                    tile = self._undo_predictor(tile)
+                tile = tile[:exp_shape[0], :exp_shape[1]]
+            else:
+                if decoded.size != int(np.prod(exp_shape)):
+                    raise ValueError(
+                        f"TIFF: decoded strip ({decoded.size} elements)"
+                        f" does not match expected "
+                        f"({int(np.prod(exp_shape))}) for shape {exp_shape}"
+                    )
+                tile = decoded.reshape(exp_shape)
+                if not no_predictor:
+                    tile = self._undo_predictor(tile)
+        else:
+            # Image-format codec: already-shaped ndarray.
+            # TIFF predictors don't apply (these codecs do their
+            # own prediction internally).
+            tile = decoded
+            if tile.shape[:2] != exp_shape[:2]:
+                # Tiled images: codec returned padded tile; crop.
+                tile = tile[:exp_shape[0], :exp_shape[1]]
+        return tile
+
     def asarray(self, *, numthreads: int | None = None) -> np.ndarray:
         """Fully decode this page into a 2D / 3D ndarray.
 
@@ -732,9 +807,6 @@ class TiffPage:
 
         # General path: per-tile/strip decode + (optional) predictor +
         # place in out. Handles all compressions and predictors.
-        if self.is_tiled:
-            full_shape = self._padded_shape()
-
         # Under PlanarConfiguration=2 (separate planes), segments are
         # laid out plane-major: all of plane 0's strips/tiles first,
         # then plane 1, etc. n_planes is the outer-loop count; for
@@ -782,56 +854,8 @@ class TiffPage:
                 else:
                     with read_lock:
                         raw = self._stream._read(offset, nbytes)
-            decoded = self._decode_segment(raw)
+            tile = self._decode_segment_pixels(raw, tx, ty)
             exp_shape = self._segment_shape(tx, ty)
-
-            if is_byte_stream:
-                # decoded is flat; reshape to padded-or-strip shape.
-                if self.bits_per_sample == 1:
-                    # Bilevel: decoded bytes are row-packed at 8
-                    # px / byte with row-end byte alignment.
-                    # Unpack to bool, then crop to exp_shape.
-                    seg_h = (exp_shape[0] if not self.is_tiled
-                             else self.tile_height)
-                    seg_w = (exp_shape[1] if not self.is_tiled
-                             else self.tile_width)
-                    row_bytes = (seg_w + 7) // 8
-                    packed = (
-                        np.asarray(decoded).view(np.uint8)
-                        .reshape(seg_h, row_bytes)
-                    )
-                    bits = np.unpackbits(packed, axis=1,
-                                          bitorder="big")
-                    tile = bits[:, :seg_w].astype(np.bool_)
-                    if self.is_tiled:
-                        tile = tile[:exp_shape[0], :exp_shape[1]]
-                    # tifffile leaves the bool array in raw bit
-                    # order (no WhiteIsZero inversion) and lets
-                    # the caller interpret photometric.
-                    # Match that for interop.
-                elif self.is_tiled:
-                    tile = decoded.reshape(full_shape)
-                    if not no_predictor:
-                        tile = self._undo_predictor(tile)
-                    tile = tile[:exp_shape[0], :exp_shape[1]]
-                else:
-                    if decoded.size != int(np.prod(exp_shape)):
-                        raise ValueError(
-                            f"TIFF: decoded strip ({decoded.size} elements)"
-                            f" does not match expected "
-                            f"({int(np.prod(exp_shape))}) for shape {exp_shape}"
-                        )
-                    tile = decoded.reshape(exp_shape)
-                    if not no_predictor:
-                        tile = self._undo_predictor(tile)
-            else:
-                # Image-format codec — already-shaped ndarray.
-                # TIFF predictors don't apply (these codecs do their
-                # own prediction internally).
-                tile = decoded
-                if tile.shape[:2] != exp_shape[:2]:
-                    # Tiled images: codec returned padded tile; crop.
-                    tile = tile[:exp_shape[0], :exp_shape[1]]
 
             y0 = ty * self.tile_height
             x0 = tx * self.tile_width
@@ -1103,6 +1127,10 @@ class TiffCodec(Codec):
     """Native TIFF reader + writer (no libtiff dependency)."""
 
     name = "tiff"
+    decode_overlap = True  # Bounded prefetch on the offset-backed region reader.
+    streaming_encode = True
+    streaming_output = True
+    writer_buffering = "frame"
     file_extensions = (".tif", ".tiff", ".btf")
     aliases = ("bigtiff",)
 

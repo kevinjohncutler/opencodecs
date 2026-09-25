@@ -71,16 +71,6 @@ def test_cms_identity_srgb_to_srgb_rgb16(srgb_profile):
     np.testing.assert_array_equal(out, arr)
 
 
-@pytest.mark.xfail(
-    reason="lcms2 refuses cmsCreateTransform on RGBA-in / RGBA-out when "
-           "both profiles are 3-channel sRGB (no per-pixel alpha to "
-           "transform). The COPY_ALPHA flag is set but doesn't help "
-           "with the built-in sRGB profile — a real RGBA workflow "
-           "would supply a 4-channel destination profile. Documenting "
-           "the limitation here rather than silently broadening the "
-           "fallback.",
-    strict=True,
-)
 def test_cms_identity_rgba8(srgb_profile):
     c = oc.get_codec("cms")
     arr = np.array([

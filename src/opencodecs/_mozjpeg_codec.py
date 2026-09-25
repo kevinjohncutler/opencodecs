@@ -18,6 +18,7 @@ from typing import Any
 import numpy as np
 
 from .core.codec import Codec
+from .core.buffers import array_output
 from .core._io_helpers import read_src as _read_src, write_dest as _write_dest
 from .core._optional_backend import import_or_stubs
 
@@ -62,8 +63,17 @@ class MozJpegCodec(Codec):
         )
         return _write_dest(out, dest)
 
-    def decode(self, src: Any, **opts) -> np.ndarray:
-        return _moz_decode(_read_src(src))
+    def decoder(self):
+        """Create an explicitly owned reusable decode handle."""
+        from .codecs._mozjpeg import DecoderContext
+        from .core.buffers import ImageDecoderContext
+        return ImageDecoderContext(DecoderContext())
+
+    def decode(self, src: Any, *, out=None, scale=None,
+               scale_num=None, scale_denom=None, **opts) -> np.ndarray:
+        return _moz_decode(
+            _read_src(src), out=out if out is None else array_output(out),
+            scale=scale, scale_num=scale_num, scale_denom=scale_denom)
 
 
 __all__ = ["MozJpegCodec"]

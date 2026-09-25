@@ -114,6 +114,34 @@ def _resolve_out_bytes(out, n_bytes: int, label: str):
     return out
 
 
+def _predictor_into(arr, axis, dist, out, kernel, ufunc):
+    """Decode into caller storage without a full result-and-copy temporary."""
+    if not isinstance(out, np.ndarray):
+        raise TypeError("predictor out must be an ndarray")
+    if out.shape != arr.shape or out.dtype != arr.dtype:
+        raise ValueError("predictor out shape/dtype mismatch")
+    if not out.flags.writeable:
+        raise ValueError("predictor out must be writable")
+    if dist < 1:
+        raise ValueError("predictor distance must be positive")
+    # Moving the selected axis to the end can remain a contiguous view.
+    target = np.moveaxis(out, axis, -1)
+    if (kernel is not None and target.flags.c_contiguous and
+            out.dtype.isnative and out.dtype.kind in 'iu' and
+            out.dtype.itemsize in (1, 2, 4, 8) and target.shape[-1]):
+        np.copyto(out, arr)
+        kernel(target.reshape(-1, target.shape[-1]), dist)
+        return out
+    np.copyto(out, arr)
+    selection = [slice(None)] * arr.ndim
+    for start in range(min(dist, arr.shape[axis])):
+        selection[axis] = slice(start, None, dist)
+        lane = out[tuple(selection)]
+        # NumPy preserves the destination's byte order and strided layout.
+        ufunc.accumulate(lane, axis=axis, dtype=arr.dtype.newbyteorder("="), out=lane)
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Delta
 # ---------------------------------------------------------------------------
@@ -174,23 +202,10 @@ class DeltaCodec(Codec):
             arr = np.frombuffer(buf, dtype=dtype)
         else:
             arr = np.frombuffer(buf, dtype=dtype).reshape(shape)
-        result = self._apply_along(arr, axis, dist, mode="decode")
         if out is not None:
-            if not isinstance(out, np.ndarray):
-                raise TypeError(
-                    f"delta decode: out= must be an ndarray, "
-                    f"got {type(out).__name__}")
-            if out.shape != result.shape:
-                raise ValueError(
-                    f"delta decode: out= shape {out.shape} does not match "
-                    f"decoded {result.shape}")
-            if out.dtype != result.dtype:
-                raise ValueError(
-                    f"delta decode: out= dtype {out.dtype} does not match "
-                    f"decoded {result.dtype}")
-            np.copyto(out, result)
-            return out
-        return result
+            return _predictor_into(arr, axis, dist, out,
+                                   _delta_decode_kernel(), np.add)
+        return self._apply_along(arr, axis, dist, mode="decode")
 
     @staticmethod
     def _apply_along(arr: np.ndarray, axis: int, dist: int, mode: str) -> np.ndarray:
@@ -305,17 +320,10 @@ class XorCodec(Codec):
         arr = (np.frombuffer(buf, dtype=dtype).reshape(shape)
                if shape is not None
                else np.frombuffer(buf, dtype=dtype))
-        result = self._apply_along(arr, axis, dist, mode="decode")
         if out is not None:
-            if not isinstance(out, np.ndarray):
-                raise TypeError(
-                    f"xor decode: out= must be an ndarray, "
-                    f"got {type(out).__name__}")
-            if out.shape != result.shape or out.dtype != result.dtype:
-                raise ValueError("xor decode: out= shape/dtype mismatch")
-            np.copyto(out, result)
-            return out
-        return result
+            return _predictor_into(arr, axis, dist, out,
+                                   _xor_decode_kernel(), np.bitwise_xor)
+        return self._apply_along(arr, axis, dist, mode="decode")
 
     @staticmethod
     def _apply_along(arr, axis, dist, mode):
@@ -416,23 +424,14 @@ class FloatpredCodec(Codec):
         axis: int = -1,
         dist: int = 1,
         out=None,
+        scratch=None,
         **opts,
     ) -> np.ndarray:
         if dtype is None:
             raise ValueError("floatpred decode: dtype= is required")
         buf = _read_src(src)
-        # Restore byte stream → float array.
-        result = self._undelta_then_unshuffle(buf, np.dtype(dtype), shape, axis, dist)
-        if out is not None:
-            if not isinstance(out, np.ndarray):
-                raise TypeError(
-                    f"floatpred decode: out= must be an ndarray, "
-                    f"got {type(out).__name__}")
-            if out.shape != result.shape or out.dtype != result.dtype:
-                raise ValueError("floatpred decode: out= shape/dtype mismatch")
-            np.copyto(out, result)
-            return out
-        return result
+        return self._undelta_then_unshuffle(
+            buf, np.dtype(dtype), shape, axis, dist, out=out, scratch=scratch)
 
     @staticmethod
     def _shuffle_then_delta(arr, axis, dist, encode):
@@ -454,17 +453,17 @@ class FloatpredCodec(Codec):
         u8 = np.ascontiguousarray(u8)
         # Now apply delta on the trailing axis (per-plane).
         if encode:
-            shifted = np.roll(u8, dist, axis=-1)
-            sl = [slice(None)] * u8.ndim
-            sl[-1] = slice(0, dist)
-            shifted[tuple(sl)] = 0
-            out = (u8 - shifted).astype(np.uint8, copy=False)
+            if dist < 1:
+                raise ValueError("predictor distance must be positive")
+            out = np.empty_like(u8)
+            out[..., :dist] = u8[..., :dist]
+            np.subtract(u8[..., dist:], u8[..., :-dist], out=out[..., dist:])
         else:
             out = np.cumsum(u8, axis=-1, dtype=np.uint8)
         return out.tobytes()
 
     @staticmethod
-    def _undelta_then_unshuffle(buf, dtype, shape, axis, dist):
+    def _undelta_then_unshuffle(buf, dtype, shape, axis, dist, *, out=None, scratch=None):
         if shape is None:
             raise ValueError("floatpred decode: shape= is required")
         itemsize = dtype.itemsize
@@ -481,21 +480,40 @@ class FloatpredCodec(Codec):
             internal_shape = target_shape
         n = internal_shape[-1]
         outer = int(np.prod(internal_shape[:-1])) if len(internal_shape) > 1 else 1
-        u8 = np.frombuffer(buf, dtype=np.uint8).reshape(outer, itemsize, n)
-        # Undo delta along last axis.
-        u8 = np.cumsum(u8, axis=-1, dtype=np.uint8)
-        # Move plane axis back: (outer, itemsize, n) -> (outer, n, itemsize)
-        u8 = np.moveaxis(u8, -2, -1)
-        u8 = np.ascontiguousarray(u8)
-        # Reinterpret as the float dtype.
-        flat = u8.reshape(outer, n * itemsize).view(dtype)
-        # Flat shape: (outer, n); reshape to internal_shape.
-        arr = flat.reshape(internal_shape)
-        # Move the encoded axis back to its original position.
-        if axis_pos != len(target_shape) - 1:
-            arr = np.moveaxis(arr, -1, axis_pos)
-            arr = arr.reshape(target_shape)
-        return np.ascontiguousarray(arr)
+        if dist < 1:
+            raise ValueError("predictor distance must be positive")
+        if out is not None:
+            from .core.buffers import array_output
+            array_output(out)
+            if out.shape != target_shape or out.dtype != dtype:
+                raise ValueError("floatpred out shape/dtype mismatch")
+        required = outer * itemsize * n
+        source = np.frombuffer(buf, dtype=np.uint8).reshape(outer, itemsize, n)
+        if scratch is None:
+            u8 = source.copy()
+        else:
+            from .core.scratch import ScratchBuffer
+            from .core.buffers import byte_output
+            storage = scratch.bytes(required) if isinstance(scratch, ScratchBuffer) else byte_output(scratch)
+            if isinstance(storage, int) or len(storage) < required:
+                raise ValueError("floatpred scratch buffer is too small")
+            u8 = np.frombuffer(storage, dtype=np.uint8, count=required).reshape(source.shape)
+            if out is not None and np.shares_memory(u8, out):
+                raise ValueError("floatpred scratch must not overlap output")
+            np.copyto(u8, source)
+        kernel = _delta_decode_kernel()
+        if kernel is not None and n:
+            kernel(u8.reshape(outer * itemsize, n), dist)
+        else:
+            for start in range(min(dist, n)):
+                lane = u8[..., start::dist]
+                np.add.accumulate(lane, axis=-1, dtype=np.uint8, out=lane)
+        if out is None:
+            out = np.empty(target_shape, dtype=dtype)
+        target_bytes = out.view(np.uint8).reshape(target_shape + (itemsize,))
+        target_bytes = np.moveaxis(target_bytes, axis_pos, -2)
+        target_bytes[...] = np.moveaxis(u8, -2, -1).reshape(internal_shape + (itemsize,))
+        return out
 
 
 __all__ = ["DeltaCodec", "XorCodec", "FloatpredCodec"]

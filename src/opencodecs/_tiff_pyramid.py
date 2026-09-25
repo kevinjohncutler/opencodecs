@@ -15,14 +15,13 @@ Range requests.
 
 from __future__ import annotations
 
-import os
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
-from ._tiff_codec import TiffStream, TiffPage
+from ._tiff_codec import TiffStream, TiffPage, CMP_NONE
+from .core.parallel import resolve_workers, run_batched
 from .core.pyramid import PyramidLevel, PyramidReader
 
 
@@ -79,6 +78,8 @@ class TiffPyramidReader(PyramidReader):
         read_at=None,
         ifd_index: int | None = None,
         num_decode_workers: int | None = None,
+        prefetch: bool | None = None,
+        max_buffer_bytes: int = 64 << 20,
     ):
         """Open a TIFF and discover its pyramid structure.
 
@@ -102,23 +103,31 @@ class TiffPyramidReader(PyramidReader):
             Thread-pool size for parallel tile decoding inside
             :meth:`read_region`. Compressed TIFF tile decoders (JPEG,
             JPEG-2000, deflate, zstd) release the GIL during the C
-            call, so threads scale the decode step across cores even
-            on CPython. ``None`` (default) picks
-            ``min(os.cpu_count(), 8)``; pass ``1`` to force the serial
-            path (matches the pre-parallel behavior for benchmarks
-            / regression diff). Parallel decode kicks in only when at
-            least 4 tiles overlap the read region — fewer than that
-            and the thread-pool spin-up cost outweighs the win.
+            call, so threads scale decode across cores. The default uses
+            the shared worker budget based on segment count and output size.
+            Pass 1 for serial decode. Raw copy-only reads stay serial.
+        prefetch : bool or None
+            Overlap bounded range batches with decode. The default enables
+            this for remote sources and preserves the local mapped fast path.
+        max_buffer_bytes : int
+            Reservation budget for queued compressed input and decoder scratch.
+            A single oversized segment runs alone; output and source caches
+            have separate lifetimes and are not included in this budget.
         """
         # Pass-through to TiffStream — it accepts paths, bytes,
         # file-likes, or a custom read_at callable (HTTPDataSource).
         self._stream = TiffStream(src, read_at=read_at) if read_at is not None \
             else TiffStream(src)
         self._ifd_index = ifd_index
-        if num_decode_workers is None:
-            self._num_decode_workers = min(os.cpu_count() or 1, 8)
-        else:
-            self._num_decode_workers = max(1, int(num_decode_workers))
+        self._num_decode_workers = num_decode_workers
+        if max_buffer_bytes < 1:
+            raise ValueError("max_buffer_bytes must be positive")
+        self._max_buffer_bytes = int(max_buffer_bytes)
+        source = getattr(self._stream._read, "__self__", self._stream._read)
+        if prefetch is None:
+            from ._tiff_http import HTTPDataSource
+            prefetch = isinstance(source, HTTPDataSource)
+        self._prefetch = bool(prefetch)
         self._levels = self._build_levels()
 
     # ----- ABC contract -----
@@ -225,146 +234,87 @@ class TiffPyramidReader(PyramidReader):
             return np.empty(out_shape, dtype=page.dtype)
         out = np.empty(out_shape, dtype=page.dtype)
 
-        if page.is_tiled:
-            self._fill_tiles(page, out, y0, y1, x0, x1)
-        else:
-            self._fill_strips(page, out, y0, y1, x0, x1)
+        self._fill_segments(page, out, y0, y1, x0, x1)
         return out
 
-    # ----- Tiled path -----
+    def _fill_segments(self, page, out, y0, y1, x0, x1):
+        """Fetch intersecting segments, then decode directly into output.
 
-    def _fill_tiles(
-        self, page: TiffPage, out: np.ndarray,
-        y0: int, y1: int, x0: int, x1: int,
-    ) -> None:
-        """Assemble out from the tiles of page that intersect (y0:y1, x0:x1).
-
-        When the underlying data source advertises ``read_many`` (HTTP
-        range-requests or pread parallelism), all overlapping tiles are
-        fetched in one batched call before decode. Otherwise tiles are
-        pulled serially. This is the perf path that makes
-        ``read_region`` over an HTTP COG do O(1) round-trips per tile
-        cluster instead of O(N)."""
-        tw, th = page.tile_width, page.tile_height
-        ty_start = y0 // th
-        ty_stop = (y1 + th - 1) // th
-        tx_start = x0 // tw
-        tx_stop = (x1 + tw - 1) // tw
-        ty_stop = min(ty_stop, page.tiles_y)
-        tx_stop = min(tx_stop, page.tiles_x)
-
-        # Padded-tile native shape — every tile read decodes to this,
-        # then we crop into out.
-        full_tile_shape = page._padded_shape()
-
-        # Build the (offset, nbytes) list for every tile we need.
-        ranges: list[tuple[int, int]] = []
-        coords: list[tuple[int, int]] = []
-        for ty in range(ty_start, ty_stop):
-            for tx in range(tx_start, tx_stop):
-                idx = ty * page.tiles_x + tx
-                ranges.append(
-                    (int(page.offsets[idx]), int(page.byte_counts[idx]))
-                )
-                coords.append((ty, tx))
-        if not ranges:
-            return
-
-        # Coalesced fetch path: one round-trip / one parallel batch for
-        # the whole bbox, instead of N serial reads. Falls back to per-
-        # tile reads when the data source doesn't expose read_many
-        # (e.g. raw file handle, bytes, BytesIO).
-        read_many = getattr(self._stream._read, "read_many", None)
-        if read_many is not None and len(ranges) > 1:
-            blobs = read_many(ranges)
-        else:
-            blobs = [self._stream._read(o, n) for (o, n) in ranges]
-
-        # Parallel decode path: when 4+ tiles overlap the bbox and the
-        # user hasn't pinned workers=1, fan decode out across a thread
-        # pool. Compressed TIFF tile codecs (JPEG / JPEG-2000 / deflate
-        # / zstd / lzw / webp / lerc) all release the GIL during the
-        # C decompress step, so threads scale across cores on CPython.
-        # Output bytes are identical to the serial path — only the
-        # scheduling changes. The 4-tile threshold dodges thread-pool
-        # spin-up cost on small region reads (single-tile cluster).
-        n_tiles = len(blobs)
-        nw = self._num_decode_workers
-        if n_tiles >= 4 and nw > 1:
-            with ThreadPoolExecutor(
-                max_workers=min(nw, n_tiles),
-                thread_name_prefix="tiff-decode",
-            ) as ex:
-                decoded_tiles = list(ex.map(page._decode_segment, blobs))
-        else:
-            decoded_tiles = [page._decode_segment(b) for b in blobs]
-
-        for (ty, tx), decoded in zip(coords, decoded_tiles):
-            # Byte-stream codecs return flat; image codecs return shaped.
-            if decoded.ndim == 1:
-                tile = decoded.reshape(full_tile_shape)
-            else:
-                tile = decoded
-
-            tile_y0 = ty * th
-            tile_x0 = tx * tw
-            # Intersect tile rect with the requested bbox.
-            in_y0 = max(y0 - tile_y0, 0)
-            in_y1 = min(y1 - tile_y0, th)
-            in_x0 = max(x0 - tile_x0, 0)
-            in_x1 = min(x1 - tile_x0, tw)
-            out_y0 = tile_y0 + in_y0 - y0
-            out_x0 = tile_x0 + in_x0 - x0
-            out[out_y0:out_y0 + (in_y1 - in_y0),
-                out_x0:out_x0 + (in_x1 - in_x0)] = \
-                tile[in_y0:in_y1, in_x0:in_x1]
-
-    # ----- Striped path -----
-
-    def _fill_strips(
-        self, page: TiffPage, out: np.ndarray,
-        y0: int, y1: int, x0: int, x1: int,
-    ) -> None:
-        """Assemble out from the strips of page that intersect (y0:y1, x0:x1).
-
-        Strips span the full image width, so x clipping happens after
-        decode. Only the strips overlapping (y0:y1) get fetched. Like
-        :meth:`_fill_tiles`, batches the network reads through
-        ``read_many`` when the data source advertises it.
+        Tiles and strips share placement, prediction, and planar-channel
+        handling. Workers own disjoint output rectangles. Decoded pixels
+        live only for one segment per worker instead of a whole region.
+        Batched source reads preserve range coalescing before decode.
         """
-        rps = page.tile_height   # rows per strip (filed under tile_height for strips)
-        h = page.height
-        s_start = y0 // rps
-        s_stop = (y1 + rps - 1) // rps
-        s_stop = min(s_stop, len(page.offsets))
-
-        ranges = [
-            (int(page.offsets[s]), int(page.byte_counts[s]))
-            for s in range(s_start, s_stop)
-        ]
+        tw, th = page.tile_width, page.tile_height
+        ty_start, ty_stop = y0 // th, min((y1 + th - 1) // th, page.tiles_y)
+        tx_start, tx_stop = x0 // tw, min((x1 + tw - 1) // tw, page.tiles_x)
+        n_planes = page.samples_per_pixel if page.planar_config == 2 else 1
+        per_plane = len(page.offsets) // n_planes
+        coords = []
+        ranges = []
+        for plane in range(n_planes):
+            for ty in range(ty_start, ty_stop):
+                for tx in range(tx_start, tx_stop):
+                    idx = plane * per_plane + ty * page.tiles_x + tx
+                    coords.append((plane, ty, tx))
+                    ranges.append((int(page.offsets[idx]), int(page.byte_counts[idx])))
         if not ranges:
             return
+        source = getattr(self._stream._read, "__self__", self._stream._read)
+        read_many = getattr(source, "read_many", None)
+        workers = resolve_workers(
+            self._num_decode_workers, len(coords), output_bytes=out.nbytes,
+            max_workers=8,
+            has_decode_work=page.compression != CMP_NONE or page.predictor != 1)
+        blobs = None
+        if not self._prefetch:
+            blobs = (read_many(ranges) if read_many is not None and len(ranges) > 1
+                     else [self._stream._read(o, n) for o, n in ranges])
 
-        read_many = getattr(self._stream._read, "read_many", None)
-        if read_many is not None and len(ranges) > 1:
-            blobs = read_many(ranges)
-        else:
-            blobs = [self._stream._read(o, n) for (o, n) in ranges]
+        def place(i, raw=None):
+            plane, ty, tx = coords[i]
+            tile = page._decode_segment_pixels(blobs[i] if raw is None else raw, tx, ty)
+            tile_y0, tile_x0 = ty * th, tx * tw
+            in_y0, in_x0 = max(y0 - tile_y0, 0), max(x0 - tile_x0, 0)
+            in_y1 = min(y1 - tile_y0, tile.shape[0])
+            in_x1 = min(x1 - tile_x0, tile.shape[1])
+            out_y0, out_x0 = tile_y0 + in_y0 - y0, tile_x0 + in_x0 - x0
+            target = out[..., plane] if n_planes > 1 else out
+            target[out_y0:out_y0 + in_y1 - in_y0,
+                   out_x0:out_x0 + in_x1 - in_x0] = tile[in_y0:in_y1, in_x0:in_x1]
 
-        for s, raw in zip(range(s_start, s_stop), blobs):
-            decoded = page._decode_segment(raw)
-            strip_y0 = s * rps
-            strip_h = min(rps, h - strip_y0)
-            strip_shape = (strip_h, page.width) if page.samples_per_pixel == 1 \
-                else (strip_h, page.width, page.samples_per_pixel)
-            strip = decoded.reshape(strip_shape) if decoded.ndim == 1 else decoded
+        if blobs is not None:
+            run_batched(place, range(len(coords)), workers, name="tiff-region")
+            return
 
-            in_y0 = max(y0 - strip_y0, 0)
-            in_y1 = min(y1 - strip_y0, strip_h)
-            out_y0 = strip_y0 + in_y0 - y0
-            # Clip x slice (full strip width → bbox columns).
-            out[out_y0:out_y0 + (in_y1 - in_y0)] = \
-                strip[in_y0:in_y1, x0:x1]
+        from contextlib import closing
+        from .core.pipeline import map_bounded, range_batches
+        segment_pixels = int(np.prod(page._padded_shape())) * page.dtype.itemsize
+        # A worker decodes one tile at a time within its fetched batch, so
+        # reserve one scratch tile, plus all retained compressed payloads.
+        scratch_bytes = 3 * segment_pixels
+        batches = range_batches(range(len(coords)), lambda i: ranges[i][1],
+                                max_bytes=max(1, self._max_buffer_bytes // workers - scratch_bytes),
+                                max_items=max(1, min(64, (len(coords) + workers - 1) // workers)))
+
+        def fetch(batch):
+            selected = [ranges[i] for i in batch]
+            payloads = (read_many(selected) if read_many is not None and len(batch) > 1
+                        else [self._stream._read(o, n) for o, n in selected])
+            return batch, payloads
+
+        def decode_batch(batch):
+            batch, payloads = fetch(batch)
+            for i, raw in zip(batch, payloads):
+                place(i, raw)
+
+        with closing(map_bounded(
+                decode_batch, batches, workers,
+                size=lambda batch: sum(ranges[i][1] for i in batch) + scratch_bytes,
+                max_bytes=self._max_buffer_bytes, name="tiff-fetch-decode")) as results:
+            for _ in results:
+                pass
+
 
 
 __all__ = ["TiffPyramidReader"]

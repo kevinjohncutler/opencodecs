@@ -240,6 +240,10 @@ class OibFileParser:
                 f"OIB: no frame at (c={c}, z={z}, t={t}); have "
                 f"{len(self.layout.frames)} frames")
         tiff_bytes = self._ole.read_stream(stream)
+        return self._decode_frame_payload(stream, tiff_bytes)
+
+    @staticmethod
+    def _decode_frame_payload(stream, tiff_bytes):
         from .codecs._tiff import check_signature as _tiff_sig
         from ._tiff_codec import TiffCodec
         if not _tiff_sig(tiff_bytes):
@@ -263,13 +267,50 @@ class OibFileParser:
         if L.n_z > 1: idx.append(z)
         return tuple(idx)
 
-    def read_all(self) -> np.ndarray:
+    def read_all(self, *, numthreads=None, max_pending_bytes=None,
+                 worker_budget=None, pipeline_stats=None) -> np.ndarray:
         """Decode every frame, assemble the full (T?, C?, Z?, H, W)
-        ndarray (FluoView axis order)."""
+        ndarray (FluoView axis order).
+
+        An explicit max_pending_bytes overlaps producer-owned stream reads
+        with decode and direct placement. Final output, directory tables,
+        cached miniature streams, and native allocator overhead are separate
+        from this reservation budget. The default keeps serial frame reads.
+        """
         L = self.layout
         out = np.empty(L.shape, dtype=L.dtype)
-        for (c, z, t) in L.frames:
-            out[self._index_of(c, z, t)] = self.read_frame(c, z, t)
+        if max_pending_bytes is None:
+            for (c, z, t) in L.frames:
+                out[self._index_of(c, z, t)] = self.read_frame(c, z, t)
+            return out
+        from .core.parallel import resolve_workers
+        from .core.pipeline import map_bounded
+        decoded_bytes = L.height * L.width * np.dtype(L.dtype).itemsize
+        workers = resolve_workers(numthreads, len(L.frames), has_decode_work=True,
+                                  output_bytes=out.nbytes)
+        # OLE stream fetching stays on the producer. Directory sizes reserve
+        # encoded buffers before fetch; TIFF scratch and returned pixels add
+        # two decoded frame buffers. Cached ministream metadata is separate.
+        def descriptors():
+            for position, stream in L.frames.items():
+                yield position, stream, self._ole.get_size(stream)
+        def fetch(item):
+            position, stream, size = item
+            payload = self._ole.read_stream(stream)
+            if len(payload) != size:
+                raise ValueError(f"OIB: stream {stream!r} has an unexpected size")
+            return position, stream, payload
+        def place(item):
+            position, stream, payload = item
+            frame = self._decode_frame_payload(stream, payload)
+            if frame.shape != (L.height, L.width) or frame.dtype != L.dtype:
+                raise ValueError(f"OIB: stream {stream!r} differs from image geometry")
+            out[self._index_of(*position)] = frame
+        for _ in map_bounded(place, descriptors(), workers, prepare=fetch,
+                             size=lambda item: 2 * item[2] + 2 * decoded_bytes,
+                             max_bytes=max_pending_bytes, budget=worker_budget,
+                             stats=pipeline_stats, name="oib"):
+            pass
         return out
 
     def read_index(self, index: int) -> np.ndarray:
@@ -385,7 +426,11 @@ def _peek_tiff_dtype(tiff_bytes: bytes) -> np.dtype | None:
 class OibNativeReader(Reader):
     """Native Olympus OIB / OIF reader — no oiffile dependency."""
 
-    def __init__(self, src: Any):
+    def __init__(self, src: Any, *, numthreads=None, max_pending_bytes=None,
+                 worker_budget=None):
+        self._numthreads = numthreads
+        self._max_pending_bytes = max_pending_bytes
+        self._worker_budget = worker_budget
         self._parser = OibFileParser(src)
         self.shape = self._parser.shape
         self.dtype = self._parser.dtype
@@ -412,8 +457,12 @@ class OibNativeReader(Reader):
     def __getitem__(self, idx) -> np.ndarray:
         return self._parser.read_index(int(idx))
 
-    def read(self) -> np.ndarray:
-        return self._parser.read_all()
+    def read(self, *, numthreads=None, max_pending_bytes=None) -> np.ndarray:
+        return self._parser.read_all(
+            numthreads=self._numthreads if numthreads is None else numthreads,
+            max_pending_bytes=(self._max_pending_bytes if max_pending_bytes is None
+                               else max_pending_bytes),
+            worker_budget=self._worker_budget)
 
     def close(self) -> None:
         self._parser.close()

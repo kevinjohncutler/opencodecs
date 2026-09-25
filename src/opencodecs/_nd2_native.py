@@ -348,8 +348,12 @@ class Nd2NativeReader(Reader):
     def read(self) -> np.ndarray:
         if self.n_frames == 1:
             return self._parser.read_frame(0)
-        frames = [self._parser.read_frame(i) for i in range(self.n_frames)]
-        return np.stack(frames)
+        # The metadata fixes shape and dtype for every frame. Place each
+        # decoded frame immediately instead of retaining a second stack.
+        out = np.empty(self.shape, dtype=self.dtype)
+        for i in range(self.n_frames):
+            out[i] = self._parser.read_frame(i)
+        return out
 
     def close(self) -> None:
         self._parser.close()

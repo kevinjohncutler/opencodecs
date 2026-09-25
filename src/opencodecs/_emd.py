@@ -156,8 +156,11 @@ class EmdFile(ArrayReader):
     def dtype_at(self, index: int = 0) -> np.dtype:
         return np.dtype(self._dataset(index).dtype)
 
-    def asarray(self, index: int = 0) -> np.ndarray:
-        return self._dataset(index)[...]
+    def asarray(self, index: int = 0, *, numthreads: int | None = None,
+                max_pending_bytes: int | None = None) -> np.ndarray:
+        from ._h5_common import read_h5_dataset
+        return read_h5_dataset(self._dataset(index), numthreads=numthreads,
+                               max_pending_bytes=max_pending_bytes)
 
     def axes(self, index: int = 0) -> list[np.ndarray]:
         """Per-axis coordinate vectors, where the schema records them.

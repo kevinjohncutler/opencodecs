@@ -24,13 +24,17 @@ Example::
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
 from typing import Any
 
 import numpy as np
 
-from .core.codec import Codec
+from .core.codec import Codec, Reader
+from .core.buffers import array_output
 from .core._io_helpers import read_src as _read_src, write_dest as _write_dest
 from .core._optional_backend import import_or_stubs
+from .core.pipeline import native_workers
 
 (
     _b2nd_encode, _b2nd_decode, _b2nd_inspect, _b2nd_check_signature,
@@ -78,17 +82,37 @@ class B2ndCodec(Codec):
                level: int = 5,
                compressor: str | None = "zstd",
                shuffle: Any = "bit",
+               storage_output: bool = False,
                **opts) -> bytes | None:
+        """Encode an array, optionally writing native storage directly to a path.
+
+        ``storage_output=True`` avoids the encoded Python buffer, but may
+        reduce throughput. It requires a filesystem destination.
+        """
         if not isinstance(data, np.ndarray):
             data = np.asarray(data)
+        if storage_output:
+            if dest is None or hasattr(dest, "write"):
+                raise ValueError("storage_output requires a filesystem destination")
+            import tempfile
+            target = Path(dest)
+            with tempfile.TemporaryDirectory(prefix=".opencodecs-", dir=target.parent) as folder:
+                temporary = Path(folder) / "array.b2nd"
+                _b2nd_encode(data, level=int(level), compressor=compressor,
+                             shuffle=shuffle, path=temporary)
+                os.replace(temporary, target)
+            return None
         out = _b2nd_encode(
             data, level=int(level), compressor=compressor, shuffle=shuffle,
         )
         return _write_dest(out, dest)
 
     def decode(self, src: Any, *, numthreads: int | None = None,
-               **opts) -> np.ndarray:
-        return _b2nd_decode(_read_src(src), numthreads=numthreads)
+               out=None, **opts) -> np.ndarray:
+        if out is None:
+            return _b2nd_decode(_read_src(src), numthreads=native_workers(numthreads))
+        return _b2nd_decode(_read_src(src), numthreads=native_workers(numthreads),
+                            out=array_output(out))
 
     def decode_slice(self, src: Any, start, stop, *,
                      numthreads: int | None = None,
@@ -99,13 +123,55 @@ class B2ndCodec(Codec):
         half-open box, each the length of the array's ``ndim``. Only
         the chunks intersecting that box are decompressed.
         """
+        if isinstance(src, os.PathLike) or (isinstance(src, str) and "://" not in src):
+            with self.open(src, numthreads=numthreads) as reader:
+                return reader.read_slice(start, stop, out=out)
         from .codecs._b2nd import decode_slice as _slice
         return _slice(_read_src(src), start, stop,
-                      numthreads=numthreads, out=out)
+                      numthreads=native_workers(numthreads),
+                      out=out if out is None else array_output(out))
 
     def inspect(self, src: Any) -> dict:
         """Return {ndim, shape, dtype, itemsize} without decompressing."""
         return _b2nd_inspect(_read_src(src))
+
+    def open(self, src: Any, *, numthreads=None, **opts) -> Reader:
+        """Keep local persistent storage indexed for repeated box reads."""
+        if isinstance(src, os.PathLike) or (isinstance(src, str) and "://" not in src):
+            return _B2ndFileReader(src, numthreads=numthreads)
+        return super().open(src, numthreads=numthreads, **opts)
+
+
+class _B2ndFileReader(Reader):
+    n_frames = 1
+    is_chunked = True
+
+    def __init__(self, path, *, numthreads=None):
+        from .codecs._b2nd import FileReader
+        self._native = FileReader(path)
+        self.shape = self._native.shape
+        self.dtype = self._native.dtype
+        self._numthreads = numthreads
+
+    def read_slice(self, start, stop, *, out=None):
+        return self._native.read_slice(
+            start, stop, out=out,
+            numthreads=native_workers(self._numthreads),
+        )
+
+    def read(self, *, out=None):
+        return self.read_slice((0,) * len(self.shape), self.shape, out=out)
+
+    def iter_frames(self):
+        yield self.read()
+
+    def __getitem__(self, index):
+        if index not in (0, -1):
+            raise IndexError(index)
+        return self.read()
+
+    def close(self):
+        self._native.close()
 
 
 __all__ = ["B2ndCodec"]

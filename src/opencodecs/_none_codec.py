@@ -16,6 +16,7 @@ from typing import Any
 import numpy as np
 
 from .core.codec import Codec
+from .core.buffers import byte_output
 from .core._io_helpers import read_src as _read_src, write_dest as _write_dest
 
 
@@ -49,8 +50,20 @@ class NoneCodec(Codec):
             data = bytes(data)
         return _write_dest(bytes(data), dest)
 
-    def decode(self, src: Any, **opts) -> bytes:
-        return bytes(_read_src(src))
+    def decode(self, src: Any, *, out=None, **opts) -> bytes | memoryview:
+        data = _read_src(src)
+        if out is None:
+            return bytes(data)
+        destination = byte_output(out)
+        size = memoryview(data).nbytes
+        if isinstance(destination, int):
+            if destination < size:
+                raise ValueError("decode out is too small")
+            return bytes(data)
+        if len(destination) < size:
+            raise ValueError("decode out is too small")
+        destination[:size] = memoryview(data).cast("B")
+        return destination[:size]
 
 
 __all__ = ["NoneCodec"]

@@ -155,6 +155,7 @@ def decompress_image(
     data_size: int,
     header: dict[str, Any],
     numthreads: int | None = None,
+    *, max_pending_bytes: int | None = None,
 ) -> np.ndarray:
     """Decode a compressed-image BINTABLE HDU.
 
@@ -162,10 +163,10 @@ def decompress_image(
     at any offset; ``data_offset`` and ``data_size`` are the BINTABLE
     HDU's data-block bounds (the rest of this function reads from there).
 
-    Tiles are decoded across threads. The whole BINTABLE and heap are
-    read in one block before any tile is touched, so there is no I/O to
-    serialize, and each tile writes a rectangle of the output that no
-    other tile writes to. RICE_1, HCOMPRESS_1 and PLIO_1 all go through
+    Tiles are decoded across threads into disjoint output rectangles.
+    The default reads the BINTABLE and heap in one block. An explicit
+    max_pending_bytes reads the descriptor table first, then fetches
+    bounded payload batches while earlier batches decode. RICE_1, HCOMPRESS_1 and PLIO_1 all go through
     Cython decoders that release the GIL; GZIP_1 goes through zlib,
     which does too.
     """
@@ -301,7 +302,11 @@ def decompress_image(
             f"compressed FITS: data area {data_size} bytes is shorter "
             f"than declared THEAP+PCOUNT = {total_size}"
         )
-    buf = parent._read(data_offset, total_size)
+    table_size = n_naxis1 * n_naxis2
+    requested_size = table_size if max_pending_bytes is not None else total_size
+    buf = parent._read(data_offset, requested_size)
+    if len(buf) != requested_size:
+        raise ValueError("compressed FITS: truncated table or heap")
     heap_start = theap
 
     # ---------- allocate output, decompress + place each tile ----------
@@ -315,18 +320,7 @@ def decompress_image(
         bytes_per_pixel = 4
         tile_dtype = np.dtype(">i4")
 
-    def _tile(row_idx: int) -> None:
-        # tile (tr, tc) — row-major: tr = row_idx // n_tile_cols
-        tr = row_idx // n_tile_cols
-        tc = row_idx % n_tile_cols
-        y0 = tr * th
-        y1 = min(y0 + th, h)
-        x0 = tc * tw
-        x1 = min(x0 + tw, w)
-        tile_h = y1 - y0
-        tile_w = x1 - x0
-        tile_nelems = tile_h * tile_w
-
+    def _tile_info(row_idx):
         row_byte = row_idx * n_naxis1
         # Primary compressed-data descriptor.
         nelems_payload, heap_off = _read_descriptor(
@@ -366,8 +360,29 @@ def decompress_image(
         # element byte width to get the actual heap byte length (1 for
         # PB, 2 for PI / PLIO_1 shorts).
         payload_nbytes = nelems_payload * comp_elem_size
-        payload = bytes(buf[heap_start + heap_off
-                            : heap_start + heap_off + payload_nbytes])
+        if heap_off < 0 or payload_nbytes < 0 or heap_off + payload_nbytes > total_size - heap_start:
+            raise ValueError("compressed FITS: tile payload extends beyond the heap")
+        return (row_byte, heap_off, payload_nbytes, tile_ztype,
+                tile_is_quantized, tile_decode_dtype)
+
+    def _tile(row_idx: int, payload=None) -> None:
+        # tile (tr, tc), row-major: tr = row_idx // n_tile_cols
+        tr = row_idx // n_tile_cols
+        tc = row_idx % n_tile_cols
+        y0 = tr * th
+        y1 = min(y0 + th, h)
+        x0 = tc * tw
+        x1 = min(x0 + tw, w)
+        tile_h = y1 - y0
+        tile_w = x1 - x0
+        tile_nelems = tile_h * tile_w
+
+        (row_byte, heap_off, payload_nbytes, tile_ztype,
+         tile_is_quantized, tile_decode_dtype) = _tile_info(row_idx)
+        if payload is None:
+            payload = bytes(buf[heap_start + heap_off:heap_start + heap_off + payload_nbytes])
+        if len(payload) != payload_nbytes:
+            raise ValueError("compressed FITS: truncated tile payload")
 
         if tile_ztype == "RICE_1" or tile_ztype == "":
             tile_raw_u = _rice_decode_raw(
@@ -466,5 +481,32 @@ def decompress_image(
         # does, and a mixed file is dominated by the compressed ones.
         has_decode_work=ztype not in ("NOCOMPRESS",),
         output_bytes=out.nbytes)
-    run_batched(_tile, range(n_naxis2), workers, name="fits")
+    if max_pending_bytes is None:
+        run_batched(_tile, range(n_naxis2), workers, name="fits")
+    else:
+        from .core.pipeline import map_bounded, range_batches
+        # The descriptor table is retained metadata. Heap payload and
+        # tile reconstruction scratch are bounded separately from output.
+        scratch = th * tw * max(out_dtype.itemsize, 8) * 3
+        def descriptors():
+            for row in range(n_naxis2):
+                info = _tile_info(row)
+                yield row, data_offset + heap_start + info[1], info[2]
+        cost = lambda item: item[2] + scratch
+        batches = range_batches(descriptors(), cost,
+                                max_bytes=max(1, min(4 << 20, max_pending_bytes // (workers + 1))), max_items=32)
+        source = getattr(parent, "_ds", getattr(parent._read, "__self__", None))
+        read_many = getattr(source, "read_many", None)
+        def fetch(batch):
+            ranges = [(offset, size) for _, offset, size in batch]
+            blobs = (read_many(ranges) if read_many is not None else
+                     [parent._read(offset, size) for offset, size in ranges])
+            return tuple((item[0], blob) for item, blob in zip(batch, blobs))
+        def place(batch):
+            for row, blob in batch:
+                _tile(row, blob)
+        for _ in map_bounded(place, batches, workers, prepare=fetch,
+                             size=lambda batch: sum(cost(item) for item in batch),
+                             max_bytes=max_pending_bytes, name="fits"):
+            pass
     return out

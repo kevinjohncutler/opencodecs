@@ -8,8 +8,12 @@ from typing import Any
 import numpy as np
 
 from .core.codec import Codec, Reader
+from .core.buffers import array_output, CallbackDestination
+from .core._write_helpers import binary_destination
 from .core._io_helpers import read_src as _read_src, write_dest as _write_dest
 from .core._optional_backend import import_or_stubs
+from .core.pipeline import native_workers
+from .core.native_source import NativeSource
 
 (
     _heif_encode, _heif_decode, _heif_check_signature,
@@ -31,6 +35,7 @@ class HeifCodec(Codec):
     has_native = True
     has_delegate = False
     can_encode = True
+    max_writer_frames = 1
     can_decode = True
     # A HEIF holds a SET of top-level images, one of which is primary.
     # A burst, a Live Photo's stills, a depth-plus-color capture all
@@ -74,35 +79,64 @@ class HeifCodec(Codec):
         """
         if not isinstance(data, np.ndarray):
             data = np.asarray(data)
+        if dest is not None:
+            with binary_destination(dest) as stream:
+                return _heif_encode(data, level=level, lossless=lossless,
+                    color=color, bit_depth=bit_depth,
+                    numthreads=native_workers(numthreads), iccprofile=iccprofile,
+                    destination=CallbackDestination(stream))
         encoded = _heif_encode(data, level=level, lossless=lossless,
                                color=color, bit_depth=bit_depth,
-                               numthreads=numthreads,
+                               numthreads=native_workers(numthreads),
                                iccprofile=iccprofile)
         return _write_dest(encoded, dest)
 
     def decode(self, src: Any, *, numthreads: int | None = None,
-               out=None, index=None, **opts) -> np.ndarray:
+               out=None, index=None, range_reads: bool = False, **opts) -> np.ndarray:
         """Decode one image; the primary one unless ``index`` is given.
 
         ``index`` counts top-level images in the order the container
         lists them, which is not necessarily primary-first.
+        Ordinary full-image reads fetch encoded input once. ``range_reads``
+        opts into bounded source callbacks; indexed and read_at sources use
+        callbacks automatically.
         """
-        return _heif_decode(_read_src(src), numthreads=numthreads, out=out,
-                            index=index)
+        if isinstance(src, (bytes, bytearray, memoryview)):
+            return _heif_decode(src, numthreads=native_workers(numthreads),
+                                out=out if out is None else array_output(out), index=index)
+        if index is None and not range_reads and not hasattr(src, "read_at"):
+            return _heif_decode(_read_src(src), numthreads=native_workers(numthreads),
+                                out=out if out is None else array_output(out), index=index)
+        with NativeSource(src) as source:
+            return _heif_decode(source, numthreads=native_workers(numthreads),
+                                out=out if out is None else array_output(out), index=index)
 
     def frame_count(self, src: Any) -> int:
         """How many top-level images the file holds; 1 for a still.
 
         Metadata only: no image is decoded to answer it.
         """
-        return _heif_frame_count(_read_src(src))
+        if isinstance(src, (bytes, bytearray, memoryview)):
+            return _heif_frame_count(src)
+        with NativeSource(src) as source:
+            return _heif_frame_count(source)
 
     def open(self, src: Any, *, numthreads: int | None = None):
-        return HeifReader(_read_src(src), numthreads=numthreads)
+        if isinstance(src, (bytes, bytearray, memoryview)):
+            return HeifReader(src, numthreads=numthreads)
+        source = NativeSource(src)
+        try:
+            return HeifReader(source, numthreads=numthreads)
+        except BaseException:
+            source.close()
+            raise
 
     def read_icc_profile(self, src: Any) -> bytes | None:
         """Return the embedded ICC profile bytes, or ``None`` if absent."""
-        return _heif_read_icc(_read_src(src))
+        if isinstance(src, (bytes, bytearray, memoryview)):
+            return _heif_read_icc(src)
+        with NativeSource(src) as source:
+            return _heif_read_icc(source)
 
 
 
@@ -113,23 +147,24 @@ class HeifReader(Reader):
     so a caller that iterates need not first ask which kind of file it
     opened.
 
-    Each image is decoded through its own context. HEIF's container
-    parse reads the meta box rather than any picture data, so image N
-    costs that parse plus image N -- what chunked promises -- and the
-    alternative, holding one context open, would tie the reader's
-    lifetime to a borrowed input buffer for a saving this format's
-    parse does not justify.
+    Each image uses its own native context. Seekable sources are retained
+    as bounded callbacks, so reading one item does not materialize the whole
+    encoded container. Native decoded planes remain additional working memory.
     """
 
     is_chunked = True
 
     def __init__(self, data, *, numthreads: int | None = None):
+        import threading
+        self._lock = threading.RLock()
         self._data = data
         self._numthreads = numthreads
+        self.closed = False
         self._n = _heif_frame_count(data)
-        first = self.frame(0)
-        self._shape = first.shape
-        self._dtype = first.dtype
+        from .codecs._heif import decode_info
+        info = decode_info(data, index=0)
+        self._shape = info["shape"]
+        self._dtype = info["dtype"]
 
     @property
     def n_frames(self) -> int:
@@ -144,8 +179,22 @@ class HeifReader(Reader):
         return self._dtype
 
     def frame(self, index: int) -> np.ndarray:
-        return _heif_decode(self._data, numthreads=self._numthreads,
-                            index=int(index))
+        with self._lock:
+            if self.closed:
+                raise ValueError("HEIF reader is closed")
+            return _heif_decode(self._data, numthreads=native_workers(self._numthreads),
+                                index=int(index))
+
+    def close(self):
+        with self._lock:
+            if not self.closed:
+                self.closed = True
+                if isinstance(self._data, NativeSource):
+                    self._data.close()
+
+    def __del__(self):
+        if hasattr(self, "closed"):
+            self.close()
 
     __getitem__ = frame
 
@@ -168,9 +217,6 @@ class HeifReader(Reader):
         if len(shapes) == 1:
             return np.stack(frames)
         return frames
-
-    def close(self) -> None:
-        self._data = None
 
     def __enter__(self) -> "HeifReader":
         return self

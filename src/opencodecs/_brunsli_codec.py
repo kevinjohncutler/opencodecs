@@ -75,14 +75,15 @@ class BrunsliCodec(Codec):
             # Re-encode array → JPEG first, then transcode.
             import opencodecs as _oc
             jpeg_bytes = _oc.write(None, data, format="jpeg", level=int(level))
-        out = _brunsli_encode_jpeg(jpeg_bytes)
-        return _write_dest(out, dest)
+        return _brunsli_encode_jpeg(jpeg_bytes, dest=dest)
 
-    def decode(self, src: Any, *, asjpeg: bool = False, **opts) -> Any:
+    def decode(self, src: Any, *, asjpeg: bool = False, dest=None, **opts) -> Any:
+        if dest is not None and not asjpeg:
+            raise ValueError("brunsli: dest requires asjpeg=True for recovered JPEG output")
         blob = _read_src(src)
-        jpeg_bytes = _brunsli_decode_jpeg(blob)
         if asjpeg:
-            return jpeg_bytes
+            return _brunsli_decode_jpeg(blob, dest=dest)
+        jpeg_bytes = _brunsli_decode_jpeg(blob)
         import opencodecs as _oc
         return _oc.read(jpeg_bytes, format="jpeg")
 

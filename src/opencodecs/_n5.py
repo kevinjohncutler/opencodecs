@@ -93,7 +93,13 @@ def _make_store(root: Any) -> Callable[[str], bytes]:
 class N5Array:
     """One N5 dataset (an array), addressed by its own directory."""
 
-    def __init__(self, root: Any, path: str | None = None):
+    def __init__(self, root: Any, path: str | None = None, *,
+                 num_workers: int | None = None, max_buffer_bytes: int = 64 << 20):
+        remote = isinstance(root, str) and root.startswith(("http://", "https://"))
+        self._num_workers = (8 if remote else 1) if num_workers is None else max(1, int(num_workers))
+        if max_buffer_bytes < 1:
+            raise ValueError("max_buffer_bytes must be positive")
+        self._max_buffer_bytes = int(max_buffer_bytes)
         self._fetch = _make_store(root)
         self._path = (path or "").strip("/")
         key = f"{self._path}/attributes.json" if self._path else "attributes.json"
@@ -242,17 +248,17 @@ class N5Array:
                 f"{need} for shape {block_shape}")
         return np.frombuffer(data[:need], dtype=self._dtype).reshape(block_shape)
 
-    def asarray(self) -> np.ndarray:
+    def asarray(self, *, num_workers=None, max_buffer_bytes=None) -> np.ndarray:
         """Assemble the whole dataset.
 
         Unwritten blocks read as zeros, which is what every N5 reader
         does and what sparse datasets rely on.
         """
         out = np.zeros(self._shape, dtype=self._dtype)
-        for idx in np.ndindex(*self.chunk_grid):
+        def place(idx):
             block = self.read_block(idx)
             if block is None:
-                continue
+                return
             sel = tuple(
                 slice(i * c, i * c + b)
                 for i, c, b in zip(idx, self._chunks, block.shape))
@@ -264,6 +270,21 @@ class N5Array:
             sel = tuple(slice(s.start, s.start + t.stop)
                         for s, t in zip(sel, trimmed))
             out[sel] = block[trimmed]
+        workers = self._num_workers if num_workers is None else max(1, int(num_workers))
+        indices = np.ndindex(*self.chunk_grid)
+        if workers <= 1:
+            for idx in indices:
+                place(idx)
+        else:
+            from contextlib import closing
+            from .core.pipeline import map_bounded
+            raw_size = int(np.prod(self._chunks)) * self._dtype.itemsize
+            limit = self._max_buffer_bytes if max_buffer_bytes is None else max_buffer_bytes
+            with closing(map_bounded(place, indices, workers,
+                                     size=lambda _: 3 * raw_size + 65536,
+                                     max_bytes=limit, name="n5-read")) as results:
+                for _ in results:
+                    pass
         return out
 
     def __repr__(self) -> str:

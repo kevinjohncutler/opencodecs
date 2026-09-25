@@ -68,9 +68,9 @@ class DicomWsiLevel:
 
         A tiled instance returns its frames stacked; the tile grid
         geometry needed to stitch them into one plane lives in the
-        Per-Frame Functional Groups, which this reader does not parse.
-        Returning the frames is the honest answer, and DicomFile
-        indexes them by offset.
+        Per-Frame Functional Groups. This method preserves the stacked
+        frame contract; use the pyramid's read_region for selective
+        stitching of a single optical path and focal plane.
         """
         return self._file.asarray(**kw)
 
@@ -154,6 +154,11 @@ class DicomWsiPyramid(PyramidReader):
         self._levels_src = sorted(
             (DicomWsiLevel(p, f) for p, f in by_series[chosen]),
             key=lambda L: (-L.matrix[0] * L.matrix[1], str(L.path)))
+        matrices = [level.matrix for level in self._levels_src]
+        if len(set(matrices)) != len(matrices):
+            for level in self._levels_src:
+                level.close()
+            raise DicomError("dicom: multiple instances share a matrix extent; concatenations and optical paths require explicit selection")
         self._cache: list[PyramidLevel] | None = None
 
     @staticmethod
@@ -192,32 +197,30 @@ class DicomWsiPyramid(PyramidReader):
 
     def _read_region(self, level: PyramidLevel, y0: int, y1: int,
                      x0: int, x1: int) -> np.ndarray:
-        """Crop a region out of a level.
-
-        The backends that fetch only the storage units intersecting a
-        box do so because their unit is a tile with its own offset. A
-        WSI instance is tiled too -- its tiles are frames, indexed by
-        the Basic Offset Table -- but which tile covers which part of
-        the slide lives in the Per-Frame Functional Groups, and this
-        reader does not parse those. Reading the level and cropping is
-        the honest implementation of that: correct, and no faster than
-        it claims to be.
-
-        The level selection above it is where the saving actually is,
-        and that is real: asking for a 512-pixel view of a slide reads
-        the 512-pixel level, not the full-resolution one.
-        """
-        arr = level.reader.asarray()
-        if arr.ndim == 2:
-            return arr[y0:y1, x0:x1]
-        if arr.shape[:2] == level.shape[:2]:
-            return arr[y0:y1, x0:x1]
-        # A tiled instance returns frames rather than a plane; a region
-        # of that is not defined without the tile grid.
-        raise DicomError(
-            "dicom: this level is stored as tiles and the tile grid is in "
-            "the Per-Frame Functional Groups, which this reader does not "
-            "parse; use level(n).reader.frame(i) to reach frames directly")
+        """Read only explicitly positioned frames intersecting the region."""
+        file = level.reader._file
+        if file.n_frames == 1 and level.shape[:2] == (file.rows, file.columns):
+            return file.frame(0)[y0:y1, x0:x1]
+        origins = file.slide_frame_positions
+        shape = (y1 - y0, x1 - x0)
+        if file.samples_per_pixel > 1:
+            shape += (file.samples_per_pixel,)
+        out = np.zeros(shape, dtype=file.dtype)
+        selected = [(index, row, column)
+                    for index, (row, column) in enumerate(origins)
+                    if row < y1 and row + file.rows > y0
+                    and column < x1 and column + file.columns > x0]
+        def place(item):
+            index, row, column = item
+            frame = file.frame(index)
+            sy0, sy1 = max(y0, row), min(y1, row + file.rows)
+            sx0, sx1 = max(x0, column), min(x1, column + file.columns)
+            out[sy0-y0:sy1-y0, sx0-x0:sx1-x0] = frame[sy0-row:sy1-row, sx0-column:sx1-column]
+        from .core.parallel import resolve_workers, run_batched
+        workers = resolve_workers(None, len(selected),
+                                  has_decode_work=file._encapsulated, output_bytes=out.nbytes)
+        run_batched(place, selected, workers, name="dicom-slide")
+        return out
 
     @property
     def imaged_volume(self) -> tuple[float, float] | None:

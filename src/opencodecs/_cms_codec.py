@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import ctypes
 import ctypes.util
+import threading
 from typing import Any
 
 import numpy as np
@@ -154,8 +155,8 @@ TYPE_GRAY_8 = 196617
 TYPE_GRAY_16 = 196618
 TYPE_RGB_8 = 262169
 TYPE_RGB_16 = 262170
-TYPE_RGBA_8 = 393241
-TYPE_RGBA_16 = 393242
+TYPE_RGBA_8 = TYPE_RGB_8 | (1 << 7)
+TYPE_RGBA_16 = TYPE_RGB_16 | (1 << 7)
 
 # lcms2 flag: copy the alpha channel verbatim through the transform.
 # Needed when both input and output formats include an alpha channel
@@ -260,6 +261,8 @@ def cms_transform(
             raise ValueError("cms transform: out= shape/dtype mismatch")
         if not out.flags["C_CONTIGUOUS"]:
             raise ValueError("cms transform: out= must be C-contiguous")
+        if not out.flags.writeable:
+            raise ValueError("cms transform: out= must be writable")
         out_arr = out
 
     h_in = lib.cmsOpenProfileFromMem(profile_in, len(profile_in))
@@ -307,6 +310,84 @@ def cms_transform(
     finally:
         lib.cmsCloseProfile(h_in)
     return out_arr
+
+
+class CmsTransform:
+    """Explicitly owned, reusable color transform for one sample layout.
+
+    Create with a representative array, then call with any image of the same
+    dtype and channel layout. Calls on one context are serialized; independent
+    workers can own separate contexts. No global native-handle pool is used.
+    """
+
+    def __init__(self, sample, *, profile_in, profile_out=None, intent=None):
+        self._lock = threading.RLock()
+        self._handle = None
+        self._lib = _load_lcms2()
+        self._format = _array_format(np.asarray(sample))
+        if isinstance(intent, str):
+            if intent.lower() not in _INTENT_NAMES:
+                raise ValueError(f"cms: unknown intent {intent!r}")
+            intent = _INTENT_NAMES[intent.lower()]
+        intent = 0 if intent is None else int(intent)
+        if not 0 <= intent <= 3:
+            raise ValueError("cms: intent must be between 0 and 3")
+        lib = self._lib
+        source = lib.cmsOpenProfileFromMem(profile_in, len(profile_in))
+        if not source:
+            raise ValueError("cms: invalid input profile")
+        target = None
+        try:
+            target = (lib.cmsCreate_sRGBProfile() if profile_out is None else
+                      lib.cmsOpenProfileFromMem(profile_out, len(profile_out)))
+            if not target:
+                raise ValueError("cms: invalid output profile")
+            flags = _CMS_FLAGS_COPY_ALPHA if self._format in _FORMATS_WITH_ALPHA else 0
+            self._handle = lib.cmsCreateTransform(
+                source, self._format, target, self._format, intent, flags)
+            if not self._handle:
+                raise ValueError("cms: incompatible profiles and sample layout")
+        finally:
+            if target:
+                lib.cmsCloseProfile(target)
+            lib.cmsCloseProfile(source)
+
+    def __call__(self, data, *, out=None):
+        arr = np.ascontiguousarray(data)
+        if _array_format(arr) != self._format:
+            raise ValueError("cms: input layout differs from the context sample")
+        if out is None:
+            out = np.empty_like(arr)
+        else:
+            from .core.buffers import array_output
+            array_output(out)
+            if out.shape != arr.shape or out.dtype != arr.dtype:
+                raise ValueError("cms: output shape/dtype mismatch")
+        pixels = arr.shape[0] * arr.shape[1]
+        if pixels > 0xFFFFFFFF:
+            raise ValueError("cms: one transform call exceeds the native pixel limit")
+        with self._lock:
+            if self._handle is None:
+                raise ValueError("cms: transform is closed")
+            self._lib.cmsDoTransform(self._handle, arr.ctypes.data,
+                                     out.ctypes.data, pixels)
+        return out
+
+    def close(self):
+        with self._lock:
+            if self._handle is not None:
+                self._lib.cmsDeleteTransform(self._handle)
+                self._handle = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        self.close()
+
+    def __del__(self):
+        if getattr(self, '_handle', None) is not None:
+            self.close()
 
 
 # ─── built-in profile factories ──────────────────────────────────────
@@ -481,6 +562,10 @@ class CmsCodec(Codec):
         raise NotImplementedError(
             "cms is a color transform, not a compressor; use decode()")
 
+    def transform_context(self, sample, **opts):
+        """Own a reusable native transform for repeated tiles or rows."""
+        return CmsTransform(sample, **opts)
+
     def decode(self, src: Any, *, profile_in: bytes,
                profile_out: bytes | None = None,
                intent: int | str | None = None,
@@ -507,6 +592,7 @@ class CmsCodec(Codec):
 
 __all__ = [
     "CmsCodec",
+    "CmsTransform",
     "cms_transform",
     "srgb_to_display_p3_uint8",
     "_builtin_profile_icc",

@@ -59,19 +59,36 @@ class _JxlStreamWriter(Writer):
     def write_frame(self, arr: np.ndarray, **opts) -> None:
         if self._closed:
             raise RuntimeError("jxl: writer is closed")
+        if opts:
+            raise TypeError("jxl: per-frame options are not supported by the streaming adapter")
         if self._pending is not None:
-            self._inner.write_frame(self._pending, **opts)
-        self._pending = np.asarray(arr)
+            self._inner.write_frame(self._pending)
+        # Retention crosses the call boundary, so own the pending pixels.
+        self._pending = np.array(arr, copy=True)
 
     def close(self) -> bytes | None:
         if self._closed:
             return self._result
         self._closed = True
-        if self._pending is not None:
-            self._inner.write_frame(self._pending, is_last=True)
+        try:
+            if self._pending is not None:
+                self._inner.write_frame(self._pending, is_last=True)
+                self._pending = None
+            self._result = self._inner.close()
+        except BaseException:
             self._pending = None
-        self._result = self._inner.close()
+            self._inner.abort()
+            raise
         return self._result
+
+    def __exit__(self, exc_type, exc, tb):
+        if exc_type is None:
+            self.close()
+        else:
+            self._pending = None
+            self._closed = True
+            self._inner.abort()
+        return False
 
     def __getattr__(self, name: str):
         return getattr(self._inner, name)
@@ -131,6 +148,10 @@ class JpegXLCodec(Codec):
     """
 
     name = "jxl"
+    streaming_encode = True
+    streaming_output = True
+    writer_buffering = "frame"
+    decode_overlap = True
     aliases = ("jpegxl", "jpeg-xl")
     file_extensions = (".jxl",)
 

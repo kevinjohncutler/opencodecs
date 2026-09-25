@@ -102,45 +102,84 @@ class GifStreamReader(Reader):
 
 
 class _LazyGifWriter(Writer):
-    """GifWriter needs the canvas size before the first frame.
-
-    Every other writer here takes a destination and learns the geometry
-    from what it is given, so a caller driving writers generically has
-    nothing to pass. This defers construction to the first
-    ``write_frame`` and takes the canvas from that frame's shape, which
-    is what the caller meant anyway -- GIF requires every frame to match
-    it. Passing ``width``/``height`` explicitly still works and skips
-    the inference.
-    """
+    """Infer the canvas and drain each encoded frame to its destination."""
 
     def __init__(self, dest: Any = None, **opts):
         self._dest = dest
         self._opts = opts
         self._inner = None
         self._closed = False
-        self._result: bytes | None = None
+        self._result = None
+        self._destination = None
+        self._destination_context = None
+
+    def _emit(self, data):
+        from .core._write_helpers import binary_destination, write_all
+        if self._destination_context is None:
+            self._destination_context = binary_destination(self._dest)
+            self._destination = self._destination_context.__enter__()
+        write_all(self._destination, data)
+        flush = getattr(self._destination, "flush", None)
+        if flush is not None:
+            flush()
+
+    def _finish_destination(self):
+        context, self._destination_context = self._destination_context, None
+        self._destination = None
+        if context is not None:
+            context.__exit__(None, None, None)
 
     def write_frame(self, arr, **opts) -> None:
         if self._closed:
             raise RuntimeError("gif: writer is closed")
         arr = np.asarray(arr)
-        if self._inner is None:
-            opts_ = dict(self._opts)
-            opts_.setdefault("height", arr.shape[0])
-            opts_.setdefault("width", arr.shape[1])
-            self._inner = GifWriter(**opts_)
-        self._inner.write_frame(arr, **opts)
+        try:
+            if self._inner is None:
+                options = dict(self._opts)
+                options.setdefault("height", arr.shape[0])
+                options.setdefault("width", arr.shape[1])
+                self._inner = GifWriter(**options)
+            self._inner.write_frame(arr, **opts)
+            if self._dest is not None:
+                self._emit(self._inner.drain())
+        except BaseException:
+            self._abort()
+            raise
 
     def close(self) -> bytes | None:
         if self._closed:
             return self._result
         self._closed = True
-        if self._inner is None:
-            raise ValueError("gif: closed without writing a frame")
-        self._result = self._inner.close()
-        if self._dest is not None and self._result is not None:
-            self._result = _write_dest(self._result, self._dest)
+        try:
+            if self._inner is None:
+                raise ValueError("gif: closed without writing a frame")
+            result = self._inner.close()
+            if self._dest is None:
+                self._result = result
+            else:
+                self._emit(result)
+        finally:
+            self._finish_destination()
         return self._result
+
+    def _abort(self):
+        self._closed = True
+        try:
+            if self._inner is not None:
+                self._inner.close()
+        except Exception:
+            pass
+        try:
+            self._finish_destination()
+        except Exception:
+            pass
+
+    def __exit__(self, exc_type, exc, tb):
+        if exc_type is None:
+            self.close()
+        else:
+            self._abort()
+        return False
 
 
 class GifCodec(Codec):
@@ -158,6 +197,9 @@ class GifCodec(Codec):
     """
 
     name = "gif"
+    streaming_encode = True
+    streaming_output = True
+    writer_buffering = "frame"
     file_extensions = (".gif",)
 
     has_native = True

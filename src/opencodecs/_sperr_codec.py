@@ -28,6 +28,7 @@ from typing import Any
 import numpy as np
 
 from .core.codec import Codec
+from .core.pipeline import native_workers
 from .core._io_helpers import read_src as _read_src, write_dest as _write_dest
 from .core._optional_backend import import_or_stubs
 
@@ -82,12 +83,12 @@ class SperrCodec(Codec):
             data,
             mode=mode,
             psnr=float(psnr), bpp=float(bpp), pwe=float(pwe),
-            chunk=tuple(chunk), nthreads=int(nthreads),
+            chunk=tuple(chunk), nthreads=int(native_workers(nthreads)),
         )
         return _write_dest(out, dest)
 
-    def decode(self, src: Any, **opts) -> np.ndarray:
-        return _sperr_decode(_read_src(src))
+    def decode(self, src: Any, *, nthreads: int = 0, **opts) -> np.ndarray:
+        return _sperr_decode(_read_src(src), nthreads=int(native_workers(nthreads)))
 
 
 __all__ = ["SperrCodec"]

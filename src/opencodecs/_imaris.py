@@ -203,7 +203,9 @@ class ImarisReader(PyramidReader):
     # -- pixels ------------------------------------------------------
 
     def read(self, *, level: int = 0, timepoint: int | None = None,
-             channel: int | None = None) -> np.ndarray:
+             channel: int | None = None,
+             numthreads: int | None = None,
+             max_pending_bytes: int | None = None) -> np.ndarray:
         """Read a whole level as ``(Z, Y, X)``, cropped to the real extent."""
         tp = self.timepoint if timepoint is None else timepoint
         ch = self.channel if channel is None else channel
@@ -214,7 +216,9 @@ class ImarisReader(PyramidReader):
             z, y, x = self.level_shape(level)
         finally:
             self.timepoint, self.channel = saved_tp, saved_ch
-        return g["Data"][:z, :y, :x]
+        from ._h5_common import read_h5_dataset
+        return read_h5_dataset(g["Data"], np.s_[:z, :y, :x],
+                               numthreads=numthreads, max_pending_bytes=max_pending_bytes)
 
     def _read_region(self, level: PyramidLevel, y0: int, y1: int,
                      x0: int, x1: int) -> np.ndarray:
@@ -232,7 +236,8 @@ class ImarisReader(PyramidReader):
         index = level.reader._level
         g = self._channel_group(index, self.timepoint, self.channel)
         z, _, _ = self.level_shape(index)
-        region = g["Data"][:z, y0:y1, x0:x1]
+        from ._h5_common import read_h5_dataset
+        region = read_h5_dataset(g["Data"], np.s_[:z, y0:y1, x0:x1])
         # A 2-D acquisition is the common case; drop the singleton z so
         # read_region returns (y, x) like the other pyramid backends.
         return region[0] if region.shape[0] == 1 else region

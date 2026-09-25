@@ -8,6 +8,7 @@ from typing import Any
 import numpy as np
 
 from .core.codec import Codec
+from .core.buffers import byte_output
 from .core._io_helpers import read_src as _read_src, write_dest as _write_dest
 from .core._optional_backend import import_or_stubs
 
@@ -79,7 +80,8 @@ class DeflateCodec(Codec):
             compressed = _zlib_encode(data, level=level)
         return _write_dest(compressed, dest)
 
-    def decode(self, src: Any, *, backend: str | None = None, **opts) -> bytes:
+    def decode(self, src: Any, *, backend: str | None = None,
+               out=None, **opts) -> bytes | memoryview:
         use_isal = backend is not None and backend.lower() in ("isal", "igzip")
         if use_isal and not _HAVE_ISAL:
             raise RuntimeError(
@@ -88,8 +90,8 @@ class DeflateCodec(Codec):
             )
         raw = _read_src(src)
         if use_isal:
-            return _isal_decode(raw)
-        return _zlib_decode(raw)
+            return _isal_decode(raw) if out is None else _isal_decode(raw, out=byte_output(out))
+        return _zlib_decode(raw) if out is None else _zlib_decode(raw, out=byte_output(out))
 
 
 

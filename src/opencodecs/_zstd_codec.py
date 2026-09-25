@@ -8,7 +8,9 @@ from typing import Any
 import numpy as np
 
 from .core.codec import Codec
+from .core.buffers import byte_output
 from .core._optional_backend import import_or_stubs
+from .core.pipeline import in_worker
 from .core._io_helpers import read_src as _read_src, write_dest as _write_dest
 
 _zstd_encode, _zstd_decode, _zstd_check_signature, _HAVE_BACKEND = import_or_stubs(
@@ -49,11 +51,13 @@ class ZstdCodec(Codec):
         # caller is responsible for remembering shape/dtype.
         if isinstance(data, np.ndarray):
             data = data.tobytes()
-        compressed = _zstd_encode(data, level=level, numthreads=numthreads)
+        compressed = _zstd_encode(data, level=level, numthreads=0 if in_worker() else numthreads)
         return _write_dest(compressed, dest)
 
-    def decode(self, src: Any, **opts) -> bytes:
-        return _zstd_decode(_read_src(src))
+    def decode(self, src: Any, *, out=None, **opts) -> bytes | memoryview:
+        if out is None:
+            return _zstd_decode(_read_src(src))
+        return _zstd_decode(_read_src(src), out=byte_output(out))
 
 
 __all__ = ["ZstdCodec"]

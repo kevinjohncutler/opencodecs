@@ -8,6 +8,7 @@ from typing import Any
 import numpy as np
 
 from .core.codec import Codec
+from .core.buffers import array_output
 from .core._io_helpers import read_src as _read_src, write_dest as _write_dest
 from .core._optional_backend import import_or_stubs
 
@@ -59,8 +60,17 @@ class JpegCodec(Codec):
         encoded = _jpeg_encode(data, level=level, iccprofile=iccprofile)
         return _write_dest(encoded, dest)
 
-    def decode(self, src: Any, *, out=None, **opts) -> np.ndarray:
-        return _jpeg_decode(_read_src(src), out=out)
+    def decode(self, src: Any, *, out=None, scale=None,
+               scale_num=None, scale_denom=None, **opts) -> np.ndarray:
+        return _jpeg_decode(
+            _read_src(src), out=out if out is None else array_output(out),
+            scale=scale, scale_num=scale_num, scale_denom=scale_denom)
+
+    def decoder(self):
+        """Create an explicitly owned reusable decode handle."""
+        from .codecs._jpeg import DecoderContext
+        from .core.buffers import ImageDecoderContext
+        return ImageDecoderContext(DecoderContext())
 
     def read_icc_profile(self, src: Any) -> bytes | None:
         """Return the embedded ICC profile bytes, or ``None`` if absent."""

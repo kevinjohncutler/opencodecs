@@ -70,13 +70,29 @@ class NumpyCodec(Codec):
         return len(head) >= 8 and head[:6] == b"\x93NUMPY"
 
     def encode(self, data: Any, *, dest=None, **opts) -> bytes | None:
-        arr = np.ascontiguousarray(data)
-        buf = io.BytesIO()
-        # ``allow_pickle=False`` matches modern numpy's default and
-        # guarantees the output is a pure-binary header+data dump
-        # (no pickle protocol bytes for object dtypes).
-        np.save(buf, arr, allow_pickle=False)
-        return _write_dest(buf.getvalue(), dest)
+        from .core._write_helpers import binary_destination, iter_array_buffers, write_all, CompleteWriter
+        arr = np.asarray(data)
+        if arr.dtype.hasobject:
+            raise ValueError("Object arrays cannot be saved when allow_pickle=False")
+        stream = io.BytesIO() if dest is None else dest
+        with binary_destination(stream) as target:
+            header = {"descr": np.lib.format.dtype_to_descr(arr.dtype),
+                      "fortran_order": False, "shape": arr.shape}
+            header_stream = io.BytesIO()
+            try:
+                try:
+                    np.lib.format.write_array_header_1_0(header_stream, header)
+                except ValueError:
+                    np.lib.format.write_array_header_2_0(header_stream, header)
+            except UnicodeEncodeError:
+                # NumPy's public array writer selects version 3 for Unicode
+                # field names and already streams through bounded buffers.
+                np.lib.format.write_array(CompleteWriter(target), arr, allow_pickle=False)
+            else:
+                write_all(target, header_stream.getvalue())
+                for block in iter_array_buffers(arr):
+                    write_all(target, block)
+        return stream.getvalue() if dest is None else None
 
     def decode(self, src: Any, *, out=None, **opts) -> np.ndarray:
         # numpy.load returns a fresh ndarray; if the caller wants

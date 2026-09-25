@@ -8,8 +8,12 @@ from typing import Any
 import numpy as np
 
 from .core.codec import Codec
+from .core.buffers import array_output, SeekableDestination
+from .core._write_helpers import binary_destination, write_all
 from .core._io_helpers import read_src as _read_src, write_dest as _write_dest
 from .core._optional_backend import import_or_stubs
+from .core.pipeline import native_workers
+from .core.native_source import NativeSource
 
 _jp2_encode, _jp2_decode, _jp2_check_signature, _HAVE_BACKEND = import_or_stubs(
     "opencodecs.codecs._jpeg2k",
@@ -53,14 +57,21 @@ class Jpeg2kCodec(Codec):
         changes only the zoom.
         """
         from .codecs._jpeg2k import decode_region as _region
-        return _region(_read_src(src), y0, y1, x0, x1, reduce=reduce,
-                       numthreads=numthreads)
+        if isinstance(src, (bytes, bytearray, memoryview)):
+            return _region(src, y0, y1, x0, x1, reduce=reduce,
+                           numthreads=native_workers(numthreads))
+        with NativeSource(src) as source:
+            return _region(source, y0, y1, x0, x1, reduce=reduce,
+                           numthreads=native_workers(numthreads))
 
     def decode_tile(self, src: Any, tile_index: int, *,
                     numthreads: int | None = None) -> np.ndarray:
         """Decode one tile of a tiled codestream, in raster order."""
         from .codecs._jpeg2k import decode_tile as _tile
-        return _tile(_read_src(src), tile_index, numthreads=numthreads)
+        if isinstance(src, (bytes, bytearray, memoryview)):
+            return _tile(src, tile_index, numthreads=native_workers(numthreads))
+        with NativeSource(src) as source:
+            return _tile(source, tile_index, numthreads=native_workers(numthreads))
 
     def signature(self, head: bytes) -> bool:
         return _jp2_check_signature(head)
@@ -75,15 +86,31 @@ class Jpeg2kCodec(Codec):
         # than the reference, no cheating."
         if not isinstance(data, np.ndarray):
             data = np.asarray(data)
+        if dest is not None:
+            with binary_destination(dest) as stream:
+                if hasattr(stream, "seek") and hasattr(stream, "tell") and (
+                    not hasattr(stream, "seekable") or stream.seekable()
+                ):
+                    return _jp2_encode(data, level=level, lossless=lossless, codec=codec,
+                                       numthreads=native_workers(numthreads),
+                                       destination=SeekableDestination(stream))
+                encoded = _jp2_encode(data, level=level, lossless=lossless, codec=codec,
+                                       numthreads=native_workers(numthreads))
+                write_all(stream, encoded)
+                return None
         encoded = _jp2_encode(
             data, level=level, lossless=lossless, codec=codec,
-            numthreads=numthreads,
+            numthreads=native_workers(numthreads),
         )
         return _write_dest(encoded, dest)
 
     def decode(self, src: Any, *, numthreads: int | None = None,
-               **opts) -> np.ndarray:
-        return _jp2_decode(_read_src(src), numthreads=numthreads)
+               out=None, reduce: int = 0, **opts) -> np.ndarray:
+        if out is None:
+            return _jp2_decode(_read_src(src), numthreads=native_workers(numthreads),
+                               reduce=reduce)
+        return _jp2_decode(_read_src(src), numthreads=native_workers(numthreads),
+                           out=array_output(out), reduce=reduce)
 
 
 

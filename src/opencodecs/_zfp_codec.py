@@ -86,19 +86,23 @@ class ZfpCodec(Codec):
         )
         return _write_dest(out, dest)
 
-    def decode(self, src: Any, *, numthreads: int | None = None,
+    def decode(self, src: Any, *, out=None, numthreads: int | None = None,
                **opts) -> np.ndarray:
         """Decode a zfp stream.
 
         A 3-D fixed-rate stream is decoded block-wise across threads;
         anything else goes to zfp_decompress, which is the same answer.
         """
+        from .core.pipeline import native_workers
+        numthreads = native_workers(numthreads)
         data = _read_src(src)
-        out = self._decode_parallel(data, numthreads)
-        return _zfp_decode(data) if out is None else out
+        from .core.buffers import array_output
+        out = array_output(out)
+        result = self._decode_parallel(data, numthreads, out=out)
+        return _zfp_decode(data, out=out) if result is None else result
 
     @staticmethod
-    def _decode_parallel(data, numthreads):
+    def _decode_parallel(data, numthreads, *, out=None):
         """Threaded block decode, or None when it does not apply.
 
         Returns None rather than raising for every stream this path
@@ -119,27 +123,42 @@ class ZfpCodec(Codec):
         if workers <= 1:
             return None
 
-        probe = _zfp_decode_block(data, 0)
-        blocks = np.empty((n, 4, 4, 4), dtype=probe.dtype)
-        step = (n + workers - 1) // workers
-        ranges = [(i, min(i + step, n)) for i in range(0, n, step)]
-        run_batched(
-            lambda r: _zfp_decode_block_range(data, r[0], r[1],
-                                              blocks[r[0]:r[1]]),
-            ranges, workers, name="zfp")
+        try:
+            probe = _zfp_decode_block(data, 0)
+        except Exception:
+            # The block entry points support floating-point streams;
+            # integer fixed-rate streams still use the whole decoder.
+            return None
+        shape = tuple(grid["shape"])
+        if out is None:
+            out = np.empty(shape, dtype=probe.dtype)
+        elif out.shape != shape or out.dtype != probe.dtype:
+            raise ValueError("zfp decode: out shape and dtype must match the stream")
 
-        # Blocks are stored x-fastest over the block grid, and each is
-        # a 4x4x4 cube, so the assembled volume is the block grid and
-        # the intra-block axes interleaved. One transpose, one copy.
-        vol = (blocks.reshape(nbz, nby, nbx, 4, 4, 4)
-                     .transpose(0, 3, 1, 4, 2, 5)
-                     .reshape(nbz * 4, nby * 4, nbx * 4))
-        # Edge blocks are padded by the encoder when a dimension is
-        # not a multiple of 4. That padding decodes to real values and
-        # is not part of the array, so it is trimmed against the
-        # extent the header states.
-        nz, ny, nx = grid["shape"]
-        return np.ascontiguousarray(vol[:nz, :ny, :nx])
+        # Decode complete block rows so one transpose covers a broad
+        # output band. Each worker owns bounded contiguous scratch,
+        # instead of retaining every padded block plus an assembled copy.
+        row_bytes = nbx * 64 * probe.dtype.itemsize
+        rows_per_batch = max(1, min(nby, (1 << 20) // row_bytes))
+        bands = [(z, y, min(y + rows_per_batch, nby))
+                 for z in range(nbz) for y in range(0, nby, rows_per_batch)]
+        nz, ny, nx = shape
+
+        def place_band(band):
+            z, y, end = band
+            start = (z * nby + y) * nbx
+            stop = (z * nby + end) * nbx
+            blocks = np.empty((stop - start, 4, 4, 4), dtype=probe.dtype)
+            _zfp_decode_block_range(data, start, stop, blocks)
+            pixels = (blocks.reshape(end - y, nbx, 4, 4, 4)
+                            .transpose(2, 0, 3, 1, 4)
+                            .reshape(4, (end - y) * 4, nbx * 4))
+            z0, y0 = z * 4, y * 4
+            z1, y1 = min(z0 + 4, nz), min(end * 4, ny)
+            out[z0:z1, y0:y1, :] = pixels[:z1 - z0, :y1 - y0, :nx]
+
+        run_batched(place_band, bands, workers, name="zfp")
+        return out
 
     def block_grid(self, src: Any) -> dict:
         """Block geometry of a stream, without decoding anything."""
@@ -153,7 +172,8 @@ class ZfpCodec(Codec):
         (ib, jb, kb). See the extension's docstring for what fixed-rate
         buys and why the other modes cannot do this.
         """
-        return _zfp_decode_block(_read_src(src), index, out=out)
+        from .core.buffers import array_output
+        return _zfp_decode_block(_read_src(src), index, out=array_output(out))
 
 
 __all__ = ["ZfpCodec"]

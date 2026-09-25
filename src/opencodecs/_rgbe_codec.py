@@ -17,6 +17,7 @@ from typing import Any
 import numpy as np
 
 from .core.codec import Codec
+from .core.buffers import array_output
 from .core._io_helpers import read_src as _read_src, write_dest as _write_dest
 from .core._optional_backend import import_or_stubs
 
@@ -57,7 +58,7 @@ class RgbeCodec(Codec):
 
     def decode(self, src: Any, *, out=None, **opts) -> np.ndarray:
         data = _read_src(src)
-        return _rgbe_decode(data, out=out)
+        return _rgbe_decode(data, out=out if out is None else array_output(out))
 
 
 __all__ = ["RgbeCodec"]

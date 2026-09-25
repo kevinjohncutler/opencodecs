@@ -1,8 +1,4 @@
-"""NiftiCodec — Codec adapter for the native NIfTI-1 / NIfTI-2 reader.
-
-NIfTI is a container, so this decodes and does not encode, matching
-``FitsCodec`` and ``MrcCodec``.
-"""
+"""NIfTI adapter with bounded volume serialization and lazy uncompressed reads."""
 
 from __future__ import annotations
 
@@ -76,12 +72,12 @@ class NiftiCodec(Codec):
         every tool reads NIfTI-1, and its int16 dimension limit is
         checked rather than silently truncated.
         """
-        from ._nifti_writer import encode_nifti
-        blob = encode_nifti(data, **opts)
+        from ._nifti_writer import encode_nifti, write_nifti
         if dest is None:
-            return blob
-        from .core._io_helpers import write_dest as _write_dest
-        return _write_dest(dest, blob)
+            return encode_nifti(data, **opts)
+        write_nifti(dest, data, **opts)
+        return None
+
 
 
 __all__ = ["NiftiCodec"]

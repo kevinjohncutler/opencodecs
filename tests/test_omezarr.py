@@ -66,6 +66,7 @@ def http_zarr_server(tmp_path):
 
     class _Quiet(http.server.ThreadingHTTPServer):
         allow_reuse_address = True
+        request_queue_size = 32
 
     httpd = _Quiet(("127.0.0.1", 0), handler)
     # Suppress per-request log spam.
@@ -77,6 +78,7 @@ def http_zarr_server(tmp_path):
         yield base_url, directory
     finally:
         httpd.shutdown()
+        httpd.server_close()
         th.join(timeout=2)
 
 

@@ -91,9 +91,7 @@ def _build_dtype_table() -> None:
         pass
 
 
-# Module-level persistent thread pool — same pattern as CZI reader.
-# Promoting to a shared helper is a follow-up; keeping the duplication
-# minimal (just 8 lines) for now.
+# Persistent reader workers are supplied by the shared pool cache.
 _DEFAULT_POOL_SIZE = max(2 * (os.cpu_count() or 4), 8)
 _POOL: ThreadPoolExecutor | None = None
 _POOL_LOCK = threading.Lock()
@@ -511,42 +509,73 @@ class NDTiffDataset(Reader):
         keys: list[dict] | list[int] | None = None,
         *,
         prefetch: int = 16,
+        max_pending_bytes: int | None = None,
+        n_workers: int | None = None,
+        worker_budget=None,
     ) -> Iterator[np.ndarray]:
-        """Yield frames in submitted order with parallel read-ahead.
+        """Yield ordered frames with byte and task backpressure.
 
-        Bounded memory: at most ``prefetch`` frames in flight at once,
-        so this is safe for arbitrarily large acquisitions (no risk of
-        allocating a 100 GB output array up front like ``read_many``).
-
-        Match-for-match replacement for ndstorage's iteration pattern
-        with the added bonus that I/O issues in parallel.
+        The default retains the persistent count-prefetch fast path. An
+        explicit max_pending_bytes enables shared byte reservations, which
+        include stored pixels and decoded frame storage; native codec
+        workspace and source caches have separate lifetimes.
+        One oversized frame runs alone. Close the iterator before closing
+        its dataset when stopping early: queued reads are canceled and
+        running source users finish before iterator close returns.
         """
-        if keys is None:
-            indices = list(range(len(self.entries)))
-        else:
-            indices = [self._key_to_index(k) for k in keys]
-        if not indices:
+        if prefetch < 1:
+            raise ValueError("prefetch must be positive")
+        from .core.pipeline import map_bounded
+        indices = (range(len(self.entries)) if keys is None else
+                   (self._key_to_index(key) for key in keys))
+        entries = (self.entries[index] for index in indices)
+        from .core.pipeline import in_worker
+        if (max_pending_bytes is None and n_workers is None
+                and worker_budget is None and not in_worker()):
+            # Preserve the existing short-frame persistent-pool path. Cleanup
+            # joins this iterator's jobs before its caller can close sources.
+            from collections import deque
+            from concurrent.futures import CancelledError
+            pending = deque()
+            pool = _get_pool()
+            def submit_more():
+                while len(pending) < prefetch:
+                    entry = next(entries, None)
+                    if entry is None:
+                        break
+                    pending.append(pool.submit(self._read_entry, entry))
+            current = None
+            try:
+                submit_more()
+                while pending:
+                    current = pending.popleft()
+                    result = current.result()
+                    current = None
+                    yield result
+                    del result
+                    submit_more()
+            finally:
+                if current is not None:
+                    pending.appendleft(current)
+                for future in pending:
+                    future.cancel()
+                for future in pending:
+                    try:
+                        future.exception()
+                    except CancelledError:
+                        pass
             return
-
-        pool = _get_pool()
-        # Pipeline: submit up to ``prefetch`` reads in advance; as each
-        # completes, yield it and submit the next one.
-        in_flight: list = []
-        next_to_submit = 0
-
-        def _submit_more():
-            nonlocal next_to_submit
-            while len(in_flight) < prefetch and next_to_submit < len(indices):
-                idx = indices[next_to_submit]
-                fut = pool.submit(self._read_entry, self.entries[idx])
-                in_flight.append(fut)
-                next_to_submit += 1
-
-        _submit_more()
-        while in_flight:
-            fut = in_flight.pop(0)
-            yield fut.result()
-            _submit_more()
+        workers = min(prefetch, max(1, n_workers if n_workers is not None
+                                    else min(os.cpu_count() or 1, 16)))
+        def reserve(entry):
+            encoded = (self._compressed_nbytes_for(entry)
+                       if entry.pixel_compression else entry.pixel_nbytes)
+            return encoded + 2 * entry.pixel_nbytes
+        yield from map_bounded(self._read_entry, entries, workers,
+                               max_pending=prefetch, max_bytes=(64 << 20 if max_pending_bytes is None
+                                                              else max_pending_bytes),
+                               size=reserve, budget=worker_budget, name="ndtiff",
+                               executor=_get_pool())
 
     # ----- Internals -----
 

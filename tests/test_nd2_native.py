@@ -122,6 +122,28 @@ def http_nd2_server(tmp_path):
         def __init__(self, *a, **kw):
             super().__init__(*a, directory=str(tmp_path), **kw)
 
+        def do_GET(self):
+            requested = self.headers.get("Range")
+            if not requested:
+                return super().do_GET()
+            start, end = map(int, requested.removeprefix("bytes=").split("-"))
+            total = served_path.stat().st_size
+            if start >= total:
+                self.send_response(416)
+                self.send_header("Content-Range", f"bytes */{total}")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            end = min(end, total - 1)
+            with served_path.open("rb") as source:
+                source.seek(start)
+                payload = source.read(end - start + 1)
+            self.send_response(206)
+            self.send_header("Content-Range", f"bytes {start}-{end}/{total}")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
     httpd = socketserver.TCPServer(("127.0.0.1", 0), Handler)
     port = httpd.server_address[1]
     thr = threading.Thread(target=httpd.serve_forever, daemon=True)
@@ -130,6 +152,8 @@ def http_nd2_server(tmp_path):
         yield f"http://127.0.0.1:{port}/sample.nd2"
     finally:
         httpd.shutdown()
+        httpd.server_close()
+        thr.join()
 
 
 def test_native_nd2_decode_via_http_datasource(http_nd2_server):

@@ -30,8 +30,9 @@ Deferred
 from __future__ import annotations
 
 import json
+import math
 import os
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import closing
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -86,6 +87,17 @@ def _encode_chunk(raw: bytes, codec: str, level: int | None) -> bytes:
     return bytes(codec_obj.encode(raw))
 
 
+def _verify_chunk(raw, encoded, compressor):
+    """Invert the actual compressor and compare original serialized pixel bits."""
+    from .core.verification import verify_with_decoder
+    if compressor in (None, "none", "raw"):
+        decoder = lambda data: data
+    else:
+        from ._omezarr import _run_decoder
+        decoder = lambda data: _run_decoder(compressor, {}, data)
+    verify_with_decoder(raw, encoded, decoder, codec=f"zarr:{compressor}")
+
+
 # ---------------------------------------------------------------------------
 # OmeZarrArrayWriter — single Zarr array
 # ---------------------------------------------------------------------------
@@ -107,7 +119,7 @@ _DTYPE_TO_V3_NAME = {
 
 def _v3_dtype_name(dtype: np.dtype) -> str:
     try:
-        return _DTYPE_TO_V3_NAME[dtype]
+        return _DTYPE_TO_V3_NAME[dtype.newbyteorder("=")]
     except KeyError:
         raise OmeZarrWriterError(f"unsupported v3 dtype {dtype}")
 
@@ -123,6 +135,7 @@ def write_zarr_array(
     zarr_format: int = 2,
     fill_value: int | float = 0,
     workers: int | None = None,
+    verify: bool = False,
 ) -> None:
     """Write a single Zarr array (v2 or v3) to ``path``.
 
@@ -160,10 +173,21 @@ def write_zarr_array(
         uses ``os.cpu_count()``; ``1`` forces serial. Chunk encoders
         release the GIL (zstd, blosc2, gzip's zlib path all do),
         producing near-linear speedup on multi-core machines.
+    verify : bool, optional
+        Decode each compressed chunk and compare exact serialized pixel bits
+        before emission. Verification runs in the chunk workers and reserves
+        additional decoded output and bounded comparison scratch. This writer
+        has no external filters; compressor-internal transforms are inverted
+        by its actual decoder. Container metadata and destination durability
+        are outside this payload check.
     """
     root = Path(path)
     root.mkdir(parents=True, exist_ok=True)
     chunks = tuple(int(c) for c in (chunks or arr.shape))
+    if any(c <= 0 for c in chunks):
+        raise OmeZarrWriterError("chunk dimensions must be positive")
+    if zarr_format == 3 and compressor not in (None, "none", "raw", "zstd", "blosc2", "gzip"):
+        raise OmeZarrWriterError(f"unsupported Zarr v3 compressor {compressor!r}")
     if len(chunks) != arr.ndim:
         raise OmeZarrWriterError(
             f"chunks rank {len(chunks)} != array rank {arr.ndim}"
@@ -180,6 +204,8 @@ def write_zarr_array(
             raise OmeZarrWriterError(
                 f"shards rank {len(shards)} != array rank {arr.ndim}"
             )
+        if any(s <= 0 for s in shards):
+            raise OmeZarrWriterError("shard dimensions must be positive")
         for s, c, axis in zip(shards, chunks, range(arr.ndim)):
             if s % c != 0:
                 raise OmeZarrWriterError(
@@ -191,14 +217,14 @@ def write_zarr_array(
     n_workers = _resolve_workers(workers)
     if zarr_format == 2:
         _write_v2(root, arr, chunks, compressor, compression_level,
-                  fill_value, n_workers)
+                  fill_value, n_workers, verify)
     elif zarr_format == 3:
         if shards is not None:
             _write_v3_sharded(root, arr, chunks, shards, compressor,
-                              compression_level, fill_value, n_workers)
+                              compression_level, fill_value, n_workers, verify)
         else:
             _write_v3(root, arr, chunks, compressor, compression_level,
-                      fill_value, n_workers)
+                      fill_value, n_workers, verify)
     else:
         raise OmeZarrWriterError(
             f"zarr_format must be 2 or 3 (got {zarr_format})"
@@ -241,24 +267,28 @@ def _make_chunk_bytes(
 
 def _encode_one_chunk_v2(args):
     """Worker: cut + compress one chunk → (key_path, encoded_bytes)."""
-    arr, slc, chunks, fill_value, compressor, level, key_path = args
+    arr, slc, chunks, fill_value, compressor, level, key_path, verify = args
     raw = _make_chunk_bytes(arr, slc, chunks, fill_value)
     out = _encode_chunk(raw, compressor, level)
+    if verify:
+        _verify_chunk(raw, out, compressor)
     return key_path, out
 
 
 def _encode_one_chunk_v3(args):
     """Worker (v3 layout)."""
-    arr, slc, chunks, fill_value, compressor, level, key_path = args
+    arr, slc, chunks, fill_value, compressor, level, key_path, verify = args
     raw = _make_chunk_bytes(arr, slc, chunks, fill_value)
     out = _encode_chunk(raw, compressor, level)
+    if verify:
+        _verify_chunk(raw, out, compressor)
     return key_path, out
 
 
 def _write_v2(
     root: Path, arr: np.ndarray, chunks: tuple[int, ...],
     compressor: str, level: int | None, fill_value,
-    n_workers: int = 1,
+    n_workers: int = 1, verify: bool = False,
 ) -> None:
     v2_id = _CODEC_NAME_MAP.get(compressor, (compressor, None))[0]
     metadata = {
@@ -290,29 +320,43 @@ def _write_v2(
     (root / ".zattrs").write_text("{}")
 
     sep = "."
-    tasks = [
+    tasks = (
         (arr, slc, chunks, fill_value, compressor, level,
-         root / sep.join(str(i) for i in idx))
+         root / sep.join(str(i) for i in idx), verify)
         for idx, slc in _chunk_iter(arr.shape, chunks)
-    ]
+    )
+    _write_chunks(_encode_one_chunk_v2, tasks, n_workers, compressor)
 
-    if n_workers <= 1 or len(tasks) <= 1:
-        for t in tasks:
-            key_path, out = _encode_one_chunk_v2(t)
-            key_path.write_bytes(out)
-        return
 
-    with ThreadPoolExecutor(max_workers=n_workers) as pool:
-        futures = [pool.submit(_encode_one_chunk_v2, t) for t in tasks]
-        for fut in as_completed(futures):
-            key_path, out = fut.result()
-            key_path.write_bytes(out)
+def _write_chunks(encode, tasks, workers, compressor):
+    """Release each encoded chunk after writing, with bounded lookahead."""
+    from .core.pipeline import map_bounded
+    from .core._write_helpers import write_all
+    if compressor in (None, "none", "raw"):
+        workers = 1
+    previous_parent = None
+    def reservation(task):
+        size = math.prod(task[2]) * task[0].dtype.itemsize
+        if task[-1]:
+            from .core.verification import verification_reservation
+            return 3 * size + verification_reservation(size)
+        return 3 * size
+    with closing(map_bounded(encode, tasks, workers,
+                             size=reservation,
+                             name="zarr-encode")) as results:
+        for key_path, encoded in results:
+            if key_path.parent != previous_parent:
+                key_path.parent.mkdir(parents=True, exist_ok=True)
+                previous_parent = key_path.parent
+            with key_path.open("wb") as dest:
+                write_all(dest, encoded)
+
 
 
 def _write_v3(
     root: Path, arr: np.ndarray, chunks: tuple[int, ...],
     compressor: str, level: int | None, fill_value,
-    n_workers: int = 1,
+    n_workers: int = 1, verify: bool = False,
 ) -> None:
     """Zarr v3 ``zarr.json`` + chunk files at ``c/<i>/<j>/...``."""
     codecs: list[dict] = [
@@ -359,35 +403,12 @@ def _write_v3(
     }
     (root / "zarr.json").write_text(json.dumps(metadata))
 
-    tasks = []
-    for idx, slc in _chunk_iter(arr.shape, chunks):
-        sub = root / "c"
-        for i in idx:
-            sub = sub / str(i)
-        tasks.append((arr, slc, chunks, fill_value, compressor, level, sub))
-
-    # Pre-create chunk-key parent dirs serially so worker writes are
-    # collision-free. With v3's slash-separated chunk keys most chunks
-    # share parent dirs; doing this once avoids EEXIST races + mkdir
-    # overhead in the hot path.
-    seen_parents = set()
-    for *_, sub in tasks:
-        p = sub.parent
-        if p not in seen_parents:
-            p.mkdir(parents=True, exist_ok=True)
-            seen_parents.add(p)
-
-    if n_workers <= 1 or len(tasks) <= 1:
-        for t in tasks:
-            key_path, out = _encode_one_chunk_v3(t)
-            key_path.write_bytes(out)
-        return
-
-    with ThreadPoolExecutor(max_workers=n_workers) as pool:
-        futures = [pool.submit(_encode_one_chunk_v3, t) for t in tasks]
-        for fut in as_completed(futures):
-            key_path, out = fut.result()
-            key_path.write_bytes(out)
+    tasks = (
+        (arr, slc, chunks, fill_value, compressor, level,
+         root.joinpath("c", *(str(i) for i in idx)), verify)
+        for idx, slc in _chunk_iter(arr.shape, chunks)
+    )
+    _write_chunks(_encode_one_chunk_v3, tasks, n_workers, compressor)
 
 
 # ---------------------------------------------------------------------------
@@ -449,70 +470,49 @@ def _v3_codecs_for_shard_inner(
 
 
 def _encode_one_shard_v3(args):
-    """Worker: assemble one shard file.
-
-    Reads its slice of the source array, encodes each inner chunk in
-    row-major order, accumulates the concatenated payload + the
-    ``(offset, nbytes)`` index, and returns the ready-to-write bytes.
-    """
+    """Stream inner chunks to a temporary shard and append its index."""
     import struct
+    import tempfile
+    from .core._write_helpers import write_all
     (arr, shard_idx, shard_shape, chunks, fill_value, compressor, level,
-     key_path) = args
-    ndim = arr.ndim
-
-    # Inner chunk grid within this shard.
+     key_path, verify) = args
     chunks_per_shard = tuple(s // c for s, c in zip(shard_shape, chunks))
-
-    # Walk inner chunks in row-major order, encoding each.
-    def _inner_iter(axis: int, prefix: tuple[int, ...]):
-        if axis == ndim:
-            yield prefix
-            return
-        for i in range(chunks_per_shard[axis]):
-            yield from _inner_iter(axis + 1, prefix + (i,))
-
-    payload = bytearray()
-    index_pairs: list[tuple[int, int]] = []
-    cur_offset = 0
-
-    for inner in _inner_iter(0, ()):
-        # Global chunk index = shard_idx * chunks_per_shard + inner.
-        global_idx = tuple(
-            si * cps + ii
-            for si, cps, ii in zip(shard_idx, chunks_per_shard, inner)
-        )
-        # Source slice the inner chunk covers in the *array*. Use
-        # the same ``min(end, shape)`` clipping the unsharded writer
-        # uses (``_chunk_iter`` / ``_make_chunk_bytes``) so edge
-        # chunks pad correctly.
-        chunk_slc = tuple(
-            slice(gi * c, min((gi + 1) * c, dim))
-            for gi, c, dim in zip(global_idx, chunks, arr.shape)
-        )
-        # If the chunk slot is entirely past the array's end on any
-        # axis (zero-extent slice), mark it as missing.
-        if any(s.stop <= s.start for s in chunk_slc):
-            index_pairs.append((_EMPTY_SENTINEL, _EMPTY_SENTINEL))
-            continue
-        raw = _make_chunk_bytes(arr, chunk_slc, chunks, fill_value)
-        encoded = _encode_chunk(raw, compressor, level)
-        payload.extend(encoded)
-        index_pairs.append((cur_offset, len(encoded)))
-        cur_offset += len(encoded)
-
-    # Append the index footer.
-    index_bytes = b"".join(
-        struct.pack("<QQ", off, n) for off, n in index_pairs
-    )
-    payload.extend(index_bytes)
-
-    return key_path, bytes(payload)
+    index = bytearray()
+    offset = 0
+    key_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="wb", dir=key_path.parent,
+                                         prefix=f".{key_path.name}.", delete=False,
+                                         buffering=256 << 10) as dest:
+            temporary = Path(dest.name)
+            for inner in np.ndindex(chunks_per_shard):
+                global_idx = tuple(si * cps + ii for si, cps, ii in
+                                   zip(shard_idx, chunks_per_shard, inner))
+                slc = tuple(slice(gi * c, min((gi + 1) * c, dim))
+                            for gi, c, dim in zip(global_idx, chunks, arr.shape))
+                if any(part.stop <= part.start for part in slc):
+                    index.extend(struct.pack("<QQ", _EMPTY_SENTINEL, _EMPTY_SENTINEL))
+                    continue
+                raw = _make_chunk_bytes(arr, slc, chunks, fill_value)
+                encoded = _encode_chunk(raw, compressor, level)
+                if verify:
+                    _verify_chunk(raw, encoded, compressor)
+                write_all(dest, encoded)
+                index.extend(struct.pack("<QQ", offset, len(encoded)))
+                offset += len(encoded)
+            write_all(dest, index)
+        os.replace(temporary, key_path)
+        temporary = None
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 def _write_v3_sharded(
     root: Path, arr: np.ndarray, chunks: tuple[int, ...],
     shards: tuple[int, ...], compressor: str, level: int | None,
-    fill_value, n_workers: int = 1,
+    fill_value, n_workers: int = 1, verify: bool = False,
 ) -> None:
     """Zarr v3 ``zarr.json`` + one shard file per outer position."""
     inner_codecs = _v3_codecs_for_shard_inner(arr, compressor, level)
@@ -548,38 +548,26 @@ def _write_v3_sharded(
     }
     (root / "zarr.json").write_text(json.dumps(metadata))
 
-    # One task per OUTER shard. The shard worker handles all inner
-    # chunks for that shard, so chunk-grain parallelism is per-shard.
-    # For large arrays with many shards that's still plenty of work
-    # to fill ``n_workers`` threads.
-    tasks = []
-    for shard_idx, _slc in _chunk_iter(arr.shape, shards):
-        sub = root / "c"
-        for i in shard_idx:
-            sub = sub / str(i)
-        tasks.append((arr, shard_idx, shards, chunks, fill_value,
-                      compressor, level, sub))
+    from .core.pipeline import map_bounded
+    tasks = (
+        (arr, idx, shards, chunks, fill_value, compressor, level,
+         root.joinpath("c", *(str(i) for i in idx)), verify)
+        for idx, _ in _chunk_iter(arr.shape, shards)
+    )
+    # Each worker owns one shard file and only one encoded inner chunk.
+    def reservation(task):
+        inner_bytes = math.prod(chunks) * arr.dtype.itemsize
+        index_bytes = math.prod(s // c for s, c in zip(shards, chunks)) * 16
+        extra = 0
+        if verify:
+            from .core.verification import verification_reservation
+            extra = verification_reservation(inner_bytes)
+        return 3 * inner_bytes + index_bytes + (256 << 10) + extra
 
-    # Pre-create parent dirs serially so worker writes are
-    # collision-free (same pattern as the unsharded v3 path).
-    seen_parents = set()
-    for *_, sub in tasks:
-        p = sub.parent
-        if p not in seen_parents:
-            p.mkdir(parents=True, exist_ok=True)
-            seen_parents.add(p)
-
-    if n_workers <= 1 or len(tasks) <= 1:
-        for t in tasks:
-            key_path, out = _encode_one_shard_v3(t)
-            key_path.write_bytes(out)
-        return
-
-    with ThreadPoolExecutor(max_workers=n_workers) as pool:
-        futures = [pool.submit(_encode_one_shard_v3, t) for t in tasks]
-        for fut in as_completed(futures):
-            key_path, out = fut.result()
-            key_path.write_bytes(out)
+    with closing(map_bounded(_encode_one_shard_v3, tasks, n_workers,
+                             size=reservation, name="zarr-shard")) as results:
+        for _ in results:
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -589,7 +577,7 @@ def _write_v3_sharded(
 
 def write_omezarr_pyramid(
     path: str | Path,
-    levels: list[np.ndarray],
+    levels: Iterable[np.ndarray],
     *,
     chunks: tuple[int, ...] | None = None,
     shards: tuple[int, ...] | None = None,
@@ -599,6 +587,7 @@ def write_omezarr_pyramid(
     axes: list[dict] | None = None,
     fill_value: int | float = 0,
     workers: int | None = None,
+    verify: bool = False,
 ) -> None:
     """Write a full OME-NGFF pyramid (group + N arrays + multiscales
     metadata) round-trippable through ``OmeZarrPyramidDataset``.
@@ -622,87 +611,55 @@ def write_omezarr_pyramid(
         Defaults to inferring 2-D ``y``/``x`` axes.
     fill_value
         Per-array fill value.
+    verify
+        Verify each encoded chunk before writing, as in write_zarr_array.
     """
     root = Path(path)
     root.mkdir(parents=True, exist_ok=True)
-    if not levels:
+    source = iter(levels)
+    first = next(source, None)
+    if first is None:
         raise OmeZarrWriterError("write_omezarr_pyramid: levels is empty")
-    n_dims = levels[0].ndim
+    base_shape = first.shape
     if axes is None:
-        # Heuristic: last two are y, x; anything before is channel/etc.
-        names = list("tczyx")[-n_dims:]
-        type_for = {"t": "time", "c": "channel", "z": "space",
-                    "y": "space", "x": "space"}
+        names = list("tczyx")[-first.ndim:]
+        type_for = {"t": "time", "c": "channel", "z": "space", "y": "space", "x": "space"}
         axes = [{"name": n, "type": type_for[n]} for n in names]
-
-    # Coordinate transforms: per-level downscale relative to level 0.
-    base_shape = levels[0].shape
     datasets = []
-    for i, lvl in enumerate(levels):
-        scale = [1.0] * n_dims
-        # Apply downscale on the trailing 2 spatial axes
+    level = first
+    del first
+    i = 0
+    while level is not None:
+        scale = [1.0] * level.ndim
         for ax in (-2, -1):
-            if lvl.shape[ax] > 0:
-                scale[ax] = base_shape[ax] / lvl.shape[ax]
-        datasets.append({
-            "path": str(i),
-            "coordinateTransformations": [
-                {"type": "scale", "scale": scale}
-            ],
-        })
-
-    multiscales = [{
-        "version": "0.4" if zarr_format == 2 else "0.5",
-        "axes": axes,
-        "datasets": datasets,
-    }]
-
+            if level.shape[ax] > 0:
+                scale[ax] = base_shape[ax] / level.shape[ax]
+        datasets.append({"path": str(i), "coordinateTransformations":
+                         [{"type": "scale", "scale": scale}]})
+        level_chunks = chunks if chunks is not None else level.shape
+        level_shards = shards
+        if shards is not None:
+            adapted = [min(s, (dim // c) * c) for s, c, dim in
+                       zip(shards, level_chunks, level.shape)]
+            level_shards = None if any(s < c for s, c in zip(adapted, level_chunks)) else tuple(adapted)
+        write_zarr_array(root / str(i), level, chunks=level_chunks,
+                         shards=level_shards, compressor=compressor,
+                         compression_level=compression_level,
+                         zarr_format=zarr_format, fill_value=fill_value,
+                         workers=workers, verify=verify)
+        # Release the previous level before resuming a lazy producer.
+        del level
+        level = next(source, None)
+        i += 1
+    multiscales = [{"version": "0.4" if zarr_format == 2 else "0.5",
+                   "axes": axes, "datasets": datasets}]
     if zarr_format == 2:
-        # Group .zgroup + .zattrs at root
         (root / ".zgroup").write_text(json.dumps({"zarr_format": 2}))
-        (root / ".zattrs").write_text(
-            json.dumps({"multiscales": multiscales})
-        )
+        (root / ".zattrs").write_text(json.dumps({"multiscales": multiscales}))
     else:
         (root / "zarr.json").write_text(json.dumps({
-            "zarr_format": 3,
-            "node_type": "group",
-            "attributes": {"ome": {"multiscales": multiscales}},
-        }))
-
-    # Adapt shards per level: if the caller pinned ``shards=`` and a
-    # later level is smaller than ``shards``, clamp each shard axis
-    # down to the level's shape (still keeping it a multiple of
-    # ``chunks`` — drop to the smallest multiple of ``chunks`` that
-    # fits). For levels with any axis smaller than the chunk, skip
-    # sharding on that level entirely.
-    for i, lvl in enumerate(levels):
-        lvl_chunks = chunks if chunks is not None else lvl.shape
-        lvl_shards = shards
-        if shards is not None:
-            adapted: list[int] = []
-            skip = False
-            for s, c, dim in zip(shards, lvl_chunks, lvl.shape):
-                # smallest multiple of c that's <= dim and <= s
-                cap = min(s, (dim // c) * c if dim >= c else 0)
-                if cap < c:
-                    # Level too small to fit even one chunk on this
-                    # axis — fall back to per-chunk layout for it.
-                    skip = True
-                    break
-                adapted.append(cap)
-            lvl_shards = None if skip else tuple(adapted)
-        write_zarr_array(
-            root / str(i),
-            lvl,
-            chunks=lvl_chunks,
-            shards=lvl_shards,
-            compressor=compressor,
-            compression_level=compression_level,
-            zarr_format=zarr_format,
-            fill_value=fill_value,
-            workers=workers,
-        )
+            "zarr_format": 3, "node_type": "group",
+            "attributes": {"ome": {"multiscales": multiscales}}}))
 
 
 def write_omezarr_pyramid_auto(
@@ -720,6 +677,7 @@ def write_omezarr_pyramid_auto(
     axes: list[dict] | None = None,
     fill_value: int | float = 0,
     workers: int | None = None,
+    verify: bool = False,
 ) -> None:
     """Write a multi-scale OME-NGFF pyramid built automatically from a
     single full-res image (opt-in convenience wrapper around
@@ -751,8 +709,8 @@ def write_omezarr_pyramid_auto(
     All other keyword arguments are forwarded to
     :func:`write_omezarr_pyramid` unchanged.
     """
-    from ._pyramid_build import make_pyramid_levels
-    levels = make_pyramid_levels(
+    from ._pyramid_build import iter_pyramid_levels
+    levels = iter_pyramid_levels(
         image,
         levels=pyramid_levels,
         min_size=pyramid_min_size,
@@ -763,7 +721,7 @@ def write_omezarr_pyramid_auto(
         chunks=chunks, shards=shards, compressor=compressor,
         compression_level=compression_level,
         zarr_format=zarr_format, axes=axes,
-        fill_value=fill_value, workers=workers,
+        fill_value=fill_value, workers=workers, verify=verify,
     )
 
 

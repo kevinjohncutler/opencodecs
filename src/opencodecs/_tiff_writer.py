@@ -11,13 +11,12 @@ both our reader and ``tifffile``. Supports:
   :mod:`opencodecs.core.segment_compression` —
   ``none / deflate / zstd / lzw / packbits / jpeg / jpeg2000 / jxl
   / webp / lerc``.
-* Horizontal predictor (tag 317 = 2) on encode for the byte-stream
-  codecs that benefit (deflate / zstd / lzw).
+* Horizontal predictor (tag 317 = 2) and floating-point predictor
+  (tag 317 = 3) for byte-stream codecs.
 * Multi-page IFD chain so callers can write pyramidal COG-style TIFFs
   by issuing ``write_page`` once per resolution level.
 
-Deferred to v2: BigTIFF (64-bit offsets), floating-point predictor
-3, JPEG-with-shared-tables (tag 347) encode, SubIFDs (tag 330).
+JPEG-with-shared-tables (tag 347) encode remains deferred.
 """
 
 from __future__ import annotations
@@ -151,6 +150,28 @@ def _apply_horizontal_predictor(seg: np.ndarray) -> np.ndarray:
     return seg
 
 
+def _apply_float_predictor(seg: np.ndarray, byte_order: str) -> np.ndarray:
+    """Encode TIFF Predictor 3 into byte rows without floating-point math.
+
+    TIFF groups each row's most significant bytes first, then differences
+    the complete shuffled row at samples-per-pixel distance. The difference
+    crosses byte-plane boundaries. ``byte_order`` describes the stored bytes,
+    because writer segments may already be byte-swapped for the target file.
+    """
+    rows = seg.shape[0]
+    samples = seg.shape[2] if seg.ndim == 3 else 1
+    width = seg.shape[1] * samples
+    raw = np.ascontiguousarray(seg).view(np.uint8).reshape(rows, width, seg.dtype.itemsize)
+    if byte_order == "<":
+        raw = raw[:, :, ::-1]
+    shuffled = np.ascontiguousarray(raw.transpose(0, 2, 1)).reshape(rows, -1)
+    encoded = np.empty_like(shuffled)
+    encoded[:, :samples] = shuffled[:, :samples]
+    np.subtract(shuffled[:, samples:], shuffled[:, :-samples],
+                out=encoded[:, samples:])
+    return encoded
+
+
 # ---------------------------------------------------------------------------
 # IFD entry packing
 # ---------------------------------------------------------------------------
@@ -276,12 +297,16 @@ class TiffWriter(Writer):
         byte_order: str = "<",
         streaming: bool = False,
         bigtiff: bool = False,
+        spool_threshold: int | None = None,
     ):
         if byte_order not in ("<", ">"):
             raise TiffWriterError(
                 f"byte_order must be '<' or '>'; got {byte_order!r}"
             )
         self._byte_order = byte_order
+        if spool_threshold is not None and spool_threshold < 1:
+            raise ValueError("spool_threshold must be positive")
+        self._spool_threshold = spool_threshold
         self._streaming = bool(streaming)
         self._bigtiff = bool(bigtiff)
         # Per-format structural constants. Layout differences between
@@ -388,6 +413,7 @@ class TiffWriter(Writer):
         compression: str | int = "none",
         compression_level: int | None = None,
         predictor: int = 1,
+        verify: bool = False,
         subfiletype: int = 0,
         photometric: str | int = "auto",
         planar_config: int = 1,
@@ -416,11 +442,20 @@ class TiffWriter(Writer):
             implemented (decoders exist; encoders need to be vendored).
         compression_level : int or None
             Passed through to deflate/zstd/jxl etc.
-        predictor : 1 or 2
-            Horizontal differencing (TIFF tag 317) on encode. Only
-            applied for byte-stream codecs that benefit (deflate,
-            zstd, lzw, packbits, none) — image-format codecs do their
-            own internal prediction.
+        predictor : 1, 2, or 3
+            TIFF tag 317: 1 stores unchanged samples, 2 differences
+            neighboring samples, and 3 shuffles/differences float16/32/64
+            bytes. Predictor 3 requires chunky samples and deflate,
+            zstd, or lzw compression. Image-format codecs
+            use their own internal prediction.
+        verify : bool
+            Decode each encoded segment, undo its predictor, and compare exact
+            original pixel bits before emitting it. Defaults to False. Workers
+            can verify while other segments encode. Verification adds decoded
+            and inverse-prediction buffers plus bounded comparison scratch;
+            task sizing includes these costs, but is not a hard byte limit.
+            Lossy results raise LosslessVerificationError. This checks segment
+            pixels, not directory metadata or bytes after destination writes.
         subfiletype : int
             NewSubfileType (tag 254). Pass 1 to flag this IFD as a
             reduced-resolution version of another image (pyramid).
@@ -545,104 +580,57 @@ class TiffWriter(Writer):
             strip_h_for_tag = rows_per_strip
 
         # Validate predictor + compression combo.
-        if predictor not in (1, 2):
+        if predictor not in (1, 2, 3):
             raise TiffWriterError(
-                f"writer supports predictor 1 (none) or 2 (horizontal); "
+                f"writer supports predictor 1 (none), 2 (horizontal), or 3 (float); "
                 f"got predictor={predictor}"
             )
         is_byte_stream = cmp_code in _BYTE_STREAM_CMP
+        if predictor == 3 and (arr.dtype.kind != "f" or arr.dtype.itemsize not in (2, 4, 8)
+                               or not is_byte_stream or cmp_is_none or planar_config != 1):
+            raise TiffWriterError(
+                "predictor 3 requires float16/32/64, chunky samples, and a byte-stream compressor")
         if predictor == 2 and not is_byte_stream:
             # Image-format codecs (jpeg, jpeg2000, webp, jxl, lerc) do
             # their own internal prediction; a TIFF predictor on top
             # would be incorrect/lossy. Silently downgrade to 1.
             predictor = 1
 
-        # Pre-encode all segments. We need byte counts up-front to lay
-        # out the IFD before writing data. For very large pages this
-        # buffers everything in RAM; for streaming-friendly behavior
-        # callers should switch to ``start_page`` (v2; not yet wired).
+        # Seekable layout places pixels before the directory. Only offsets
+        # and byte counts are needed later, so emit bounded batches now.
         offsets: list[int] = []
         byte_counts: list[int] = []
-        encoded_segments: list[bytes | memoryview | np.ndarray] = []
-
-        if cmp_is_none and predictor == 1 and not is_tiled:
-            # Fast path: strips are row-contiguous slices of the input
-            # buffer; we can write them as memoryviews directly into
-            # the file without copying or per-segment Python work.
+        if cmp_is_none and predictor == 1 and not is_tiled and not verify:
             row_bytes = w * samples_per_pixel * arr.dtype.itemsize
             flat = arr_le.reshape(-1).view(np.uint8)
+            encoded_segments = []
+            cursor = self._pos
             for i in range(n_segments):
                 y0 = i * rows_per_strip
-                y1 = min(y0 + rows_per_strip, h)
-                n = (y1 - y0) * row_bytes
-                start = y0 * row_bytes
-                encoded_segments.append(flat[start:start + n])
-                byte_counts.append(n)
-        elif (not cmp_is_none) and n_segments >= 2 and n_workers != 1:
-            # Parallel encode path. Same pattern as NDTiffWriter:
-            # submit segment encodes to a threadpool, drain in
-            # submission order on the writer thread. Output bytes
-            # are identical to the serial path (we use the same
-            # encode function; only scheduling changes).
-            if n_workers is None:
-                _nw = min(os.cpu_count() or 1, 8)
-            else:
-                _nw = max(1, int(n_workers))
-            seg_list = list(segments)
-
-            def _encode_one(seg):
-                if predictor == 2:
-                    seg = np.ascontiguousarray(seg).copy()
-                    _apply_horizontal_predictor(seg)
-                return self._encode_segment_bytes(
-                    seg, cmp_code, compression_level,
-                )
-
-            from concurrent.futures import ThreadPoolExecutor
-            with ThreadPoolExecutor(
-                max_workers=_nw,
-                thread_name_prefix="tiff-encode",
-            ) as ex:
-                futures = [ex.submit(_encode_one, seg) for seg in seg_list]
-                for fut in futures:
-                    encoded = fut.result()
-                    encoded_segments.append(encoded)
-                    byte_counts.append(len(encoded))
-        else:
-            for seg in segments:
-                # seg arrives as a contiguous (h, w[, c]) ndarray.
-                if predictor == 2:
-                    # Predictor wants per-channel horizontal diffs;
-                    # operate on a writable C-contiguous copy so we
-                    # never mutate the caller's array.
-                    seg = np.ascontiguousarray(seg).copy()
-                    _apply_horizontal_predictor(seg)
-                if cmp_is_none:
-                    seg_c = np.ascontiguousarray(seg)
-                    encoded_segments.append(seg_c)
-                    byte_counts.append(seg_c.nbytes)
-                else:
-                    encoded = self._encode_segment_bytes(
-                        seg, cmp_code, compression_level,
-                    )
-                    encoded_segments.append(encoded)
-                    byte_counts.append(len(encoded))
-
-        # ---- Write segments to disk, recording offsets ----
-        # TIFF segment offsets are absolute file positions. We append
-        # at the current cursor and advance — but instead of issuing
-        # one syscall per segment, batch the entire encoded-segments
-        # list into a single os.writev call. Offsets are predictable
-        # from the running cursor + per-segment byte counts.
-        if encoded_segments:
-            total = sum(byte_counts)
-            self._ensure_room(total)
-            start = self._pos
-            run = start
-            for n in byte_counts:
-                offsets.append(run)
-                run += n
+                count = (min(y0 + rows_per_strip, h) - y0) * row_bytes
+                encoded_segments.append(flat[y0 * row_bytes:y0 * row_bytes + count])
+                offsets.append(cursor)
+                byte_counts.append(count)
+                cursor += count
+            self._ensure_room(sum(byte_counts))
             self._writev(encoded_segments)
+        else:
+            segment_pixels = tile_h * tile_w if is_tiled else rows_per_strip * w
+            segment_bytes = segment_pixels * samples_per_pixel * arr.dtype.itemsize
+            from contextlib import closing
+            with closing(self._encoded_batches(
+                    segments, cmp_code, compression_level, predictor,
+                    n_segments, segment_bytes, n_workers, verify=verify)) as batches:
+                for encoded in batches:
+                    counts = [seg.nbytes if isinstance(seg, np.ndarray) else len(seg)
+                              for seg in encoded]
+                    self._ensure_room(sum(counts))
+                    cursor = self._pos
+                    for count in counts:
+                        offsets.append(cursor)
+                        cursor += count
+                    self._writev(encoded)
+                    byte_counts.extend(counts)
 
         total_data_bytes = sum(byte_counts)
 
@@ -739,6 +727,7 @@ class TiffWriter(Writer):
         compression: str | int = "none",
         compression_level: int | None = None,
         predictor: int = 1,
+        verify: bool = False,
         photometric: str | int = "auto",
         planar_config: int = 1,
         subfiletype: int = 0,
@@ -825,6 +814,7 @@ class TiffWriter(Writer):
                 compression=compression,
                 compression_level=compression_level,
                 predictor=predictor,
+                verify=verify,
                 photometric=photometric,
                 planar_config=planar_config,
                 subfiletype=subfiletype,
@@ -850,7 +840,14 @@ class TiffWriter(Writer):
             )
         return infos
 
-    def _emit_streaming_page(
+    def _emit_streaming_page(self, *args, **kwargs):
+        if self._spool_threshold is None:
+            return self._emit_streaming_page_impl(*args, **kwargs)
+        import tempfile
+        with tempfile.SpooledTemporaryFile(max_size=self._spool_threshold) as spool:
+            return self._emit_streaming_page_impl(*args, _spool=spool, **kwargs)
+
+    def _emit_streaming_page_impl(
         self,
         arr: np.ndarray,
         *,
@@ -860,6 +857,7 @@ class TiffWriter(Writer):
         compression: str | int,
         compression_level: int | None,
         predictor: int,
+        verify: bool,
         photometric: str | int,
         planar_config: int,
         subfiletype: int,
@@ -868,6 +866,7 @@ class TiffWriter(Writer):
         resolution: tuple[float, float] | None,
         extra_tags: list[tuple[int, int, tuple]] | None,
         n_workers: int | None,
+        _spool=None,
     ) -> dict:
         """Encode + emit one streaming page in [IFD ⇒ pixels] order.
 
@@ -939,64 +938,34 @@ class TiffWriter(Writer):
             n_segments = n_strips
             strip_h_for_tag = rows_per_strip
 
-        if predictor not in (1, 2):
+        if predictor not in (1, 2, 3):
             raise TiffWriterError(f"unsupported predictor {predictor}")
         is_byte_stream = cmp_code in _BYTE_STREAM_CMP
+        if predictor == 3 and (arr.dtype.kind != "f" or arr.dtype.itemsize not in (2, 4, 8)
+                               or not is_byte_stream or cmp_is_none or planar_config != 1):
+            raise TiffWriterError(
+                "predictor 3 requires float16/32/64, chunky samples, and a byte-stream compressor")
         if predictor == 2 and not is_byte_stream:
             predictor = 1
 
-        # ---- Encode segments ----
+        # Forward-only layout needs counts before its directory. Retain the
+        # encoded page, but bound raw tiles and encode tasks as for write_page.
         byte_counts: list[int] = []
         encoded_segments: list[bytes | memoryview | np.ndarray] = []
-        if cmp_is_none and predictor == 1 and not is_tiled:
-            row_bytes = w * samples_per_pixel * arr.dtype.itemsize
-            flat = arr_le.reshape(-1).view(np.uint8)
-            for i in range(n_segments):
-                y0 = i * rows_per_strip
-                y1 = min(y0 + rows_per_strip, h)
-                n = (y1 - y0) * row_bytes
-                start = y0 * row_bytes
-                encoded_segments.append(flat[start:start + n])
-                byte_counts.append(n)
-        elif (not cmp_is_none) and n_segments >= 2 and n_workers != 1:
-            if n_workers is None:
-                _nw = min(os.cpu_count() or 1, 8)
-            else:
-                _nw = max(1, int(n_workers))
-            seg_list = list(segments)
-
-            def _encode_one(seg):
-                if predictor == 2:
-                    seg = np.ascontiguousarray(seg).copy()
-                    _apply_horizontal_predictor(seg)
-                return self._encode_segment_bytes(
-                    seg, cmp_code, compression_level,
-                )
-
-            from concurrent.futures import ThreadPoolExecutor
-            with ThreadPoolExecutor(
-                max_workers=_nw, thread_name_prefix="tiff-encode",
-            ) as ex:
-                futures = [ex.submit(_encode_one, seg) for seg in seg_list]
-                for fut in futures:
-                    encoded = fut.result()
-                    encoded_segments.append(encoded)
-                    byte_counts.append(len(encoded))
-        else:
-            for seg in segments:
-                if predictor == 2:
-                    seg = np.ascontiguousarray(seg).copy()
-                    _apply_horizontal_predictor(seg)
-                if cmp_is_none:
-                    seg_c = np.ascontiguousarray(seg)
-                    encoded_segments.append(seg_c)
-                    byte_counts.append(seg_c.nbytes)
+        segment_pixels = tile_h * tile_w if is_tiled else rows_per_strip * w
+        segment_bytes = segment_pixels * samples_per_pixel * arr.dtype.itemsize
+        from contextlib import closing
+        with closing(self._encoded_batches(
+                segments, cmp_code, compression_level, predictor,
+                n_segments, segment_bytes, n_workers, verify=verify)) as batches:
+            for encoded in batches:
+                if _spool is None:
+                    encoded_segments.extend(encoded)
                 else:
-                    encoded = self._encode_segment_bytes(
-                        seg, cmp_code, compression_level,
-                    )
-                    encoded_segments.append(encoded)
-                    byte_counts.append(len(encoded))
+                    for segment in encoded:
+                        _spool.write(memoryview(segment).cast("B"))
+                byte_counts.extend(seg.nbytes if isinstance(seg, np.ndarray) else len(seg)
+                                   for seg in encoded)
 
         total_data_bytes = sum(byte_counts)
         self._ensure_room(total_data_bytes)
@@ -1172,6 +1141,12 @@ class TiffWriter(Writer):
         emit_buffers: list = [bytes(ifd_struct)]
         emit_buffers.extend(ext_blobs)
         emit_buffers.extend(encoded_segments)
+        if _spool is not None:
+            self._writev(emit_buffers)
+            emit_buffers = []
+            _spool.seek(0)
+            while block := _spool.read(1 << 20):
+                self._write(block)
         if (not is_last) and (cursor % 2):
             # cursor is current pixel-end; next-IFD wants to be even.
             emit_buffers.append(b"\x00")
@@ -1193,6 +1168,7 @@ class TiffWriter(Writer):
         compression: str | int = "none",
         compression_level: int | None = None,
         predictor: int = 1,
+        verify: bool = False,
         photometric: str | int = "auto",
         metadata: str | None = None,
         subifds: bool = False,
@@ -1221,6 +1197,7 @@ class TiffWriter(Writer):
                     compression=compression,
                     compression_level=compression_level,
                     predictor=predictor,
+                    verify=verify,
                     photometric=photometric,
                     subfiletype=0 if i == 0 else 1,
                     metadata=metadata if i == 0 else None,
@@ -1239,6 +1216,7 @@ class TiffWriter(Writer):
                 compression=compression,
                 compression_level=compression_level,
                 predictor=predictor,
+                verify=verify,
                 photometric=photometric,
                 subfiletype=1,
                 _in_chain=False,
@@ -1256,6 +1234,7 @@ class TiffWriter(Writer):
             compression=compression,
             compression_level=compression_level,
             predictor=predictor,
+            verify=verify,
             photometric=photometric,
             subfiletype=0,
             metadata=metadata,
@@ -1274,6 +1253,7 @@ class TiffWriter(Writer):
         compression: str | int = "none",
         compression_level: int | None = None,
         predictor: int = 1,
+        verify: bool = False,
         photometric: str | int = "auto",
         metadata: str | None = None,
         subifds: bool = False,
@@ -1329,6 +1309,7 @@ class TiffWriter(Writer):
                     compression=compression,
                     compression_level=compression_level,
                     predictor=predictor,
+                    verify=verify,
                     photometric=photometric,
                     subfiletype=0 if i == 0 else 1,
                     metadata=metadata if i == 0 else None,
@@ -1353,6 +1334,7 @@ class TiffWriter(Writer):
             compression=compression,
             compression_level=compression_level,
             predictor=predictor,
+            verify=verify,
             photometric=photometric,
             metadata=metadata,
             subifds=subifds,
@@ -1491,6 +1473,80 @@ class TiffWriter(Writer):
                     tile = np.zeros(pad_shape, dtype=arr_le.dtype)
                     tile[:y1 - y0, :x1 - x0] = arr_le[y0:y1, x0:x1]
                     yield tile
+
+    def _encoded_batches(self, segments, cmp_code, level, predictor,
+                         n_segments, segment_bytes, n_workers, *, verify=False):
+        """Common bounded encoder for seekable and forward-only layouts."""
+        from .core.parallel import map_batches
+        from .core.segment_compression import NONE
+        compressed = cmp_code != NONE
+        workers = 1
+        if compressed and n_segments >= 2 and n_workers != 1:
+            workers = (min(os.cpu_count() or 1, 8) if n_workers is None
+                       else max(1, int(n_workers)))
+        # About one MiB per task; optional verification includes decoded,
+        # inverse-prediction, and bounded comparison scratch in task sizing.
+        # map_batches bounds task count, not total process or native memory.
+        task_bytes = segment_bytes
+        if verify:
+            from .core.verification import verification_reservation
+            task_bytes += verification_reservation(segment_bytes) + 2 * segment_bytes
+        batch_size = max(1, min(64, (1 << 20) // max(1, task_bytes)))
+        workers = min(workers, max(1, (n_segments + batch_size - 1) // batch_size))
+
+        def encode(seg):
+            original = seg
+            if predictor == 2:
+                # Stored bytes already have the target order, while the
+                # source dtype may still describe its original byte order.
+                seg = np.array(seg.view(seg.dtype.newbyteorder(self._byte_order)),
+                               copy=True, order="C")
+                _apply_horizontal_predictor(seg)
+            elif predictor == 3:
+                seg = _apply_float_predictor(seg, self._byte_order)
+            if compressed:
+                encoded = self._encode_segment_bytes(seg, cmp_code, level)
+            else:
+                encoded = np.ascontiguousarray(seg)
+            if verify:
+                self._verify_segment_pixels(original, encoded, cmp_code, predictor)
+            return encoded
+
+        return map_batches(encode, segments, workers, batch_size=batch_size,
+                           name="tiff-encode")
+
+    def _verify_segment_pixels(self, original, encoded, cmp_code, predictor):
+        """Reconstruct stored pixels through the same path as a TIFF reader.
+
+        A metadata-only one-strip page describes this padded tile or strip.
+        This shares byte decoding and inverse prediction with region/full
+        reads, and compares pixel bits before the encoded segment is emitted.
+        """
+        from types import SimpleNamespace
+        from ._tiff_codec import TiffPage, _HAVE_BACKEND
+        if not _HAVE_BACKEND:
+            raise ImportError("TIFF pixel verification requires the native TIFF backend")
+        from .core.verification import assert_bit_exact, LosslessVerificationError
+        expected = original.view(original.dtype.newbyteorder(self._byte_order))
+        height, width = expected.shape[:2]
+        samples = expected.shape[2] if expected.ndim == 3 else 1
+        bps, sample_format = _bps_and_sample_format(expected.dtype)
+        values = {TAG_IMAGE_WIDTH: width, TAG_IMAGE_LENGTH: height,
+                  TAG_COMPRESSION: cmp_code, TAG_SAMPLES_PER_PIXEL: samples,
+                  TAG_BITS_PER_SAMPLE: bps, TAG_SAMPLE_FORMAT: sample_format,
+                  TAG_PREDICTOR: predictor, TAG_ROWS_PER_STRIP: height,
+                  TAG_STRIP_OFFSETS: 0, TAG_STRIP_BYTE_COUNTS: memoryview(encoded).nbytes}
+        page = TiffPage(SimpleNamespace(_byte_order=self._byte_order), -1,
+                        {tag: (0, 1, value) for tag, value in values.items()})
+        try:
+            decoded = page._decode_segment_pixels(encoded, 0, 0)
+        except Exception as exc:
+            raise LosslessVerificationError(
+                f"Lossless verification failed for TIFF compression {cmp_code}: "
+                f"pixel reconstruction failed: {exc}") from exc
+        if expected.ndim == 3 and samples == 1:
+            expected = expected[:, :, 0]
+        assert_bit_exact(expected, decoded, codec=f"TIFF compression {cmp_code}")
 
     def _encode_segment_bytes(
         self, seg: np.ndarray, cmp_code: int, level: int | None,

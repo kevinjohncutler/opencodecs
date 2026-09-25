@@ -8,8 +8,10 @@ from typing import Any
 import numpy as np
 
 from .core.codec import Codec
+from .core.buffers import byte_output
 from .core._io_helpers import read_src as _read_src, write_dest as _write_dest
 from .core._optional_backend import import_or_stubs
+from .core.pipeline import native_workers
 
 _blosc2_encode, _blosc2_decode, _blosc2_check_signature, _HAVE_BACKEND = import_or_stubs(
     "opencodecs.codecs._blosc2",
@@ -61,8 +63,11 @@ class Blosc2Codec(Codec):
         return _write_dest(compressed, dest)
 
     def decode(self, src: Any, *, numthreads: int | None = None,
-               **opts) -> bytes:
-        return _blosc2_decode(_read_src(src), numthreads=numthreads)
+               out=None, **opts) -> bytes | memoryview:
+        if out is None:
+            return _blosc2_decode(_read_src(src), numthreads=native_workers(numthreads))
+        return _blosc2_decode(_read_src(src), numthreads=native_workers(numthreads),
+                              out=byte_output(out))
 
     def decode_partial(self, src: Any, start: int, nitems: int, *,
                        typesize: int | None = None,
@@ -79,7 +84,7 @@ class Blosc2Codec(Codec):
         """
         from .codecs._blosc2 import decode_partial as _partial
         return _partial(_read_src(src), start, nitems,
-                        typesize=typesize, numthreads=numthreads)
+                        typesize=typesize, numthreads=native_workers(numthreads))
 
 
 

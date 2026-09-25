@@ -80,29 +80,34 @@ def nifti1_header(shape, dtype, *, voxel_size=None, vox_offset: int = 352,
 
 def encode_nifti(data: Any, *, voxel_size=None, compress: bool = False) -> bytes:
     """Serialize an array as a complete single-file NIfTI-1 (.nii)."""
-    arr = np.asarray(data)
-    if arr.dtype.byteorder == ">":
-        arr = arr.astype(arr.dtype.newbyteorder("<"))
-    header = nifti1_header(arr.shape, arr.dtype, voxel_size=voxel_size)
-    # vox_offset is 352: the 348-byte header plus the 4-byte extender
-    # that says "no header extensions follow".
-    blob = header + b"\x00\x00\x00\x00" + arr.tobytes(order="F")
-    return gzip.compress(blob) if compress else blob
+    import io
+    dest = io.BytesIO()
+    write_nifti(dest, data, voxel_size=voxel_size, compress=compress)
+    return dest.getvalue()
 
 
 def write_nifti(path: Any, data: Any, *, compress: bool | None = None,
-                **kwargs) -> None:
-    """Write a NIfTI-1 file, gzipping when the name ends in .gz."""
+                voxel_size=None) -> None:
+    """Write bounded Fortran-order blocks, optionally through a gzip stream."""
+    from .core._write_helpers import binary_destination, iter_array_buffers, write_all, CompleteWriter
     if compress is None:
         name = getattr(path, "name", path)
-        compress = isinstance(name, (str, os.PathLike)) and \
-            str(name).endswith(".gz")
-    blob = encode_nifti(data, compress=compress, **kwargs)
-    if hasattr(path, "write"):
-        path.write(blob)
-        return
-    with open(os.fspath(path), "wb") as fh:
-        fh.write(blob)
+        compress = isinstance(name, (str, os.PathLike)) and str(name).endswith(".gz")
+    arr = np.asarray(data)
+    dtype = arr.dtype.newbyteorder("<")
+    header = nifti1_header(arr.shape, dtype.newbyteorder("="), voxel_size=voxel_size)
+    header += b"\x00\x00\x00\x00"
+    with binary_destination(path) as dest:
+        if compress:
+            # No embedded destination filename; deterministic header and trailer.
+            with gzip.GzipFile(filename="", mode="wb", fileobj=CompleteWriter(dest), mtime=0) as stream:
+                write_all(stream, header)
+                for block in iter_array_buffers(arr, dtype=dtype, order="F"):
+                    write_all(stream, block)
+        else:
+            write_all(dest, header)
+            for block in iter_array_buffers(arr, dtype=dtype, order="F"):
+                write_all(dest, block)
 
 
 __all__ = ["encode_nifti", "write_nifti", "nifti1_header"]

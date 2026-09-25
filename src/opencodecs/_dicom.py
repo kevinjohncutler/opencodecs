@@ -83,6 +83,21 @@ TAG_TOTAL_PIXEL_MATRIX_COLUMNS = (0x0048, 0x0006)
 TAG_TOTAL_PIXEL_MATRIX_ROWS = (0x0048, 0x0007)
 TAG_IMAGED_VOLUME_WIDTH = (0x0048, 0x0001)
 TAG_IMAGED_VOLUME_HEIGHT = (0x0048, 0x0002)
+TAG_PER_FRAME_GROUPS = (0x5200, 0x9230)
+TAG_SHARED_GROUPS = (0x5200, 0x9229)
+TAG_PLANE_POSITION_SLIDE = (0x0048, 0x021A)
+TAG_SLIDE_ROW = (0x0048, 0x021F)
+TAG_SLIDE_COLUMN = (0x0048, 0x021E)
+TAG_SLIDE_Z = (0x0040, 0x074A)
+TAG_OPTICAL_PATH_SEQUENCE = (0x0048, 0x0105)
+TAG_OPTICAL_PATH_IDENTIFICATION = (0x0048, 0x0207)
+TAG_OPTICAL_PATH_ID = (0x0048, 0x0106)
+TAG_OPTICAL_PATH_COUNT = (0x0048, 0x0302)
+TAG_FOCAL_PLANE_COUNT = (0x0048, 0x0303)
+_SLIDE_SEQUENCES = {TAG_PER_FRAME_GROUPS, TAG_SHARED_GROUPS,
+                    TAG_PLANE_POSITION_SLIDE, TAG_OPTICAL_PATH_IDENTIFICATION,
+                    TAG_OPTICAL_PATH_SEQUENCE}
+
 
 #: The SOP Class that says "this is a whole-slide image".
 SOP_CLASS_VL_WHOLE_SLIDE = "1.2.840.10008.5.1.4.1.1.77.1.6"
@@ -93,6 +108,10 @@ SOP_CLASS_VL_WHOLE_SLIDE = "1.2.840.10008.5.1.4.1.1.77.1.6"
 # b"\x30\x00", which is "0" followed by a NUL in ASCII, so a
 # string-first guess parses it as zero and produces an empty image.
 _IMPLICIT_VR: dict[tuple[int, int], bytes] = {
+    TAG_SLIDE_ROW: b"SL", TAG_SLIDE_COLUMN: b"SL",
+    TAG_TOTAL_PIXEL_MATRIX_ROWS: b"UL", TAG_TOTAL_PIXEL_MATRIX_COLUMNS: b"UL",
+    TAG_IMAGED_VOLUME_HEIGHT: b"FL", TAG_IMAGED_VOLUME_WIDTH: b"FL",
+    TAG_OPTICAL_PATH_COUNT: b"UL", TAG_FOCAL_PLANE_COUNT: b"UL",
     TAG_SAMPLES_PER_PIXEL: b"US",
     TAG_PHOTOMETRIC: b"CS",
     TAG_PLANAR_CONFIG: b"US",
@@ -293,6 +312,8 @@ class DicomFile(ArrayReader):
             off += 2
             if vr in _LONG_VRS:
                 off += 2                                   # reserved
+                if off + 4 > len(raw):
+                    return len(raw), None
                 (length,) = struct.unpack_from(bo + "I", raw, off)
                 off += 4
             else:
@@ -319,8 +340,10 @@ class DicomFile(ArrayReader):
         if length == 0xFFFFFFFF:
             # Undefined-length sequence: walk to its delimiter rather
             # than guessing, so the following elements stay aligned.
+            start = off
             off = self._skip_undefined_length(off, explicit, bo)
-            return off, _Element((g, e), vr or b"SQ", b"")
+            value = raw[start:off] if (g, e) in _SLIDE_SEQUENCES else b""
+            return off, _Element((g, e), vr or b"SQ", value)
 
         value = raw[off:off + length]
         off += length
@@ -669,6 +692,78 @@ class DicomFile(ArrayReader):
             return None
 
     @property
+    def slide_frame_positions(self) -> tuple[tuple[int, int], ...]:
+        """Zero-based tile origins for one optical path and focal plane.
+
+        Positions are explicit Per-Frame Functional Groups metadata. This
+        does not infer implicit TILED_FULL order, join concatenations, or
+        choose an optical path/focal plane for the caller.
+        """
+        cached = getattr(self, "_slide_positions", None)
+        if cached is not None:
+            return cached
+        if (self._int(TAG_OPTICAL_PATH_COUNT) or 1) > 1 or (self._int(TAG_FOCAL_PLANE_COUNT) or 1) > 1:
+            raise DicomError("dicom: select one optical path and focal plane before stitching")
+        paths = self._ds.get(TAG_OPTICAL_PATH_SEQUENCE)
+        if paths is not None and paths.value and len(_slide_sequence_items(paths.value, self._explicit, self._bo)) > 1:
+            raise DicomError("dicom: multiple optical paths require explicit selection")
+        element = self._ds.get(TAG_PER_FRAME_GROUPS)
+        if element is None or not element.value:
+            raise DicomError("dicom: selective tiles require explicit Per-Frame Functional Groups positions")
+        frames = _slide_sequence_items(element.value, self._explicit, self._bo)
+        if len(frames) != self.n_frames:
+            raise DicomError("dicom: Per-Frame Functional Groups count differs from NumberOfFrames")
+        shared_element = self._ds.get(TAG_SHARED_GROUPS)
+        shared = (_slide_sequence_items(shared_element.value, self._explicit, self._bo)
+                  if shared_element is not None and shared_element.value else [])
+        if len(shared) > 1:
+            raise DicomError("dicom: multiple Shared Functional Groups items")
+        shared = shared[0] if shared else {}
+
+        def one_group(item, tag):
+            values = item.get(tag, [])
+            if not isinstance(values, list) or len(values) > 1:
+                raise DicomError("dicom: ambiguous slide position or optical path group")
+            return values[0] if values else {}
+
+        shared_position = one_group(shared, TAG_PLANE_POSITION_SLIDE)
+        shared_optical = one_group(shared, TAG_OPTICAL_PATH_IDENTIFICATION)
+        origins, focal_planes, optical_paths = [], set(), set()
+        for frame in frames:
+            position = one_group(frame, TAG_PLANE_POSITION_SLIDE) or shared_position
+            optical = one_group(frame, TAG_OPTICAL_PATH_IDENTIFICATION) or shared_optical
+            coords = []
+            for tag in (TAG_SLIDE_ROW, TAG_SLIDE_COLUMN):
+                value = position.get(tag)
+                if not isinstance(value, _Element) or len(value.value) != 4:
+                    raise DicomError("dicom: tile position requires signed row and column values")
+                coordinate = struct.unpack(self._bo + "i", value.value)[0] - 1
+                if coordinate < 0:
+                    raise DicomError("dicom: nonpositive slide tile position is unsupported")
+                coords.append(coordinate)
+            z = position.get(TAG_SLIDE_Z)
+            try:
+                focal_planes.add(float(z.value.strip(b" \x00")) if z is not None else None)
+            except ValueError as exc:
+                raise DicomError("dicom: invalid slide focal-plane coordinate") from exc
+            optical_id = optical.get(TAG_OPTICAL_PATH_ID)
+            optical_paths.add(optical_id.value.strip(b" \x00") if optical_id is not None else None)
+            origins.append(tuple(coords))
+        if len(focal_planes) > 1 or len(optical_paths) > 1:
+            raise DicomError("dicom: multiple optical paths or focal planes cannot be stitched together")
+        if len(set(origins)) != len(origins):
+            raise DicomError("dicom: overlapping slide tiles are ambiguous")
+        row_mod = {row % self.rows for row, _ in origins}
+        column_mod = {column % self.columns for _, column in origins}
+        if len(row_mod) > 1 or len(column_mod) > 1:
+            raise DicomError("dicom: overlapping or irregular slide tile grid is unsupported")
+        matrix = self.total_pixel_matrix
+        if matrix and any(row >= matrix[0] or column >= matrix[1] for row, column in origins):
+            raise DicomError("dicom: tile origin is outside the total pixel matrix")
+        self._slide_positions = tuple(origins)
+        return self._slide_positions
+
+    @property
     def imaged_volume(self) -> tuple[float, float] | None:
         """``(height, width)`` of the imaged area in millimetres.
 
@@ -712,3 +807,69 @@ class DicomFile(ArrayReader):
 
 
 __all__ = ["DicomFile", "DicomError"]
+
+
+def _slide_sequence_items(raw, explicit, bo):
+    """Read slide functional groups with defined or undefined item lengths."""
+    def dataset(offset, end, depth):
+        if depth > 32:
+            raise DicomError("dicom: functional groups nesting is too deep")
+        values = {}
+        while offset < end:
+            if offset + 8 > end:
+                raise DicomError("dicom: truncated functional group element")
+            tag = _read_tag(raw, offset, bo)
+            if tag == _ITEM_DELIM:
+                return values, offset + 8
+            if tag[0] == 0xFFFE:
+                raise DicomError("dicom: unexpected delimiter in functional group")
+            if explicit:
+                vr = raw[offset + 4:offset + 6]
+                if vr in _LONG_VRS:
+                    if offset + 12 > end:
+                        raise DicomError("dicom: truncated functional group header")
+                    length = struct.unpack_from(bo + "I", raw, offset + 8)[0]
+                    value_start = offset + 12
+                else:
+                    length = struct.unpack_from(bo + "H", raw, offset + 6)[0]
+                    value_start = offset + 8
+            else:
+                vr = b"SQ" if tag in _SLIDE_SEQUENCES else _IMPLICIT_VR.get(tag, b"")
+                length = struct.unpack_from(bo + "I", raw, offset + 4)[0]
+                value_start = offset + 8
+            if length == 0xFFFFFFFF:
+                value, offset = sequence(value_start, end, depth + 1, True)
+            else:
+                offset = value_start + length
+                if offset > end:
+                    raise DicomError("dicom: functional group value exceeds its item")
+                if vr == b"SQ":
+                    value, _ = sequence(value_start, offset, depth + 1, False)
+                else:
+                    value = _Element(tag, vr, raw[value_start:offset])
+            values[tag] = value
+        return values, offset
+
+    def sequence(offset, end, depth, undefined):
+        items = []
+        while offset < end:
+            if offset + 8 > end:
+                raise DicomError("dicom: truncated functional group sequence")
+            tag = _read_tag(raw, offset, bo)
+            length = struct.unpack_from(bo + "I", raw, offset + 4)[0]
+            offset += 8
+            if tag == _SEQ_DELIM:
+                return items, offset
+            if tag != _ITEM:
+                raise DicomError("dicom: expected functional group sequence item")
+            item_end = end if length == 0xFFFFFFFF else offset + length
+            if item_end > end:
+                raise DicomError("dicom: functional group item exceeds sequence")
+            value, following = dataset(offset, item_end, depth)
+            items.append(value)
+            offset = following if length == 0xFFFFFFFF else item_end
+        if undefined:
+            raise DicomError("dicom: missing functional group sequence delimiter")
+        return items, offset
+
+    return sequence(0, len(raw), 0, False)[0]

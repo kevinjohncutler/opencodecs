@@ -120,7 +120,10 @@ def _parse_multipart(body: bytes, content_type: str) -> list[tuple[dict[str, str
             sep = b"\n\n"
         head, _, payload = part.partition(sep)
         # Strip the trailing CRLF before the next boundary marker.
-        payload = payload.rstrip(b"\r\n")
+        if payload.endswith(b"\r\n"):
+            payload = payload[:-2]
+        elif payload.endswith(b"\n"):
+            payload = payload[:-1]
         headers: dict[str, str] = {}
         for line in head.split(b"\r\n") if b"\r\n" in head else head.split(b"\n"):
             line = line.strip()
@@ -384,6 +387,8 @@ class DicomwebClient:
         bits_allocated: int | None = None,
         samples_per_pixel: int = 1,
         pixel_representation: int = 0,
+        max_response_bytes: int | None = None,
+        max_decoded_bytes: int | None = None,
     ):
         """Fetch and decode one frame; returns a numpy ndarray.
 
@@ -395,20 +400,55 @@ class DicomwebClient:
             f"{self.base_url}/studies/{study_uid}/series/{series_uid}"
             f"/instances/{instance_uid}/frames/{frame}"
         )
-        body, content_type = self._http_get(url, accept=accept)
+        if max_response_bytes is None:
+            body, content_type = self._http_get(url, accept=accept)
+        else:
+            body, content_type = self._http_get(url, accept=accept, max_bytes=max_response_bytes)
         parts = _parse_multipart(body, content_type)
         if not parts:
             raise DicomwebError("server returned no frame parts")
         # WADO-RS frames endpoint returns one part per requested frame.
         part_headers, part_body = parts[0]
         ts = _extract_transfer_syntax(part_headers)
-        return decode_frame(
+        result = decode_frame(
             part_body, ts,
             rows=rows, columns=columns,
             bits_allocated=bits_allocated,
             samples_per_pixel=samples_per_pixel,
             pixel_representation=pixel_representation,
         )
+        if max_decoded_bytes is not None and result.nbytes > max_decoded_bytes:
+            raise DicomwebError("decoded frame exceeds max_decoded_bytes")
+        return result
+
+    def iter_frames(self, study_uid, series_uid, instance_uid, frames, *,
+                    max_frame_bytes: int, numthreads: int = 4,
+                    max_pending_bytes: int = 64 << 20, worker_budget=None,
+                    **pixel_options):
+        """Fetch and yield requested frames in order with bounded retention.
+
+        max_frame_bytes is an explicit ceiling on each multipart response
+        and decoded result. Response reads enforce it before decoding;
+        decoded size is checked afterward because encoded image headers
+        determine allocation. Native decoder workspace is separate. Close
+        the iterator to cancel queued requests and join active requests.
+        """
+        if max_frame_bytes < 1:
+            raise ValueError("max_frame_bytes must be positive")
+        from .core.pipeline import map_bounded
+        def fetch(frame):
+            if int(frame) < 1:
+                raise ValueError("DICOMweb frame numbers start at one")
+            return self.get_frame(study_uid, series_uid, instance_uid, int(frame),
+                                  max_response_bytes=max_frame_bytes,
+                                  max_decoded_bytes=max_frame_bytes, **pixel_options)
+        # Multipart splitting retains several byte copies alongside the
+        # decoded frame. Reserve these explicitly rather than one frame
+        # estimate pretending to cover its complete response lifetime.
+        yield from map_bounded(fetch, frames, numthreads,
+                               size=lambda frame: 6 * max_frame_bytes,
+                               max_bytes=max_pending_bytes, budget=worker_budget,
+                               name="dicomweb")
 
     # ------------------------------------------------------------------
     # QIDO-RS
@@ -429,8 +469,19 @@ class DicomwebClient:
     # HTTP plumbing
     # ------------------------------------------------------------------
 
-    def _http_get(self, url: str, *, accept: str) -> tuple[bytes, str]:
+    def _http_get(self, url: str, *, accept: str, max_bytes=None) -> tuple[bytes, str]:
         req = urllib.request.Request(url, headers={**self.headers,
                                                    "Accept": accept})
         with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-            return resp.read(), resp.headers.get("Content-Type", "")
+            if max_bytes is None:
+                body = resp.read()
+            else:
+                if max_bytes < 1:
+                    raise ValueError("max_bytes must be positive")
+                declared = resp.headers.get("Content-Length")
+                if declared is not None and int(declared) > max_bytes:
+                    raise DicomwebError("frame response exceeds max_response_bytes")
+                body = resp.read(max_bytes + 1)
+                if len(body) > max_bytes:
+                    raise DicomwebError("frame response exceeds max_response_bytes")
+            return body, resp.headers.get("Content-Type", "")

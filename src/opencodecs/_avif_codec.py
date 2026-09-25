@@ -8,8 +8,11 @@ from typing import Any
 import numpy as np
 
 from .core.codec import Codec, Reader
+from .core.buffers import array_output
 from .core._io_helpers import read_src as _read_src, write_dest as _write_dest
 from .core._optional_backend import import_or_stubs
+from .core.pipeline import native_workers
+from .core.native_source import NativeSource
 
 (
     _avif_encode, _avif_decode, _avif_check_signature,
@@ -30,6 +33,7 @@ class AvifCodec(Codec):
     has_native = True
     has_delegate = False
     can_encode = True
+    max_writer_frames = 1
     can_decode = True
     # AVIF carries image sequences (the same machinery as AV1 video)
     # and progressive layers, both indexed through avifDecoderNthImage.
@@ -75,7 +79,7 @@ class AvifCodec(Codec):
             data = np.asarray(data)
         encoded = _avif_encode(
             data, level=level, lossless=lossless, speed=speed,
-            color=color, bit_depth=bit_depth, numthreads=numthreads,
+            color=color, bit_depth=bit_depth, numthreads=native_workers(numthreads),
             iccprofile=iccprofile,
         )
         return _write_dest(encoded, dest)
@@ -98,13 +102,13 @@ class AvifCodec(Codec):
         """
         data = _read_src(src)
         if _avif_frame_count(data) <= 1:
-            return _avif_decode(data, numthreads=numthreads, out=out)
+            return _avif_decode(data, numthreads=native_workers(numthreads), out=out if out is None else array_output(out))
         if out is not None:
             raise ValueError(
                 "avif decode: out= cannot take a multi-image sequence; "
                 "decode without it, or use open() and write the frames "
                 "where you want them")
-        with AvifReader(data, numthreads=numthreads) as r:
+        with AvifReader(data, numthreads=native_workers(numthreads)) as r:
             return np.stack([r.frame(i) for i in range(r.n_frames)])
 
     def frame_count(self, src: Any) -> int:
@@ -112,7 +116,10 @@ class AvifCodec(Codec):
 
         Parses the container only, so asking does not cost a decode.
         """
-        return _avif_frame_count(_read_src(src))
+        if isinstance(src, (bytes, bytearray, memoryview)):
+            return _avif_frame_count(src)
+        with self.open(src) as reader:
+            return reader.n_frames
 
     def open(self, src: Any, *, numthreads: int | None = None):
         """A reader over an AVIF sequence.
@@ -122,7 +129,14 @@ class AvifCodec(Codec):
         into N parses; here the parse happens once and a frame is a
         lookup in the sample table it built.
         """
-        return AvifReader(_read_src(src), numthreads=numthreads)
+        if isinstance(src, (bytes, bytearray, memoryview)):
+            return AvifReader(src, numthreads=numthreads)
+        source = NativeSource(src)
+        try:
+            return AvifReader(source, numthreads=numthreads)
+        except BaseException:
+            source.close()
+            raise
 
     def read_icc_profile(self, src: Any) -> bytes | None:
         """Return the embedded ICC profile bytes, or ``None`` if absent."""
@@ -141,7 +155,12 @@ class AvifReader(Reader):
     is_chunked = True
 
     def __init__(self, data, *, numthreads: int | None = None):
-        self._seq = _AvifSequence(data, numthreads)
+        import os
+        import threading
+        self._lock = threading.RLock()
+        self._source = data if isinstance(data, NativeSource) else None
+        self._numthreads = (os.cpu_count() or 4) if numthreads is None or numthreads <= 0 else numthreads
+        self._seq = _AvifSequence(data, native_workers(self._numthreads))
 
     @property
     def n_frames(self) -> int:
@@ -163,13 +182,16 @@ class AvifReader(Reader):
         return self._seq.duration
 
     def frame(self, index: int) -> np.ndarray:
-        return self._seq.frame(int(index))
+        with self._lock:
+            if self._seq is None:
+                raise ValueError("AVIF reader is closed")
+            return self._seq.frame(int(index), numthreads=native_workers(self._numthreads))
 
     __getitem__ = frame
 
     def iter_frames(self):
         for i in range(self.n_frames):
-            yield self._seq.frame(i)
+            yield self.frame(i)
 
     def read(self) -> np.ndarray:
         """Every frame stacked, or the single image for a still.
@@ -178,11 +200,18 @@ class AvifReader(Reader):
         what decode() has always returned for the same file.
         """
         if self.n_frames == 1:
-            return self._seq.frame(0)
-        return np.stack([self._seq.frame(i) for i in range(self.n_frames)])
+            return self.frame(0)
+        return np.stack([self.frame(i) for i in range(self.n_frames)])
 
     def close(self) -> None:
-        self._seq = None
+        with self._lock:
+            self._seq = None
+            if self._source is not None:
+                self._source.close()
+
+    def __del__(self):
+        if hasattr(self, "_lock"):
+            self.close()
 
     def __enter__(self) -> "AvifReader":
         return self

@@ -100,7 +100,8 @@ class VsiPyramidReader(PyramidReader):
     choosing which picture to return.
     """
 
-    def __init__(self, src: Any, *, stack: str | int | None = None):
+    def __init__(self, src: Any, *, stack: str | int | None = None,
+                 numthreads: int | None = None, max_pending_bytes: int | None = None):
         # A URL names one .ets directly: there is no directory listing
         # over HTTP to find a companion tree with, so the caller has
         # already had to say which stack they mean. Running it through
@@ -122,6 +123,8 @@ class VsiPyramidReader(PyramidReader):
         self._index = {
             (r.level, r.tile_x, r.tile_y): r for r in self.info.records}
         self._probe = None
+        self._numthreads = numthreads
+        self._max_pending_bytes = max_pending_bytes
         self._cache: list[PyramidLevel] | None = None
 
     # -- construction ------------------------------------------------
@@ -160,13 +163,16 @@ class VsiPyramidReader(PyramidReader):
 
     # -- pixels ------------------------------------------------------
 
-    def _decode_tile(self, rec) -> np.ndarray:
+    def _decode_tile(self, rec, payload=None) -> np.ndarray:
         # The probe tile is decoded once to learn channels and dtype,
         # and it is usually the first tile a caller asks for too, so
         # reading the top-left region used to decode it twice.
         if self._probe is not None and rec is self.info.records[0]:
             return self._probe
-        payload = self._ds.read_at(rec.offset, rec.size)
+        if payload is None:
+            payload = self._ds.read_at(rec.offset, rec.size)
+        if len(payload) != rec.size:
+            raise VsiPyramidError("VSI: truncated tile payload")
         decode = _tile_decoder(bytes(payload[:8]))
         if decode is None:
             raise VsiPyramidError(
@@ -228,21 +234,52 @@ class VsiPyramidReader(PyramidReader):
         shape = (y1 - y0, x1 - x0) if c == 1 else (y1 - y0, x1 - x0, c)
         out = np.zeros(shape, dtype=self.dtype)
 
-        for ty in range(y0 // th, (y1 - 1) // th + 1):
-            for tx in range(x0 // tw, (x1 - 1) // tw + 1):
-                rec = self._index.get((lvl, tx, ty))
-                if rec is None:
-                    continue        # a grid position the file omits
-                tile = self._decode_tile(rec)
-                # Where this tile sits in the level, and the part of it
-                # the region wants.
-                ty0, tx0 = ty * th, tx * tw
-                sy0, sy1 = max(y0, ty0), min(y1, ty0 + tile.shape[0])
-                sx0, sx1 = max(x0, tx0), min(x1, tx0 + tile.shape[1])
-                if sy1 <= sy0 or sx1 <= sx0:
-                    continue
+        records = [self._index[(lvl, tx, ty)]
+                   for ty in range(y0 // th, (y1 - 1) // th + 1)
+                   for tx in range(x0 // tw, (x1 - 1) // tw + 1)
+                   if (lvl, tx, ty) in self._index]
+
+        def place(rec, payload=None):
+            tile = self._decode_tile(rec) if payload is None else self._decode_tile(rec, payload)
+            ty0, tx0 = rec.tile_y * th, rec.tile_x * tw
+            sy0, sy1 = max(y0, ty0), min(y1, ty0 + tile.shape[0])
+            sx0, sx1 = max(x0, tx0), min(x1, tx0 + tile.shape[1])
+            if sy1 > sy0 and sx1 > sx0:
                 out[sy0 - y0:sy1 - y0, sx0 - x0:sx1 - x0] = \
                     tile[sy0 - ty0:sy1 - ty0, sx0 - tx0:sx1 - tx0]
+
+        if self._max_pending_bytes is None:
+            for rec in records:
+                place(rec)
+        else:
+            from .core.parallel import resolve_workers
+            from .core.pipeline import map_bounded, range_batches
+            workers = resolve_workers(self._numthreads, len(records),
+                                      output_bytes=out.nbytes)
+            cost = lambda rec: rec.size + 2 * th * tw * c * self.dtype.itemsize
+            batches = range_batches(records, cost,
+                                    max_bytes=max(1, min(4 << 20, self._max_pending_bytes // (workers + 1))), max_items=32)
+            def fetch(batch):
+                ranges = [(rec.offset, rec.size) for rec in batch]
+                blobs = self._ds.read_many(ranges)
+                return tuple(zip(batch, blobs))
+            def place_batch(batch):
+                for rec, blob in batch:
+                    place(rec, blob)
+            from .core.io import BufferDataSource
+            from ._tiff_http import FileDataSource, HTTPDataSource
+            if isinstance(self._ds, (BufferDataSource, FileDataSource, HTTPDataSource)):
+                # Built-in sources support concurrent offset reads. Keep the
+                # generic caller-owned source on its producer thread.
+                def fetch_place(batch):
+                    place_batch(fetch(batch))
+                task, prepare = fetch_place, None
+            else:
+                task, prepare = place_batch, fetch
+            for _ in map_bounded(task, batches, workers, prepare=prepare,
+                                 size=lambda batch: sum(cost(rec) for rec in batch),
+                                 max_bytes=self._max_pending_bytes, name="vsi"):
+                pass
         return out
 
     def close(self) -> None:

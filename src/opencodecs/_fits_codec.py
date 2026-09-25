@@ -60,17 +60,20 @@ class FitsCodec(Codec):
             or head.startswith(b"XTENSION= ")
         )
 
-    def open(self, src: Any, *, numthreads: int | None = None):
+    def open(self, src: Any, *, numthreads: int | None = None,
+             max_pending_bytes: int | None = None):
         # ._fits, not ._fits_reader: the latter has never existed, so
         # this raised ModuleNotFoundError for every caller of
         # oc.open(..., format="fits") and for decode(), which goes
         # through it. Nothing noticed because no test called either.
         from ._fits import FitsStream
-        return FitsStream(_read_src_or_path(src), numthreads=numthreads)
+        return FitsStream(_read_src_or_path(src), numthreads=numthreads,
+                          max_pending_bytes=max_pending_bytes)
 
     def decode(self, src: Any, **opts) -> np.ndarray:
         """Read the primary (or first data-bearing) HDU as an ndarray."""
-        with self.open(src, numthreads=opts.pop("numthreads", None)) as r:
+        with self.open(src, numthreads=opts.pop("numthreads", None),
+                       max_pending_bytes=opts.pop("max_pending_bytes", None)) as r:
             return r.read()
 
 

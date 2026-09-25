@@ -8,8 +8,10 @@ from typing import Any
 import numpy as np
 
 from .core.codec import Codec, Reader
+from .core.buffers import array_output
 from .core._io_helpers import read_src as _read_src, write_dest as _write_dest
 from .core._optional_backend import import_or_stubs
+from .core.pipeline import native_workers
 
 (
     _webp_encode, _webp_decode, _webp_check_signature,
@@ -30,6 +32,7 @@ class WebpCodec(Codec):
     has_native = True
     has_delegate = False
     can_encode = True
+    max_writer_frames = 1
     can_decode = True
     # Animated WebP, which we did not read at all: an animation
     # decoded as its first frame with nothing saying the rest existed.
@@ -63,11 +66,11 @@ class WebpCodec(Codec):
             data = np.asarray(data)
         encoded = _webp_encode(
             data, level=level, lossless=lossless,
-            numthreads=numthreads, method=method,
+            numthreads=native_workers(numthreads), method=method,
         )
         return _write_dest(encoded, dest)
 
-    def decode(self, src: Any, **opts) -> np.ndarray:
+    def decode(self, src: Any, *, out=None, **opts) -> np.ndarray:
         """Decode a still WebP, or every frame of an animation.
 
         The plain decoder cannot read an animation container at all: it
@@ -84,6 +87,10 @@ class WebpCodec(Codec):
         A still is unchanged and still returns ``(H, W, C)``.
         """
         data = _read_src(src)
+        if out is not None:
+            if _webp_frame_count(data) > 1:
+                raise ValueError("webp decode: out= cannot take an animation; use open()")
+            return _webp_decode(data, out=array_output(out))
         try:
             return _webp_decode(data)
         except Exception:
@@ -100,7 +107,7 @@ class WebpCodec(Codec):
         return _webp_frame_count(_read_src(src))
 
     def open(self, src: Any, *, numthreads: int | None = None):
-        return WebpReader(_read_src(src), numthreads=numthreads)
+        return WebpReader(_read_src(src), numthreads=native_workers(numthreads))
 
 
 
@@ -123,7 +130,7 @@ class WebpReader(Reader):
     def __init__(self, data, *, numthreads: int | None = None):
         if _webp_frame_count(data) > 1:
             self._frames, self.timestamps, self.loop_count = \
-                _webp_decode_animation(data, numthreads=numthreads)
+                _webp_decode_animation(data, numthreads=native_workers(numthreads))
         else:
             self._frames = [_webp_decode(data)]
             self.timestamps = [0]

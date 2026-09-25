@@ -28,6 +28,7 @@ from typing import Any
 import numpy as np
 
 from .core.codec import Codec
+from .core.buffers import array_output
 from .core._io_helpers import read_src as _read_src, write_dest as _write_dest
 from .core._optional_backend import import_or_stubs
 
@@ -81,8 +82,10 @@ class Sz3Codec(Codec):
         )
         return _write_dest(out, dest)
 
-    def decode(self, src: Any, **opts) -> np.ndarray:
-        return _sz3_decode(_read_src(src))
+    def decode(self, src: Any, *, out=None, **opts) -> np.ndarray:
+        if out is None:
+            return _sz3_decode(_read_src(src))
+        return _sz3_decode(_read_src(src), out=array_output(out))
 
 
 __all__ = ["Sz3Codec"]

@@ -18,10 +18,9 @@ For the common-but-special case of ``bitspersample`` divisible by 8
 (8/16/32), the packing is just the natural memory layout — we short-
 circuit through ``frombuffer`` for free.
 
-For arbitrary N, the implementation uses NumPy bit-twiddling. Not
-the fastest possible (a Cython inner loop would be ~5× faster on
-4K+ images) but correct, dependency-free, and matches imagecodecs
-output byte-for-byte.
+Arbitrary widths use a native direct-output bit reader when available,
+with a NumPy fallback. One-bit input uses NumPy unpackbits; standard
+byte widths retain their existing view/conversion fast path.
 """
 
 from __future__ import annotations
@@ -76,6 +75,10 @@ def _bitunpack(buf: bytes, dtype: np.dtype, bitspersample: int,
     if bitspersample <= 0 or bitspersample > 64:
         raise ValueError(
             f"packints: bitspersample must be in 1..64, got {bitspersample}")
+    if bitspersample == 1:
+        if n_elements > len(buf) * 8:
+            raise ValueError("packints input is truncated")
+        return np.unpackbits(np.frombuffer(buf, dtype=np.uint8), count=n_elements).astype(dtype, copy=False)
     if bitspersample % 8 == 0:
         target_dt = {
             8: ">u1", 16: ">u2", 32: ">u4", 64: ">u8",
@@ -161,6 +164,9 @@ class PackintsCodec(Codec):
     ) -> np.ndarray:
         if dtype is None:
             raise ValueError("packints decode: dtype= is required")
+        bitspersample = int(bitspersample)
+        if not 1 <= bitspersample <= 64:
+            raise ValueError("packints bitspersample must be in 1..64")
         buf = _read_src(src)
         if n_elements is None:
             if shape is None:
@@ -169,8 +175,36 @@ class PackintsCodec(Codec):
                 n_elements = total_bits // int(bitspersample)
             else:
                 n_elements = int(np.prod(shape))
-        result = _bitunpack(buf, np.dtype(dtype), int(bitspersample),
-                            int(n_elements))
+        target_dtype = np.dtype(dtype)
+        target_shape = tuple(shape) if shape is not None else (int(n_elements),)
+        import math
+        if int(n_elements) < 0 or math.prod(target_shape) != int(n_elements):
+            raise ValueError("packints shape does not match sample count")
+        if out is not None:
+            if not isinstance(out, np.ndarray):
+                raise TypeError("packints out must be an ndarray")
+            if out.dtype != target_dtype or out.shape != target_shape:
+                raise ValueError("packints out shape/dtype mismatch")
+            if not out.flags.writeable:
+                raise ValueError("packints out must be writable")
+        # Whole-byte widths already use a fast NumPy view/conversion. The
+        # native bit reader avoids a samples-by-bits matrix for other widths.
+        if (int(bitspersample) not in (1, 8, 16, 32, 64) and target_dtype.kind in "iu" and
+                target_dtype.itemsize in (1, 2, 4, 8) and
+                (out is None or out.flags.c_contiguous)):
+            try:
+                from .codecs._bytetools import unpackints_into
+            except ImportError:
+                pass
+            else:
+                import sys
+                result = np.empty(target_shape, dtype=target_dtype) if out is None else out
+                little = (target_dtype.byteorder == "<" or
+                          target_dtype.byteorder in ("=", "|") and sys.byteorder == "little")
+                unpackints_into(buf, memoryview(result).cast("B"), int(bitspersample),
+                                int(n_elements), target_dtype.itemsize, little)
+                return result
+        result = _bitunpack(buf, target_dtype, int(bitspersample), int(n_elements))
         if shape is not None:
             result = result.reshape(shape)
         if out is not None:

@@ -26,6 +26,7 @@ from typing import Any
 import numpy as np
 
 from .core.codec import Codec
+from .core.buffers import byte_output
 from .core._io_helpers import read_src as _read_src, write_dest as _write_dest
 from .core._optional_backend import import_or_stubs
 
@@ -81,9 +82,12 @@ class BitshuffleCodec(Codec):
 
     def decode(self, src: Any, *,
                itemsize: int = 1,
-               blocksize: int = 0,
-               **opts) -> bytes:
-        return _bs_decode(_read_src(src), itemsize=int(itemsize), blocksize=int(blocksize))
+               blocksize: int = 0, out=None,
+               **opts) -> bytes | memoryview:
+        if out is None:
+            return _bs_decode(_read_src(src), itemsize=int(itemsize), blocksize=int(blocksize))
+        return _bs_decode(_read_src(src), itemsize=int(itemsize),
+                          blocksize=int(blocksize), out=byte_output(out))
 
 
 __all__ = ["BitshuffleCodec"]

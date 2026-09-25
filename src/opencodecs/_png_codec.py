@@ -8,6 +8,7 @@ from typing import Any
 import numpy as np
 
 from .core.codec import Codec
+from .core.buffers import array_output
 from .core._io_helpers import read_src as _read_src, write_dest as _write_dest
 from .core._optional_backend import import_or_stubs
 
@@ -71,7 +72,17 @@ class PngCodec(Codec):
         return _write_dest(encoded, dest)
 
     def decode(self, src: Any, *, out=None, **opts) -> np.ndarray:
-        return _png_decode(_read_src(src), out=out)
+        return _png_decode(_read_src(src), out=out if out is None else array_output(out))
+
+    def decode_rows(self, src):
+        """Yield owned complete rows or explicitly located Adam7 pass updates."""
+        from .core.rows import decode_png_rows
+        return decode_png_rows(src)
+
+    def encode_rows(self, rows, *, shape, dtype, dest=None, **options):
+        """Encode ordinary PNG from sequential rows and a declared image shape."""
+        from .core.rows import encode_png_rows
+        return encode_png_rows(rows, shape=shape, dtype=dtype, dest=dest, **options)
 
     def read_icc_profile(self, src: Any) -> bytes | None:
         """Return the embedded ICC profile bytes, or ``None`` if absent.

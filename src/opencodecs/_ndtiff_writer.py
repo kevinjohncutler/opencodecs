@@ -35,12 +35,16 @@ import struct
 import sys
 import threading
 from collections import OrderedDict
+from copy import deepcopy
 from pathlib import Path
 from typing import Any, Iterable
 
 import numpy as np
 
 from .core.codec import Writer
+
+_ENCODE_BATCH_BYTES = 256 << 10
+_ENCODE_BATCH_COUNT = 8
 
 
 # Format constants — must match ndstorage exactly for cross-reader
@@ -95,6 +99,9 @@ class NDTiffWriter(Writer):
 
     The ``axes`` arg to ``write_frame`` is an arbitrary dict of
     JSON-serializable values; the reader keys on ``frozenset(axes.items())``.
+    Set ``verify=True`` to decode each encoded frame and require identical pixel
+    bits before emission. Verification runs inside parallel frame tasks and
+    consumes an additional decoded frame plus bounded comparison scratch.
     """
 
     def __init__(
@@ -115,6 +122,8 @@ class NDTiffWriter(Writer):
         # corresponding TIFF compression code.
         compression: str | int = "none",
         compression_level: int | None = None,
+        compression_options: dict | None = None,
+        verify: bool = False,
     ):
         self._dir = Path(directory)
         self._dir.mkdir(parents=True, exist_ok=True)
@@ -127,6 +136,10 @@ class NDTiffWriter(Writer):
         )
         self._compression_code = codec_name_to_code(compression)
         self._compression_level = compression_level
+        self._compression_options = dict(compression_options or {})
+        self._verify = bool(verify)
+        self._segment_encoder = None
+        self._segment_prepare = None
         self._compression_is_none = self._compression_code == _CMP_NONE
 
         # State.
@@ -150,6 +163,8 @@ class NDTiffWriter(Writer):
         self._lock = threading.Lock()
         self._closed = False
         self._frame_count = 0
+        self._ifd_template_key = None
+        self._ifd_template = None
 
         self._open_next_stack()
 
@@ -205,6 +220,7 @@ class NDTiffWriter(Writer):
         frames: Iterable[tuple[dict, np.ndarray, dict | str | None]],
         *,
         n_workers: int | None = None,
+        copy_frames: bool = True,
     ) -> list[dict]:
         """Write N frames; single flush at the end. Returns the index
         records for each frame written.
@@ -224,91 +240,112 @@ class NDTiffWriter(Writer):
             encodes in submission order so the ndstorage reader and
             our reader see the exact same on-disk layout as the
             serial path.
+        copy_frames : bool
+            Snapshot frames before advancing a producer, allowing acquisition
+            generators to reuse one buffer. Set False only when every yielded
+            array remains unchanged until this call returns.
         """
-        frames_list = list(frames)
-        # Decide whether to use the parallel pipeline.
-        if (self._compression_is_none
-                or len(frames_list) < 2
-                or n_workers == 1):
+        if self._compression_is_none or n_workers == 1:
             recs = []
             with self._lock:
-                for axes, pixels, metadata in frames_list:
+                for axes, pixels, metadata in frames:
                     recs.append(self._write_frame_inner(axes, pixels, metadata))
-                # Raw-fd writes go to the kernel immediately; no
-                # user-space buffer to flush.
             return recs
+        workers = min(os.cpu_count() or 1, 8) if n_workers is None else max(1, int(n_workers))
+        return self._write_many_parallel(frames, workers, copy_frames=copy_frames)
 
-        if n_workers is None:
-            n_workers = min(os.cpu_count() or 1, 8)
-        return self._write_many_parallel(frames_list, n_workers)
+    def _encode_pixels(self, pixels, *, outer_workers=1):
+        """Preserve image geometry while sharing prepared compressor dispatch."""
+        if self._segment_encoder is None:
+            from .core.segment_compression import (
+                bind_segment_encoder, prepare_segment_input, JPEG2000, JXL, WEBP,
+            )
+            options = dict(self._compression_options)
+            options.setdefault("owned_output", True)
+            options["verify"] = self._verify
+            if self._compression_code in (JPEG2000, JXL, WEBP):
+                options.setdefault("lossless", True)
+            self._segment_prepare = prepare_segment_input
+            self._segment_encoder = bind_segment_encoder(
+                self._compression_code, level=self._compression_level, **options)
+        data = (pixels if outer_workers > 1 else
+                self._segment_prepare(pixels, self._compression_code))
+        return self._segment_encoder(data)
 
-    def _write_many_parallel(
-        self,
-        frames: list[tuple[dict, np.ndarray, dict | str | None]],
-        n_workers: int,
-    ) -> list[dict]:
-        """Parallel encode → serial write pipeline.
+    def _write_many_parallel(self, frames, n_workers, *, copy_frames=True):
+        """Bounded owned batches, ordered encode, then serial emission."""
+        from .core.pipeline import map_bounded
+        from .core.io import get_reader_pool
+        from .core.segment_compression import prepare_segment_input
+        from contextlib import closing
 
-        Encodes run on a thread pool (zstd / deflate / jxl / etc.
-        release the GIL during their native compress call, so threads
-        scale near-linearly on multi-core hosts). The writer thread
-        drains futures in submission order so the on-disk byte layout
-        is identical to the serial path — readers see exactly the same
-        IFD chain.
+        if self._verify:
+            from .core.verification import verification_reservation
+            def frame_reservation(pixels):
+                return 3 * max(1, pixels.nbytes) + verification_reservation(pixels.nbytes)
+        else:
+            def frame_reservation(pixels):
+                return 3 * max(1, pixels.nbytes)
 
-        A bounded look-ahead window caps in-flight encoded bytes so
-        long batches don't grow memory unboundedly when the encoder
-        outpaces the disk writer.
-        """
-        from concurrent.futures import ThreadPoolExecutor
-        from .core.segment_compression import encode_segment
+        source = iter(frames)
+        sentinel = object()
+        lookahead = sentinel
 
-        cmp_code = self._compression_code
-        cmp_level = self._compression_level
+        def descriptors():
+            nonlocal lookahead
+            while True:
+                first = lookahead if lookahead is not sentinel else next(source, sentinel)
+                lookahead = sentinel
+                if first is sentinel:
+                    return
+                raw_bytes = max(1, first[1].nbytes)
+                count = max(1, min(_ENCODE_BATCH_COUNT, _ENCODE_BATCH_BYTES // raw_bytes))
+                yield first, count, frame_reservation(first[1]) * count
 
-        def _encode_pixels(raw_pixels):
-            if isinstance(raw_pixels, np.ndarray):
-                buf = memoryview(raw_pixels).cast("B")
-            else:
-                buf = raw_pixels
-            return encode_segment(buf, cmp_code, level=cmp_level)
+        def prepare(descriptor):
+            nonlocal lookahead
+            first, count, reservation = descriptor
+            prepared = []
+            used = 0
+            item = first
+            while item is not sentinel:
+                axes, pixels, metadata = item
+                amount = frame_reservation(pixels)
+                if prepared and used + amount > reservation:
+                    # Keep this borrowed item without advancing its producer.
+                    lookahead = item
+                    break
+                p = self._prepare_frame(axes, pixels, metadata)
+                p["axes"] = deepcopy(p["axes"])
+                converted = p["raw_pixels"]
+                owns_conversion = converted is not pixels and converted.flags.owndata
+                p["raw_pixels"] = prepare_segment_input(
+                    converted, self._compression_code,
+                    copy=copy_frames and not owns_conversion)
+                prepared.append(p)
+                used += amount
+                if len(prepared) == count:
+                    break
+                item = next(source, sentinel)
+            return prepared
 
-        recs: list[dict] = []
+        def encode(batch):
+            results = []
+            for prepared in batch:
+                encoded = self._encode_pixels(prepared.pop("raw_pixels"), outer_workers=n_workers)
+                results.append((prepared, encoded))
+            return results
+
+        recs = []
         with self._lock:
-            # Prepare each frame in main thread (no I/O, no encode).
-            # _prepare_frame extracts numpy buffers and JSON-encodes
-            # metadata; cheap and avoids holding refs to user dicts.
-            with ThreadPoolExecutor(
-                max_workers=n_workers,
-                thread_name_prefix="ndtiff-encode",
-            ) as ex:
-                window = max(n_workers * 2, 4)
-                inflight: list[tuple[dict, Any]] = []   # [(prepared, future)]
-                it = iter(frames)
-
-                def _submit_next() -> bool:
-                    try:
-                        axes, pixels, metadata = next(it)
-                    except StopIteration:
-                        return False
-                    p = self._prepare_frame(axes, pixels, metadata)
-                    fut = ex.submit(_encode_pixels, p["raw_pixels"])
-                    inflight.append((p, fut))
-                    return True
-
-                # Prime the pipeline up to the window.
-                for _ in range(window):
-                    if not _submit_next():
-                        break
-
-                while inflight:
-                    p, fut = inflight.pop(0)
-                    encoded = fut.result()
-                    recs.append(self._emit_frame(
-                        p, encoded, self._compression_code,
-                    ))
-                    _submit_next()
-
+            with closing(map_bounded(encode, descriptors(), n_workers, prepare=prepare,
+                                     max_pending=max(n_workers + 1, n_workers * 2),
+                                     executor=get_reader_pool("ndtiff-encode", n_workers),
+                                     size=lambda item: item[2],
+                                     name="ndtiff-encode")) as results:
+                for batch in results:
+                    for prepared, encoded in batch:
+                        recs.append(self._emit_frame(prepared, encoded, self._compression_code))
         return recs
 
     def close(self) -> None:
@@ -581,13 +618,11 @@ class NDTiffWriter(Writer):
         """Serial write path: prepare → encode → emit, all in one go."""
         p = self._prepare_frame(axes, pixels, metadata)
         if self._compression_is_none:
+            if self._verify:
+                from .core.verification import verify_segment
+                verify_segment(p["raw_pixels"], p["raw_pixels"], self._compression_code)
             return self._emit_frame(p, p["raw_pixels"], 1)
-        from .core.segment_compression import encode_segment
-        raw = p["raw_pixels"]
-        buf = memoryview(raw).cast("B") if isinstance(raw, np.ndarray) else raw
-        encoded = encode_segment(
-            buf, self._compression_code, level=self._compression_level,
-        )
+        encoded = self._encode_pixels(p["raw_pixels"])
         return self._emit_frame(p, encoded, self._compression_code)
 
     # ------------------------------------------------------------------
@@ -678,44 +713,59 @@ class NDTiffWriter(Writer):
         if next_ifd_off % 2 == 1:
             next_ifd_off += 1
 
-        ifd_bytes = bytearray(ifd_struct_size + (6 if rgb else 0) + 16)
-        # 2-byte entry count
-        struct.pack_into("<H", ifd_bytes, 0, _ENTRIES_PER_IFD)
-        # 13 entries — order matches ndstorage exactly so readers
-        # that scan in-order don't trip.
-        e = 2
-        e += _pack_ifd_entry(ifd_bytes, e, _TAG_WIDTH,       4, 1, w)
-        e += _pack_ifd_entry(ifd_bytes, e, _TAG_HEIGHT,      4, 1, h)
-        e += _pack_ifd_entry(ifd_bytes, e, _TAG_BITS_PER_SAMPLE,
-                             3, 3 if rgb else 1,
-                             bps_off if rgb else (8 if bit_depth == 8 else 16))
-        e += _pack_ifd_entry(ifd_bytes, e, _TAG_COMPRESSION,
-                             3, 1, tiff_compression_tag)
-        e += _pack_ifd_entry(ifd_bytes, e, _TAG_PHOTOMETRIC, 3, 1, 2 if rgb else 1)
-        e += _pack_ifd_entry(ifd_bytes, e, _TAG_STRIP_OFFSETS, 4, 1, pixel_off)
-        e += _pack_ifd_entry(ifd_bytes, e, _TAG_SAMPLES_PER_PIXEL,
-                             3, 1, 3 if rgb else 1)
-        e += _pack_ifd_entry(ifd_bytes, e, _TAG_ROWS_PER_STRIP, 3, 1, h)
-        e += _pack_ifd_entry(ifd_bytes, e, _TAG_STRIP_BYTE_COUNTS,
-                             4, 1, bytes_per_image)
-        e += _pack_ifd_entry(ifd_bytes, e, _TAG_X_RESOLUTION, 5, 1, x_res_off)
-        e += _pack_ifd_entry(ifd_bytes, e, _TAG_Y_RESOLUTION, 5, 1, y_res_off)
-        e += _pack_ifd_entry(ifd_bytes, e, _TAG_RESOLUTION_UNIT, 3, 1, 3)
-        e += _pack_ifd_entry(ifd_bytes, e, _TAG_MM_METADATA, 2, len(md_bytes),
-                             metadata_off)
-        # next-IFD pointer slot — will be patched by next frame or by
-        # close() to 0 for the last frame.
-        struct.pack_into("<I", ifd_bytes, e, next_ifd_off)
-        e += 4
-        if rgb:
-            struct.pack_into("<HHH", ifd_bytes, e,
-                             bit_depth, bit_depth, bit_depth)
-            e += 6
-        # X/Y resolution rationals (numerator, denominator)
-        struct.pack_into("<II", ifd_bytes, e, 1, 1)
-        e += 8
-        struct.pack_into("<II", ifd_bytes, e, 1, 1)
-        e += 8
+        template_key = (w, h, rgb, bit_depth, tiff_compression_tag)
+        if template_key == self._ifd_template_key:
+            ifd_bytes = bytearray(self._ifd_template)
+            if rgb:
+                struct.pack_into("<I", ifd_bytes, 2 + 2 * 12 + 8, bps_off)
+            for slot, value in ((5, pixel_off), (8, bytes_per_image),
+                                (9, x_res_off), (10, y_res_off)):
+                struct.pack_into("<I", ifd_bytes, 2 + slot * 12 + 8, value)
+            struct.pack_into("<II", ifd_bytes, 2 + 12 * 12 + 4,
+                             len(md_bytes), metadata_off)
+            struct.pack_into("<I", ifd_bytes, 2 + _ENTRIES_PER_IFD * 12, next_ifd_off)
+        else:
+            ifd_bytes = bytearray(ifd_struct_size + (6 if rgb else 0) + 16)
+            # 2-byte entry count
+            struct.pack_into("<H", ifd_bytes, 0, _ENTRIES_PER_IFD)
+            # 13 entries; order matches ndstorage exactly so readers
+            # that scan in-order don't trip.
+            e = 2
+            e += _pack_ifd_entry(ifd_bytes, e, _TAG_WIDTH,       4, 1, w)
+            e += _pack_ifd_entry(ifd_bytes, e, _TAG_HEIGHT,      4, 1, h)
+            e += _pack_ifd_entry(ifd_bytes, e, _TAG_BITS_PER_SAMPLE,
+                                 3, 3 if rgb else 1,
+                                 bps_off if rgb else (8 if bit_depth == 8 else 16))
+            e += _pack_ifd_entry(ifd_bytes, e, _TAG_COMPRESSION,
+                                 3, 1, tiff_compression_tag)
+            e += _pack_ifd_entry(ifd_bytes, e, _TAG_PHOTOMETRIC, 3, 1, 2 if rgb else 1)
+            e += _pack_ifd_entry(ifd_bytes, e, _TAG_STRIP_OFFSETS, 4, 1, pixel_off)
+            e += _pack_ifd_entry(ifd_bytes, e, _TAG_SAMPLES_PER_PIXEL,
+                                 3, 1, 3 if rgb else 1)
+            e += _pack_ifd_entry(ifd_bytes, e, _TAG_ROWS_PER_STRIP, 3, 1, h)
+            e += _pack_ifd_entry(ifd_bytes, e, _TAG_STRIP_BYTE_COUNTS,
+                                 4, 1, bytes_per_image)
+            e += _pack_ifd_entry(ifd_bytes, e, _TAG_X_RESOLUTION, 5, 1, x_res_off)
+            e += _pack_ifd_entry(ifd_bytes, e, _TAG_Y_RESOLUTION, 5, 1, y_res_off)
+            e += _pack_ifd_entry(ifd_bytes, e, _TAG_RESOLUTION_UNIT, 3, 1, 3)
+            e += _pack_ifd_entry(ifd_bytes, e, _TAG_MM_METADATA, 2, len(md_bytes),
+                                 metadata_off)
+            # next-IFD pointer slot, to be patched by next frame or by
+            # close() to 0 for the last frame.
+            struct.pack_into("<I", ifd_bytes, e, next_ifd_off)
+            e += 4
+            if rgb:
+                struct.pack_into("<HHH", ifd_bytes, e,
+                                 bit_depth, bit_depth, bit_depth)
+                e += 6
+            # X/Y resolution rationals (numerator, denominator)
+            struct.pack_into("<II", ifd_bytes, e, 1, 1)
+            e += 8
+            struct.pack_into("<II", ifd_bytes, e, 1, 1)
+            e += 8
+
+            self._ifd_template_key = template_key
+            self._ifd_template = bytes(ifd_bytes)
 
         # No patch-back needed: the IFD we're about to write already
         # contains the correct `next_ifd_off` value, computed from
@@ -780,15 +830,8 @@ class NDTiffWriter(Writer):
         going through bytes(). Saves ~30 µs/frame on big arrays vs an
         explicit .tobytes() that allocates a new bytes object.
         """
-        host_le = sys.byteorder == "little"
-        if pixels.dtype.byteorder == "=" or pixels.dtype.byteorder == "|" \
-                or (pixels.dtype.byteorder == "<" and host_le) \
-                or (pixels.dtype.byteorder == ">" and not host_le):
-            arr = np.ascontiguousarray(pixels)
-        else:
-            # Source byteorder differs from host; swap once before write.
-            arr = np.ascontiguousarray(pixels.byteswap())
-        return arr
+        return np.ascontiguousarray(pixels, dtype=pixels.dtype.newbyteorder("<"))
+
 
 
 def _pack_ifd_entry(

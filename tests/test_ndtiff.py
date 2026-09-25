@@ -262,7 +262,13 @@ def test_ndtiff_dataset_from_http(tmp_path):
             if rng:
                 s, e = rng.split("=", 1)[1].split("-")
                 s = int(s)
-                e = int(e) if e else len(data) - 1
+                e = min(int(e) if e else len(data) - 1, len(data) - 1)
+                if s >= len(data):
+                    self.send_response(416)
+                    self.send_header("Content-Range", f"bytes */{len(data)}")
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
                 chunk = data[s:e + 1]
                 self.send_response(206)
                 self.send_header("Content-Type", "application/octet-stream")

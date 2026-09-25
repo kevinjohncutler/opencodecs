@@ -70,6 +70,27 @@ class RcompCodec(Codec):
     def decode(self, src: Any, *, dtype=None, shape=None, out=None,
                **opts) -> np.ndarray:
         buf = _read_src(src)
+        if out is not None:
+            import math
+            import struct
+            if not isinstance(out, np.ndarray):
+                raise TypeError("rcomp out must be an ndarray")
+            if not out.flags.writeable:
+                raise ValueError("rcomp out must be writable")
+            if len(buf) < 12:
+                raise ValueError("rcomp input is missing its header")
+            nbytes, _, bpp = struct.unpack_from("<IIi", buf)
+            if bpp not in (1, 2, 4) or nbytes % bpp:
+                raise ValueError("rcomp invalid pixel size or byte count")
+            target = np.dtype(dtype) if dtype is not None else np.dtype(f"u{bpp}")
+            target_shape = tuple(shape) if shape is not None else (nbytes // bpp,)
+            if out.shape != target_shape or out.dtype != target or math.prod(target_shape) != nbytes // bpp:
+                raise ValueError("rcomp out shape/dtype mismatch")
+            if target.itemsize == bpp and out.flags.c_contiguous:
+                _rcomp_decode(buf, out=out.view(f"u{bpp}"))
+                if not target.isnative:
+                    out.byteswap(inplace=True)
+                return out
         arr = _rcomp_decode(buf)
         # cfitsio's rdecomp_* writes UNSIGNED output (uint8/16/32). For
         # signed inputs the bit pattern matches; we just need to
@@ -78,7 +99,9 @@ class RcompCodec(Codec):
         if dtype is not None:
             target = np.dtype(dtype)
             if target.itemsize == arr.dtype.itemsize:
-                arr = arr.view(target)
+                arr = arr.view(target.newbyteorder("="))
+                if not target.isnative:
+                    arr = arr.astype(target)
             else:
                 arr = arr.astype(target, copy=False)
         if shape is not None:

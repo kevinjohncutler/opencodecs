@@ -33,6 +33,7 @@ from typing import Any
 import numpy as np
 
 from .core.codec import Codec
+from .core.buffers import array_output
 from .core._io_helpers import read_src as _read_src, write_dest as _write_dest
 from .core._optional_backend import import_or_stubs
 
@@ -78,8 +79,10 @@ class LercCodec(Codec):
         out = _lerc_encode(data, max_z_error=float(max_z_error))
         return _write_dest(out, dest)
 
-    def decode(self, src: Any, **opts) -> np.ndarray:
-        return _lerc_decode(_read_src(src))
+    def decode(self, src: Any, *, out=None, **opts) -> np.ndarray:
+        if out is None:
+            return _lerc_decode(_read_src(src))
+        return _lerc_decode(_read_src(src), out=array_output(out))
 
     def info(self, src: Any) -> dict:
         """Return shape, dtype, value range, version without decoding."""

@@ -24,12 +24,10 @@ What this module does:
     header + first IFD usually fit in 64 KB, so one request gets all
     of them.
 
-What it deliberately doesn't do (yet):
-  * Coalesce small back-to-back reads into one Range request — useful
-    for very-many-IFD COGs but adds complexity. Defer to Tier 5.5.
-  * Handle redirects, retries, or backoff — leave that to the caller's
-    requests session if they want it (pass session=...).
-  * Authentication — caller can wrap in a custom session for that.
+Adjacent ranges are coalesced by read_many. Small sequential misses can
+trigger adaptive read-ahead; cached ranges use an interval index. Responses
+must honor Range: a whole-file HTTP 200 response is rejected before its body
+is consumed. Pass opener= for caller-managed redirects or authentication.
 """
 
 from __future__ import annotations
@@ -37,6 +35,8 @@ from __future__ import annotations
 import concurrent.futures
 import http.client
 import os
+import re
+import urllib.error
 import threading
 import urllib.parse
 import urllib.request
@@ -44,6 +44,43 @@ from collections import OrderedDict
 from typing import Any, Sequence
 
 from .core.io import DataSource, Range, coalesce_ranges
+from .core._range_index import RangeIndex
+
+
+class RangeResponseError(ValueError):
+    """A server response cannot satisfy the requested byte range safely."""
+
+
+def _source_pool_reads(source, ranges, read, name):
+    """Share one source pool and join this call's work before propagating errors."""
+    futures = []
+    try:
+        with source._pool_lock:
+            if source._pool_closed:
+                raise ValueError("data source is closed")
+            if source._pool is None:
+                source._pool = concurrent.futures.ThreadPoolExecutor(
+                    max_workers=source._max_workers, thread_name_prefix=name)
+            for offset, length in ranges:
+                futures.append(source._pool.submit(read, offset, length))
+        return [future.result() for future in futures]
+    except BaseException:
+        for future in futures:
+            future.cancel()
+        for future in futures:
+            try:
+                future.exception()
+            except concurrent.futures.CancelledError:
+                pass
+        raise
+
+
+def _close_source_pool(source):
+    with source._pool_lock:
+        source._pool_closed = True
+        pool, source._pool = source._pool, None
+    if pool is not None:
+        pool.shutdown(wait=True, cancel_futures=True)
 
 
 class HTTPDataSource(DataSource):
@@ -119,10 +156,10 @@ class HTTPDataSource(DataSource):
         self.headers = dict(headers or {})
         self._opener = opener
         self._lock = threading.Lock()
-        # LRU of (offset, n) -> bytes. Keyed by exact (offset, n);
-        # callers that issue varying-size reads at the same offset
-        # don't dedupe (rare in TIFF parsing).
+        # Least recently used (LRU) payloads, with an exact-key fast path
+        # and a separate interval index for covering-range lookups.
         self._cache: "OrderedDict[tuple[int, int], bytes]" = OrderedDict()
+        self._range_index = RangeIndex()
         self._cache_max = int(cache_bytes)
         self._cache_used = 0
 
@@ -163,6 +200,8 @@ class HTTPDataSource(DataSource):
         # Lazily-created thread pool for read_many. We don't pay the
         # 8-thread startup cost on single-read workflows.
         self._pool: concurrent.futures.ThreadPoolExecutor | None = None
+        self._pool_lock = threading.Lock()
+        self._pool_closed = False
 
         # Persistent http.client connection pool — keyed by thread id.
         # urllib.request opens a fresh TCP connection per call, which
@@ -185,6 +224,8 @@ class HTTPDataSource(DataSource):
         if prefetch_bytes > 0:
             try:
                 head = self._range_request(0, prefetch_bytes)
+            except RangeResponseError:
+                raise
             except Exception:
                 # Don't fail construction on a transient network error;
                 # the first read_at call will retry.
@@ -208,7 +249,9 @@ class HTTPDataSource(DataSource):
     def read_at(self, offset: int, n: int) -> bytes:
         offset = int(offset)
         n = int(n)
-        if n <= 0:
+        if offset < 0 or n < 0:
+            raise ValueError("negative byte range")
+        if n == 0:
             return b""
         end = offset + n
 
@@ -226,8 +269,7 @@ class HTTPDataSource(DataSource):
                 self._cache.move_to_end((offset, n))
                 return cached
             # Covering-range lookup: an earlier read-ahead may have
-            # fetched a bigger blob that includes this range. Scan the
-            # LRU back-to-front (most recent first, hottest cache).
+            # fetched a bigger blob that includes this range.
             covering = self._covering_lookup(offset, n)
             if covering is not None:
                 return covering
@@ -247,31 +289,37 @@ class HTTPDataSource(DataSource):
         # Tile/chunk-sized requests (>= threshold) are never extended
         # — over-fetching wastes bandwidth on data the caller probably
         # won't touch.
-        fetch_n = n
-        is_small = n <= self._readahead_threshold
-        explicit = self._readahead_window > 0 and self._readahead_window > n
-        adaptive = (
-            self._adaptive_window > 0
-            and self._adaptive_streak >= self._adaptive_streak_threshold
-            and self._adaptive_window > n
-        )
-        if is_small and (explicit or adaptive):
-            fetch_n = max(
-                self._readahead_window if explicit else 0,
-                self._adaptive_window if adaptive else 0,
+        with self._lock:
+            fetch_n = n
+            is_small = n <= self._readahead_threshold
+            explicit = self._readahead_window > 0 and self._readahead_window > n
+            adaptive = (
+                self._adaptive_window > 0
+                and self._adaptive_streak >= self._adaptive_streak_threshold
+                and self._adaptive_window > n
+                and self._adaptive_last_end is not None
+                and abs(offset - self._adaptive_last_end) <= self._adaptive_locality
             )
-            # Don't fetch past EOF when the file size is known.
-            if self._total_size is not None:
-                fetch_n = min(fetch_n, max(0, self._total_size - offset))
-            if fetch_n < n:
-                fetch_n = n
+            if is_small and (explicit or adaptive):
+                fetch_n = max(
+                    self._readahead_window if explicit else 0,
+                    self._adaptive_window if adaptive else 0,
+                )
+                # Don't fetch past EOF when the file size is known.
+                if self._total_size is not None:
+                    fetch_n = min(fetch_n, max(0, self._total_size - offset))
+                if fetch_n < n:
+                    fetch_n = n
 
-        # Streak bookkeeping for the adaptive path. Done BEFORE the
-        # actual fetch so the *current* miss counts toward the streak
-        # for the next call. We only count small reads — large reads
-        # are tiles/chunks and signal a different access pattern.
-        if is_small:
-            self._observe_miss(offset, n)
+            # Streak bookkeeping for the adaptive path. Done BEFORE the
+            # actual fetch so the *current* miss counts toward the streak
+            # for the next call. We only count small reads; large reads
+            # are tiles/chunks and signal a different access pattern.
+            if is_small:
+                self._observe_miss(offset, n)
+            else:
+                self._adaptive_streak = 0
+                self._adaptive_last_end = None
 
         chunk = self._range_request(offset, fetch_n)
         with self._lock:
@@ -356,23 +404,18 @@ class HTTPDataSource(DataSource):
         """Return bytes for ``[offset, offset+n)`` from any cached blob
         that fully covers the range, else None. Caller holds ``self._lock``.
 
-        Iterates the LRU back-to-front (most recent first). With
-        typical caches under ~100 entries this is fine; if it ever
-        becomes a hotspot promote to an interval tree.
+        Length buckets avoid scanning unrelated small entries. The cache
+        remains the authority for payload ownership and eviction order.
         """
-        end = offset + n
-        for (c_off, c_len), blob in reversed(self._cache.items()):
-            if c_off <= offset and c_off + c_len >= end:
-                lo = offset - c_off
-                hi = lo + n
-                view = blob[lo:hi]
-                # Touch the covering blob's LRU position + add an
-                # exact-key entry so subsequent reads of the same
-                # range skip the scan.
-                self._cache.move_to_end((c_off, c_len))
-                self._cache_put((offset, n), view)
-                return view
-        return None
+        key = self._range_index.covering(offset, n)
+        if key is None:
+            return None
+        blob = self._cache[key]
+        lo = offset - key[0]
+        view = blob[lo:lo + n]
+        self._cache.move_to_end(key)
+        self._cache_put((offset, n), view)
+        return view
 
     def read_many(self, ranges: Sequence[Range]) -> list[bytes]:
         """Fetch many ranges in parallel; results returned in input order.
@@ -397,7 +440,9 @@ class HTTPDataSource(DataSource):
         with self._lock:
             for i, (off, length) in enumerate(ranges):
                 off = int(off); length = int(length)
-                if length <= 0:
+                if off < 0 or length < 0:
+                    raise ValueError("negative byte range")
+                if length == 0:
                     out[i] = b""
                     continue
                 end = off + length
@@ -433,16 +478,8 @@ class HTTPDataSource(DataSource):
         if len(merged) == 1 or self._max_workers <= 1:
             fetched = [self._range_request(o, L) for o, L in merged]
         else:
-            if self._pool is None:
-                self._pool = concurrent.futures.ThreadPoolExecutor(
-                    max_workers=min(self._max_workers, len(merged)),
-                    thread_name_prefix="opencodecs-http",
-                )
-            futures = [
-                self._pool.submit(self._range_request, o, L)
-                for o, L in merged
-            ]
-            fetched = [f.result() for f in futures]
+            fetched = _source_pool_reads(
+                self, merged, self._range_request, "opencodecs-http")
 
         # Step 4 + 5: split, fill, cache.
         with self._lock:
@@ -450,7 +487,7 @@ class HTTPDataSource(DataSource):
                 # Cache the merged blob too — future ``read_at(m_off, m_len)``
                 # will hit. Also stash sub-slices keyed by their requested
                 # (offset, length) so the next single-read hits as well.
-                self._cache_put((m_off, m_len), data)
+                self._cache_put((m_off, len(data)), data)
             for i_local, splits_for_orig in enumerate(splits):
                 orig_idx = miss_idx[i_local]
                 # With non-overlapping inputs each splits[i] has length 1;
@@ -462,7 +499,7 @@ class HTTPDataSource(DataSource):
                 # Cache the exact-range view so single read_at(o, n)
                 # hits without slicing again.
                 self._cache_put(
-                    (miss_ranges[i_local][0], miss_ranges[i_local][1]),
+                    (miss_ranges[i_local][0], len(piece)),
                     piece,
                 )
 
@@ -482,10 +519,11 @@ class HTTPDataSource(DataSource):
         # shutdown takes care of).
         with self._lock:
             self._cache.clear()
+            self._range_index.clear()
+            self._prefetch_buffer = b""
+            self._seq_buf = None
             self._cache_used = 0
-        if self._pool is not None:
-            self._pool.shutdown(wait=False)
-            self._pool = None
+        _close_source_pool(self)
         conn = getattr(self._conn_local, "conn", None)
         if conn is not None:
             try:
@@ -560,61 +598,24 @@ class HTTPDataSource(DataSource):
             try:
                 conn.request("GET", self._path_q, headers=headers)
                 resp = conn.getresponse()
-                if resp.status == 416:
-                    # Range Not Satisfiable — caller asked past EOF.
-                    # File-like ``read`` returns b'' past EOF; mirror
-                    # that behavior here so probe-reads in the FITS /
-                    # TIFF HDU walkers ("any byte at the next offset?")
-                    # cleanly signal "no more file" without raising.
-                    resp.read()
-                    # Try to learn the size from Content-Range: */N.
-                    cr = resp.getheader("Content-Range")
-                    if cr and "*/" in cr:
-                        try:
-                            self._total_size = int(cr.rsplit("/", 1)[1])
-                        except ValueError:
-                            pass
-                    self._total_requests += 1
-                    return b""
-                if resp.status not in (200, 206):
-                    err = http.client.HTTPException(
-                        f"unexpected status {resp.status} for {self._path_q}"
-                    )
-                    resp.read()  # drain so the conn can be reused
-                    raise err
-                if self._total_size is None:
-                    cr = resp.getheader("Content-Range")
-                    if cr and "/" in cr:
-                        try:
-                            self._total_size = int(cr.rsplit("/", 1)[1])
-                        except ValueError:
-                            pass
-                    elif resp.status == 200:
-                        # Server returned the WHOLE file (didn't honor
-                        # Range, or didn't advertise it). The
-                        # Content-Length header is the file size in
-                        # that case — we may as well learn it.
-                        cl = resp.getheader("Content-Length")
-                        if cl is not None:
-                            try:
-                                self._total_size = int(cl)
-                            except ValueError:
-                                pass
-                data = resp.read()
-                self._total_requests += 1
-                self._total_bytes_fetched += len(data)
+                data = self._read_range_response(resp, offset, n)
                 # If the server signals it will close the connection
                 # (HTTP/1.0 default, or explicit "Connection: close"),
                 # drop our cached conn so the next request opens a
                 # fresh one. Otherwise we'd send to a half-closed
                 # socket and hit the timeout.
-                if resp.will_close:
+                if resp.status == 416 or resp.will_close:
                     try:
                         conn.close()
                     except Exception:
                         pass
                     self._conn_local.conn = None
                 return data
+            except RangeResponseError:
+                resp.close()
+                conn.close()
+                self._conn_local.conn = None
+                raise
             except (http.client.HTTPException, ConnectionError, OSError) as e:
                 last_err = e
                 # Stale connection — drop it and retry once.
@@ -635,37 +636,80 @@ class HTTPDataSource(DataSource):
         end = offset + n - 1
         headers = dict(self.headers)
         headers["Range"] = f"bytes={offset}-{end}"
+        headers.setdefault("Accept-Encoding", "identity")
         req = urllib.request.Request(self.url, headers=headers)
-        with self._opener.open(req, timeout=self.timeout) as resp:
+        try:
+            resp = self._opener.open(req, timeout=self.timeout)
+        except urllib.error.HTTPError as exc:
+            if exc.code != 416:
+                raise
+            resp = exc
+        with resp:
+            return self._read_range_response(resp, offset, n)
+
+    def _read_range_response(self, resp, offset: int, n: int) -> bytes:
+        """Validate both transports before bytes enter an offset cache.
+
+        Reject whole-file responses without consuming their potentially
+        huge bodies. A range source must not silently become a download.
+        """
+        with self._lock:
             self._total_requests += 1
-            if self._total_size is None:
-                cr = resp.headers.get("Content-Range")
-                if cr and "/" in cr:
-                    try:
-                        self._total_size = int(cr.rsplit("/", 1)[1])
-                    except ValueError:
-                        pass
-                elif resp.status == 200:
-                    cl = resp.headers.get("Content-Length")
-                    if cl is not None:
-                        try:
-                            self._total_size = int(cl)
-                        except ValueError:
-                            pass
-            data = resp.read()
-        self._total_bytes_fetched += len(data)
+        cr = resp.headers.get("Content-Range", "")
+        if resp.status == 416:
+            match = re.fullmatch(r"bytes \*/(\d+)", cr)
+            if match:
+                self._total_size = int(match[1])
+                if offset < self._total_size:
+                    raise RangeResponseError("server rejected a satisfiable byte range")
+            # Error bodies need not be bounded by the requested range.
+            resp.close()
+            return b""
+        if resp.status != 206:
+            raise RangeResponseError(
+                f"expected HTTP 206 for byte range, got {resp.status}; "
+                "the server must support Range requests")
+        match = re.fullmatch(r"bytes (\d+)-(\d+)/(\d+|\*)", cr)
+        if match is None:
+            raise RangeResponseError("missing or invalid Content-Range")
+        start, end = int(match[1]), int(match[2])
+        total = None if match[3] == "*" else int(match[3])
+        expected_end = offset + n - 1
+        if total is not None:
+            expected_end = min(expected_end, total - 1)
+        if start != offset or end < start or end != expected_end:
+            raise RangeResponseError(f"Content-Range does not match request: {cr}")
+        length = end - start + 1
+        content_length = resp.headers.get("Content-Length")
+        if content_length is not None and (
+                re.fullmatch(r"[0-9]+", content_length.strip()) is None or
+                int(content_length) != length):
+            raise RangeResponseError("Content-Length does not match Content-Range")
+        if resp.headers.get("Content-Encoding", "identity").lower() != "identity":
+            raise RangeResponseError("encoded range response is not byte-addressable")
+        data = resp.read(length + 1)
+        with self._lock:
+            self._total_bytes_fetched += len(data)
+        if len(data) != length:
+            raise RangeResponseError("truncated or oversized range response")
+        if total is not None:
+            self._total_size = total
         return data
 
     def _cache_put(self, key: tuple[int, int], value: bytes) -> None:
         """Insert into LRU; evict from the back until under budget."""
+        if not value:
+            return
         existing = self._cache.pop(key, None)
         if existing is not None:
             self._cache_used -= len(existing)
         self._cache[key] = value
+        self._range_index.add(key)
         self._cache_used += len(value)
         while self._cache_used > self._cache_max and self._cache:
             _k, _v = self._cache.popitem(last=False)
             self._cache_used -= len(_v)
+            self._range_index.discard(_k)
 
 
 # ---------------------------------------------------------------------------
@@ -698,6 +742,8 @@ class FileDataSource(DataSource):
         self._total_requests = 0
         self._max_workers = int(max_workers)
         self._pool: concurrent.futures.ThreadPoolExecutor | None = None
+        self._pool_lock = threading.Lock()
+        self._pool_closed = False
         try:
             self.size = os.fstat(self._fd).st_size
         except OSError:  # pragma: no cover - shouldn't happen on open FD
@@ -743,20 +789,10 @@ class FileDataSource(DataSource):
             return []
         if not self._has_pread or self._max_workers <= 1 or len(ranges) == 1:
             return [self.read_at(o, n) for o, n in ranges]
-        if self._pool is None:
-            self._pool = concurrent.futures.ThreadPoolExecutor(
-                max_workers=min(self._max_workers, len(ranges)),
-                thread_name_prefix="opencodecs-pread",
-            )
-        futures = [
-            self._pool.submit(self.read_at, o, n) for o, n in ranges
-        ]
-        return [f.result() for f in futures]
+        return _source_pool_reads(self, ranges, self.read_at, "opencodecs-pread")
 
     def close(self) -> None:
-        if self._pool is not None:
-            self._pool.shutdown(wait=False)
-            self._pool = None
+        _close_source_pool(self)
         if self._fd >= 0:
             os.close(self._fd)
             self._fd = -1

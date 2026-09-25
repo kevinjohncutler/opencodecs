@@ -115,7 +115,7 @@ class OibCodec(Codec):
     # point and says so with its own is_chunked = False.
     chunked = True
     streaming_decode = True
-    parallel_decode = False
+    parallel_decode = True  # Explicit bounded native OIB read mode.
 
     supported_dtypes = (np.uint8, np.uint16, np.uint32)
     supports_color = True
@@ -139,6 +139,10 @@ class OibCodec(Codec):
              **opts) -> Reader:
         """Open OIB / OIF for reading.
 
+        ``max_pending_bytes`` opts into bounded native stream fetch/decode
+        overlap; ``numthreads`` and ``worker_budget`` control outer workers.
+        These options do not change the oiffile directory-format delegate.
+
         ``backend``:
           * ``None`` (default): native first, fall back to oiffile.
           * ``"native"``: force the native parser. Won't handle OIF
@@ -152,7 +156,10 @@ class OibCodec(Codec):
                 # one, so bytes no longer make a round trip through
                 # the filesystem just to become a path.
                 from .core.io import normalize_source
-                return OibNativeReader(normalize_source(src))
+                return OibNativeReader(
+                    normalize_source(src), numthreads=opts.get("numthreads"),
+                    max_pending_bytes=opts.get("max_pending_bytes"),
+                    worker_budget=opts.get("worker_budget"))
             except (NotImplementedError, ValueError, KeyError) as e:
                 if backend == "native":
                     raise
