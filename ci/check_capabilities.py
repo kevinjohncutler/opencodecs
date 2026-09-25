@@ -322,7 +322,7 @@ def cmd_sync(args) -> int:
               "if they are genuinely gone.")
         return 1
 
-    head = MANIFEST.read_text().split("schema = 1", 1)[0] if MANIFEST.is_file() \
+    head = MANIFEST.read_text(encoding="utf-8").split("schema = 1", 1)[0] if MANIFEST.is_file() \
         else ""
     lines = [head.rstrip("\n"), "", "schema = 1", ""] if head else \
         ["schema = 1", ""]
@@ -341,7 +341,7 @@ def cmd_sync(args) -> int:
             note = prev["note"].replace('"', '\\"')
             lines.append(f'note = "{note}"')
         lines.append("")
-    MANIFEST.write_text("\n".join(lines))
+    MANIFEST.write_text("\n".join(lines), encoding="utf-8")
     print(f"synced {len(actual)} codecs into {MANIFEST.name}")
     return 0
 

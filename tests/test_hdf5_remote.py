@@ -87,7 +87,7 @@ def test_remote_and_local_agree(served):
         assert np.array_equal(np.asarray(r[0]), local)
 
 
-def test_h5_source_maps_each_kind_to_what_h5py_takes(tmp_path):
+def test_h5_source_maps_each_kind_to_what_h5py_takes(tmp_path, served):
     """The helper's whole job, checked directly."""
     import io
 
@@ -100,8 +100,10 @@ def test_h5_source_maps_each_kind_to_what_h5py_takes(tmp_path):
 
     assert h5_source(str(p)) == str(p), "a path must pass through"
     assert isinstance(h5_source(raw), io.BytesIO), "bytes must be wrapped"
-    assert type(h5_source("https://example.com/x.h5")).__name__ \
-        == "_HTTPFileLike"
+    # A local range server, not a public URL: the source prefetches on
+    # construction, so a real host makes this a network test.
+    _, base, _, _ = served
+    assert type(h5_source(f"{base}/plain.h5")).__name__ == "_HTTPFileLike"
     fh = io.BytesIO(raw)
     assert h5_source(fh) is fh, "a file-like must pass through untouched"
 

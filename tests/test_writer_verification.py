@@ -37,6 +37,8 @@ def test_ndtiff_lossy_verification_fails_before_index_publication(tmp_path):
 @pytest.mark.parametrize("compressor", ["none", "zstd", "gzip"])
 def test_zarr_verified_float_bits_and_endianness(tmp_path, version, sharded, compressor):
     zarr = pytest.importorskip("zarr")
+    if version == 3 and not zarr.__version__.startswith("3"):
+        pytest.skip("reading a v3 store needs zarr 3")
     from opencodecs._omezarr_writer import write_zarr_array
     bits = (np.arange(11 * 13, dtype="u4") + 0x3F000000).reshape(11, 13)
     bits.flat[:5] = [0, 0x80000000, 0x7FC00001, 0x7FC00002, 0x7F800000]

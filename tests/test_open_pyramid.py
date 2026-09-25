@@ -10,16 +10,15 @@ Coverage:
 
 from __future__ import annotations
 
-import http.server
 import os
-import socketserver
 import tempfile
-import threading
 
 import numpy as np
 import pytest
 
 import opencodecs as oc
+
+from _range_http_server import range_http_server
 
 
 def _make_pyramid_tiff(path: str, full: np.ndarray) -> None:
@@ -103,21 +102,10 @@ def http_pyramid_server(tmp_path):
     path = str(tmp_path / "cog.tif")
     _make_pyramid_tiff(path, full)
 
-    class Handler(http.server.SimpleHTTPRequestHandler):
-        def log_message(self, *_):
-            pass
-
-        def __init__(self, *a, **kw):
-            super().__init__(*a, directory=str(tmp_path), **kw)
-
-    httpd = socketserver.TCPServer(("127.0.0.1", 0), Handler)
-    port = httpd.server_address[1]
-    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
-    thread.start()
-    try:
-        yield f"http://127.0.0.1:{port}/cog.tif", full
-    finally:
-        httpd.shutdown()
+    # SimpleHTTPRequestHandler ignores Range on most Python versions, and a
+    # range source rightly rejects a whole-file 200, so serve with Range.
+    with range_http_server(tmp_path) as (base, _tracker):
+        yield f"{base}/cog.tif", full
 
 
 def test_open_pyramid_http_url(http_pyramid_server):

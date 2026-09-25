@@ -114,14 +114,14 @@ def test_verify_passes_on_the_committed_manifest():
 
 def test_verify_catches_a_flipped_boolean(restore_manifest):
     _need("tiff")
-    s = MANIFEST.read_text()
+    s = MANIFEST.read_text(encoding="utf-8")
     # tiff genuinely has pyramid; claiming otherwise must be caught.
     block, end = _block_bounds(s, "tiff")
     patched = (s[:block]
                + s[block:end].replace("pyramid = true", "pyramid = false", 1)
                + s[end:])
     assert patched != s
-    MANIFEST.write_text(patched)
+    MANIFEST.write_text(patched, encoding="utf-8")
     r = _run("verify")
     assert r.returncode != 0
     assert "DRIFTED" in r.stdout and "tiff.pyramid" in r.stdout
@@ -135,14 +135,14 @@ def test_verify_catches_a_gap_that_is_already_built(restore_manifest):
     this check is what caught them.
     """
     _need("tiff")
-    s = MANIFEST.read_text()
+    s = MANIFEST.read_text(encoding="utf-8")
     block, end = _block_bounds(s, "tiff")
     # This guard must still inject a contradiction when TIFF has other gaps.
     seg = "\n".join(line for line in s[block:end].splitlines()
                     if not line.startswith(("feasible = ", "gaps = ")))
     seg += '\nfeasible = "gap"\ngaps = ["pyramid"]\n'
     assert seg != s[block:end]
-    MANIFEST.write_text(s[:block] + seg + s[end:])
+    MANIFEST.write_text(s[:block] + seg + s[end:], encoding="utf-8")
     r = _run("verify")
     assert r.returncode != 0
     assert "lists pyramid as a gap, but the code already has it" in r.stdout
@@ -158,16 +158,16 @@ def test_verify_catches_a_verdict_that_contradicts_its_gaps(restore_manifest):
     verify passed and the test failed for the right reason.
     """
     tomllib = _tomllib()
-    rows = tomllib.loads(MANIFEST.read_text())["codec"]
+    rows = tomllib.loads(MANIFEST.read_text(encoding="utf-8"))["codec"]
     victim = next((r["name"] for r in rows if r.get("feasible") == "gap"), None)
     if victim is None:
         pytest.skip("no codec currently lists a gap to remove")
     _need(victim)
-    s = MANIFEST.read_text()
+    s = MANIFEST.read_text(encoding="utf-8")
     block, end = _block_bounds(s, victim)
     seg = s[block:end]
     seg = seg[:seg.index("gaps = [")] + seg[seg.index("note = "):]
-    MANIFEST.write_text(s[:block] + seg + s[end:])
+    MANIFEST.write_text(s[:block] + seg + s[end:], encoding="utf-8")
     r = _run("verify")
     assert r.returncode != 0
     assert "feasible=gap but nothing listed" in r.stdout
@@ -175,11 +175,11 @@ def test_verify_catches_a_verdict_that_contradicts_its_gaps(restore_manifest):
 
 def test_verify_catches_a_judgment_with_no_reason(restore_manifest):
     _need("qoi")
-    s = MANIFEST.read_text()
+    s = MANIFEST.read_text(encoding="utf-8")
     block, end = _block_bounds(s, "qoi")
     seg = s[block:end]
     seg = seg[:seg.index("note = ")]
-    MANIFEST.write_text(s[:block] + seg + s[end:])
+    MANIFEST.write_text(s[:block] + seg + s[end:], encoding="utf-8")
     r = _run("verify")
     assert r.returncode != 0
     assert "with no reason" in r.stdout
@@ -196,18 +196,18 @@ def test_verify_catches_an_invented_capability(restore_manifest):
     back unchanged.
     """
     tomllib = _tomllib()
-    rows = tomllib.loads(MANIFEST.read_text())["codec"]
+    rows = tomllib.loads(MANIFEST.read_text(encoding="utf-8"))["codec"]
     victim = next((r for r in rows if r.get("gaps")), None)
     if victim is None:
         pytest.skip("no codec currently lists a gap to corrupt")
     _need(victim["name"])
-    s = MANIFEST.read_text()
+    s = MANIFEST.read_text(encoding="utf-8")
     start, end = _block_bounds(s, victim["name"])
     listed = ", ".join(f'"{g}"' for g in victim["gaps"])
     block = s[start:end].replace(f"gaps = [{listed}]",
                                  f'gaps = [{listed}, "telepathy"]', 1)
     assert block != s[start:end], "did not find the gaps line to corrupt"
-    MANIFEST.write_text(s[:start] + block + s[end:])
+    MANIFEST.write_text(s[:start] + block + s[end:], encoding="utf-8")
     r = _run("verify")
     assert r.returncode != 0
     assert "is not a capability" in r.stdout
@@ -215,9 +215,9 @@ def test_verify_catches_an_invented_capability(restore_manifest):
 
 def test_verify_catches_a_removed_codec(restore_manifest):
     _need("qoi")
-    s = MANIFEST.read_text()
+    s = MANIFEST.read_text(encoding="utf-8")
     start, end = _block_bounds(s, "qoi")
-    MANIFEST.write_text(s[:start] + s[end:])
+    MANIFEST.write_text(s[:start] + s[end:], encoding="utf-8")
     r = _run("verify")
     assert r.returncode != 0
     assert "UNRECORDED" in r.stdout and "qoi" in r.stdout
@@ -230,16 +230,16 @@ def test_sync_preserves_the_judgments(restore_manifest, tmp_path):
     losing them to a routine re-sync would be unrecoverable without
     going to git.
     """
-    before = MANIFEST.read_text()
+    before = MANIFEST.read_text(encoding="utf-8")
     r = _run("sync")
     if r.returncode != 0 and "did not build here" in r.stdout:
         # sync refuses to rewrite the record of every codec from a
         # machine that builds only some: doing so would delete the rows
         # it cannot see, judgments and all. Nothing to round-trip.
-        assert MANIFEST.read_text() == before, "a refused sync still wrote"
+        assert MANIFEST.read_text(encoding="utf-8") == before, "a refused sync still wrote"
         pytest.skip("partial build: sync correctly refuses to shrink")
     assert r.returncode == 0, r.stdout + r.stderr
-    assert MANIFEST.read_text() == before, (
+    assert MANIFEST.read_text(encoding="utf-8") == before, (
         "sync changed a manifest that verify says is already correct")
 
 
@@ -323,10 +323,10 @@ def test_strict_still_catches_a_genuinely_removed_codec(restore_manifest):
     behind it is stale. Without a mode like this, deleting a codec and
     leaving its row behind would never be noticed.
     """
-    s = MANIFEST.read_text()
+    s = MANIFEST.read_text(encoding="utf-8")
     block, end = _block_bounds(s, "qoi")
     seg = s[block:end].replace('name = "qoi"', 'name = "qoi_removed"', 1)
-    MANIFEST.write_text(s[:block] + seg + s[end:])
+    MANIFEST.write_text(s[:block] + seg + s[end:], encoding="utf-8")
     lenient = _run("verify")
     strict = _run("verify", "--strict")
     assert "recorded but not built here" in lenient.stdout

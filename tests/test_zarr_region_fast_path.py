@@ -13,6 +13,9 @@ import pytest
 
 zarr = pytest.importorskip("zarr")
 numcodecs = pytest.importorskip("numcodecs")
+if not zarr.__version__.startswith("3"):
+    # The fixtures are written with zarr 3's create_array (both formats).
+    pytest.skip(f"needs zarr 3, have {zarr.__version__}", allow_module_level=True)
 
 from opencodecs._omezarr import OmeZarrArray  # noqa: E402
 

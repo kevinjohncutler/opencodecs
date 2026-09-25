@@ -63,6 +63,7 @@ def test_animation_destination_failure_propagates_and_preserves_borrowed_stream(
 
 
 def test_brunsli_direct_transcode_roundtrip_and_short_writes(tmp_path):
+    pytest.importorskip("opencodecs.codecs._brunsli")
     from opencodecs.codecs._brunsli import encode_jpeg, decode_jpeg
     jpeg_codec = get_codec("jpeg")
     arr = np.random.default_rng(7).integers(0, 256, (64, 96, 3), dtype="u1")
@@ -85,6 +86,7 @@ def test_brunsli_direct_transcode_roundtrip_and_short_writes(tmp_path):
 
 
 def test_brunsli_callback_error_propagates():
+    pytest.importorskip("opencodecs.codecs._brunsli")
     from opencodecs.codecs._brunsli import encode_jpeg, decode_jpeg
     jpeg = get_codec("jpeg").encode(np.arange(4096, dtype="u1").reshape(64, 64))
     for fn, source in ((encode_jpeg, jpeg), (decode_jpeg, encode_jpeg(jpeg))):

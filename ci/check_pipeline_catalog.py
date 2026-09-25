@@ -68,7 +68,7 @@ def validate(catalog, codec_names, root):
                     continue
                 if symbol:
                     if path not in texts:
-                        texts[path] = (root / path).read_text()
+                        texts[path] = (root / path).read_text(encoding="utf-8")
                     # Check named tokens, not unstable line numbers. This
                     # checks location drift, not the claimed behavior.
                     for token in symbol.split('.'):

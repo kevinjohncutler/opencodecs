@@ -125,7 +125,11 @@ def test_webp_animation_destination_is_explicitly_unsupported():
     imagecodecs = pytest.importorskip("imagecodecs")
     frames = np.zeros((2, 24, 32, 3), dtype=np.uint8)
     frames[1, :, :, 1] = 191
-    encoded = imagecodecs.webp_encode(frames, lossless=True)
+    try:
+        encoded = imagecodecs.webp_encode(frames, lossless=True)
+    except ValueError:
+        # Older imagecodecs releases cannot encode a frame stack.
+        pytest.skip("this imagecodecs cannot write an animated WebP")
     with pytest.raises(ValueError, match="animation"):
         oc.read(encoded, format="webp", out=np.empty_like(frames))
 

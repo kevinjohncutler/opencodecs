@@ -129,6 +129,8 @@ def test_zarr_bounded_results_and_independent_parity(tmp_path, monkeypatch, zarr
     if sharded and zarr_format == 2:
         pytest.skip("sharding requires Zarr v3")
     zarr = pytest.importorskip("zarr")
+    if zarr_format == 3 and not zarr.__version__.startswith("3"):
+        pytest.skip("reading a v3 store needs zarr 3")
     import opencodecs._omezarr_writer as module
     arr = np.arange(137 * 149, dtype="u2").reshape(137, 149)
     real_make = module._make_chunk_bytes
@@ -200,7 +202,9 @@ def test_mrc_statistics_ignore_nonfinite_values_in_bounded_blocks(tmp_path):
 
 
 def test_zarr_big_endian_v3_independent_reader(tmp_path):
-    import zarr
+    zarr = pytest.importorskip("zarr")
+    if not zarr.__version__.startswith("3"):
+        pytest.skip("reading a v3 store needs zarr 3")
     from opencodecs._omezarr_writer import write_zarr_array
     arr = np.arange(35, dtype=">u2").reshape(5, 7)
     write_zarr_array(tmp_path, arr, chunks=(3, 4), compressor="zstd", zarr_format=3)
