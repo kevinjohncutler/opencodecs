@@ -130,9 +130,20 @@ Do **not** re-implement the path-vs-DataSource branching. The helper
 is the right place to add new source types later (S3, GCS, in-memory
 buffer with size hints) without touching every reader.
 
-Bytes / file-like inputs go through `Codec.open()`'s pre-amble (spill
-to temp file, then hand to the native reader). Don't push that branch
-into the native reader.
+Bytes and file-like inputs go through `coerce_data_source`, which uses a
+`BufferDataSource`. A supplied memoryview is wrapped in a separate view,
+so closing the reader does not release the caller's view. Path-only
+delegates spill to disk only when that fallback is actually selected.
+
+Writers may retain pixels after `write_frame` returns only if they own a
+snapshot. The caller may refill an acquisition buffer immediately. The
+shared buffered writer and the JPEG XL one-frame adapter enforce this.
+
+The capability catalog also records `streaming_encode`, `streaming_output`,
+`decode_overlap`, and `writer_buffering`. Incremental frame encoding does
+not imply bounded encoded-output buffering. See
+[shared pipeline capabilities](shared_pipeline_capabilities.md) for the
+shared mechanisms, integration points, and remaining gaps.
 
 ## Lossless by default, everywhere it is possible
 

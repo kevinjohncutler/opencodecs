@@ -1,0 +1,610 @@
+# Cross-codec optimization audit and implementation worklist.
+# Runtime capability facts remain in capabilities.toml. This file does not
+# advertise planned work as shipped or infer native support from a format name.
+# Each registered codec belongs to one family; direct adapters are explicit.
+# pilots/followups identify consumers; investigate lists source-audited targets.
+# Complete closes the stated implementation or assessment, not every possible
+# new native feature. Each current/limits field records the shipped boundary.
+# Evidence is repository-relative path:Symbol (or an entire source file).
+# Validate/report: python ci/check_pipeline_catalog.py verify|report
+schema = 1
+reviewed = "2026-09-24"
+
+
+[[family]]
+id = "indexed_containers"
+members = ["tiff", "czi", "hdf5", "emd", "fits", "dicom", "eer", "nd2", "oir", "vsi", "oib"]
+scope = "Independent tiles, chunks, frames, or records can share selection, bounded fetching, decoding, and placement. Each reader retains responsibility for indexes, filters, and compositing."
+evidence = ["src/opencodecs/core/parallel.py:run_batched", "src/opencodecs/_tiff_pyramid.py:TiffPyramidReader._fill_segments"]
+
+[[family]]
+id = "raw_arrays"
+members = ["mrc", "nifti", "nrrd", "numpy", "dm", "lif"]
+scope = "Prioritize offset selection, coalescing, buffer ownership, and direct destinations. Raw copies usually stay serial. Compressed whole-stream variants need different access policies."
+evidence = ["src/opencodecs/_mrc_codec.py:MrcCodec", "src/opencodecs/_numpy_codec.py:NumpyCodec", "src/opencodecs/_nifti_codec.py:NiftiCodec"]
+
+[[family]]
+id = "byte_compressors"
+members = ["deflate", "gzip", "zstd", "lz4", "brotli", "bz2", "lzma", "snappy", "blosc2", "aec", "none"]
+scope = "Container blocks already supply independent units. Whole compressed streams require state across feeds; arbitrary byte cuts do not create independently decodable blocks."
+evidence = ["src/opencodecs/core/segment_compression.py:encode_segment", "src/opencodecs/codecs/_lz4.pyx:decode", "src/opencodecs/codecs/_brotli.pyx:decode"]
+
+[[family]]
+id = "scientific_arrays"
+members = ["b2nd", "lerc", "pcodec", "sz3", "sperr", "zfp"]
+scope = "Prioritize destination forwarding and thread budgets. Fixed-rate ZFP has a concrete bounded-placement path; other partial or progressive access needs format-specific evidence."
+evidence = ["src/opencodecs/_zfp_codec.py:_decode_parallel", "src/opencodecs/_b2nd_codec.py:B2ndCodec"]
+
+[[family]]
+id = "still_and_progressive"
+members = ["png", "jpeg", "mozjpeg", "jpeg2k", "htj2k", "jpegls", "rgbe", "bmp", "qoi", "brunsli"]
+scope = "Share destination contracts and independently encoded container work now. Rows, native callbacks, and progressive passes require explicit format adapters, not generic slicing."
+evidence = ["src/opencodecs/codecs/_png.pyx:decode", "src/opencodecs/codecs/_jpeg2k.pyx:decode_region", "src/opencodecs/codecs/_brunsli.pyx:_sink_write"]
+
+[[family]]
+id = "sequences_and_collections"
+members = ["gif", "jxl", "webp", "avif", "heif"]
+scope = "Sequence reading does not imply sequence encoding or independent frames. GIF and JPEG XL accept writer frames and drain encoded output to destinations."
+evidence = ["src/opencodecs/_gif_codec.py:_LazyGifWriter", "src/opencodecs/_jxl_codec.py:_JxlStreamWriter", "src/opencodecs/_webp_codec.py:WebpCodec"]
+
+[[family]]
+id = "filters_and_blocks"
+members = ["bitshuffle", "byteshuffle", "delta", "floatpred", "xor", "packints", "quantize", "dicomrle", "rcomp", "bcn", "cms"]
+scope = "Use correctly delimited rows/blocks and bounded scratch. Preserve predictor distance, channel layout, byte order, packed tails, and transform ownership; no independent stream seek point is implied."
+evidence = ["src/opencodecs/_predictor_codec.py:FloatpredCodec", "src/opencodecs/_cms_codec.py:cms_transform", "src/opencodecs/_bcn_codec.py:BcnCodec"]
+
+[[adapter]]
+id = "omezarr"
+scope = "Open Microscopy Environment Zarr arrays and pyramids, including version 3 shards"
+evidence = ["src/opencodecs/_omezarr.py:OmeZarrArray", "src/opencodecs/_omezarr_writer.py:write_zarr_array"]
+
+[[adapter]]
+id = "n5"
+scope = "N5 directory/object blocks"
+evidence = ["src/opencodecs/_n5.py:N5Array"]
+
+[[adapter]]
+id = "ndtiff"
+scope = "NDTiff dataset, pyramid, and direct writer"
+evidence = ["src/opencodecs/_ndtiff.py:NDTiffDataset", "src/opencodecs/_ndtiff_writer.py:NDTiffWriter"]
+
+[[adapter]]
+id = "imaris"
+scope = "Imaris pyramid over Hierarchical Data Format version 5"
+evidence = ["src/opencodecs/_imaris.py:ImarisReader"]
+
+[[adapter]]
+id = "dicomweb"
+scope = "Digital Imaging and Communications in Medicine web frame client"
+evidence = ["src/opencodecs/_dicomweb.py:DicomwebClient"]
+
+[[adapter]]
+id = "ultrahdr"
+scope = "Ultra high dynamic range adapter outside the codec manifest"
+evidence = ["src/opencodecs/_ultrahdr_codec.py:UltraHdrCodec"]
+
+[[work]]
+id = "correctness"
+title = "Repair destination and filter contracts"
+priority = 0
+state = "complete"
+pilots = ["hdf5", "mrc", "nifti"]
+followups = ["adapter:ndtiff"]
+investigate = []
+depends_on = []
+current = "Shared checked HDF5 filter reconstruction now covers HDF5, EMD, and Imaris. MRC/NIfTI destination ordering is fixed. NDTiff preserves shaped image input and validates independent decode."
+action = "Apply HDF5 active filters in reverse order with per-chunk filter masks or fall back to h5py; preserve checksum validation. Correct destination helper argument order. Route NDTiff image compressors shaped arrays and byte compressors byte buffers."
+limits = "Gate the affected HDF5, destination, and NDTiff migrations, not unrelated work. New encoders for read-only formats are separate functionality."
+evidence = ["src/opencodecs/_hdf5_codec.py:HdfReader.read_parallel", "src/opencodecs/_mrc_codec.py:MrcCodec.encode", "src/opencodecs/_nifti_codec.py:NiftiCodec.encode", "src/opencodecs/_ndtiff_writer.py:NDTiffWriter.write_many", "src/opencodecs/_tiff_writer.py:TiffWriter._encode_segment_bytes"]
+acceptance = ["Independent gzip-only, gzip/shuffle, checksum, skipped-filter, sparse-fill and ragged-edge HDF5 fixtures; corrupt checksums must fail or use a validating fallback.", "MRC/NIfTI bytes, path, and file-like outputs independently decode to identical pixels and metadata.", "NDTiff advertised byte and image compressor paths receive their required input kind and round-trip independently."]
+
+implementation_evidence = ["tests/test_container_pipeline.py", "tests/test_writer_pipeline_completion.py"]
+
+[[work]]
+id = "output_buffers"
+title = "Expose existing native output buffers consistently"
+priority = 1
+state = "complete"
+pilots = ["deflate", "zstd", "lz4", "brotli", "snappy"]
+followups = ["blosc2", "aec", "bitshuffle", "jpeg2k", "mozjpeg", "lerc", "pcodec", "sz3", "zfp", "webp"]
+investigate = []
+depends_on = []
+current = "Public byte/scientific/image adapters now validate and forward supported native destinations. Returned byte views alias supplied storage. Native intermediate copies remain documented per codec."
+action = "Define validation, mutation, returned-view ownership, and unsupported-layout behavior in the common contract, then forward out across existing adapters with one parametrized contract suite."
+limits = "SZ3 retains a native intermediate, and JPEG 2000 copies/converts native component planes into the destination. Bytearray slicing can copy the returned result. Noncontiguous tile windows may require bounded contiguous scratch. Animation output needs its own shape contract."
+evidence = ["src/opencodecs/_zstd_codec.py:ZstdCodec.decode", "src/opencodecs/codecs/_zstd.pyx:decode", "src/opencodecs/_deflate_codec.py:DeflateCodec.decode", "src/opencodecs/_webp_codec.py:WebpCodec.decode", "src/opencodecs/codecs/_sz3.pyx:decode"]
+acceptance = ["Exercise public read and Codec.decode, checking supplied storage is actually written and return aliasing is documented.", "Check undersized, read-only, wrong dtype/shape, noncontiguous, bytearray, and memoryview destinations.", "Measure allocations separately from throughput; do not label allocate-and-copy as direct decode."]
+
+implementation_evidence = ["tests/test_public_output_buffers.py"]
+
+[[work]]
+id = "bounded_pipeline"
+title = "Share byte-bounded scheduling and ownership"
+priority = 0
+state = "complete"
+pilots = ["tiff", "adapter:omezarr", "adapter:ndtiff"]
+followups = ["czi", "hdf5", "emd", "fits", "nd2", "oib", "vsi", "adapter:n5", "adapter:imaris", "adapter:dicomweb", "zfp"]
+investigate = []
+depends_on = []
+current = "Shared map_bounded provides ordered byte reservations, producer snapshots, worker budgets, cancellation, borrowed executors and oversized-item isolation across range, object and frame adapters. Final output, caches and native allocator overhead are accounted separately."
+action = "Add shared stage contracts for independent items, byte reservations, ordered emission or indexed placement, early-close cleanup, and explicit borrowed/owned input. Put source-specific range/object access outside the scheduler."
+limits = "Account separately for compressed input, decoded scratch, encoded results, final output, cache, and index metadata. Define behavior for a single item larger than the budget. Never consume the next reused buffer before taking ownership."
+evidence = ["src/opencodecs/core/parallel.py:map_batches", "src/opencodecs/core/parallel.py:run_batched", "src/opencodecs/core/io.py:BackgroundChunkReader", "src/opencodecs/_ndtiff.py:NDTiffDataset.iter_frames_parallel", "src/opencodecs/_ndtiff_writer.py:NDTiffWriter.write_many"]
+acceptance = ["Slow producer/consumer harness proves backpressure, stable ordering, and a queue/scratch byte bound as input size grows.", "Reusable pixel and metadata buffers yield distinct correct frames; copies occur before advancing the producer.", "Early close, source/codec/sink errors, and nested callers leave no live source users or orphan work."]
+
+implementation_evidence = ["src/opencodecs/core/pipeline.py:map_bounded", "tests/test_pipeline_budget.py", "tests/test_pipeline_executor.py"]
+
+[[work]]
+id = "worker_budget"
+title = "Coordinate outer and native workers"
+priority = 1
+state = "complete"
+pilots = ["tiff", "adapter:ndtiff", "hdf5"]
+followups = ["eer", "czi", "jpeg2k", "jxl", "avif", "blosc2", "b2nd", "sperr", "zstd", "adapter:omezarr"]
+investigate = []
+depends_on = ["bounded_pipeline"]
+current = "WorkerBudget coordinates nested work and explicitly shared concurrent calls. Native inner workers are clamped, with Zstandard using zero background workers. EER accumulators propagate worker errors and share explicit budgets. Fast serial and persistent-pool paths remain."
+action = "Define one caller-visible worker budget with explicit ownership and an outer-versus-inner policy. Reuse existing pools only where concurrent and repeated-call measurements support it."
+limits = "Do not wait for child work submitted to the same saturated pool. Keep raw-copy and small-item serial paths. Do not impose universal context pooling."
+evidence = ["src/opencodecs/_eer_reader.py:EerReader._sum_threaded", "src/opencodecs/core/parallel.py:resolve_workers", "src/opencodecs/core/io.py:get_reader_pool", "src/opencodecs/codecs/_zstd.pyx:encode", "src/opencodecs/codecs/_jpeg2k.pyx:decode"]
+acceptance = ["Bound aggregate active workers under simultaneous calls and nested container/native decode.", "Benchmark repeated small reads as well as large frames; retain a serial control.", "Explicit shutdown and error paths do not close a source while workers still use it."]
+
+implementation_evidence = ["src/opencodecs/core/pipeline.py:WorkerBudget", "tests/test_eer_worker_budget.py"]
+
+[[work]]
+id = "fetch_decode"
+title = "Overlap selected fetches with decode and placement"
+priority = 1
+state = "complete"
+pilots = ["tiff", "adapter:omezarr"]
+followups = ["adapter:n5", "hdf5", "emd", "adapter:imaris", "fits", "vsi", "adapter:dicomweb"]
+investigate = ["czi", "dicom"]
+depends_on = ["bounded_pipeline", "worker_budget"]
+current = "Measured bounded selected fetching covers range and object stores. CZI has opt-in indexed remote reads; DICOM whole-slide selection uses explicit per-frame positions. Warm local paths remain controls, and small NDTiff/OIR scheduling regressions were removed."
+action = "Provide coalesced range and object-store producers feeding one bounded decode/place engine. Pilot two storage models before adding thin container adapters. Centralize the corrected HDF5 selection path for HDF5, EMD, and Imaris."
+limits = "HDF5 adoption requires the correctness work. Preserve shard-index cache ownership, missing chunks, fill values, metadata filters, and per-source safety. CZI indexed remote access and DICOM tile-position discovery are prerequisites, not scheduler-only changes."
+evidence = ["src/opencodecs/_tiff_pyramid.py:TiffPyramidReader._fill_segments", "src/opencodecs/_omezarr.py:OmeZarrArray.read_region", "src/opencodecs/_hdf5_http.py:prefetch_hdf5_chunks", "src/opencodecs/_fits_compressed.py:decompress_image", "src/opencodecs/_czi_reader.py:CziReader.from_http", "src/opencodecs/_dicom_pyramid.py:DicomWsiPyramid._read_region"]
+acceptance = ["Delayed range/object fixtures prove overlap and bounded fetched bytes without increasing sparse-region request/byte budgets.", "Compare warm local mapping, cold/coalesced local reads, and delayed remote reads; preserve the winning eager fast path.", "Independent results cover clipped tiles, missing chunks, checksum/filter handling, and cancellation."]
+
+implementation_evidence = ["tests/test_range_pipeline_completion.py", "src/opencodecs/_dicom_pyramid.py:DicomWsiPyramid"]
+
+[[work]]
+id = "direct_placement"
+title = "Remove full decoded intermediates"
+priority = 1
+state = "complete"
+pilots = ["nd2", "zfp"]
+followups = []
+investigate = []
+depends_on = ["bounded_pipeline"]
+current = "ND2 preallocates final frame storage; fixed-rate three-dimensional ZFP decodes and places bounded block rows. Variable-rate ZFP retains its fallback."
+action = "Decode bounded frame or block batches and copy or decode into final disjoint destinations. Reuse the same ownership and lifetime policy as the shared scheduler."
+limits = "ZFP variable-rate decoding stays on its existing fallback. Edge tiles and noncontiguous targets can require bounded scratch. Variable frame shapes need an explicit iterator/list contract."
+evidence = ["src/opencodecs/_nd2_native.py:Nd2NativeReader.read", "src/opencodecs/_zfp_codec.py:_decode_parallel", "src/opencodecs/_tiff_pyramid.py:TiffPyramidReader._fill_segments"]
+acceptance = ["Exact output against independent readers for asymmetric shapes, clipped blocks, multiple scalar types, and worker counts.", "Temporary decoded memory scales with worker/batch budget instead of the full image or stack.", "Output allocation is reported separately from scratch and compressed-input retention."]
+
+implementation_evidence = ["tests/test_container_pipeline.py"]
+
+[[work]]
+id = "bounded_writes"
+title = "Reuse bounded encode/write across containers"
+priority = 1
+state = "complete"
+pilots = ["adapter:omezarr", "adapter:ndtiff"]
+followups = ["czi"]
+investigate = []
+depends_on = ["bounded_pipeline", "worker_budget"]
+current = "Zarr and NDTiff encode bounded owned batches; CZI retains incremental per-subblock output. The final twenty-trial small-frame NDTiff control found no repeatable material slowdown."
+action = "Move Zarr and NDTiff to shared lazy, owned, ordered encoding; add codec input-kind and internal-worker policy to segment preparation. Assess CZI independent sub-block batching only after shared semantics pass."
+limits = "NDTiff requires the input-kind correctness fix. Preserve file/index order and frame metadata; avoid copying stable borrowed input unnecessarily. Do not add outer pools around already-saturated native encoders."
+evidence = ["src/opencodecs/_omezarr_writer.py:_write_v2", "src/opencodecs/_omezarr_writer.py:_write_v3", "src/opencodecs/_omezarr_writer.py:_write_v3_sharded", "src/opencodecs/_ndtiff_writer.py:NDTiffWriter.write_many", "src/opencodecs/core/segment_compression.py:encode_segment", "src/opencodecs/_czi_writer.py:_CziStreamWriter"]
+acceptance = ["Slow destinations and long generators prove bounded raw and encoded retention.", "Serial and parallel output independently round-trip with unchanged compression/quality settings.", "Producer buffer reuse, metadata reuse, partial writes, and codec failures leave correct ownership and cleanup."]
+
+implementation_evidence = ["tests/test_writer_pipeline_completion.py"]
+
+[[work]]
+id = "shards_and_pyramids"
+title = "Stream shard payloads and pyramid levels"
+priority = 1
+state = "complete"
+pilots = ["adapter:omezarr"]
+followups = ["tiff"]
+investigate = []
+depends_on = ["bounded_writes"]
+current = "Local Zarr shards stream payloads before their final index, and pyramid levels are generated lazily. Forward-only TIFF has explicit temporary-disk spooling: lower temporary memory with a measured throughput cost, leaving the default unchanged."
+action = "Write local shard payload chunks directly and retain index entries; consume iter_pyramid_levels while writing. Separately assess temporary-file spooling for large forward-only TIFF pages."
+limits = "Local files permit immediate shard output; remote atomic object publication or multipart output is a different adapter. Keep incomplete shards invisible or remove them on error. TIFF spooling bounds memory by using disk, not by eliminating buffering."
+evidence = ["src/opencodecs/_omezarr_writer.py:_encode_one_shard_v3", "src/opencodecs/_omezarr_writer.py:write_omezarr_pyramid_auto", "src/opencodecs/_pyramid_build.py:iter_pyramid_levels", "src/opencodecs/_tiff_writer.py:TiffWriter._emit_streaming_page"]
+acceptance = ["Independent Zarr version 3 reader verifies index entries, missing chunks, ragged edges, and final multiscales metadata.", "Large shards avoid shard-sized encoded buffers; completed pyramid levels become collectible.", "Forward-only TIFF remains valid on nonseekable destinations and cleans any spool file on failure."]
+
+implementation_evidence = ["src/opencodecs/_omezarr_writer.py", "tests/test_tiff_spool.py"]
+
+[[work]]
+id = "array_destinations"
+title = "Write scientific arrays directly to destinations"
+priority = 1
+state = "complete"
+pilots = ["mrc", "nifti", "numpy"]
+followups = []
+investigate = ["b2nd"]
+depends_on = ["correctness"]
+current = "MRC, NIfTI and NumPy serialize directly in bounded conversion blocks when a destination is supplied. B2nd native persistent storage is explicit storage_output=True because it trades throughput for retention; its fast destination default is preserved."
+action = "Add destination-oriented serializers for known arrays, retaining bytes-return behavior when dest is None. Stream endian/order conversion and gzip output where appropriate."
+limits = "Preserve dimensions, axis order, affine/voxel metadata, MRC statistics, and gzip trailers. Seekable header patching or declared final shape is required for some frame-writer extensions. B2nd needs native storage/append investigation."
+evidence = ["src/opencodecs/_mrc_writer.py:encode_mrc", "src/opencodecs/_nifti_writer.py:encode_nifti", "src/opencodecs/_numpy_codec.py:NumpyCodec.encode", "src/opencodecs/codecs/_b2nd.pyx:encode"]
+acceptance = ["Independent readback of path and file-like outputs for contiguous/noncontiguous and endian-swapped arrays.", "Destination mode avoids a full serialized-volume temporary; dest=None still returns complete bytes.", "Truncated writes and encoder errors propagate without silently valid-looking final metadata."]
+
+implementation_evidence = ["tests/test_writer_pipeline_completion.py", "tests/test_public_output_buffers.py"]
+
+[[work]]
+id = "output_sinks"
+title = "Share bounded native output draining"
+priority = 1
+state = "complete"
+pilots = ["gif", "jxl", "brunsli"]
+followups = []
+investigate = ["heif", "png", "jpeg2k"]
+depends_on = []
+current = "GIF and JPEG XL drain frame output before close; Brunsli and HEIF route native callbacks to checked destinations. Caller errors and short writes propagate. HEIF still retains native encoded items internally."
+action = "Define a destination sink contract covering callback errors, short writes, buffer lifetime, finalization, and optional bounded buffering. Integrate multiple callback/drain patterns through adapters."
+limits = "Keep JPEG XL threaded behavior as the performance control. Brunsli input remains whole and reconstructed JPEG bytes are distinct from pixel streaming. A sink alone does not add sequence encoding."
+evidence = ["src/opencodecs/codecs/_gif.pyx:_write_cb", "src/opencodecs/codecs/_jxl.pyx:_flush_to_dest", "src/opencodecs/codecs/_brunsli.pyx:_sink_write", "src/opencodecs/codecs/_heif.pyx:_writer_cb"]
+acceptance = ["Bytes arrive before close where the native format permits, and encoded retention stays bounded as output grows.", "Independent decode verifies final frame, trailers, color/disposal, and reconstructed JPEG output.", "Exercise partial writes, destination exceptions, close twice, abandoned sessions, and large threaded JPEG XL regressions."]
+
+implementation_evidence = ["tests/test_native_output_sinks.py"]
+
+[[work]]
+id = "incremental_bytes"
+title = "Expose stateful byte feed and drain"
+priority = 2
+state = "complete"
+pilots = ["brotli", "lz4", "gzip", "bz2", "lzma"]
+followups = ["deflate", "zstd"]
+investigate = ["aec"]
+depends_on = ["bounded_pipeline", "output_sinks"]
+current = "Seven byte codecs expose genuine stateful input/output iteration: gzip, bzip2, LZMA, deflate, Brotli, LZ4 and Zstandard. Eager paths are preserved; chunks are not falsely treated as independent frames."
+action = "Add an explicit incremental session alongside eager encode/decode, with input-consumed/output-produced, finalization, and bounded destination semantics. Use standard-library and existing native loops as distinct first implementations."
+limits = "Preserve fast eager backends. Arbitrary input chunks are not independently decodable streams. Raw Snappy remains an independent block codec; a framed variant would be a new surface. AEC count-aware incremental decode requires additional declarations and a sample/padding contract documented in the native audit."
+evidence = ["src/opencodecs/codecs/_brotli.pyx:decode", "src/opencodecs/codecs/_lz4.pyx:decode", "src/opencodecs/_gzip_codec.py:GzipCodec", "src/opencodecs/_bz2_codec.py:Bz2Codec", "src/opencodecs/_lzma_codec.py:LzmaCodec", "src/opencodecs/codecs/zstd.pxd"]
+acceptance = ["Feed one-byte and irregular chunks; verify empty inputs, truncation, flush, concatenated members, checksum failures, output limits, and early close.", "Bound queue and codec-visible working buffers across growing input sizes.", "Report time to first output, total throughput, and memory against eager mode without changing the wire format."]
+
+implementation_evidence = ["src/opencodecs/core/streaming.py", "tests/test_incremental_byte_codecs.py"]
+
+[[work]]
+id = "row_sessions"
+title = "Add explicit row and progressive-pass sessions"
+priority = 3
+state = "complete"
+pilots = []
+followups = []
+investigate = ["png", "jpeg", "mozjpeg", "rgbe", "bmp", "htj2k", "qoi", "jpegls", "webp", "avif", "heif", "adapter:ultrahdr"]
+depends_on = ["incremental_bytes", "output_sinks"]
+current = "PNG implements native row decode/encode and sparse Adam7 pass updates. Every other named target has a source-grounded callable-interface assessment and explicit prerequisites; no eager-output slicing is presented as streaming."
+action = "Start with a PNG session design that distinguishes provisional interlace passes from final rows. Audit each remaining binding before promoting it to an integration target."
+limits = "A progressive preview is not necessarily a speedup. Restart markers do not automatically provide arbitrary JPEG strip access. Preserve QOI state, animation dependencies, high dynamic range metadata, and native limitations."
+evidence = ["3rdparty/libspng/spng.h:spng_decode_row", "3rdparty/libspng/spng.h:spng_encode_row", "src/opencodecs/codecs/spng.pxd", "src/opencodecs/codecs/openjph_shim.cpp", "src/opencodecs/codecs/_qoi.pyx:decode"]
+acceptance = ["Prototype ordinary and interlaced PNG with explicit pass/finality semantics and independent pixel checks.", "Separate reduced-resolution decode, provisional preview, and genuinely incremental final output in capabilities.", "Promote follow-ups only after callable native support, bounded memory, and useful first-output latency are established."]
+
+implementation_evidence = ["src/opencodecs/core/rows.py", "docs/native_pipeline_binding_audit.md"]
+
+[[work]]
+id = "indexed_native"
+title = "Connect native partial decode to selective storage"
+priority = 3
+state = "complete"
+pilots = []
+followups = []
+investigate = ["jpeg2k", "b2nd", "blosc2", "heif", "avif", "lzma", "sperr"]
+depends_on = ["fetch_decode"]
+current = "B2nd owns a native local file-backed slice context. JPEG 2000, HEIF and AVIF use native source callbacks and independent selective-source tests. Blosc2 lazy storage, XZ indexes and SPERR progressive quality need distinct new bindings or contracts documented by the audit."
+action = "Audit callbacks and indexes, then prototype source adapters where storage bytes can actually be avoided. Keep each codec index and native ownership protocol separate from shared range scheduling."
+limits = "Do not turn partial CPU decode into a range-read claim without measuring source requests. XZ block indexes and progressive scientific streams need new binding work."
+evidence = ["src/opencodecs/codecs/_jpeg2k.pyx:decode_region", "src/opencodecs/_b2nd_codec.py:B2ndCodec", "src/opencodecs/_blosc2_codec.py:Blosc2Codec", "src/opencodecs/_sperr_codec.py:SperrCodec"]
+acceptance = ["Instrument requested/fetched bytes and decoded pixels separately on indexed fixtures.", "Verify discontiguous regions, index corruption, unknown sizes, ownership, and independent output.", "Document unsupported source modes instead of falling back to a hidden whole-file fetch."]
+
+implementation_evidence = ["src/opencodecs/_b2nd_codec.py", "docs/native_pipeline_binding_audit.md"]
+
+[[work]]
+id = "scratch_and_contexts"
+title = "Reuse scratch and measure owned native contexts"
+priority = 2
+state = "complete"
+pilots = []
+followups = []
+investigate = ["cms", "jpeg", "mozjpeg", "bitshuffle", "byteshuffle", "delta", "floatpred", "xor", "packints", "quantize", "dicomrle", "rcomp", "bcn", "lerc", "pcodec", "sz3", "none"]
+depends_on = ["output_buffers", "worker_budget"]
+current = "Delta/XOR and Rice use caller destinations, floating prediction reuses owned scratch, packed integers avoid a samples-by-bits matrix, and DICOM assembles one byte plane at a time. Explicit color/JPEG contexts retain safe owned native state. Unhelpful Zstandard context and large staging experiments were rejected."
+action = "Compose filter steps with reusable worker-owned buffers; separately benchmark explicitly owned native context lifetimes where initialization dominates."
+limits = "No universal pool. Preserve predictor distance, row boundaries, channel order, tails, and context thread-safety. Already-direct outputs should remain direct; copy-only work may be faster serially."
+evidence = ["src/opencodecs/_predictor_codec.py:FloatpredCodec", "src/opencodecs/_cms_codec.py:cms_transform", "src/opencodecs/codecs/_zstd.pyx", "src/opencodecs/_packints_codec.py:PackintsCodec"]
+acceptance = ["Independent edge-case filter parity and shared-buffer alias/lifetime tests.", "Small repeated calls and concurrent callers show whether context reuse helps; retain negative results.", "Track scratch allocation and memory traffic separately from compression/quality and final output."]
+
+implementation_evidence = ["src/opencodecs/core/scratch.py", "tests/test_filter_scratch.py", "tests/test_owned_color_context.py", "docs/native_pipeline_binding_audit.md"]
+
+[[work]]
+id = "sequence_encoding"
+title = "Separate read sequences from write sequences"
+priority = 3
+state = "complete"
+pilots = []
+followups = []
+investigate = ["webp", "avif", "heif"]
+depends_on = []
+current = "WebP, AVIF and HEIF common writers reject a second frame explicitly. Native timed-animation or image-collection writer requirements are assessed individually; these new format features are not falsely inferred from shared scheduling."
+action = "Reject unsupported multiple-frame encoding clearly and audit the native sequence writer interface before adding incremental sequence encoders."
+limits = "HEIF top-level image collections are not necessarily timed animations. A shared frame scheduler cannot supply missing native sequence semantics."
+evidence = ["src/opencodecs/core/codec.py:Codec.writer", "src/opencodecs/_webp_codec.py:WebpCodec", "src/opencodecs/_avif_codec.py:AvifCodec", "src/opencodecs/_heif_codec.py:HeifCodec"]
+acceptance = ["Common writer reports unsupported sequences explicitly instead of silently claiming streaming support.", "Any future sequence encoder passes independent frame count, timing, disposal, color, and finalization tests before capability flags change."]
+
+implementation_evidence = ["src/opencodecs/core/codec.py:_BufferedWriter", "docs/native_pipeline_binding_audit.md"]
+
+[[finding]]
+id = "hdf5_filters"
+state = "fixed"
+confidence = "reproduced"
+targets = ["hdf5"]
+blocks = ["fetch_decode"]
+summary = "Parallel gzip-plus-shuffle decode returns incorrect pixels; returned chunk filter masks are ignored."
+reproduction = "Independent h5py-written uint16 ramp, shape 256x256, chunks32x32: read_parallel(n_workers=4) equals source for gzip only and differs for gzip plus shuffle."
+evidence = ["src/opencodecs/_hdf5_codec.py:HdfReader.read_parallel"]
+
+[[finding]]
+id = "array_destination_order"
+state = "fixed"
+confidence = "reproduced"
+targets = ["mrc", "nifti"]
+blocks = ["array_destinations"]
+summary = "MRC/NIfTI encode reverses the write_dest(data, dest) arguments."
+reproduction = "float32 arange(24).reshape(2,3,4): bytes-only controls return 1120/448 bytes; dest=BytesIO raises TypeError and writes zero bytes."
+evidence = ["src/opencodecs/_mrc_codec.py:MrcCodec.encode", "src/opencodecs/_nifti_codec.py:NiftiCodec.encode"]
+
+[[finding]]
+id = "ndtiff_input_kind"
+state = "fixed"
+confidence = "source_confirmed"
+targets = ["adapter:ndtiff"]
+blocks = ["bounded_writes"]
+summary = "NDTiff flattens encoder inputs while image codecs require shaped arrays; advertised compression names need independent validation."
+reproduction = "Independent image-codec decoding now verifies shaped-input NDTiff writes; reusable pixel and metadata producer tests verify ownership."
+evidence = ["src/opencodecs/_ndtiff_writer.py:NDTiffWriter.write_many", "src/opencodecs/_tiff_writer.py:TiffWriter._encode_segment_bytes"]
+
+[[work]]
+id = "raw_selection"
+title = "Measure selective raw-plane access and coalescing"
+priority = 2
+state = "complete"
+pilots = []
+followups = []
+investigate = ["lif", "dm", "oir", "nrrd", "mrc", "nifti", "numpy"]
+depends_on = ["bounded_pipeline"]
+current = "Independent raw-array fixtures already perform exact selected-plane reads. OIR remote payloads coalesce while its local method is unchanged. Compressed NRRD iteration now decodes the whole stream once instead of once per frame. LIF and DM retain their source-grounded no-change decisions."
+action = "Measure requested versus fetched bytes for sparse planes and narrow regions. Add source-range selection and coalescing only where existing layout metadata can avoid payload bytes; preserve current fast contiguous copies."
+limits = "This is an assessment, not a promise that every raw reader needs changes. Whole-stream compression requires incremental decoding or indexes rather than raw offset arithmetic. Avoid adding decode workers to memory-bandwidth-limited copies."
+evidence = ["src/opencodecs/_lif_native.py:LifNativeReader.read", "src/opencodecs/_dm.py:DmFile", "src/opencodecs/_oir_codec.py:OirNativeReader", "src/opencodecs/_mrc_codec.py:MrcCodec.decode"]
+acceptance = ["Independent asymmetric volumes verify slice order, endian handling, and metadata.", "Sparse reads have explicit request/byte budgets, with warm local contiguous reads as a no-regression control.", "Record no-change decisions where existing selective access already has the best measured behavior."]
+
+implementation_evidence = ["tests/test_lif_indexing.py", "tests/test_dm_offsets.py", "tests/test_mrc.py"]
+
+[[work]]
+id = "bit_exact_verification"
+title = "Overlap actual round-trip verification with independent encoding"
+priority = 1
+state = "complete"
+pilots = ["tiff", "czi"]
+followups = ["adapter:ndtiff", "adapter:omezarr"]
+investigate = []
+depends_on = ["bounded_writes", "worker_budget"]
+current = "Optional verify=True decodes and checks each completed payload before emission. TIFF, NDTiff and Zarr use bounded piece tasks; CZI checks one pending piece while encoding the next."
+action = "Share exact byte and pixel-bit comparison, bounded scratch, decode-error propagation, ownership and worker accounting. Measure disabled, sequential and overlapped verification separately."
+limits = "Extra computation cannot always be hidden. This checks encoded pixels, not final container indexes, metadata or storage corruption. Lossy settings that alter bits fail rather than silently relaxing equality. Native decoder workspace is separate from comparison reservations."
+evidence = ["src/opencodecs/core/verification.py:assert_bit_exact", "src/opencodecs/core/verification.py:DeferredVerification", "src/opencodecs/_czi_writer.py:_CziStreamWriter", "src/opencodecs/_tiff_writer.py:TiffWriter"]
+acceptance = ["Preserve shape, scalar type, signed zero, NaN payloads and endian semantics without mutating input.", "Corruption and lossy changes fail before the affected payload is emitted; producer and decoder failures join outstanding work.", "Prove actual encode/verify overlap with events and compare elapsed time and memory against identical sequential checks where possible."]
+implementation_evidence = ["tests/test_verified_encoding.py", "tests/test_czi_verification.py", "tests/test_tiff_writer_verification.py", "tests/test_writer_pipeline_completion.py"]
+
+[[work]]
+id = "czi_direct_decode"
+title = "Decode and unshuffle CZI payloads into destinations"
+priority = 1
+state = "complete"
+pilots = ["czi"]
+followups = ["zstd", "byteshuffle"]
+investigate = []
+depends_on = ["output_buffers"]
+current = "CZI sub-block decode writes a caller destination. Unshuffled payloads decompress straight into it; shuffled payloads decompress into per-thread scratch and unshuffle into it. read() passes each row of its final stack, so a tile no longer allocates a decompressed buffer, an unshuffled buffer and a copy. A standalone tile still returns freshly allocated storage that outlives the reader."
+action = "Add a destination-aware payload path validating dtype, contiguity, writability and element count, reuse one scratch buffer per worker thread for the shuffled intermediate, and size every decode to exactly one tile."
+limits = "Measured as an allocation reduction, not a throughput multiplier: parallel reads are unchanged within noise and only serial reads got faster. The destination must be contiguous and exactly one tile; region windows, partial tiles and channel reordering keep their existing paths. Scratch is borrowed for the duration of one decode and must not be retained. Linux sweep: parallel reads always use the persistent pool with contiguous batches (a pool per call costs more than the read on 128 cores), and the default worker cap is 8, measured with a fresh output on both a 20-core arm64 Mac and a 128-core x86-64 Linux host; 16 doubled the Linux time. Final default path: Mac 1.97 to 1.94 ms, Linux 3.71 to 3.61 ms."
+evidence = ["src/opencodecs/_czi_reader.py:CziReader._decode_payload", "src/opencodecs/_czi_reader.py:_payload_destination", "src/opencodecs/_czi_reader.py:_decode_scratch", "src/opencodecs/codecs/_zstd.pyx:decode", "src/opencodecs/codecs/_bytetools.pyx:byteshuffle_decode"]
+acceptance = ["Identical pixels for raw, ZSTD0 and ZSTDHDR with and without the shuffle, across scalar widths, a color pixel type and singleton axes.", "A standalone tile owns its memory and still matches after the reader closes and later decodes have recycled the scratch.", "Destinations that are not ndarray, writable, contiguous, correctly typed or correctly sized are rejected; payloads that decode short or long raise instead of returning truncated pixels.", "Concurrent decodes of different tile sizes on many threads return each caller's own pixels."]
+implementation_evidence = ["tests/test_czi_direct_decode.py"]
+
+[[work]]
+id = "czi_writer_shuffle"
+title = "Native byte shuffle with reusable writer scratch"
+priority = 1
+state = "complete"
+pilots = ["czi"]
+followups = ["byteshuffle"]
+investigate = []
+depends_on = ["czi_direct_decode"]
+current = "The CZI writer shuffles byte planes with the native primitive into one writer-owned buffer instead of a NumPy transpose plus tobytes(), which allocated a second full-size buffer per frame. The one-byte identity path still passes through without copying, and the shuffled view goes into the compressor rather than another bytes object."
+action = "Route _byteshuffle_encode through codecs/_bytetools.byteshuffle_encode with a caller-provided output, give each writer a ScratchBuffer, and pass it down through sub-block construction."
+limits = "The pixel snapshot the writer already takes for verification is unchanged; only the shuffled intermediate is removed. The scratch is valid until the next frame shuffles, which is safe because compression consumes it before the call returns and a pending verification reads the encoded payload and its own snapshot instead. Separate writers own separate buffers; one writer is not safe to drive from two threads. Under gcc at conda's default -O2 the native shuffle was 1.4 to 1.7x slower than the NumPy transpose; _bytetools now compiles at -O3, after which Linux encode is 4 to 10x faster than NumPy and the writer gains transfer (zstdhdr sequential 1.35x on Linux)."
+evidence = ["src/opencodecs/_czi_writer.py:_byteshuffle_encode", "src/opencodecs/_czi_writer.py:_zstdhdr_encode", "src/opencodecs/_czi_writer.py:_CziStreamWriter", "src/opencodecs/codecs/_bytetools.pyx:byteshuffle_encode", "src/opencodecs/core/scratch.py:ScratchBuffer"]
+acceptance = ["Shuffled bytes match the NumPy transpose for every scalar width including odd widths, and for awkward element counts including zero and one.", "A shorter frame after a longer one returns only its own bytes rather than inheriting the buffer tail; a length that is not a whole number of elements is rejected.", "Complete written files decode independently for uint8, uint16 and float32 with verification on and off, preserving NaN payload bits and signed zero.", "A reused producer buffer is stored per frame as submitted, and concurrent writers of different frame sizes each produce their own correct file."]
+implementation_evidence = ["tests/test_czi_writer_shuffle.py"]
+
+[[work]]
+id = "czi_bounded_iteration"
+title = "Bounded CZI iteration and direct slice assembly"
+priority = 2
+state = "complete"
+pilots = ["czi"]
+followups = []
+investigate = []
+depends_on = ["czi_direct_decode", "worker_budget"]
+current = "Slice access allocates its stack once and decodes each tile into a row when the selection is homogeneous, instead of holding a list of tiles and the finished stack together. iter_tiles stays a plain serial loop by default and takes an explicit bounded prefetch path when given a worker count, byte budget or worker budget."
+action = "Add a shared stacking helper using the destination decode path, and an opt-in map_bounded iteration route that yields in directory order through the reader pool."
+limits = "The bounded path is opt-in because scheduling costs more than it saves for local mmap-backed tiles. A mixed-shape selection keeps the old list-and-stack path so it raises the same error. Yielded arrays are freshly allocated; the reservation covers the decoded result and the worker's scratch, not the borrowed mmap view or reader caches."
+evidence = ["src/opencodecs/_czi_reader.py:CziReader.iter_tiles", "src/opencodecs/_czi_reader.py:CziReader._stack_entries", "src/opencodecs/core/pipeline.py:map_bounded"]
+acceptance = ["Every slice form, including stepped, negative, reversed, single-element and fully singleton tiles, matches decoding tile by tile; empty and mixed-shape selections still raise ValueError.", "Bounded iteration yields the same tiles in the same order as the serial loop, including the as_rgb channel reordering, and completes even when the byte budget is smaller than one tile.", "Arrays yielded earlier still match after later tiles have reused the worker scratch.", "Abandoning the iterator joins its work and leaves the borrowed reader usable; a failing decode propagates to the caller."]
+implementation_evidence = ["tests/test_czi_bounded_iteration.py"]
+
+[[work]]
+id = "czi_region_index"
+title = "Spatially indexed, bounded CZI regional reads"
+priority = 1
+state = "complete"
+pilots = ["czi"]
+followups = []
+investigate = []
+depends_on = ["czi_direct_decode", "worker_budget"]
+current = "Each pyramid level builds an immutable grid index over stored tile bounds on first use. A region decodes only intersecting tiles, in batches of about 2 MiB through the bounded pipeline when there is enough work, and composites in directory order on the calling thread so overlaps keep last-wins. A request touching more than one plane (channel, time, depth or scene at the same place) is refused. region_stats reports candidates examined, tiles decoded, workers, batches and, for range sources, physical requests and bytes."
+action = "Add _CziLevelIndex (uniform grid keyed on the median tile, pure-Python bounds test for small candidate sets), refactor _read_region onto it with batched map_bounded decode and ordered paste, and count range-source requests."
+limits = "Measured on a 400-tile mosaic of 256x256 uint16 ZSTDHDR tiles: 200 random small crops -53%, the full level -20%, an 81-tile crop -6%. The first read of a level pays about 0.5 ms to build its index. A 4-tile control still costs about 5 us more per crop than the old scan, which is the counters and batching bookkeeping. The parallel path holds decoded batches in flight up to the pending budget (traced peak 8.6 to 18.5 MB on an 8 MB crop); decode_workers=1 restores the old memory profile. Refusing mixed planes is a behavior change: the old scan composited them silently."
+evidence = ["src/opencodecs/_czi_reader.py:_CziLevelIndex", "src/opencodecs/_czi_reader.py:CziPyramidReader._read_region", "src/opencodecs/_czi_reader.py:CziPyramidReader._paste_tile", "src/opencodecs/core/parallel.py:resolve_workers", "src/opencodecs/core/pipeline.py:map_bounded"]
+acceptance = ["Many random crops on regular, overlapping and irregular layouts match the previous scan and an independently assembled canvas, with zero fill for uncovered pixels and clipped edges.", "Index queries match brute force on irregular tiles, return hits in directory order, and examine fewer candidates than the level holds for a small crop.", "Serial and parallel paths agree; a request spanning two planes raises; the stub reader used by older pyramid tests still works.", "Counters report examined, decoded, workers and range-source requests per call."]
+implementation_evidence = ["tests/test_czi_region_index.py"]
+
+[[work]]
+id = "czi_segment_parts"
+title = "Emit CZI sub-blocks as header, payload and padding"
+priority = 1
+state = "complete"
+pilots = ["czi"]
+followups = []
+investigate = []
+depends_on = ["czi_writer_shuffle", "bounded_writes"]
+current = "A sub-block is a frozen descriptor: one short header bytes object, the payload as a view, and the alignment pad as a count. Emission writes the parts through the short-write-safe helper; the next position comes from the exact size; verification reads the payload part directly. Without verification the array's own buffer is the payload source or the compressor input, so an uncompressed frame reaches the file with no copy at all; with verification the snapshot the check needs is still taken."
+action = "Replace the single-string assembly with _SubBlockSegment, keep bytes-typed segments accepted for compatibility, and adapt the corruption tests to corrupt the payload part."
+limits = "File bytes and directory offsets are identical to the previous layout, checked against the fixture serializer. Measured on 8 frames of 2048x2048 uint16: uncompressed unverified writes -44% with first emission at 0.03 ms and no Python-visible allocation; zstdhdr unverified -33%; verified configurations about -30%. zstdhdr with verification peaks 13 MB higher because the writer's shuffle scratch and the verification thread's decode scratch persist where transients were freed; that is the cost of reuse and is documented, not hidden. A plain sequential write is used; no vectored system call."
+evidence = ["src/opencodecs/_czi_writer.py:_SubBlockSegment", "src/opencodecs/_czi_writer.py:_build_subblock", "src/opencodecs/_czi_writer.py:_CziStreamWriter._emit_subblock", "src/opencodecs/core/_write_helpers.py:write_all"]
+acceptance = ["Whole files are byte-identical to the independent fixture serializer for every compression and dtype.", "Parts reassemble to the former single string; a destination accepting short writes receives the same bytes; a failing sink aborts the writer.", "Verified and unverified writes produce identical files; borrowed producer buffers mutated right after write() do not leak into stored frames; strided input is stored correctly.", "Corrupted payloads are still caught before emission (test_czi_verification.py)."]
+implementation_evidence = ["tests/test_czi_segment_parts.py"]
+
+[[work]]
+id = "batched_region_requests"
+title = "Shared planner for batches of overlapping region requests"
+priority = 2
+state = "complete"
+pilots = ["czi"]
+followups = ["tiff", "adapter:omezarr"]
+investigate = []
+depends_on = ["czi_region_index"]
+current = "PyramidReader.iter_regions and read_regions take a bounded batch of boxes, collect the union of tile ids each box needs, decode every tile once in the backend's composition order and paste it into each output it intersects, so per-box results equal read_region. Batches are bounded by output bytes plus newly required decoded tiles; results are yielded batch by batch in request order, so closing early retains nothing beyond the current batch. Backends opt in through four hooks; without them each box is served by read_region, still in order. CZI implements the hooks and its single-region path is refactored onto them, so both share the index, the plane refusal and the batched parallel decode. batch_stats reports boxes, requested tiles, unique tiles, batches and fallback boxes."
+action = "Add the planner and hooks to core/pyramid.py; implement _region_tiles, _decode_region_tiles, _paste_region_tile, _region_tile_bytes and _new_region_output for CZI."
+limits = "Tile ids must sort in the backend's composition order; that is the contract that keeps overlap semantics. Measured on the 400-tile mosaic against the same tree's read_region loop: 25 adjacent 300x300 crops -52% (36 unique tiles for 100 requested), 50 random 200x200 crops -28% (128 unique for 152; even random crops on a 256 grid overlap), one 2000x2000 crop unchanged within noise. TIFF and Zarr still take the per-box fallback: their tile lookup and planar handling live inside their own region fill and were not lifted. A batch retains all of its outputs until yielded, bounded by max_batch_bytes; a single box larger than the budget runs alone."
+evidence = ["src/opencodecs/core/pyramid.py:PyramidReader.iter_regions", "src/opencodecs/core/pyramid.py:PyramidReader.read_regions", "src/opencodecs/_czi_reader.py:CziPyramidReader._decode_region_tiles", "src/opencodecs/_czi_reader.py:CziPyramidReader._select_tiles"]
+acceptance = ["Every per-box result equals read_region for adjacent, disjoint, large, overlapping and randomly sized boxes, across batch boundaries forced by a tiny budget.", "Adjacent boxes decode fewer tiles than they request; disjoint boxes decode exactly what they request; a lone box pays no measurable planning cost.", "Abandoning the iterator leaves the reader usable; plane refusal propagates; serial and parallel decode agree.", "A backend without hooks is served per box in request order and reports fallback_boxes."]
+implementation_evidence = ["tests/test_pyramid_batched_regions.py"]
+
+[[work]]
+id = "decoded_tile_cache"
+title = "Optional byte-bounded cache of decoded CZI tiles"
+priority = 3
+state = "complete"
+pilots = ["czi"]
+followups = []
+investigate = []
+depends_on = ["czi_region_index", "batched_region_requests"]
+current = "CziPyramidReader(decoded_cache_bytes=N) keeps decoded tiles in a least-recently-used cache under N bytes, shared by read_region and the batched planner. Keys carry the reader instance and the tile's directory index. Cached arrays are read-only and handed out directly. Concurrent misses for one key decode once; the others wait, and a failed claimant releases the key so waiters decode for themselves. Claims are taken in sorted tile order so overlapping readers cannot deadlock. Off unless a budget is given; invalidate_cache() empties it; close() clears it."
+action = "Add core/tile_cache.py (DecodedTileCache) and route _decode_region_tiles through it when enabled, storing misses as they arrive from the batched decode."
+limits = "Spends memory to skip decompression. Measured on the 400-tile mosaic with a 32 MiB budget: 30 revisited 400x400 crops, pass 2 and 3 went from 10.3 ms to 2.0 ms (413 hits of 576 tile requests) for 21 MB retained; a 20-step 512-px pan went from 5.5 ms to 1.4 ms for 3 MB. The cold first pass is unchanged within noise. Retained bytes are counted here and are separate from source caches and pipeline reservations; an item larger than the budget is never stored. Source mutation during a session is not detected; the caller must invalidate. Not enabled by default: no workload evidence says every reader revisits tiles."
+evidence = ["src/opencodecs/core/tile_cache.py:DecodedTileCache", "src/opencodecs/_czi_reader.py:CziPyramidReader._decode_region_tiles", "src/opencodecs/_czi_reader.py:CziPyramidReader.invalidate_cache"]
+acceptance = ["Pixels with the cache equal pixels without it for repeated, overlapping and batched requests, and region_stats reports hits and misses per call.", "Retained bytes never exceed the budget; eviction is least-recently-used; oversized tiles are skipped; cached arrays refuse writes.", "Six threads missing one key decode it once and all receive the result; a released claim lets a waiter proceed; a decode failure releases every unstored claim.", "Off by default, on when a budget is given, emptied by invalidate_cache."]
+implementation_evidence = ["tests/test_tile_cache.py"]
+
+[[work]]
+id = "czi_read_out"
+title = "Caller-owned stack destination for CziReader.read"
+priority = 3
+state = "complete"
+pilots = ["czi"]
+followups = []
+investigate = []
+depends_on = ["czi_direct_decode"]
+current = "CziReader.read(out=array) decodes every sub-block straight into a row of a caller-owned C-contiguous array of the file's dtype, shaped (n_subblocks, *tile_shape) or that shape without singleton axes; numpy.memmap qualifies. The same object is returned (squeezed as a view on request). Both decode paths fill it. as_rgb is refused with out= because the stored order would differ from the returned view. No file is created here."
+action = "Validate the destination against the file's frame count and tile shape, and route the existing per-row destination decode through a reshaped row view of it."
+limits = "Memory mapping the output moves the bytes, it does not make them free: on the 16-frame 33.6 MB fixture a memmap destination on local disk took 20.8 ms against 1.5 ms for a heap destination, all of it page-cache writes and faults, not disk throughput. Reported as a storage experiment, not a speedup. Wrong dtype, shape, contiguity or writability is refused before any decode."
+evidence = ["src/opencodecs/_czi_reader.py:CziReader.read", "src/opencodecs/_czi_reader.py:CziReader._validate_stack_destination"]
+acceptance = ["Full-shape, squeezed-shape and memmap destinations are filled with the same pixels the reader returns on its own, on the pool path, the serial path and the bounded path, and the returned object is the caller's.", "A bytearray, a read-only array, a strided array, the wrong dtype, the wrong tile shape and the wrong frame count are each refused with a message naming the problem.", "as_rgb together with out= is refused."]
+implementation_evidence = ["tests/test_czi_read_out.py"]
+
+[[work]]
+id = "czi_parallel_compression"
+title = "Bounded parallel CZI sub-block compression"
+priority = 2
+state = "complete"
+pilots = ["czi"]
+followups = []
+investigate = []
+depends_on = ["czi_segment_parts", "worker_budget", "bit_exact_verification"]
+current = "CziWriter.write_many(frames) and CziPyramidWriter.write_many(levels) snapshot each frame the moment it is pulled from the producer, group frames into tasks of about batch_bytes (2 MiB) of pixels, compress them on up to workers threads under max_pending_bytes of retained input, encoded output and verification scratch, and emit sub-blocks in submission order with file positions assigned at emission and patched into the segment header, so the file is byte-identical to sequential write calls. With verify=True each task checks its own payload inside the same worker budget; no second pool exists. The single-frame write path is untouched."
+action = "Add write_many on the shared stream writer with a per-subclass frame plan hook (pyramid levels keep their in-order state), a with_position patch on the segment descriptor, and a per-thread shuffle scratch."
+limits = "Measured, zstdhdr: 16 frames of 1024x1024 uint16 went 25.5 to 7.4 ms (verified 31.0 to 13.4); 400 frames of 64x64 went 13.3 to 11.4 ms only after grouping small frames per task, since one task per 8 KB frame measured slower than sequential (14.4 to 22.3 ms). With a 1 ms per-segment sink the large case went 56.5 to 30.6 ms; the tiny case is dominated by 400 ms of sink time. A task that fails, including a failed verification, is withheld entirely, so a mid-task failure also withholds the good frames grouped before it, and the writer aborts. copy_frames=False skips the snapshot and requires stable input. The compressor is single-threaded, so outer workers are not multiplied. Residual: sequential write() of 8 KB frames with verify=True measured about 3.5 us per frame slower than before at best-of-trials in a noisy configuration; unverified small frames are 6% faster after small segments were coalesced into one write. On Linux write_many borrows a persistent pool (a pool per call cost more than a batch of tiny frames); 8 KB frames are at parity with sequential there, not faster, and 1024x1024 frames gain 2.4x."
+evidence = ["src/opencodecs/_czi_writer.py:_CziStreamWriter.write_many", "src/opencodecs/_czi_writer.py:_SubBlockSegment.with_position", "src/opencodecs/_czi_writer.py:_worker_scratch", "src/opencodecs/core/pipeline.py:map_bounded"]
+acceptance = ["Parallel output is byte-identical to sequential output for every compression with verification on and off, and reopens independently; variable-size frames keep an ascending 32-byte-aligned index.", "A producer refilling one buffer is stored frame by frame as submitted; copy_frames=False works for stable input.", "A codec failure propagates and aborts; a corrupted payload is caught in the task and nothing at or after it is emitted; verification runs on the write workers, not a separate pool.", "Tiny, mixed and pyramid-level inputs work with grouping on, off and unbounded."]
+implementation_evidence = ["tests/test_czi_parallel_write.py"]
+
+[[work]]
+id = "czi_slide_geometry"
+title = "Origin- and scale-correct CZI pyramid levels"
+priority = 1
+state = "complete"
+pilots = ["czi"]
+followups = []
+investigate = []
+depends_on = ["czi_region_index"]
+current = "Level pixels count from the slide origin (the smallest level-0 start, as czifile reports it) and divide each tile's full-resolution start by the level's scale. CziPyramidReader.origin maps level pixels back to slide coordinates."
+action = "Replace the per-level extent that added stored sizes to full-resolution starts with a placement computed once per level, and build each level's index from it."
+limits = "A correctness fix found while building a slide-shaped benchmark: before it, the Axioscan corpus slide (origin 20086, -104227) reported every level as (N, 0) and read nothing, in the committed code and in the pre-optimization tree alike. Files whose tiles start at zero read exactly as before. Region coordinates on files with a nonzero origin are now relative to the origin, as czifile's are. The corpus slide is JPEG XR, which the reader cannot decode, so on real data only geometry is verified; pixels are verified on synthetic slides with a negative origin."
+evidence = ["src/opencodecs/_czi_reader.py:_level_placement", "src/opencodecs/_czi_reader.py:CziPyramidReader.origin"]
+acceptance = ["Every level of a synthetic slide at a negative origin reads as the exact decimation of the full-resolution image, for whole levels and random crops.", "Level 0 of the real Axioscan slide matches czifile's origin and shape, and every level's extent matches what czifile's independently parsed directory entries give."]
+implementation_evidence = ["tests/test_czi_slide_geometry.py"]
+
+[[work]]
+id = "czi_directory_parse"
+title = "Fast CZI directory parse and one-pass level grouping"
+priority = 2
+state = "complete"
+pilots = ["czi"]
+followups = []
+investigate = []
+depends_on = []
+current = "Local sources parse the directory with one precompiled unpack for each entry header and one for all of its dimensions, reading fields through getters cached per dimension layout. Level grouping computes each entry's two scale factors once and is cached per axes. Range sources keep the per-entry parser."
+action = "Add _parse_directory_entries and _dims_layout; replace scale_factors_per_level plus a per-level directory filter with CziReader._level_groups."
+limits = "On a 12,240-sub-block slide: open 98.8 to 47.0 ms on x86-64 Linux (80.7 to 37.4 ms on arm64 macOS), pyramid construction 164 to 3.9 ms (180 to 3.1 ms). What remains is about 2.6 us per entry, mostly building the entry objects; a lazily materialized directory would be an API change."
+evidence = ["src/opencodecs/_czi_reader.py:_parse_directory_entries", "src/opencodecs/_czi_reader.py:_dims_layout", "src/opencodecs/_czi_reader.py:CziReader._level_groups"]
+acceptance = ["The fast parser and the per-entry parser return equal entries on a slide with C, Z and M dimensions, and a range source parses the same directory.", "Pyramid tests that borrow scale_factors_per_level and entries_at_level on a stand-in reader still pass."]
+implementation_evidence = ["tests/test_czi_slide_geometry.py"]
+
+[[work]]
+id = "czi_fused_zstd_decode"
+title = "Fused zstd decode and byte unshuffle in one native call"
+priority = 1
+state = "complete"
+pilots = ["czi"]
+followups = []
+investigate = []
+depends_on = ["czi_direct_decode"]
+current = "ZSTD0 and ZSTDHDR tiles decode through _zstd.decode_unshuffle_into: decompression into worker scratch and the byte-plane unshuffle into the destination share one GIL release, on a per-thread reusable decompression context, with no import in the per-tile path."
+action = "Add DecodeContext and decode_unshuffle_into to the zstd extension (built at -O3) and route CziReader's zstd paths through them."
+limits = "Measured on 400 tiles of 128 KB with 8 threads over one thread: raw zstd scaled 2.6x (arm64 macOS) and 4.3x (x86-64 Linux), zstd plus a separate unshuffle call only 1.8x and 2.9x, because each extra GIL reacquire per tile queued behind the other workers; the fused call scaled 5.1x on Linux. The reused context alone changed nothing measurable. Whole-stack reads of 2 MB tiles are unchanged (within plus or minus 4% over 16 rounds on Linux)."
+evidence = ["src/opencodecs/codecs/_zstd.pyx:decode_unshuffle_into", "src/opencodecs/codecs/_zstd.pyx:DecodeContext", "src/opencodecs/_czi_reader.py:CziReader._zstd_unshuffle_into", "src/opencodecs/_czi_reader.py:_decode_context"]
+acceptance = ["Every CZI decode test passes through the fused path, including malformed payloads raising CziError.", "The fused call matches the two-call result on shuffled and unshuffled payloads."]
+implementation_evidence = ["tests/test_czi_direct_decode.py"]
+
+[[work]]
+id = "czi_region_windows"
+title = "CZI regional reads decoded straight into the output"
+priority = 1
+state = "complete"
+pilots = ["czi"]
+followups = []
+investigate = []
+depends_on = ["czi_fused_zstd_decode", "czi_slide_geometry", "czi_region_index"]
+current = "Zstd tiles decode through _zstd.decode_unshuffle_windows, which writes each tile's windows into the region output in one native call. Serial requests go in directory order. Parallel requests write only each tile's visible pieces (what no later same-plane tile covers), which are disjoint, so workers write in any order with unchanged last-wins results, and hidden tiles are skipped. The level index answers its first query with one vectorized scan and builds its grid on the second."
+action = "Add decode_unshuffle_windows, CziPyramidReader._decode_windows and _window_layout, _CziLevelIndex.visible with rectangle subtraction, and the lazy grid. Uncompressed levels and reads with the tile cache keep the owned-tile path."
+limits = "x86-64 Linux, against this round's starting tree: full 400-tile level 30.7 to 17.5 ms, 2000 px crop 9.9 to 4.7 ms with traced peak 18.9 to 8.3 MB, 200 small crops 68.6 to 54.2 ms, first crop 1.22 to 0.22 ms (the pre-index original was 0.31), overlapping mosaic full level 33.4 to 23.9 ms. Serial decode into a large cold output is bound by memory, not by decode: about 78 us per 128 KB tile against 50 us into a hot buffer; huge pages made it 2.2x slower. The batched iter_regions planner still pastes owned tiles."
+evidence = ["src/opencodecs/codecs/_zstd.pyx:decode_unshuffle_windows", "src/opencodecs/_czi_reader.py:CziPyramidReader._decode_windows", "src/opencodecs/_czi_reader.py:_CziLevelIndex.visible", "src/opencodecs/_czi_reader.py:_subtract_rect"]
+acceptance = ["Overlapping and jittered mosaics in shuffled directory order match a canvas painted from the source tiles, whole and cropped, serial and parallel, for gray, RGB, unshuffled ZSTDHDR and ZSTD0 tiles.", "Visible pieces are disjoint and repaint every pixel with its directory-order owner; fully hidden tiles are not decoded.", "A corrupt tile raises CziError from a worker; the native call matches NumPy and refuses windows outside the tile or the destination."]
+implementation_evidence = ["tests/test_czi_region_windows.py"]

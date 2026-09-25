@@ -137,8 +137,11 @@ def test_verify_catches_a_gap_that_is_already_built(restore_manifest):
     _need("tiff")
     s = MANIFEST.read_text()
     block, end = _block_bounds(s, "tiff")
-    seg = s[block:end].replace('feasible = "done"',
-                               'feasible = "gap"\ngaps = ["pyramid"]', 1)
+    # This guard must still inject a contradiction when TIFF has other gaps.
+    seg = "\n".join(line for line in s[block:end].splitlines()
+                    if not line.startswith(("feasible = ", "gaps = ")))
+    seg += '\nfeasible = "gap"\ngaps = ["pyramid"]\n'
+    assert seg != s[block:end]
     MANIFEST.write_text(s[:block] + seg + s[end:])
     r = _run("verify")
     assert r.returncode != 0

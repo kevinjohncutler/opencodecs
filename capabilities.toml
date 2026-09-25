@@ -7,7 +7,7 @@
 # impossible for some formats. Without a record, "we have not done that
 # yet" and "that cannot be done" look identical from outside.
 #
-# The seven booleans are derived from the tree, not asserted here:
+# The ten booleans are derived from the tree, not asserted here:
 # ci/check_capabilities.py re-reads the Codec class flags and greps for
 # the offset-read and PyramidReader call sites, and `verify` fails when
 # this file disagrees with what it finds. Two of them mean something
@@ -22,10 +22,10 @@
 # `feasible` is the field no script can derive, because it is a
 # judgment about the format rather than a fact about the tree:
 #
-#   done   everything this format can support, we support.
+#   done   no remaining gaps in the specifically assessed flag scope.
 #   gap    something the format supports is not built. `gaps` names
 #          which capabilities, and `note` says what it would take.
-#   no     nothing further is available here. `note` says why -- either
+#   no     no further work identified in that flag scope. `note` says why -- either
 #          the format cannot express it (a prefix sum has no seek
 #          point, a single deflate frame has no index) or the upstream
 #          library exposes no entry point for it.
@@ -40,6 +40,20 @@
 # eight before the flag was set, and heif -- which calls the threading
 # API but measured 1.00x -- is deliberately left false.
 
+# Write-side fields describe Codec.writer() with a file destination.
+# streaming_encode: frames are encoded without retaining the raw stack.
+# streaming_output: encoded bytes reach the destination before close().
+# decode_overlap: bounded input prefetch overlaps native decode (opt-in).
+# writer_buffering: unsupported, all (raw stack), frame, or encoded (output).
+# These are independent: an incremental encoder can still retain native output.
+# Native incremental primitives not yet wired into the common interface and
+# shared pipeline work are tracked in pipeline_catalog.toml and explained in
+# docs/shared_pipeline_capabilities.md and docs/pipeline_optimization_plan.md.
+# A done/no verdict is not a claim that buffers, native sessions, callbacks,
+# or storage access have no further optimization opportunities.
+# Existing feasible judgments apply to the named gaps, not unassessed native
+# library features beyond this catalog.
+
 schema = 1
 
 [[codec]]
@@ -51,6 +65,10 @@ parallel_decode = false
 range_reads = false
 pyramid = false
 http = false
+streaming_encode = false
+streaming_output = false
+decode_overlap = false
+writer_buffering = "all"
 feasible = "no"
 note = "libaec is handed one HDF5/szip chunk at a time, so the container has already chosen the unit of streaming and the codec never sees a whole file. CCSDS 121 carries no block index to seek into either."
 
@@ -60,9 +78,13 @@ multi_frame = true
 chunked = true
 streaming_decode = true
 parallel_decode = true
-range_reads = false
+range_reads = true
 pyramid = false
-http = false
+http = true
+streaming_encode = false
+streaming_output = false
+decode_overlap = false
+writer_buffering = "all"
 feasible = "done"
 note = "libavif reads image sequences and progressive layers through avifDecoderNthImage and imageCount, and open() now does: one decoder is held across frames, so the container is parsed once and a frame is a lookup in the sample table that parse built rather than another parse. Verified against imagecodecs, which links its own libavif and both writes the fixture and supplies the expected values -- round-tripping through our own encoder would let a symmetric bug pass. Frames are bit-identical, including out of order, which is the case a forward-only decoder would fail. A still is a one-frame sequence rather than a special case. decode() returns the whole frame stack for a sequence, which is what gif and webp do here and what imagecodecs returns for the same file; it returned the first image at first, which is the mistake reading sequences was meant to fix and which surfaced in webp before it was corrected here. A still is untouched, out= included, and out= is refused for a sequence rather than silently filled with frame 0. Decode already threads: measured 7.6x going from one core to eight."
 
@@ -72,9 +94,13 @@ multi_frame = false
 chunked = true
 streaming_decode = false
 parallel_decode = true
-range_reads = false
+range_reads = true
 pyramid = false
 http = false
+streaming_encode = false
+streaming_output = false
+decode_overlap = false
+writer_buffering = "all"
 feasible = "done"
 note = "both are built. decode_slice() pulls an n-dimensional sub-box, decompressing only the chunks it intersects: measured 8x cheaper for a 0.2% box of a 256x256x64 array. Threads are applied to the array's own context rather than the global setting."
 
@@ -87,6 +113,10 @@ parallel_decode = true
 range_reads = false
 pyramid = false
 http = false
+streaming_encode = false
+streaming_output = false
+decode_overlap = false
+writer_buffering = "unsupported"
 feasible = "done"
 note = "every 4x4 block is independently decodable at a fixed byte offset, which is the whole point of block compression: a sub-rectangle is a block range and the blocks have no dependencies at all. Both are now taken, from the same primitive: a band of block rows is a contiguous slice of the input and decodes as a surface of that height, so there is no offset arithmetic. decode() splits BC1/2/3/7 into bands across threads (4096x4096 BC7: 69.8 ms to 6.2 ms, 11.7x; BC3 6.9x, BC1 5.4x, all bit-identical), and decode_rows() decodes one band alone (64 rows of that BC7 texture: 1.11 ms). The single-channel and float variants, BC4/BC5/BC6H, go through their own decoders and are not covered."
 
@@ -99,6 +129,10 @@ parallel_decode = false
 range_reads = false
 pyramid = false
 http = false
+streaming_encode = false
+streaming_output = false
+decode_overlap = false
+writer_buffering = "all"
 feasible = "no"
 note = "a bit permutation inside a block the container already sized. Streaming and chunking are decisions made by whatever holds the block."
 
@@ -111,6 +145,10 @@ parallel_decode = true
 range_reads = false
 pyramid = false
 http = false
+streaming_encode = false
+streaming_output = false
+decode_overlap = false
+writer_buffering = "all"
 feasible = "done"
 note = "both are built. decode_partial() reads a range of items straight out of a compressed buffer, touching only the blocks it covers: 1/64th of a 64 MB chunk costs 64x less than expanding the whole thing. Threading goes through a decompression context, never the process-global blosc2_set_nthreads, and gives 5.9x on 64 MB -- but 0.42x on 1 MB, so it stays opt-in rather than automatic. Item width is read from the chunk header, not taken from the caller."
 
@@ -123,6 +161,10 @@ parallel_decode = false
 range_reads = false
 pyramid = false
 http = false
+streaming_encode = false
+streaming_output = false
+decode_overlap = false
+writer_buffering = "all"
 feasible = "no"
 note = "an uncompressed BMP is a header plus fixed-stride rows, so rows can be produced as bytes arrive and row N is computable arithmetic. The RLE4 and RLE8 variants are sequential and would not get this. streaming_decode is not a gap here and has been dropped from the list: the flag means iter_frames yields without materializing the whole thing, and this format has no frame axis to yield along. Every codec that sets it is multi_frame, 17 of 17, and the checker now enforces that. The incremental API described above is real and is a different capability from the one this column measures."
 
@@ -135,6 +177,10 @@ parallel_decode = false
 range_reads = false
 pyramid = false
 http = false
+streaming_encode = false
+streaming_output = false
+decode_overlap = false
+writer_buffering = "all"
 feasible = "no"
 note = "BrotliDecoderDecompressStream decodes incrementally. A brotli stream carries no block index, so seeking into one is unavailable at any amount of effort. streaming_decode is not a gap here and has been dropped from the list: the flag means iter_frames yields without materializing the whole thing, and this format has no frame axis to yield along. Every codec that sets it is multi_frame, 17 of 17, and the checker now enforces that. The incremental API described above is real and is a different capability from the one this column measures."
 
@@ -147,8 +193,12 @@ parallel_decode = false
 range_reads = false
 pyramid = false
 http = false
+streaming_encode = false
+streaming_output = false
+decode_overlap = false
+writer_buffering = "all"
 feasible = "no"
-note = "a whole-file JPEG recompression: the decoder rebuilds the original JPEG in a single pass and upstream exposes no incremental entry point."
+note = "The current binding consumes a complete recompressed JPEG input, but native EncodeBrunsli and DecodeBrunsli already expose output callbacks. The wrapper accumulates those bytes before returning them. A bounded destination sink is a concrete opportunity, separate from incremental input or pixel decode. See pipeline_catalog.toml output_sinks; this no verdict only describes the older assessed flag scope."
 
 [[codec]]
 name = "byteshuffle"
@@ -159,6 +209,10 @@ parallel_decode = false
 range_reads = false
 pyramid = false
 http = false
+streaming_encode = false
+streaming_output = false
+decode_overlap = false
+writer_buffering = "all"
 feasible = "no"
 note = "a byte permutation inside a block the container already sized; the filter never sees a whole file."
 
@@ -171,6 +225,10 @@ parallel_decode = false
 range_reads = false
 pyramid = false
 http = false
+streaming_encode = false
+streaming_output = false
+decode_overlap = false
+writer_buffering = "all"
 feasible = "no"
 note = "BZ2_bzDecompress is incremental. bzip2's 900k blocks are independently decodable in principle, which is how bzip2recover works, but finding their boundaries means scanning the whole stream, so random access is not worth claiming. streaming_decode is not a gap here and has been dropped from the list: the flag means iter_frames yields without materializing the whole thing, and this format has no frame axis to yield along. Every codec that sets it is multi_frame, 17 of 17, and the checker now enforces that. The incremental API described above is real and is a different capability from the one this column measures."
 
@@ -183,6 +241,10 @@ parallel_decode = false
 range_reads = false
 pyramid = false
 http = false
+streaming_encode = false
+streaming_output = false
+decode_overlap = false
+writer_buffering = "unsupported"
 feasible = "no"
 note = "a color transform over pixels already in memory. There is no bitstream, so none of these dimensions are its to have."
 
@@ -195,6 +257,10 @@ parallel_decode = true
 range_reads = true
 pyramid = true
 http = true
+streaming_encode = true
+streaming_output = true
+decode_overlap = false
+writer_buffering = "frame"
 feasible = "done"
 note = "streaming, subblock random access, range reads, HTTP, multi-scene stacks and the pyramid CZI natively stores are all wired, and subblocks decode in parallel. Nothing the format offers is unbuilt."
 
@@ -207,6 +273,10 @@ parallel_decode = false
 range_reads = false
 pyramid = false
 http = false
+streaming_encode = false
+streaming_output = false
+decode_overlap = false
+writer_buffering = "all"
 feasible = "no"
 note = "libdeflate is one-shot by design and ships no streaming API, so this means adding a zlib inflate path beside it rather than setting a flag. A raw deflate stream has no index, so seeking is out regardless. streaming_decode is not a gap here and has been dropped from the list: the flag means iter_frames yields without materializing the whole thing, and this format has no frame axis to yield along. Every codec that sets it is multi_frame, 17 of 17, and the checker now enforces that. The incremental API described above is real and is a different capability from the one this column measures."
 
@@ -219,6 +289,10 @@ parallel_decode = false
 range_reads = false
 pyramid = false
 http = false
+streaming_encode = false
+streaming_output = false
+decode_overlap = false
+writer_buffering = "all"
 feasible = "no"
 note = "a prefix sum: element N depends on every element before it, so there is no boundary inside one buffer to seek to. The container picks the block, and the decode is already a nogil pass over it."
 
@@ -231,6 +305,10 @@ parallel_decode = true
 range_reads = true
 pyramid = true
 http = true
+streaming_encode = false
+streaming_output = false
+decode_overlap = false
+writer_buffering = "unsupported"
 feasible = "done"
 note = "chunked was recorded as missing and was there: the Basic Offset Table gives per-frame offsets, the reader uses them, and the codec simply never set the flag, inheriting False from the base class. Measured on a 60-frame 31.5 MB file, r[59] takes 0.07 ms against 4.34 ms for read(), and over HTTP it moves 1.9% of the file. Frames decode independently, and asarray() now threads them: 48 encapsulated JPEG 2000 frames go 121.6 ms serial to 66.1 ms on 8. The 1.86x rather than 8x is because openjpeg runs its own T1 threads at numthreads=1, so the baseline is not serial; with openjpeg pinned to one thread the frame fan-out measures 7.42x. Getting any of it at all needed a fix in jpeg2k rather than in dicom -- opj_decode held the GIL, so the first honest measurement of the frame pool was 0.94x. VL Whole Slide Microscopy DICOM is genuinely pyramidal, and it was a reader of its own rather than a missing switch: a slide is a SERIES of instances describing the same physical area at different pixel extents, sharing a SeriesInstanceUID and an Imaged Volume and distinguished by Total Pixel Matrix Columns / Rows. Nothing inside any one instance says which level it is, so DicomWsiPyramid takes a directory or a list rather than a path, and orders levels by extent because the standard does not require the files to be named or ordered usefully. It refuses a directory holding two series rather than building a pyramid out of two slides. read_region crops the chosen level rather than fetching intersecting tiles: a WSI instance IS tiled, but which tile covers which part of the slide lives in the Per-Frame Functional Groups, which this does not parse -- the saving is in level selection, which is real. pydicom writes the fixtures, so the tags are spelled the way the reference implementation spells them. One fix fell out of it: the Imaged Volume tags are FL, and the reader had only a decimal-string float helper, so they read back as None."
 
@@ -243,6 +321,10 @@ parallel_decode = false
 range_reads = false
 pyramid = false
 http = false
+streaming_encode = false
+streaming_output = false
+decode_overlap = false
+writer_buffering = "all"
 feasible = "no"
 note = "the 64-byte header does give per-segment offsets, but the segments are byte planes of one image (high byte, then low byte), not independent regions: every pixel needs all of them. The offset table therefore buys no random access."
 
@@ -255,6 +337,10 @@ parallel_decode = false
 range_reads = true
 pyramid = false
 http = true
+streaming_encode = false
+streaming_output = false
+decode_overlap = false
+writer_buffering = "unsupported"
 feasible = "done"
 note = "DM3 and DM4 tags carry absolute offsets to uncompressed image data, so a plane is an offset and a length, and the reader now takes that literally: the tag walk goes through a 128 KB sliding window and image data is read at its own offset. Against a range-serving test server on an 8.39 MB dm4, opening and reading the shape moved 0.197 MB in 3 requests, and the full read moved 8.585 MB. The corpus fixtures are 32 KB and 50 KB, both under the window, so the byte-savings tests build their own file."
 
@@ -267,6 +353,10 @@ parallel_decode = true
 range_reads = true
 pyramid = false
 http = true
+streaming_encode = false
+streaming_output = false
+decode_overlap = false
+writer_buffering = "unsupported"
 feasible = "done"
 note = "EER frames are independent electron-event bitstreams, and both gaps are now closed. chunked was recorded as done, then corrected to a gap, and is now real. Indexing used to go through the base Reader's default __getitem__, which walks iter_frames(), so frame 720 of 721 cost 1200 ms against 1.62 ms for the same frame through frame(); EerReader indexes at the IFD offset now and measures 1.70 ms. A flag that says \"indexing is offered\" is not the same as one that says \"indexing is cheap\", and this codec had the second set from the first. sum() accumulates across threads with one accumulator per worker, reduced at the end: 120 frames of 4096x4096 go 1123.7 ms to 214.0 ms on 8, bit-identical. There are no resolution levels, so there is no pyramid."
 
@@ -279,6 +369,10 @@ parallel_decode = false
 range_reads = true
 pyramid = false
 http = true
+streaming_encode = false
+streaming_output = false
+decode_overlap = false
+writer_buffering = "unsupported"
 feasible = "done"
 note = "all four arrived at once, and by wiring rather than by new parsing: EMD is HDF5, and every HDF5-backed reader here now reaches h5py through the shared h5_source, which turns an http(s) URL into a range-reading file-like. Reading one dataset out of a 16.8 MB remote file moved 0.09 MB in 10 requests, byte-identical to the local read. chunked and streaming_decode were never missing so much as unrecorded: the reader has advertised is_chunked all along, and pulling the small dataset from a 134 MB file takes 0.35 ms against 15.9 ms for the big one, so a frame costs its own size."
 
@@ -291,6 +385,10 @@ parallel_decode = true
 range_reads = true
 pyramid = false
 http = true
+streaming_encode = false
+streaming_output = false
+decode_overlap = false
+writer_buffering = "unsupported"
 feasible = "done"
 note = "chunked was recorded as missing and was there, for the same reason as dicom: the flag was never set and inherited False. An HDU is a seek -- headers are walked, only the requested HDU's data is read -- and on a 24-HDU 12.7 MB file the last one moves 5.2% of the file over HTTP. Tiles within a compressed HDU decode independently and now decode across threads: on 4096x4096 with 256x256 tiles, HCOMPRESS_1 goes 603.3 ms to 86.7, RICE_1 106.5 to 19.2, GZIP_1 86.5 to 20.6, GZIP_2 89.8 to 21.9, PLIO_1 46.2 to 18.5, all bit-identical to astropy. One of the five was not safe to thread: cfitsio's fits_hdecompress keeps its bit-reader position in three file-scope variables, so overlapping HCOMPRESS_1 tiles corrupted each other and returned status=414. The vendored copy marks those thread-local. FITS has no resolution levels, so there is no pyramid."
 
@@ -303,6 +401,10 @@ parallel_decode = false
 range_reads = false
 pyramid = false
 http = false
+streaming_encode = false
+streaming_output = false
+decode_overlap = false
+writer_buffering = "all"
 feasible = "no"
 note = "TIFF's floating-point predictor: a byte shuffle plus a delta across one scanline. The scanline is the unit, and tiff chose it."
 
@@ -315,8 +417,12 @@ parallel_decode = false
 range_reads = false
 pyramid = false
 http = false
-feasible = "no"
-note = "frames are sequential LZW carrying disposal state, so frame N really does require the frames before it and chunked is unavailable at any effort. A GIF can now be opened from a URL -- read_src fetches one, so about thirty codecs that could not open a URL at all now can -- but that is a whole-file GET and stays recorded as such. Ranges would move exactly the same bytes for a format where the last frame depends on every frame before it, and claiming http here would put a tick against a saving that does not exist. This follows the convention _pyramid_bytes already set for the whole-codestream decoders."
+streaming_encode = true
+streaming_output = true
+decode_overlap = false
+writer_buffering = "frame"
+feasible = "done"
+note = "Native frame encoding now drains checked destination writes before close, retaining only bounded encoded output. Independent decoded frames and exact encoded hashes match the baseline, with measured lower traced and process memory. Frame disposal dependencies remain sequential; eager URL reads still download the complete compressed stream."
 
 [[codec]]
 name = "gzip"
@@ -327,6 +433,10 @@ parallel_decode = false
 range_reads = false
 pyramid = false
 http = false
+streaming_encode = false
+streaming_output = false
+decode_overlap = false
+writer_buffering = "all"
 feasible = "no"
 note = "gzip is the streaming case by construction, which is what gzip(1) does; the binding is one-shot. Random access needs an index built by a full pass, so it is not part of the format. streaming_decode is not a gap here and has been dropped from the list: the flag means iter_frames yields without materializing the whole thing, and this format has no frame axis to yield along. Every codec that sets it is multi_frame, 17 of 17, and the checker now enforces that. The incremental API described above is real and is a different capability from the one this column measures."
 
@@ -339,8 +449,12 @@ parallel_decode = true
 range_reads = true
 pyramid = false
 http = true
+streaming_encode = false
+streaming_output = false
+decode_overlap = false
+writer_buffering = "unsupported"
 feasible = "done"
-note = "chunks are independent and the B-tree already gives their offsets, so multi-core chunk decode needed no format work -- only for read() to call the read_parallel path that was already here and unreachable, so every read went through h5py one chunk at a time under libhdf5's process-wide lock. Measured on 64 gzip chunks of a 33.6 MB dataset: 134.0 ms to 13.4 ms, 10.0x. The path declines on its own for an unchunked or uncompressed dataset (both measured 1.00x, correctly) and for filters it has no user-space decoder for. HDF5 itself has no pyramid; that is a convention layered on top, and belongs to the layer that defines it."
+note = "Independent raw chunks and parallel gzip decode are implemented. The earlier 10.0x measurement covered a gzip-only dataset, not arbitrary HDF5 filters. The September cross-codec audit reproduced incorrect read_parallel pixels for gzip plus shuffle: the fast path ignores filter masks and does not reverse the full active filter chain. Correct or fall back before extending it. Explicit prefetch_hdf5_chunks/read_hdf5_slice helpers cache remote chunks; ordinary selections do not automatically use that prefetch. Shared bounded overlap and HDF5/EMD/Imaris integration are tracked in pipeline_catalog.toml."
 
 [[codec]]
 name = "heif"
@@ -348,9 +462,13 @@ multi_frame = true
 chunked = true
 streaming_decode = true
 parallel_decode = false
-range_reads = false
+range_reads = true
 pyramid = false
-http = false
+http = true
+streaming_encode = false
+streaming_output = false
+decode_overlap = false
+writer_buffering = "all"
 feasible = "done"
 note = "A HEIF holds a SET of top-level images -- a burst, a Live Photo's stills, a depth-plus-color capture -- and we decoded only the primary, dropping the rest with nothing said. decode(index=) and open() now address them by item id out of the container's own list, so image N costs the metadata parse and image N. Getting a fixture was the work: nothing available writes a multi-image HEIF (imagecodecs ships no heif_encode and our encoder takes one image), so the test drives libheif itself through ctypes, which also keeps the reference outside the code under test. HEIF grid images, a separate feature where one top-level image is assembled from tiles with their own item offsets, are still read whole. Threading is already requested via heif_context_set_max_decoding_threads, but an untiled image measures 1.00x from one core to eight, so parallel_decode is false on purpose."
 
@@ -363,6 +481,10 @@ parallel_decode = false
 range_reads = false
 pyramid = true
 http = false
+streaming_encode = false
+streaming_output = false
+decode_overlap = false
+writer_buffering = "all"
 feasible = "done"
 note = "reduced-resolution decode is built through OpenJPH's restrict_input_resolution, applied between read_headers and create so the fine subbands are never read: a 256x256 overview of a 2048x2048 codestream takes 1.4 ms against 97 ms full, about 70x. Htj2kPyramidReader exposes the levels, and the codestream's own num_decompositions bounds them. Nothing further is available to call: openjph 0.27's public headers expose neither a threading API nor a per-tile decode."
 
@@ -372,9 +494,13 @@ multi_frame = false
 chunked = false
 streaming_decode = false
 parallel_decode = false
-range_reads = false
+range_reads = true
 pyramid = true
-http = false
+http = true
+streaming_encode = false
+streaming_output = false
+decode_overlap = false
+writer_buffering = "all"
 feasible = "no"
 note = "DCT-scaled decode is built: scale=1/2, 1/4 and 1/8 come straight out of a smaller inverse DCT, and JpegPyramidReader exposes them as levels. Be clear about what that buys, though -- the Huffman pass still reads every coefficient, so a 1/8 decode measured 1.3x faster than full on noisy content and 2.0x on photo-like; the win is a 192 KB output instead of 12 MB, not fast JPEG. jpeg_read_scanlines would still add row-at-a-time streaming. Restart markers could drive parallel strips, but libjpeg-turbo exposes no entry point. streaming_decode is not a gap here and has been dropped from the list: the flag means iter_frames yields without materializing the whole thing, and this format has no frame axis to yield along. Every codec that sets it is multi_frame, 17 of 17, and the checker now enforces that. The incremental API described above is real and is a different capability from the one this column measures."
 
@@ -384,11 +510,15 @@ multi_frame = false
 chunked = true
 streaming_decode = false
 parallel_decode = true
-range_reads = false
+range_reads = true
 pyramid = true
-http = false
+http = true
+streaming_encode = false
+streaming_output = false
+decode_overlap = false
+writer_buffering = "all"
 feasible = "done"
-note = "everything JPEG 2000 offers here is built. Reduced-resolution decode skips the finest subbands before they are entropy-decoded -- a 256x256 overview of a 2048x2048 codestream takes 2.3 ms against 211 ms for a full decode. decode_region takes a window through opj_set_decode_area (a 128x128 window of a 1024x1024 image is 13x cheaper than the whole), and decode_tile takes one tile of a tiled codestream, also 13x. The two compose: region coordinates stay on the full-resolution grid at every reduce level, so a caller picks a window once and changes only the zoom. Threading was already wired at 6.6x. Note neither this encoder nor imagecodecs writes TILED codestreams, so the tile path is tested against one made by openjpeg's own CLI and skipped where that is absent."
+note = "Reduced-resolution, region, tile, and internally threaded decode are implemented. Existing measurements cover reduced pixel decoding, not selective storage bytes: current native source callbacks read from an already-loaded memory buffer. Tile tests use independently generated tiled codestreams. Native out accepts a destination but copies/converts native component planes into it. Common output forwarding and storage-backed callbacks remain work in pipeline_catalog.toml; done describes the assessed runtime flags, not every possible native feature."
 
 [[codec]]
 name = "jpegls"
@@ -399,6 +529,10 @@ parallel_decode = false
 range_reads = false
 pyramid = false
 http = false
+streaming_encode = false
+streaming_output = false
+decode_overlap = false
+writer_buffering = "all"
 feasible = "no"
 note = "CharLS exposes only charls_jpegls_decoder_decode_to_buffer, a whole-image call: there is no scanline or region entry point to build streaming on, and JPEG-LS has no tiles."
 
@@ -411,8 +545,12 @@ parallel_decode = true
 range_reads = false
 pyramid = false
 http = false
-feasible = "no"
-note = "the pyramid this entry used to promise does not exist, and the note that promised it was wrong. JXL progressive DC is real and the decoder here already drives it: decode(downsample=8) subscribes to FRAME_PROGRESSION, flushes at the DC pass and skips the rest. Measured on 2048x2048 it is 67.8 ms against 43.9 ms to decode fully and slice -- slower, because libjxl reshapes its pipeline to support flushing -- and the result is a slightly WORSE thumbnail (6.15 against 5.28 mean absolute error versus a box downscale). Truncating the stream shows why the preview is not early either: nothing decodes until 50% of the bytes are present, with or without the encoder's progressive flag, and wiring PROGRESSIVE_DC into the encoder grew streams 31% without moving any of those numbers (tried, measured, reverted). A pyramid whose levels cost more than the whole image and look worse is not a capability. downsample= stays, correct and documented; ds=2 and ds=4 already fall back to decode-and-slice for the same reason."
+streaming_encode = true
+streaming_output = true
+decode_overlap = true
+writer_buffering = "frame"
+feasible = "done"
+note = "File-backed writers drain completed frame output before close without changing native threaded encoding; independent output hashes and throughput controls pass. Raw input retention is one deferred final frame. Existing bounded read/decode overlap remains opt-in. Progressive reduced-resolution output is distinct from selective storage and can be slower than full decode followed by slicing; no pyramid or range capability is implied."
 
 [[codec]]
 name = "lerc"
@@ -423,6 +561,10 @@ parallel_decode = false
 range_reads = false
 pyramid = false
 http = false
+streaming_encode = false
+streaming_output = false
+decode_overlap = false
+writer_buffering = "all"
 feasible = "no"
 note = "LERC's blocks are entropy-coded back to back with no offset table, and Lerc_c_api decodes a whole blob. Multiple bands are already handled inside one decode call."
 
@@ -435,6 +577,10 @@ parallel_decode = false
 range_reads = true
 pyramid = false
 http = true
+streaming_encode = false
+streaming_output = false
+decode_overlap = false
+writer_buffering = "unsupported"
 feasible = "done"
 note = "LIF's XML header gives each plane's absolute offset and length, so a plane is a seek, and array_for_image was already doing exactly that. What was missing was a __getitem__ to reach it, so indexing fell through to Reader's default, which walks iter_frames(). Both readers index directly now, and neither moves the reader's current image the way image() does -- iterating used to leave it pointing at the last one. The only LIF in the corpus holds a single image, so the guard is structural rather than a timing measurement. The format stores no resolution levels, so there is no pyramid to expose."
 
@@ -447,6 +593,10 @@ parallel_decode = false
 range_reads = false
 pyramid = false
 http = false
+streaming_encode = false
+streaming_output = false
+decode_overlap = false
+writer_buffering = "all"
 feasible = "no"
 note = "LZ4F has a streaming decompressor. Per-block random access would need LZ4F_blockIndependent plus an index the frame format has nowhere to store, so it is unavailable without inventing a sidecar. streaming_decode is not a gap here and has been dropped from the list: the flag means iter_frames yields without materializing the whole thing, and this format has no frame axis to yield along. Every codec that sets it is multi_frame, 17 of 17, and the checker now enforces that. The incremental API described above is real and is a different capability from the one this column measures."
 
@@ -459,6 +609,10 @@ parallel_decode = false
 range_reads = false
 pyramid = false
 http = false
+streaming_encode = false
+streaming_output = false
+decode_overlap = false
+writer_buffering = "all"
 feasible = "no"
 note = ".xz carries a block index in its footer and liblzma exposes it through lzma_index, so seeking to a block is genuinely in the format. Raw LZMA1 streams have no index and stay whole-file. Recorded as a no rather than a gap, with what it would actually take, because two of the three obstacles are not effort. It needs a liblzma binding: the stdlib lzma module exposes none of lzma_index_buffer_decode, lzma_index_iter_locate or lzma_block_decoder, so this is a new C extension. It needs xz added to bench/build_codec_libs.sh for three platforms, since the script does not build it today and lzma.h is not guaranteed present. And there is no fixture: the stdlib writes single-block .xz, multi-block needs lzma_stream_encoder_mt which it does not expose, and there is no xz CLI here, so the capability could be written and not tested. Nothing in this package produces a multi-block .xz either -- our own encoder writes one block -- so the only caller would be someone bringing their own file. streaming_decode is not a gap here and has been dropped from the list: the flag means iter_frames yields without materializing the whole thing, and this format has no frame axis to yield along. Every codec that sets it is multi_frame, 17 of 17, and the checker now enforces that. The incremental API described above is real and is a different capability from the one this column measures."
 
@@ -471,6 +625,10 @@ parallel_decode = false
 range_reads = false
 pyramid = true
 http = false
+streaming_encode = false
+streaming_output = false
+decode_overlap = false
+writer_buffering = "all"
 feasible = "no"
 note = "same DCT scaling as jpeg, reached through TurboJPEG v2, which infers the factor from the destination size instead of taking it directly; the outputs are byte-identical to the jpeg codec at every supported ratio, and a test pins that. Scanline streaming is still unbuilt. streaming_decode is not a gap here and has been dropped from the list: the flag means iter_frames yields without materializing the whole thing, and this format has no frame axis to yield along. Every codec that sets it is multi_frame, 17 of 17, and the checker now enforces that. The incremental API described above is real and is a different capability from the one this column measures."
 
@@ -483,8 +641,12 @@ parallel_decode = false
 range_reads = true
 pyramid = false
 http = true
+streaming_encode = false
+streaming_output = false
+decode_overlap = false
+writer_buffering = "all"
 feasible = "done"
-note = "MRC is a 1024-byte header followed by a contiguous volume, so plane N is a fixed offset and a fixed length -- and plane(i) has read it that way all along. The chunked flag simply disagreed with the reader beside it, which has advertised is_chunked since it was written. Measured: one plane is 69x cheaper than read() on a 34 MB volume, and over HTTP it moves 1.8% of the file in 2 requests. Decode is a memcpy, so threading it would buy nothing."
+note = "MRC is a 1024-byte header followed by a contiguous volume, so plane N is a fixed offset and a fixed length -- and plane(i) has read it that way all along. The chunked flag simply disagreed with the reader beside it, which has advertised is_chunked since it was written. Measured: one plane is 69x cheaper than read() on a 34 MB volume, and over HTTP it moves 1.8% of the file in 2 requests. Decode is a memcpy, so threading it would buy nothing. The September audit reproduced an encode(dest=...) helper argument-order error. Fix that contract before adding direct destination serialization; both are tracked in pipeline_catalog.toml."
 
 [[codec]]
 name = "nd2"
@@ -495,8 +657,12 @@ parallel_decode = false
 range_reads = true
 pyramid = false
 http = true
+streaming_encode = false
+streaming_output = false
+decode_overlap = false
+writer_buffering = "unsupported"
 feasible = "no"
-note = "chunks are independent in principle, and the measurement says there is nothing here to divide. The reader delegates to the nd2 package, and the only ND2 in the corpus is uncompressed: 13 frames of 600x800 uint16 read in 1.3 ms, which is a memcpy at memory bandwidth, and per-frame threading measured 0.99x on 8. ND2 does have compressed variants where this would pay, and nd2 cannot write one, so there is no fixture to justify the claim on. Marked no rather than gap: the blocker is a sample, not effort. ND2 stores no resolution levels."
+note = "Independent indexed frame reads exist in Nd2NativeReader. The previous uncompressed corpus measurement found no benefit from per-frame threads, so parallel_decode remains false. That does not rule out reducing allocation: native read currently retains decoded frames before stacking, a direct-placement candidate tracked in pipeline_catalog.toml. Compressed variants need representative fixtures before promising threaded gains. ND2 stores no resolution levels."
 
 [[codec]]
 name = "nifti"
@@ -507,8 +673,12 @@ parallel_decode = false
 range_reads = true
 pyramid = false
 http = true
+streaming_encode = false
+streaming_output = false
+decode_overlap = false
+writer_buffering = "all"
 feasible = "done"
-note = "all four, for the uncompressed case, which is the case where they mean anything. A plain .nii is a 348- or 540-byte header and then a contiguous volume, so slice_at() reads one slice at its own offset: 1.6% of the file over a range server. The contiguous slice is along the LAST axis, not the first, because NIfTI stores the first dimension fastest and the shape it reports is Fortran-ordered -- the opposite of MRC's convention. A .nii.gz is still read whole and inflated and always will be, since a gzip member has no random access; the reader reports which path it took through is_memory_resident rather than leaving a caller to guess why a read was slow."
+note = "Uncompressed NIfTI exposes selective slices at known offsets. Its contiguous slice is along the last axis because the first stored dimension varies fastest. The current compressed .nii.gz path reads and inflates the whole stream; incremental decoding is a separate opportunity, and arbitrary seeking would require indexing or checkpoints. The September audit also reproduced a destination argument-order error in encode(dest=...), tracked as a correctness prerequisite before direct output in pipeline_catalog.toml."
 
 [[codec]]
 name = "none"
@@ -519,6 +689,10 @@ parallel_decode = false
 range_reads = false
 pyramid = false
 http = false
+streaming_encode = false
+streaming_output = false
+decode_overlap = false
+writer_buffering = "all"
 feasible = "no"
 note = "the identity codec, which exists so a container can say 'stored'. The container's own offsets already give random access; there is nothing here to make faster."
 
@@ -531,6 +705,10 @@ parallel_decode = false
 range_reads = true
 pyramid = false
 http = true
+streaming_encode = false
+streaming_output = false
+decode_overlap = false
+writer_buffering = "unsupported"
 feasible = "done"
 note = "raw and detached NRRD put the data contiguously at a known offset, so slices are seeks, and the reader already reads at offsets over HTTP through core.io.coerce_data_source (open_read_at, which this note used to name, was folded into it and deleted). Both gaps are closed: _frame() reads slice N at its own offset for the raw encoding, so iterating no longer materializes the volume first and slice N does not cost slices 0..N-1. Over the range-serving test server one slice of a 2 MB volume moves one slice. multi_frame said False while iterating really did yield frames, and is now True to match MRC and NIfTI, which are the same shape of format. The gzip and bzip2 encodings are single streams with no byte position for slice N, so they fall back to reading the volume and slicing it: the same answer at the same cost as before."
 
@@ -543,6 +721,10 @@ parallel_decode = false
 range_reads = true
 pyramid = false
 http = true
+streaming_encode = false
+streaming_output = false
+decode_overlap = false
+writer_buffering = "all"
 feasible = "done"
 note = "all four, and none of them needed new parsing. A .npy is a short ASCII header and then the raw buffer in C order, so a plane along axis 0 is an offset and a length -- NpyFile reads it that way through the shared DataSource, which is what gives range reads and HTTP for free. Measured on a 34 MB array served by range: opening it moves 65 KB and reading one plane moves exactly that plane, 1.6% of the file. Fortran-ordered files are read whole and sliced on purpose: in column-major layout a leading-axis plane is strided across the entire buffer, so a per-plane read would be a read of everything with extra steps, and plane() refuses rather than pretending."
 
@@ -551,10 +733,14 @@ name = "oib"
 multi_frame = true
 chunked = true
 streaming_decode = true
-parallel_decode = false
+parallel_decode = true
 range_reads = true
 pyramid = false
 http = true
+streaming_encode = false
+streaming_output = false
+decode_overlap = false
+writer_buffering = "unsupported"
 feasible = "done"
 note = "OIB is an OLE compound file whose directory gives every stream's sector chain, so a plane is addressable without reading the whole archive, and _ole2 already walked those chains. Two corrections. range_reads was recorded as missing and was there: the offset arithmetic lives in _ole2.py, which the manifest attributes by filename and so could not see, and opening a 26 MB OIB over the range-serving test server moves 0.168 MB in 12 requests. chunked was a real gap and is now closed: the reader assembled the whole experiment and sliced it, and read_index() reads only the streams behind one index. Axis 0 is not necessarily one frame -- FluoView order is (T?, C?, Z?, H, W) with singletons collapsed, so on a 2-channel 6-slice file index 0 is six streams -- and it moves 12.8 MB against 25.4 MB for the whole file. The flag describes the native reader, which open() returns by default; the oiffile delegate, for the OIF directory variant, has no per-frame entry point and says so itself."
 
@@ -567,6 +753,10 @@ parallel_decode = false
 range_reads = true
 pyramid = false
 http = true
+streaming_encode = false
+streaming_output = false
+decode_overlap = false
+writer_buffering = "unsupported"
 feasible = "done"
 note = "HTTP arrived by unification rather than by being built for OIR: the reader coerces its source through core.io.coerce_data_source, which turns an http(s) URL into an HTTPDataSource, and OIR already read at offsets. Verified against a range-serving test server -- opening and fully reading a 25.96 MB file moved 16.86 MB in 198 range requests, byte-identical to the local read. Streaming decode was recorded as missing and was there, the fourth capability in this manifest to be: iter_frames() decodes one plane at a time, reading only that plane's three payload ranges. Measured on a 32-plane 512x512 z-stack, iterating peaks at 1.29 MB against 17.06 MB for read(), for a 16.78 MB result. Nothing in the suite could have caught the flag being wrong either way, because it is a memory property and every correctness test passes regardless; there is now a test that measures it."
 
@@ -579,6 +769,10 @@ parallel_decode = false
 range_reads = false
 pyramid = false
 http = false
+streaming_encode = false
+streaming_output = false
+decode_overlap = false
+writer_buffering = "all"
 feasible = "no"
 note = "unpacks sub-byte samples out of a buffer whose length the container fixed. The decode is one vectorized pass; there is no file here to stream."
 
@@ -591,6 +785,10 @@ parallel_decode = false
 range_reads = false
 pyramid = false
 http = false
+streaming_encode = false
+streaming_output = false
+decode_overlap = false
+writer_buffering = "all"
 feasible = "no"
 note = "pcodec's wrapped format does have chunks, but the C surface it ships and we bind is pco_standalone_simple_compress_into / _decompress_into, which is whole-buffer. Per-chunk decode would mean binding a Rust API that has no C entry point today."
 
@@ -603,6 +801,10 @@ parallel_decode = false
 range_reads = false
 pyramid = false
 http = false
+streaming_encode = false
+streaming_output = false
+decode_overlap = false
+writer_buffering = "all"
 feasible = "no"
 note = "libspng has SPNG_DECODE_PROGRESSIVE with spng_decode_row and a spng_set_png_stream read callback, so rows can come out as bytes arrive. PNG has no tiles, so there is nothing to seek to, and Adam7 interlace gives seven passes rather than a resolution pyramid. streaming_decode is not a gap here and has been dropped from the list: the flag means iter_frames yields without materializing the whole thing, and this format has no frame axis to yield along. Every codec that sets it is multi_frame, 17 of 17, and the checker now enforces that. The incremental API described above is real and is a different capability from the one this column measures."
 
@@ -615,6 +817,10 @@ parallel_decode = false
 range_reads = false
 pyramid = false
 http = false
+streaming_encode = false
+streaming_output = false
+decode_overlap = false
+writer_buffering = "all"
 feasible = "no"
 note = "decoding position N needs every byte before it: QOI carries a running 64-entry hash table across the whole stream. Row-wise output could be bolted onto the vendored decoder, but the format targets images small enough that the whole buffer is already in memory."
 
@@ -627,6 +833,10 @@ parallel_decode = false
 range_reads = false
 pyramid = false
 http = false
+streaming_encode = false
+streaming_output = false
+decode_overlap = false
+writer_buffering = "all"
 feasible = "no"
 note = "a lossy rounding filter applied before a real compressor. It has no bitstream of its own."
 
@@ -639,6 +849,10 @@ parallel_decode = false
 range_reads = false
 pyramid = false
 http = false
+streaming_encode = false
+streaming_output = false
+decode_overlap = false
+writer_buffering = "all"
 feasible = "no"
 note = "Rice compression of a single FITS tile. The tiling and the per-tile offsets live in the FITS file, and the fits reader is where that work belongs."
 
@@ -651,6 +865,10 @@ parallel_decode = false
 range_reads = false
 pyramid = false
 http = false
+streaming_encode = false
+streaming_output = false
+decode_overlap = false
+writer_buffering = "all"
 feasible = "no"
 note = "Radiance .hdr is RLE per scanline, so rows can be produced as they arrive. There is no scanline offset table, so they cannot be seeked to. streaming_decode is not a gap here and has been dropped from the list: the flag means iter_frames yields without materializing the whole thing, and this format has no frame axis to yield along. Every codec that sets it is multi_frame, 17 of 17, and the checker now enforces that. The incremental API described above is real and is a different capability from the one this column measures."
 
@@ -663,6 +881,10 @@ parallel_decode = false
 range_reads = false
 pyramid = false
 http = false
+streaming_encode = false
+streaming_output = false
+decode_overlap = false
+writer_buffering = "all"
 feasible = "no"
 note = "the framing format is a sequence of self-contained chunks and decodes incrementally; the raw format we read and write is one-shot and has no index to seek with. streaming_decode is not a gap here and has been dropped from the list: the flag means iter_frames yields without materializing the whole thing, and this format has no frame axis to yield along. Every codec that sets it is multi_frame, 17 of 17, and the checker now enforces that. The incremental API described above is real and is a different capability from the one this column measures."
 
@@ -675,6 +897,10 @@ parallel_decode = false
 range_reads = false
 pyramid = false
 http = false
+streaming_encode = false
+streaming_output = false
+decode_overlap = false
+writer_buffering = "all"
 feasible = "no"
 note = "SPERR's bitstream is embedded, and SPERR3D_Stream_Tools exposes progressive_read and progressive_truncate: a prefix of the file decodes to a lower-quality version of the whole volume. That is quality progression rather than a tile index, so it buys early preview, not random access. streaming_decode is not a gap here and has been dropped from the list: the flag means iter_frames yields without materializing the whole thing, and this format has no frame axis to yield along. Every codec that sets it is multi_frame, 17 of 17, and the checker now enforces that. The incremental API described above is real and is a different capability from the one this column measures."
 
@@ -687,6 +913,10 @@ parallel_decode = false
 range_reads = false
 pyramid = false
 http = false
+streaming_encode = false
+streaming_output = false
+decode_overlap = false
+writer_buffering = "all"
 feasible = "no"
 note = "SZ3 entropy-codes the whole array as one unit: there are no independently decodable blocks in the bitstream, and upstream exposes no incremental entry point."
 
@@ -699,8 +929,12 @@ parallel_decode = true
 range_reads = true
 pyramid = true
 http = true
+streaming_encode = true
+streaming_output = true
+decode_overlap = true
+writer_buffering = "frame"
 feasible = "done"
-note = "every capability the format offers is built. Tile and strip decode spreads across threads, and the worker count is sized by how much output there is rather than by a constant -- a fixed cap is wrong at both ends, losing to 8 threads on a 9 MB image and to 16 on a 75 MB one. Measured against single-threaded, 512px tiles: 6144x6144 uint16 lzw 12.2x, deflate 11.6x, zstd 3.2x. Uncompressed segments stay serial whatever is asked for, because their decode is a memcpy and threading it measured slower. Local files are mapped rather than read segment by segment, and the byte-order check no longer swaps a little-endian file on a little-endian machine, which had been costing a full copy per tile."
+note = "Full-page and region readers share prediction, bit unpacking and planar-channel placement. Bounded region fetch/decode is available with prefetch and defaults on for HTTPDataSource; local coalesced reads preserve the eager fast path. Seekable writes emit bounded ordered batches. Forward-only writes retain one encoded page by default, with explicit disk spooling available as a memory/throughput tradeoff. Predictor 3 writes are independently validated for supported float layouts."
 
 [[codec]]
 name = "vsi"
@@ -711,6 +945,10 @@ parallel_decode = false
 range_reads = true
 pyramid = true
 http = true
+streaming_encode = false
+streaming_output = false
+decode_overlap = false
+writer_buffering = "unsupported"
 feasible = "done"
 note = "the pyramid is real and is now read. It lives inside each .ets rather than across the stack directories: the tile table's LAST coordinate axis is the resolution level, and level L is the image halved L times, tiled at the file's stored tile size. Derived and then verified rather than assumed -- parse_ets reports a pyramid only when the tile population of every level equals the grid covering the extent halved that many times, which is 6 predictions on the sample fetched and 7 more on its sibling stack, all exact, and which the untiled corpus file fails so it still reports one level. Cross-checked on pixels too: level 4 correlates 0.96 with level 3 area-downscaled. VsiPyramidReader decodes only the tiles a region covers, so a 256x256 window of an 8022x9367 slide moves 0.499 MB of 32.6 MB over HTTP and opening it moves 0.155 MB. Two readings had to be corrected first, and both are why this looked flat: the SIS header field taken for the table's byte size is a record COUNT, so a 413-record table was read as 413 bytes and gave up after 11 entries; and a record is self-describing rather than fixed-width, opening with its own axis count and so 4*(ndims+5) bytes, 36 for the tiled files and 44 for the untiled one, so a fixed 44 read the tiled files as garbage. The corpus file has 180 records rather than the 4 previously recorded. Separate stacks are separate IMAGES, not levels, so a .vsi with more than one needs stack=. The contiguous-plane path now refuses a tiled file instead of returning noise. Clean-room throughout: no proprietary docs and no GPL reader, per the standing rule in _ets.py."
 
@@ -723,8 +961,12 @@ parallel_decode = false
 range_reads = false
 pyramid = false
 http = false
+streaming_encode = false
+streaming_output = false
+decode_overlap = false
+writer_buffering = "all"
 feasible = "done"
-note = "WebPAnimDecoder reads animated WebP, which we did not read at all: the plain decoder cannot open an animation container, so decode() failed with the bare message 'WebP decode failed' and said nothing about why. open() now reads the sequence and decode() returns the whole frame stack, which is what gif has always returned for a time sequence here and what imagecodecs returns for the same file; returning frame 0 would silently discard the rest. Verified bit-identical to imagecodecs on an 8-frame VP8X animation from the webmproject downloads. Frames are bit-identical to imagecodecs, which writes the fixtures and supplies the expected values. Needs libwebpdemux, which is separate from libwebp but not optional: libwebp's CMakeLists adds the target and lists it in INSTALLED_LIBRARIES unconditionally, so the -DWEBP_BUILD_WEBPMUX=OFF in bench/build_codec_libs.sh does not affect it. chunked stays false on purpose, the same reasoning as gif: frames are sub-rectangles with disposal and blending rules and libwebp says so in its own API, where GetNext only moves forward and Reset rewinds to the start. WebPIAppend, incremental decode as bytes arrive, is still unbuilt. libwebp's threading is an encoder setting (WebPConfig.thread_level), so decode stays on one core: measured 1.00x. streaming_decode is not a gap here and has been dropped from the list: the flag means iter_frames yields without materializing the whole thing, and this format has no frame axis to yield along. Every codec that sets it is multi_frame, 17 of 17, and the checker now enforces that. The incremental API described above is real and is a different capability from the one this column measures."
+note = "WebPAnimDecoder reads animated WebP, which we did not read at all: the plain decoder cannot open an animation container, so decode() failed with the bare message 'WebP decode failed' and said nothing about why. open() now reads the sequence and decode() returns the whole frame stack, which is what gif has always returned for a time sequence here and what imagecodecs returns for the same file; returning frame 0 would silently discard the rest. Verified bit-identical to imagecodecs on an 8-frame VP8X animation from the webmproject downloads. Frames are bit-identical to imagecodecs, which writes the fixtures and supplies the expected values. Needs libwebpdemux, which is separate from libwebp but not optional: libwebp's CMakeLists adds the target and lists it in INSTALLED_LIBRARIES unconditionally, so the -DWEBP_BUILD_WEBPMUX=OFF in bench/build_codec_libs.sh does not affect it. chunked stays false on purpose, the same reasoning as gif: frames are sub-rectangles with disposal and blending rules and libwebp says so in its own API, where GetNext only moves forward and Reset rewinds to the start. WebPIAppend, incremental decode as bytes arrive, is still unbuilt. libwebp's threading is an encoder setting (WebPConfig.thread_level), so decode stays on one core: measured 1.00x. Sequence reading is implemented, while the common buffered writer still feeds a native single-image encoder. Native out for still images is not forwarded by the common decode wrapper. Incremental input, destination forwarding, and sequence encoding are distinct work items in pipeline_catalog.toml."
 
 [[codec]]
 name = "xor"
@@ -735,6 +977,10 @@ parallel_decode = false
 range_reads = false
 pyramid = false
 http = false
+streaming_encode = false
+streaming_output = false
+decode_overlap = false
+writer_buffering = "all"
 feasible = "no"
 note = "out[i] depends on out[i-dist], the same serial chain as delta. There is no boundary inside one buffer to seek to, and the container picks the block."
 
@@ -747,6 +993,10 @@ parallel_decode = true
 range_reads = false
 pyramid = false
 http = false
+streaming_encode = false
+streaming_output = false
+decode_overlap = false
+writer_buffering = "all"
 feasible = "done"
 note = "in fixed-rate mode every 4^d block occupies the same number of bits, so a block's position is arithmetic and zfp_decode_block_* is the per-block entry point: true random access, which is what fixed-rate mode exists for. The variable-rate modes cannot do this, so it would be a fixed-rate-only path. The decode released its GIL in this pass, which was worth 1.00x to 7.38x for a caller decoding many zfp chunks at once and is what a chunked-array reader actually does. Splitting one stream is what parallel_decode means here, and that judgment was wrong: it does NOT need OpenMP. zfp_decode_block_float_3 plus a bitstream seek reaches block N directly, so a thread per block range does it with the library as it already ships, and the ZFP_EXEC_OMP route can stay unbuilt. Both gaps close together. One block costs 0.0010 ms against 0.2094 ms for a full decode of the same stream, 216x; the threaded full decode goes 110.3 ms to 30.0 ms end to end on a 67 MB volume, or 114.0 to 8.2 ms for the block decode alone before the assembly copy. Bit-identical, including shapes whose dimensions are not multiples of 4, where the encoder pads the edge blocks and the padding has to be trimmed against the extent in the header. The variable-rate modes fall back to zfp_decompress and decode_block refuses them by name."
 
@@ -759,5 +1009,9 @@ parallel_decode = false
 range_reads = false
 pyramid = false
 http = false
+streaming_encode = false
+streaming_output = false
+decode_overlap = false
+writer_buffering = "all"
 feasible = "no"
 note = "ZSTD_decompressStream decodes without holding the whole frame. Random access into one frame is not possible: there is no index, and the seekable format is a separate container rather than a mode. streaming_decode is not a gap here and has been dropped from the list: the flag means iter_frames yields without materializing the whole thing, and this format has no frame axis to yield along. Every codec that sets it is multi_frame, 17 of 17, and the checker now enforces that. The incremental API described above is real and is a different capability from the one this column measures."

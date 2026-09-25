@@ -37,10 +37,12 @@ MANIFEST = ROOT / "capabilities.toml"
 
 # Mechanically derivable: each is a fact about the tree, not an opinion.
 DERIVED = ("multi_frame", "chunked", "streaming_decode", "parallel_decode",
-           "range_reads", "pyramid", "http")
+           "range_reads", "pyramid", "http", "streaming_encode",
+           "streaming_output", "decode_overlap")
 # Same fields, ordered the way a caller cares about them.
 DERIVED_ORDER = ("streaming_decode", "chunked", "range_reads", "http",
-                 "multi_frame", "pyramid", "parallel_decode")
+                 "multi_frame", "pyramid", "parallel_decode", "streaming_encode",
+                 "streaming_output", "decode_overlap")
 
 
 def _load():
@@ -91,7 +93,13 @@ def derive() -> dict[str, dict]:
     sys.path.insert(0, str(ROOT / "src"))
     import opencodecs as oc
 
-    src = ROOT / "src/opencodecs"
+    # Read the tracked source inventory once, not one recursive traversal
+    # per codec. This also matches _grep's tracked-file semantics.
+    inventory = subprocess.run(
+        ["git", "ls-files", "--", "src/opencodecs"], cwd=ROOT,
+        capture_output=True, text=True, check=True)
+    sources = [line for line in inventory.stdout.splitlines()
+               if line.endswith((".py", ".pyx"))]
     # Reaching storage by offset. `read_at=` matters as much as
     # `read_at(`: a reader that takes the callable and threads it into a
     # shared stream (_eer_reader does exactly this) is doing range reads
@@ -100,6 +108,11 @@ def derive() -> dict[str, dict]:
     range_capable = _grep(
         "coerce_data_source\\|read_at(\\|read_at=\\|read_many("
         "\\|h5_source")
+    # Explicit native source construction delegates offset and HTTP reads to
+    # core.native_source; a mention in documentation must not set a flag.
+    native_sources = _grep(r"NativeSource\(src\)", extended=True)
+    range_capable |= native_sources
+    range_capable |= _grep(r"self\._native = FileReader\(path\)", extended=True)
     # A file counts as a pyramid backend when it DEFINES or RE-EXPORTS
     # one, not when it mentions the name. _jpeg2k.pyx refers to
     # Jpeg2kPyramidReader in a docstring to point callers at it, and
@@ -140,6 +153,7 @@ def derive() -> dict[str, dict]:
     # the HDF5-backed readers, so calling it is reaching storage by
     # offset over HTTP just as much as constructing the data source is.
     http_files |= _grep("h5_source")
+    http_files |= native_sources
 
     # Readers whose offset arithmetic lives in a helper module named
     # after the CONTAINER rather than the codec. Matching files by the
@@ -158,9 +172,7 @@ def derive() -> dict[str, dict]:
     }
 
     def files_for(name: str) -> set[str]:
-        # as_posix(), to match git grep's output on Windows.
-        own = {p.relative_to(ROOT).as_posix() for p in src.rglob(f"*{name}*")
-               if p.suffix in (".py", ".pyx")}
+        own = {p for p in sources if name in pathlib.PurePosixPath(p).name}
         return own | set(DELEGATES.get(name, ()))
 
     out = {}
@@ -176,6 +188,10 @@ def derive() -> dict[str, dict]:
             "range_reads": bool(mine & range_capable),
             "pyramid": bool(mine & pyramid_files),
             "http": bool(mine & http_files),
+            "streaming_encode": bool(c.streaming_encode),
+            "streaming_output": bool(c.streaming_output),
+            "decode_overlap": bool(c.decode_overlap),
+            "writer_buffering": c.writer_buffering,
         }
     return out
 
@@ -183,7 +199,11 @@ def derive() -> dict[str, dict]:
 def cmd_verify(args) -> int:
     recorded = {c["name"]: c for c in _load()}
     actual = derive()
-    bad = 0
+    from check_pipeline_catalog import verify as verify_pipeline_catalog
+    pipeline_errors = verify_pipeline_catalog(ROOT)
+    for error in pipeline_errors:
+        print(f"  BAD pipeline: {error}")
+    bad = len(pipeline_errors)
 
     missing = sorted(set(actual) - set(recorded))
     unbuilt = sorted(set(recorded) - set(actual))
@@ -205,7 +225,7 @@ def cmd_verify(args) -> int:
             bad += len(unbuilt)
 
     for name in sorted(set(recorded) & set(actual)):
-        for field in DERIVED:
+        for field in (*DERIVED, "writer_buffering"):
             want = actual[name][field]
             got = recorded[name].get(field)
             if got != want:
@@ -259,6 +279,12 @@ def cmd_verify(args) -> int:
     # incremental decompression, row-at-a-time decode -- is real and
     # belongs in the note, not in a column that means something else.
     for name, caps in sorted(actual.items()):
+        if caps["streaming_output"] and not caps["streaming_encode"]:
+            print(f"  BAD         {name}: streaming_output without streaming_encode")
+            bad += 1
+        if caps["writer_buffering"] not in ("unsupported", "all", "frame", "encoded"):
+            print(f"  BAD         {name}: invalid writer_buffering")
+            bad += 1
         if caps["streaming_decode"] and not caps["multi_frame"]:
             print(f"  BAD         {name}: streaming_decode without "
                   f"multi_frame; there is no frame axis to stream along")
@@ -305,6 +331,7 @@ def cmd_sync(args) -> int:
         lines.append(f'name = "{name}"')
         for field in DERIVED:
             lines.append(f"{field} = {str(actual[name][field]).lower()}")
+        lines.append(f'writer_buffering = "{actual[name]["writer_buffering"]}"')
         prev = old.get(name, {})
         lines.append(f'feasible = "{prev.get("feasible", "unassessed")}"')
         if prev.get("gaps"):
@@ -324,13 +351,16 @@ def cmd_report(args) -> int:
     n = len(recorded)
     print(f"{n} codecs\n")
     blurb = {
-        "streaming_decode": "decode without holding the whole file",
+        "streaming_decode": "yield frames without materializing all decoded frames",
         "chunked": "fetch tile N without decoding 0..N-1",
         "range_reads": "reaches storage by offset, not whole-file",
         "http": "fetches only the bytes it needs over HTTP",
         "multi_frame": "stacks and animations",
         "pyramid": "open at a resolution that fits the screen",
-        "parallel_decode": "more than one core on ONE image",
+        "parallel_decode": "parallel work within one decode call",
+        "streaming_encode": "encode frames without retaining the raw stack",
+        "streaming_output": "emit encoded bytes to a destination before close",
+        "decode_overlap": "bounded input prefetch concurrent with decode",
     }
     print(f"{'capability':18s} {'have':>5s} {'+can':>5s}  "
           f"what it buys a caller")
@@ -354,8 +384,8 @@ def cmd_report(args) -> int:
     shut = [c["name"] for c in recorded if c.get("feasible") == "no"]
     print(f"\n{len(gapped)} codec(s) with feasible work left, "
           f"{sum(len(c['gaps']) for c in gapped)} capability(ies) in total.")
-    print(f"{len(done)} complete; {len(shut)} where nothing further is "
-          f"available (see each note for why).")
+    print(f"{len(done)} complete in assessed scope; {len(shut)} with no "
+          f"further assessed work (see each note for scope).")
     if args.verbose:
         print()
         for c in sorted(gapped, key=lambda c: -len(c["gaps"])):

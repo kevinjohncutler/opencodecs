@@ -10,6 +10,44 @@ Versions follow the same ``YYYY.M.D`` cadence as upstream when we
 publish; the entries below cluster work by date rather than by
 release because most of it has shipped continuously to ``main``.
 
+Unreleased
+----------
+
+**Shared bounded pipeline across readers and writers**
+
+A common layer in ``opencodecs.core`` now carries the work that each
+format used to do its own way: ordered, byte-bounded parallel
+scheduling (``core.pipeline.map_bounded``) with a shared worker
+budget, per-worker scratch buffers, caller-owned output buffers and
+sinks for the native codecs, stateful streaming iterators for seven
+byte codecs, native PNG row sessions, selective range sources, and
+opt-in bit-exact verification of written segments. Each piece of work
+is recorded, with its measured limits, in ``pipeline_catalog.toml``
+and checked by ``ci/check_pipeline_catalog.py``.
+
+**CZI: faster reads and writes, and real slides read correctly**
+
+- Fix: ``CziPyramidReader`` took sub-block starts as level pixels.
+  Zen stores them in full-resolution slide coordinates, often far from
+  zero and negative, so a real slide reported every level as ``(N, 0)``.
+  Levels now count from the slide origin (``reader.origin``, matching
+  czifile) and divide positions by the level's scale.
+- Sub-blocks decode straight into their destination. Whole-stack
+  ``read`` accepts ``out=`` (``numpy.memmap`` included). zstd
+  decompression and the byte unshuffle run as one native call, which
+  let several threads decode small tiles at once.
+- Regional reads use a lazily built spatial index and write each tile
+  straight into the output; overlapping tiles still resolve to the
+  later one in the directory. ``PyramidReader.read_regions`` decodes
+  the union of a batch of boxes once, and ``decoded_cache_bytes`` adds
+  an opt-in decoded-tile cache.
+- Opening is faster: the directory parses in about a third of the
+  time and the pyramid reader no longer rescans it per level (180 ms to
+  3 ms on a 12k-sub-block slide).
+- The writer shuffles natively, emits sub-blocks as parts without
+  copying unverified payloads, and ``write_many`` compresses frames on
+  workers while keeping the file byte-identical to sequential writes.
+
 0.2.0 (2026-09-09)
 ------------------
 

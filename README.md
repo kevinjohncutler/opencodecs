@@ -344,9 +344,12 @@ caps = tomllib.load(open("capabilities.toml", "rb"))["codec"]
 [c["name"] for c in caps if c["pyramid"]]   # codecs with a pyramid reader
 ```
 
-The manifest covers the codec registry, so the reader-only backends
-(Imaris, OME-Zarr, NDTiff, N5) are not in it; they are listed in the
-tables above and reached through `open_pyramid` / their own classes.
+The runtime manifest covers the codec registry. The companion
+[pipeline catalog](pipeline_catalog.toml) also covers direct adapters such as
+Imaris, OME-Zarr, NDTiff and N5, and maps shared optimization work across all
+registered codecs. See the [implementation plan](docs/pipeline_optimization_plan.md)
+for priorities, source evidence, correctness prerequisites and acceptance tests.
+Run `python ci/check_pipeline_catalog.py report` for the current worklist.
 
 ### Codec registry
 
@@ -529,9 +532,9 @@ build).
   (TIFF, BigTIFF, OME-TIFF, CZI, NDTiff, HDF5, JXL, FITS, OME-Zarr v2 +
   v3 sharded), and pyramid readers for TIFF/COG/SVS, OME-Zarr, CZI,
   Imaris, DICOM VL Whole Slide Microscopy and Olympus VSI/ETS
-- Every reader takes a path, bytes, memoryview, mmap, open file or
-  `http(s)` URL; remote reads go through `HTTPDataSource` range requests
-  with a covering cache and adaptive read-ahead
+- Shared source adapters support paths, buffers, file objects and remote URLs.
+  Indexed readers use checked range requests, covering caches and adaptive
+  read-ahead; whole-stream codecs retain their documented eager input paths.
 - Multi-frame AVIF, animated WebP and GIF decode to a frame stack; HEIF
   exposes every top-level image
 - Compression backend auto-detect (libdeflate → zlib-ng-compat → stdlib)
@@ -544,9 +547,14 @@ Deferred work (see [`docs/TODO_DEFERRED.md`](docs/TODO_DEFERRED.md)):
 
 - CCITT Fax3/Fax4 encode: legacy fax, zero scientific users
 - JPEG-XR: abandoned format outside niche DICOM
-- libspng `filter_sum` SIMD: off the bench-tracked workload
-  (`h2h_png_4mp_rgb` is at 1.14× already); filter-bound PNG-encode users
-  could see another 2-3×
+
+GIF and JPEG XL destination writers now drain encoded frame output before close.
+The shared pipeline also supplies bounded independent-piece scheduling, seven
+stateful byte-codec iterators, native PNG row sessions, selective native sources,
+and checked caller-owned destinations.
+
+Shared streaming, buffering, and overlap mechanisms and remaining integration
+work are documented in [the pipeline catalog](docs/shared_pipeline_capabilities.md).
 
 See [CHANGES.rst](CHANGES.rst) for release history.
 

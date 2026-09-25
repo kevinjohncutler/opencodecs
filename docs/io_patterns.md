@@ -17,10 +17,12 @@ is below; rationale and measured numbers follow.
 4. **`bytes(memoryview)` is a real copy.** When chunks reach the codec,
    they should arrive as memoryview / mmap slices, not as fresh bytes.
    Our codec adapters now accept buffer-protocol input directly.
-5. **Streaming readers (`BackgroundChunkReader`) are for streamed
-   formats only.** JXL frame-by-frame benefits from overlap. TIFF/CZI
-   don't, because slurp-then-parallel-decode is faster when the file
-   fits in RAM.
+5. **Choose overlap by workload and storage.** `BackgroundChunkReader`
+   feeds a stateful sequential decoder. Independent container pieces need
+   a different bounded fetch/decode scheduler. Memory mapping and eager
+   coalesced reads remain the measured local controls; remote latency and
+   memory limits can justify overlap for indexed formats too. See the
+   [cross-codec plan](pipeline_optimization_plan.md).
 
 ## Background: where this came from
 
@@ -154,29 +156,27 @@ nogil-byteshuffle + persistent-pool combination.
 
 For a new format wrapper or native parser, ask in this order:
 
-1. **Does the file fit in RAM?** If yes, `mmap` it and stop thinking
-   about I/O. The kernel handles prefetch, page eviction, NUMA
-   placement. Use `madvise(MADV_SEQUENTIAL)` if you'll scan front-to-
-   back, `MADV_RANDOM` for chunk-index access patterns. You should
-   probably never call `os.pread` directly.
+1. **What must the caller read, and where does it live?** Measure sparse
+   selections and whole-image reads separately. Memory mapping is a useful
+   local baseline; fitting in address space alone does not prove it is the
+   fastest or least costly access pattern. Do not apply sequential/random
+   hints without measuring the intended reuse pattern.
 
-2. **Is the format self-describing in a way that lets you find chunks
-   without reading sequentially?** If yes, parse the directory once,
-   then dispatch chunk-decode to a thread pool. Don't issue parallel
-   READS — issue one big read or trust mmap, then run the decoders in
-   parallel.
+2. **Does the format expose independent indexed pieces?** Parse selection
+   metadata once. Use coalesced ranges or object fetches and direct placement.
+   Compare eager fetching with bounded fetch/decode overlap on the relevant
+   storage. Preserve native filter and index rules in the adapter.
 
-3. **Is the format truly streaming (decoder needs frame N before
-   frame N+1)?** Use `BackgroundChunkReader`: a background thread
-   reads chunks into a bounded queue, the foreground thread decodes
-   them. This is what JXL streaming uses. It's NOT the right pattern
-   for self-describing chunked formats — you'd be paying overhead for
-   parallelism you don't get.
+3. **Does decoding carry state between input chunks or frames?** Use a
+   stateful feed/drain interface, with explicit ownership and finalization.
+   Sequential background input and independent-piece scheduling can share
+   lifecycle and byte-budget rules without pretending their decode semantics
+   are interchangeable.
 
-4. **Do you really need parallel I/O?** Almost never on local NVMe or
-   10 G NAS. Almost always on cloud object storage (S3/GCS) where every
-   GET request has 30-100 ms of round-trip latency. Match the pattern
-   to the storage.
+4. **Does concurrency pay for this workload?** Benchmark local warm/cold
+   access and delayed remote access separately. Coalescing often beats many
+   small local requests; concurrent remote requests can hide latency. Budget
+   outer tasks and native workers together, and retain serial raw-copy paths.
 
 ## Codec adapter pattern: zero-copy buffer protocol
 
