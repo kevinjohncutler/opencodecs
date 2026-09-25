@@ -445,11 +445,17 @@ class TiffPage:
         # of mapping the file: measured, the conversion made mmap 0.78x
         # of seek+read on zstd, because it paid the page faults AND the
         # copy.
-        if cmp in (CMP_DEFLATE, CMP_ADOBE_DEFLATE):
-            decoded = _get_decoder("opencodecs.codecs._deflate")(raw)
-            return self._bytes_to_array(decoded)
-        if cmp == CMP_ZSTD:
-            decoded = _get_decoder("opencodecs.codecs._zstd")(raw)
+        if cmp in (CMP_DEFLATE, CMP_ADOBE_DEFLATE, CMP_ZSTD):
+            decode = _get_decoder("opencodecs.codecs._zstd" if cmp == CMP_ZSTD
+                                  else "opencodecs.codecs._deflate")
+            if self.predictor == 2:
+                # Decode into a writable array: the predictor is undone in
+                # place, and immutable bytes made it copy every tile first,
+                # one more allocation and one more GIL handoff per tile.
+                decoded = decode(raw, out=np.empty(
+                    self._expected_uncompressed_bytes(), np.uint8))
+            else:
+                decoded = decode(raw)
             return self._bytes_to_array(decoded)
         if cmp == CMP_PACKBITS:
             decoded = _tiff_packbits_decode(

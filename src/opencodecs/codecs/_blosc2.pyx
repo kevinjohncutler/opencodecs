@@ -13,12 +13,12 @@ from libc.stdint cimport int16_t, int32_t, uint8_t
 from libc.string cimport memset
 
 from blosc2 cimport (
-    BLOSC2_MAX_OVERHEAD, BLOSC_SHUFFLE, BLOSC_NOSHUFFLE,
-    blosc2_compress, blosc2_decompress, blosc2_cbuffer_sizes,
-    blosc1_set_compressor,
-    blosc2_context, blosc2_dparams,
-    blosc2_create_dctx, blosc2_free_ctx, blosc2_decompress_ctx,
-    blosc2_getitem, blosc2_getitem_ctx, blosc1_cbuffer_metainfo,
+    BLOSC2_MAX_OVERHEAD, BLOSC_SHUFFLE, BLOSC_NOSHUFFLE, BLOSC2_MAX_FILTERS,
+    blosc2_cbuffer_sizes, blosc2_compname_to_compcode,
+    blosc2_context, blosc2_dparams, blosc2_cparams, BLOSC2_CPARAMS_DEFAULTS,
+    blosc2_create_dctx, blosc2_create_cctx, blosc2_free_ctx,
+    blosc2_decompress_ctx, blosc2_compress_ctx,
+    blosc2_getitem_ctx, blosc1_cbuffer_metainfo,
 )
 
 
@@ -47,6 +47,9 @@ def encode(data, *, level: int | None = None,
         bytes out
         const void* src_ptr = NULL
         void* dst_ptr
+        int compcode
+        blosc2_cparams cparams
+        blosc2_context* cctx = NULL
 
     try:
         src = data
@@ -54,14 +57,15 @@ def encode(data, *, level: int | None = None,
         src = bytes(data)
     srcsize = <int32_t> src.shape[0]
 
-    # Always set the compressor explicitly. The blosc1_set_compressor
-    # API is *process-global state*; without an explicit set here, the
-    # active compressor leaks across calls and the output depends on
-    # whatever was last chosen elsewhere. Default to ``zstd``, matching
-    # both blosc2 2.x's compile-time default and
-    # ``imagecodecs.blosc2_encode``.
+    # The compressor goes on a context of this call's own. It used to be
+    # set with blosc1_set_compressor, which is process-global: another
+    # thread encoding with a different compressor could switch it between
+    # the set and the compress, and the global compress serialized every
+    # thread behind one mutex anyway. Default to ``zstd``, matching both
+    # blosc2 2.x's compile-time default and ``imagecodecs.blosc2_encode``.
     cname = (compressor or 'zstd').encode() if isinstance(compressor or 'zstd', str) else compressor
-    if blosc1_set_compressor(cname) < 0:
+    compcode = blosc2_compname_to_compcode(cname)
+    if compcode < 0:
         raise Blosc2Error(f'unknown blosc2 compressor: {compressor!r}')
 
     # Default clevel=1: matches imagecodecs.blosc2_encode.
@@ -91,11 +95,20 @@ def encode(data, *, level: int | None = None,
     if srcsize > 0:
         src_ptr = <const void*> &src[0]
 
-    with nogil:
-        ret = blosc2_compress(
-            clevel, do_shuffle, tsize,
-            src_ptr, srcsize, dst_ptr, dstcap,
-        )
+    cparams = BLOSC2_CPARAMS_DEFAULTS
+    cparams.compcode = <uint8_t> compcode
+    cparams.clevel = <uint8_t> clevel
+    cparams.typesize = tsize
+    cparams.nthreads = 1
+    cparams.filters[BLOSC2_MAX_FILTERS - 1] = <uint8_t> do_shuffle
+    cctx = blosc2_create_cctx(cparams)
+    if cctx == NULL:
+        raise Blosc2Error('blosc2_create_cctx failed')
+    try:
+        with nogil:
+            ret = blosc2_compress_ctx(cctx, src_ptr, srcsize, dst_ptr, dstcap)
+    finally:
+        blosc2_free_ctx(cctx)
     if ret < 0:
         raise Blosc2Error(f'blosc2_compress failed: {ret}')
     return out[:ret]
@@ -105,10 +118,13 @@ cdef int _decompress_threaded(
     const void* src_ptr, int32_t srcsize, void* dst_ptr,
     int32_t nbytes, int nthreads,
 ) except? -1:
-    """Whole-chunk decompress through a context with nthreads set.
+    """Whole-chunk decompress through a context of its own.
 
-    Separate from the inline single-threaded call so the common path
-    keeps paying nothing for the context create/free round trip.
+    Every decode goes through a context, single-threaded ones included.
+    blosc2_decompress runs on one process-global context behind a global
+    mutex, so decodes from different threads queued on it: eight workers
+    decoding 128 KB chunks took longer than one. The create/free round
+    trip is small next to that.
     """
     cdef blosc2_dparams dparams
     cdef blosc2_context* dctx = NULL
@@ -246,24 +262,21 @@ def decode_partial(data, start: int, nitems: int, *,
     dst_ptr = <void*> PyBytes_AsString(out_bytes)
     cdef const void* src_ptr = <const void*> &src[0]
 
-    if nthreads > 1:
-        memset(&dparams, 0, sizeof(blosc2_dparams))
-        dparams.nthreads = <int16_t> nthreads
-        dparams.typesize = ts
-        dctx = blosc2_create_dctx(dparams)
-        if dctx == NULL:
-            raise Blosc2Error('blosc2_create_dctx failed')
-        try:
-            with nogil:
-                ret = blosc2_getitem_ctx(dctx, src_ptr, srcsize,
-                                         c_start, c_nitems,
-                                         dst_ptr, destsize)
-        finally:
-            blosc2_free_ctx(dctx)
-    else:
+    # Always through a context: blosc2_getitem shares the global one
+    # (and its mutex) with every other thread, as decompress does.
+    memset(&dparams, 0, sizeof(blosc2_dparams))
+    dparams.nthreads = <int16_t> nthreads
+    dparams.typesize = ts
+    dctx = blosc2_create_dctx(dparams)
+    if dctx == NULL:
+        raise Blosc2Error('blosc2_create_dctx failed')
+    try:
         with nogil:
-            ret = blosc2_getitem(src_ptr, srcsize, c_start, c_nitems,
-                                 dst_ptr, destsize)
+            ret = blosc2_getitem_ctx(dctx, src_ptr, srcsize,
+                                     c_start, c_nitems,
+                                     dst_ptr, destsize)
+    finally:
+        blosc2_free_ctx(dctx)
     if ret < 0:
         raise Blosc2Error(f'blosc2_getitem failed: {ret}')
     return out_bytes
@@ -346,12 +359,8 @@ def decode(data, *, out=None, numthreads: int | None = None):
                 f"blosc2 decode: out= buffer is {out_view.shape[0]} bytes "
                 f"but the blosc2 header declares {nbytes} bytes")
         dst_ptr = <void*> &out_view[0]
-        if nthreads > 1:
-            ret = _decompress_threaded(
-                src_ptr, srcsize, dst_ptr, nbytes, nthreads)
-        else:
-            with nogil:
-                ret = blosc2_decompress(src_ptr, srcsize, dst_ptr, nbytes)
+        ret = _decompress_threaded(
+            src_ptr, srcsize, dst_ptr, nbytes, nthreads)
         if ret < 0:
             raise Blosc2Error(f'blosc2_decompress failed: {ret}')
         del out_view
@@ -365,12 +374,8 @@ def decode(data, *, out=None, numthreads: int | None = None):
                 f"blosc2 header's declared {nbytes} bytes")
     out_bytes = PyBytes_FromStringAndSize(NULL, <Py_ssize_t> nbytes)
     dst_ptr = <void*> PyBytes_AsString(out_bytes)
-    if nthreads > 1:
-        ret = _decompress_threaded(
-            src_ptr, srcsize, dst_ptr, nbytes, nthreads)
-    else:
-        with nogil:
-            ret = blosc2_decompress(src_ptr, srcsize, dst_ptr, nbytes)
+    ret = _decompress_threaded(
+        src_ptr, srcsize, dst_ptr, nbytes, nthreads)
     if ret < 0:
         raise Blosc2Error(f'blosc2_decompress failed: {ret}')
     return out_bytes[:ret]

@@ -25,6 +25,25 @@ opt-in bit-exact verification of written segments. Each piece of work
 is recorded, with its measured limits, in ``pipeline_catalog.toml``
 and checked by ``ci/check_pipeline_catalog.py``.
 
+**Zarr, TIFF and blosc2 under many threads**
+
+- Zarr regional reads group chunks into tasks of about 2 MiB on a
+  persistent pool, read chunk files with os-level calls, and decompress
+  plain zstd chunks straight into the output. Eight workers reading a
+  4096 x 4096 array in 256 x 256 chunks: zstd 47.5 to 19.0 ms on Linux
+  (30.8 to 14.3 ms on macOS), zlib 58.8 to 38.0 ms.
+- Zarr v2 ``blosc`` chunks decode through the native blosc2 extension
+  instead of numcodecs, whose binding serializes calls across threads
+  (eight workers had been slower than one): 53.7 to 24.5 ms.
+- Fix: blosc2 encode selected its compressor through process-global
+  state, so concurrent encodes could use another thread's compressor.
+  Encode, decode and partial decode now each use a context of their own,
+  which also stops them queuing on blosc2's global mutex. Chunks written
+  with item size 1 and shuffle carry slightly different header flags;
+  old and new chunks decode in both versions.
+- TIFF tiles with the horizontal predictor decode into a writable array,
+  so the predictor no longer copies each tile first (about 14% faster).
+
 **CZI: faster reads and writes, and real slides read correctly**
 
 - JPEG XR sub-blocks (compression 4, used by most Zeiss slide scans) now

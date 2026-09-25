@@ -341,7 +341,9 @@ def unpackints_into(data, out, int bits, Py_ssize_t count,
     if bits < 1 or bits > 64 or itemsize not in (1, 2, 4, 8):
         raise ValueError("invalid packed integer width or output itemsize")
     if count < 0 or count > (source.shape[0] * 8) // bits:
-        raise ValueError("packed integer input is truncated")
+        raise ValueError(
+            f"packed integer input is truncated: {count} samples of {bits} "
+            f"bits need {(count * bits + 7) // 8} bytes, got {source.shape[0]}")
     if count > target.shape[0] // itemsize:
         raise ValueError("packed integer output is too small")
     with nogil:

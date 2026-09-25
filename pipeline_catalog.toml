@@ -624,3 +624,35 @@ limits = "Decode only. Built when jxrlib is installed; the wheel build does not 
 evidence = ["src/opencodecs/codecs/jpegxr_shim.c:oc_jxr_open", "src/opencodecs/codecs/_jpegxr.pyx:decode", "src/opencodecs/_czi_reader.py:CziReader._decode_jpegxr"]
 acceptance = ["Decoded pixels match imagecodecs' decode of the same stream for 8- and 16-bit and float gray, color and alpha, odd sizes, lossless and lossy.", "CZI JPEG XR mosaics read like the same tiles uncompressed; a stream of the wrong size or a corrupt stream raises CziError.", "Tiles and an overlapping region of the real Axioscan slide match czifile's decode and mosaic-order composition."]
 implementation_evidence = ["tests/test_jpegxr.py"]
+
+[[work]]
+id = "zarr_region_dispatch"
+title = "Zarr regional reads that scale across workers"
+priority = 1
+state = "complete"
+pilots = ["adapter:omezarr"]
+followups = []
+investigate = []
+depends_on = ["czi_fused_zstd_decode"]
+current = "Parallel region reads group chunks into tasks of about 2 MiB on a persistent pool, the filesystem store reads chunk files with os-level calls, v2 blosc chunks decode through native blosc2, and plain zstd chunks (v2 compressor or v3 bytes plus zstd, unsharded, native byte order, two or more axes) decompress straight into their windows of the output."
+action = "Batch OmeZarrArray.read_region tasks, pass the shared reader pool, rewrite _FsStore reads, route blosc to _blosc2, and add _zstd_window_ok and _place_zstd_chunk."
+limits = "Eight workers on a 4096 x 4096 uint16 array in 256 x 256 chunks, against the previous tree: zstd 47.5 to 19.0 ms on x86-64 Linux and 30.8 to 14.3 ms on arm64 macOS; blosc 53.7 to 24.5 ms; zlib 58.8 to 38.0 ms. Blosc and zlib chunks still decode to an owned array and copy, so they scale less than zstd. v2 filter chains remain unsupported and are refused at open."
+evidence = ["src/opencodecs/_omezarr.py:OmeZarrArray.read_region", "src/opencodecs/_omezarr.py:OmeZarrArray._place_zstd_chunk", "src/opencodecs/_omezarr.py:_FsStore"]
+acceptance = ["Region reads on the direct zstd path and the decoded path equal NumPy slicing for 2-D and N-d arrays, partial and edge chunks, v2 and v3, one and several workers.", "A missing chunk reads as the fill value; big-endian arrays and other codecs keep the decoded path."]
+implementation_evidence = ["tests/test_zarr_region_fast_path.py"]
+
+[[work]]
+id = "blosc2_contexts"
+title = "Per-call blosc2 contexts"
+priority = 1
+state = "complete"
+pilots = ["blosc2"]
+followups = []
+investigate = []
+depends_on = []
+current = "blosc2 encode, decode and partial decode each create a context of their own; the compressor is set on the encode context instead of through blosc1_set_compressor."
+action = "Replace the global-context calls in _blosc2.pyx with blosc2_create_cctx / blosc2_compress_ctx and the decompression context path."
+limits = "A thread-safety fix as well as a speedup: concurrent encodes could use another thread's compressor, and every call queued on one global mutex (decode of 128 KB chunks went from 0.83x to 2.4x scaling at 8 threads). Chunks with item size 1 and shuffle get different header flags than before; old and new chunks decode in both versions. The per-call context costs a create/free per chunk."
+evidence = ["src/opencodecs/codecs/_blosc2.pyx:encode", "src/opencodecs/codecs/_blosc2.pyx:_decompress_threaded"]
+acceptance = ["Concurrent encodes with mixed compressors equal serial ones; concurrent decodes and partial decodes are correct; shuffled chunks round-trip at every item size."]
+implementation_evidence = ["tests/test_blosc2_threads.py"]

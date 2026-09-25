@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import threading
 import weakref
 
@@ -54,35 +55,86 @@ from .core.pyramid import PyramidLevel, PyramidReader, _normalize_axis
 # ---------------------------------------------------------------------------
 
 
+_O_READ = os.O_RDONLY | getattr(os, "O_BINARY", 0)
+
+#: Decoded bytes per parallel region task (see OmeZarrArray.read_region).
+_ZARR_BATCH_BYTES = 2 << 20
+
+_ZSTD_MODULE = None
+_ZSTD_TLS = threading.local()
+
+
+def _zstd_module():
+    global _ZSTD_MODULE
+    if _ZSTD_MODULE is None:
+        from .codecs import _zstd
+        _ZSTD_MODULE = _zstd
+    return _ZSTD_MODULE
+
+
+def _zstd_thread_state():
+    """This thread's decode scratch and zstd context, created on first use."""
+    state = getattr(_ZSTD_TLS, "state", None)
+    if state is None:
+        from .core.scratch import ScratchBuffer
+        state = (ScratchBuffer(), _zstd_module().DecodeContext())
+        _ZSTD_TLS.state = state
+    return state
+
+
+def _read_exactly(handle: int, n: int) -> bytes:
+    """Up to ``n`` bytes from an open descriptor, looping on short reads."""
+    data = os.read(handle, n)
+    if len(data) >= n or not data:
+        return data
+    parts = [data]
+    got = len(data)
+    while got < n:
+        more = os.read(handle, n - got)
+        if not more:
+            break
+        parts.append(more)
+        got += len(more)
+    return b"".join(parts)
+
+
 class _FsStore:
     """Local-filesystem store. Each key is a path relative to ``root``."""
 
-    __slots__ = ("root",)
+    __slots__ = ("root", "_root_str")
     supports_range = True
 
     def __init__(self, root: str | Path):
         self.root = Path(root)
+        self._root_str = str(self.root)
 
     def __contains__(self, key: str) -> bool:
         return (self.root / key).exists()
 
     def __getitem__(self, key: str) -> bytes:
-        with open(self.root / key, "rb") as f:
-            return f.read()
+        # os-level calls, not open().read(): a chunk read is mostly Python
+        # file-object setup, which holds the GIL. On 256 files of 100 KB,
+        # eight threads took 20.2 ms that way against 9.8 ms here on
+        # Linux, and on macOS open().read() got slower with more threads.
+        handle = os.open(os.path.join(self._root_str, key), _O_READ)
+        try:
+            return _read_exactly(handle, os.fstat(handle).st_size)
+        finally:
+            os.close(handle)
 
     def read_range(self, key: str, offset: int, n: int) -> bytes:
         """Read `n` bytes starting at `offset` from the file backing
         `key`. Negative `offset` is "last |offset| bytes" (file tail).
         For multi-GB shards this avoids materializing the whole file in
         memory just to read a 16 KB inner chunk."""
-        path = self.root / key
-        with open(path, "rb") as f:
+        handle = os.open(os.path.join(self._root_str, key), _O_READ)
+        try:
             if offset < 0:
-                size = path.stat().st_size
-                f.seek(max(0, size + offset))
-            else:
-                f.seek(offset)
-            return f.read(n)
+                offset = max(0, os.fstat(handle).st_size + offset)
+            os.lseek(handle, offset, os.SEEK_SET)
+            return _read_exactly(handle, n)
+        finally:
+            os.close(handle)
 
     def size_of(self, key: str) -> int:
         return (self.root / key).stat().st_size
@@ -429,9 +481,23 @@ def _run_decoder(name: str, cfg: dict, data: bytes) -> bytes:
             fn = _zstd_decode
             _DECODER_CACHE["zstd"] = fn
         return fn(data)
-    if name == "blosc2":
+    if name == "blosc":
+        # Zarr v2's "blosc" is a Blosc1 chunk, which c-blosc2 decodes.
+        # numcodecs' Blosc binding serializes calls across threads, so
+        # routing through it made eight workers slower than one. Builds
+        # without the native extension keep the numcodecs path below.
         fn = _DECODER_CACHE.get("blosc2")
         if fn is None:
+            try:
+                from .codecs._blosc2 import decode as fn
+            except ImportError:
+                fn = False
+            _DECODER_CACHE["blosc2"] = fn
+        if fn:
+            return fn(data)
+    if name == "blosc2":
+        fn = _DECODER_CACHE.get("blosc2")
+        if not fn:
             from .codecs._blosc2 import decode as _b_decode
             fn = _b_decode
             _DECODER_CACHE["blosc2"] = fn
@@ -846,6 +912,87 @@ class OmeZarrArray:
         only the chunks intersecting the slice are loaded."""
         return self.read_region(item)
 
+    def _zstd_window_ok(self) -> bool:
+        """Whether chunks can decompress straight into the output.
+
+        True for plain zstd chunks (v2 compressor ``zstd``; v3 ``bytes`` then
+        ``zstd``) stored unsharded in native byte order with at least two
+        axes: then a chunk's bytes are its C-order pixels, and one native
+        call can decompress it into its windows of the region output.
+        """
+        cached = self.__dict__.get("_zstd_window")
+        if cached is not None:
+            return cached
+        ok = False
+        if not self._sharded and len(self.chunks) >= 2 and self._codecs is not None:
+            native = self.dtype.byteorder in ("=", "|") or self.dtype.itemsize == 1
+            if self.zarr_format == 2:
+                ok = native and (self._codecs.get("id") == "zstd")
+            else:
+                names = [(c.get("name") or c.get("id")) for c in self._codecs]
+                if names == ["bytes", "zstd"]:
+                    endian = (self._codecs[0].get("configuration") or {}).get("endian")
+                    ok = self.dtype.itemsize == 1 or endian in (
+                        None, "little" if sys.byteorder == "little" else "big")
+        self.__dict__["_zstd_window"] = ok
+        return ok
+
+    def _place_zstd_chunk(self, chunk_idx, bounds, out, out2d, scratch, context):
+        """Decompress one zstd chunk straight into its windows of ``out``.
+
+        The chunk is viewed as rows of its last axis, one row per index of
+        every other axis, and ``out2d`` the same way; each combination of
+        the intersected leading indices is one window of one native call.
+        A missing chunk fills its part of the region with the fill value.
+        """
+        chunks = self.chunks
+        nd = len(chunks)
+        src = []
+        dst = []
+        for axis, ci in enumerate(chunk_idx):
+            c = chunks[axis]
+            start, stop = bounds[axis]
+            lo = max(start, ci * c)
+            hi = min(stop, ci * c + c)
+            src.append((lo - ci * c, hi - ci * c))
+            dst.append((lo - start, hi - start))
+        try:
+            raw = self._store[self._chunk_key(chunk_idx)]
+        except (KeyError, FileNotFoundError):
+            out[tuple(slice(a, b) for a, b in dst)] = self.fill_value
+            return
+        # Row strides over the leading axes, in chunk and in output rows.
+        out_shape = out.shape
+        windows = []
+        lead = [range(src[a][0], src[a][1]) for a in range(nd - 2)]
+
+        def walk(axis, c_row, o_row):
+            if axis == nd - 2:
+                sy0, sy1 = src[nd - 2]
+                sx0, sx1 = src[nd - 1]
+                windows.append((c_row * chunks[nd - 2] + sy0, c_row * chunks[nd - 2] + sy1,
+                                sx0, sx1, o_row * out_shape[nd - 2] + dst[nd - 2][0],
+                                dst[nd - 1][0]))
+                return
+            for k in lead[axis]:
+                walk(axis + 1, c_row * chunks[axis] + k,
+                     o_row * out_shape[axis] + (k - src[axis][0] + dst[axis][0]))
+
+        walk(0, 0, 0)
+        tile_h = 1
+        for c in chunks[:-1]:
+            tile_h *= c
+        itemsize = self.dtype.itemsize
+        total = tile_h * chunks[-1] * itemsize
+        zstd = _zstd_module()
+        written = zstd.decode_unshuffle_windows(
+            raw, scratch.bytes(total), out2d, 1, itemsize, tile_h, chunks[-1],
+            windows, context)
+        if written != total:
+            raise ValueError(
+                f"OmeZarrArray: chunk size mismatch (decoded {written} bytes, "
+                f"expected {total} for chunk shape {chunks})")
+
     def read_region(self, region, *, num_workers=None, max_buffer_bytes=None) -> np.ndarray:
         """Read a region given as a tuple of slices or single slice.
 
@@ -904,7 +1051,7 @@ class OmeZarrArray:
             for i in rs[0]:
                 yield from _iter_indices(rs[1:], prefix + (i,))
 
-        def place(chunk_idx):
+        def place_decoded(chunk_idx):
             chunk = self._load_chunk(chunk_idx)
             # Compute the source slice within the chunk and the
             # destination slice within ``out``.
@@ -921,6 +1068,18 @@ class OmeZarrArray:
                 dst_slices.append(slice(s_lo - start, s_hi - start))
             out[tuple(dst_slices)] = chunk[tuple(src_slices)]
 
+        # Plain zstd chunks decompress straight into the output: one native
+        # call per chunk instead of decode, frombuffer and a copy, each of
+        # which retook the GIL (8 workers: 25 against 12 ms on 256 chunks).
+        if self._zstd_window_ok() and out.size:
+            out2d = out.reshape(-1, out.shape[-1]).view(np.uint8)
+
+            def place(chunk_idx):
+                scratch, context = _zstd_thread_state()
+                self._place_zstd_chunk(chunk_idx, bounds, out, out2d, scratch, context)
+        else:
+            place = place_decoded
+
         workers = self._num_workers if num_workers is None else max(1, int(num_workers))
         indices = _iter_indices(ranges)
         if workers <= 1:
@@ -928,14 +1087,38 @@ class OmeZarrArray:
                 place(chunk_idx)
         else:
             from contextlib import closing
+            from .core.io import get_reader_pool
             from .core.pipeline import map_bounded
             raw_size = int(np.prod(self.chunks)) * self.dtype.itemsize
             if self._sharded and not getattr(self._store, "supports_range", False):
                 raw_size += int(np.prod(self._shard_shape)) * self.dtype.itemsize
             limit = self._max_buffer_bytes if max_buffer_bytes is None else max_buffer_bytes
-            with closing(map_bounded(place, indices, workers,
-                                     size=lambda _: 3 * raw_size + 65536,
-                                     max_bytes=limit, name="zarr-read")) as results:
+            # One task per chunk does not pay for small chunks: the
+            # pipeline's per-task bookkeeping cost more than decoding a
+            # 128 KB chunk, and 8 workers were 2.5x slower than a plain
+            # pool map of the same work. Tasks carry consecutive chunks
+            # worth about _ZARR_BATCH_BYTES of decoded data; a chunk
+            # larger than that is its own task.
+            per_task = max(1, _ZARR_BATCH_BYTES // max(1, raw_size))
+
+            def batches():
+                batch = []
+                for chunk_idx in indices:
+                    batch.append(chunk_idx)
+                    if len(batch) == per_task:
+                        yield batch
+                        batch = []
+                if batch:
+                    yield batch
+
+            def place_batch(batch):
+                for chunk_idx in batch:
+                    place(chunk_idx)
+
+            with closing(map_bounded(place_batch, batches(), workers,
+                                     size=lambda b: len(b) * (3 * raw_size + 65536),
+                                     max_bytes=limit, name="zarr-read",
+                                     executor=get_reader_pool("zarr"))) as results:
                 for _ in results:
                     pass
 
