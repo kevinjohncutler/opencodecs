@@ -604,7 +604,7 @@ investigate = []
 depends_on = ["czi_fused_zstd_decode", "czi_slide_geometry", "czi_region_index"]
 current = "Zstd tiles decode through _zstd.decode_unshuffle_windows, which writes each tile's windows into the region output in one native call. Serial requests go in directory order. Parallel requests write only each tile's visible pieces (what no later same-plane tile covers), which are disjoint, so workers write in any order with unchanged last-wins results, and hidden tiles are skipped. The level index answers its first query with one vectorized scan and builds its grid on the second."
 action = "Add decode_unshuffle_windows, CziPyramidReader._decode_windows and _window_layout, _CziLevelIndex.visible with rectangle subtraction, and the lazy grid. Uncompressed levels and reads with the tile cache keep the owned-tile path."
-limits = "x86-64 Linux, against this round's starting tree: full 400-tile level 30.7 to 17.5 ms, 2000 px crop 9.9 to 4.7 ms with traced peak 18.9 to 8.3 MB, 200 small crops 68.6 to 54.2 ms, first crop 1.22 to 0.22 ms (the pre-index original was 0.31), overlapping mosaic full level 33.4 to 23.9 ms. Serial decode into a large cold output is bound by memory, not by decode: about 78 us per 128 KB tile against 50 us into a hot buffer; huge pages made it 2.2x slower. The batched iter_regions planner still pastes owned tiles."
+limits = "x86-64 Linux, against this round's starting tree: full 400-tile level 30.7 to 17.5 ms, 2000 px crop 9.9 to 4.7 ms with traced peak 18.9 to 8.3 MB, 200 small crops 68.6 to 54.2 ms, first crop 1.22 to 0.22 ms (the pre-index original was 0.31), overlapping mosaic full level 33.4 to 23.9 ms. Serial decode into a large cold output is bound by memory, not by decode: about 78 us per 128 KB tile against 50 us into a hot buffer; huge pages made it 2.2x slower. The batched iter_regions planner uses the same path through its _decode_region_windows hook, decoding each tile shared by several boxes once into every box (disjoint crops 6.3 to 5.0 ms against owned tiles on Linux); it passes each tile only the outputs it touches, because the native call converts every output it is given."
 evidence = ["src/opencodecs/codecs/_zstd.pyx:decode_unshuffle_windows", "src/opencodecs/_czi_reader.py:CziPyramidReader._decode_windows", "src/opencodecs/_czi_reader.py:_CziLevelIndex.visible", "src/opencodecs/_czi_reader.py:_subtract_rect"]
 acceptance = ["Overlapping and jittered mosaics in shuffled directory order match a canvas painted from the source tiles, whole and cropped, serial and parallel, for gray, RGB, unshuffled ZSTDHDR and ZSTD0 tiles.", "Visible pieces are disjoint and repaint every pixel with its directory-order owner; fully hidden tiles are not decoded.", "A corrupt tile raises CziError from a worker; the native call matches NumPy and refuses windows outside the tile or the destination."]
 implementation_evidence = ["tests/test_czi_region_windows.py"]
@@ -656,3 +656,19 @@ limits = "A thread-safety fix as well as a speedup: concurrent encodes could use
 evidence = ["src/opencodecs/codecs/_blosc2.pyx:encode", "src/opencodecs/codecs/_blosc2.pyx:_decompress_threaded"]
 acceptance = ["Concurrent encodes with mixed compressors equal serial ones; concurrent decodes and partial decodes are correct; shuffled chunks round-trip at every item size."]
 implementation_evidence = ["tests/test_blosc2_threads.py"]
+
+[[work]]
+id = "czi_background_encode"
+title = "Opt-in background compression for sequential CZI writes"
+priority = 3
+state = "complete"
+pilots = ["czi"]
+followups = []
+investigate = []
+depends_on = ["czi_parallel_compression"]
+current = "CziWriter(background_encode=True) copies each compressed frame of 1 MiB or more into one of two reused buffers and compresses it on a thread of the writer's own while the caller prepares the next frame; the sub-block is written, with its position patched in, on the next call or at close, so the file is byte-identical. Off by default."
+action = "Add _encode_in_background and _finish_encode to the stream writer, gate them on background_encode, unverified, compressed and large frames, and join them in write_many, close and abort."
+limits = "Opt-in because it only pays with work to overlap: writing 12 frames of 2048 x 2048 zstdhdr while the caller spends about a frame's compression time producing each one, 1.46x faster on x86-64 Linux and 1.44x on arm64 macOS; with frames ready and nothing to overlap, 0.87x and 0.96x, since the frame compresses on a different core than the one that just wrote it. A compression error surfaces one call later and aborts the writer. Verified writes and frames under 1 MiB are unaffected."
+evidence = ["src/opencodecs/_czi_writer.py:_CziStreamWriter._encode_in_background", "src/opencodecs/_czi_writer.py:_CziStreamWriter._finish_encode"]
+acceptance = ["Files are byte-identical with the option on and off for mixed large and small frames.", "A caller refilling one buffer after each write gets its frames written unchanged; a compression error surfaces on the next call and aborts the writer.", "Verified and uncompressed writes, and the default, never compress in the background; pyramid levels and write_many after a pending frame are written in order."]
+implementation_evidence = ["tests/test_czi_write_pipeline.py"]

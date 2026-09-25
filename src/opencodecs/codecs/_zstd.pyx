@@ -385,7 +385,7 @@ def decode_unshuffle_windows(data, scratch, out, Py_ssize_t itemsize,
                              Py_ssize_t samples, Py_ssize_t tile_h,
                              Py_ssize_t tile_w, windows,
                              DecodeContext context=None):
-    """Decompress one tile once and write windows of it straight into ``out``.
+    """Decompress one tile once and write windows of it straight into outputs.
 
     The frame holds a ``tile_h`` x ``tile_w`` tile of ``samples`` elements
     per pixel, each ``itemsize`` bytes, stored as ``itemsize`` byte planes
@@ -393,28 +393,30 @@ def decode_unshuffle_windows(data, scratch, out, Py_ssize_t itemsize,
     for every ``(sy0, sy1, sx0, sx1, dy, dx)`` in ``windows``, tile rows
     ``sy0:sy1`` and columns ``sx0:sx1`` are interleaved into ``out``, a
     C-contiguous 2D byte view of the destination image (one row per image
-    row), at image row ``dy``, pixel column ``dx``. Decompression, unshuffle
-    and placement share one GIL release, and no tile-sized array is
-    allocated, which is what a region read of many small tiles otherwise
-    spends its time on.
+    row), at image row ``dy``, pixel column ``dx``. ``out`` may also be a
+    list of such views, and a window a 7-tuple whose last element picks
+    one, so a tile shared by several requested regions decodes once.
+    Decompression, unshuffle and placement share one GIL release, and no
+    tile-sized array is allocated, which is what a region read of many
+    small tiles otherwise spends its time on.
 
-    Returns the decompressed size; ``out`` is written only when it equals
+    Returns the decompressed size; outputs are written only when it equals
     the tile's size, and the caller must reject any other value.
     """
     cdef:
         const uint8_t[::1] src = data
         uint8_t[::1] tmp = scratch
-        uint8_t[:, ::1] dst = out
+        uint8_t[:, ::1] dst
         const uint8_t* sp
         uint8_t* drow
-        uint8_t* origin
-        Py_ssize_t out_stride
         size_t ret
         Py_ssize_t k = itemsize, s = samples
-        Py_ssize_t n, row_elems, cnt, base, r, w_i, m
-        Py_ssize_t sy0, sy1, sx0, sx1, dy, dx
+        Py_ssize_t n, row_elems, cnt, base, r, w_i, m, o_i, n_out
+        Py_ssize_t sy0, sy1, sx0, sx1, dy, dx, target
         Py_ssize_t total, pixel_bytes
         Py_ssize_t* spec = NULL
+        uint8_t** origins = NULL
+        Py_ssize_t* strides = NULL
         ZSTD_DCtx* dctx = NULL
 
     if k < 1 or s < 1 or tile_h < 0 or tile_w < 0:
@@ -426,31 +428,51 @@ def decode_unshuffle_windows(data, scratch, out, Py_ssize_t itemsize,
         raise ZstdError("decode_unshuffle_windows: empty frame or tile")
     if tmp.shape[0] < total:
         raise ValueError(f"scratch holds {tmp.shape[0]} bytes, need {total}")
+    outs = list(out) if isinstance(out, (list, tuple)) else [out]
+    n_out = len(outs)
     windows = list(windows)
     m = len(windows)
-    spec = <Py_ssize_t*> malloc(<size_t> (6 * m + 1) * sizeof(Py_ssize_t))
-    if spec == NULL:
+    spec = <Py_ssize_t*> malloc(<size_t> (7 * m + 1) * sizeof(Py_ssize_t))
+    origins = <uint8_t**> malloc(<size_t> (n_out + 1) * sizeof(uint8_t*))
+    strides = <Py_ssize_t*> malloc(<size_t> (2 * n_out + 1) * sizeof(Py_ssize_t))
+    if spec == NULL or origins == NULL or strides == NULL:
+        free(spec)
+        free(origins)
+        free(strides)
         raise MemoryError()
+    held = []
     try:
+        for o_i in range(n_out):
+            dst = outs[o_i]
+            held.append(dst)
+            origins[o_i] = &dst[0, 0] if dst.shape[0] > 0 and dst.shape[1] > 0 else NULL
+            strides[2 * o_i] = dst.shape[0]
+            strides[2 * o_i + 1] = dst.shape[1]
         for w_i in range(m):
-            sy0, sy1, sx0, sx1, dy, dx = windows[w_i]
+            window = windows[w_i]
+            if len(window) == 7:
+                sy0, sy1, sx0, sx1, dy, dx, target = window
+            else:
+                sy0, sy1, sx0, sx1, dy, dx = window
+                target = 0
+            if not 0 <= target < n_out:
+                raise ValueError("window names an output that was not given")
             if not (0 <= sy0 <= sy1 <= tile_h and 0 <= sx0 <= sx1 <= tile_w):
                 raise ValueError("window lies outside the tile")
-            if (dy < 0 or dx < 0 or dy + (sy1 - sy0) > dst.shape[0]
-                    or (dx + (sx1 - sx0)) * pixel_bytes > dst.shape[1]):
+            if (dy < 0 or dx < 0 or dy + (sy1 - sy0) > strides[2 * target]
+                    or (dx + (sx1 - sx0)) * pixel_bytes > strides[2 * target + 1]):
                 raise ValueError("window lies outside the destination")
-            spec[6 * w_i] = sy0
-            spec[6 * w_i + 1] = sy1
-            spec[6 * w_i + 2] = sx0
-            spec[6 * w_i + 3] = sx1
-            spec[6 * w_i + 4] = dy
-            spec[6 * w_i + 5] = dx
+            spec[7 * w_i] = sy0
+            spec[7 * w_i + 1] = sy1
+            spec[7 * w_i + 2] = sx0
+            spec[7 * w_i + 3] = sx1
+            spec[7 * w_i + 4] = dy
+            spec[7 * w_i + 5] = dx
+            spec[7 * w_i + 6] = target
         if context is not None:
             dctx = context._dctx
         row_elems = tile_w * s
         sp = <const uint8_t*> &tmp[0]
-        origin = &dst[0, 0] if dst.shape[0] > 0 and dst.shape[1] > 0 else NULL
-        out_stride = dst.shape[1]
         with nogil:
             if dctx != NULL:
                 ret = ZSTD_decompressDCtx(dctx, <void*> &tmp[0], <size_t> total,
@@ -460,21 +482,25 @@ def decode_unshuffle_windows(data, scratch, out, Py_ssize_t itemsize,
                                       <const void*> &src[0], <size_t> src.shape[0])
             if not ZSTD_isError(ret) and ret == <size_t> total:
                 for w_i in range(m):
-                    sy0 = spec[6 * w_i]
-                    sy1 = spec[6 * w_i + 1]
-                    sx0 = spec[6 * w_i + 2]
-                    sx1 = spec[6 * w_i + 3]
-                    dy = spec[6 * w_i + 4]
-                    dx = spec[6 * w_i + 5]
+                    sy0 = spec[7 * w_i]
+                    sy1 = spec[7 * w_i + 1]
+                    sx0 = spec[7 * w_i + 2]
+                    sx1 = spec[7 * w_i + 3]
+                    dy = spec[7 * w_i + 4]
+                    dx = spec[7 * w_i + 5]
+                    target = spec[7 * w_i + 6]
                     cnt = (sx1 - sx0) * s
                     if cnt <= 0:
                         continue
                     for r in range(sy0, sy1):
-                        drow = origin + (dy + r - sy0) * out_stride + dx * pixel_bytes
+                        drow = (origins[target] + (dy + r - sy0) * strides[2 * target + 1]
+                                + dx * pixel_bytes)
                         base = r * row_elems + sx0 * s
                         oc_unshuffle(drow, sp + base, <size_t> n, <size_t> cnt, <size_t> k)
     finally:
         free(spec)
+        free(origins)
+        free(strides)
     if ZSTD_isError(ret):
         raise ZstdError(f'ZSTD_decompress: {ZSTD_getErrorName(ret).decode()}')
     return ret

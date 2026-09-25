@@ -373,12 +373,18 @@ def _build_file_header(
     return _pad_segment(sid + payload, payload_alloc=file_size)
 
 
+#: Smallest frame, in bytes, whose compression write() moves to a
+#: background thread. Below this the thread handoff costs about as much as
+#: compressing (an 8 KB frame takes tens of microseconds either way).
+_PIPELINE_MIN_BYTES = 1 << 20
+
+
 class _CziStreamWriter(Writer):
     """Shared sub-block sink with optional bounded pixel verification."""
 
     def __init__(self, path: str | Path, *, compression: str = "none",
                  hilo: bool = True, metadata_xml: bytes | str = b"<Metadata/>",
-                 verify: bool = False):
+                 verify: bool = False, background_encode: bool = False):
         if compression not in _CMP_NAME_TO_CODE:
             raise CziWriterError(f"unknown compression {compression!r}")
         self._path = Path(path)
@@ -392,6 +398,12 @@ class _CziStreamWriter(Writer):
         self._file = None
         self._closed = False
         self._pending_verified = None
+        # With background_encode, unverified compressed frames of at least
+        # _PIPELINE_MIN_BYTES compress on a thread of this writer's own
+        # while the caller prepares the next one; see _append.
+        self._background_encode = bool(background_encode)
+        self._pending_encode = None
+        self._encode_pool = None
         # One shuffle buffer per writer. Each frame's shuffled bytes are
         # consumed by the compressor before _append returns, and a pending
         # verification reads the encoded payload plus its own pixel snapshot,
@@ -437,7 +449,78 @@ class _CziStreamWriter(Writer):
             self._pending_verified = None
             self._emit_subblock(segment, entry)
 
+    def _finish_encode(self):
+        """Emit the frame compressing in the background, if there is one.
+
+        Its position is assigned here, in emission order, and patched into
+        the sub-block header, exactly as write_many does, so the file is
+        byte-identical to compressing on the calling thread. A compression
+        error surfaces here, one call after the frame that caused it.
+        """
+        pending = self._pending_encode
+        if pending is None:
+            return
+        self._pending_encode = None
+        segment, entry = pending.result()
+        position = self._position
+        entry["file_position"] = position
+        self._emit_subblock(segment.with_position(position), entry)
+
+    def _encode_in_background(self, array, logical_shape, pyramid_type):
+        """Snapshot the frame and compress it on this writer's own thread."""
+        if self._encode_pool is None:
+            from concurrent.futures import ThreadPoolExecutor
+            self._encode_pool = ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix="opencodecs-czi-encode")
+        # The caller may refill its array as soon as write() returns, so the
+        # frame is copied, into one of two buffers reused in turn: at most
+        # one frame is in flight, and fresh 8 MB allocations cost page
+        # faults on every frame.
+        slots = self.__dict__.setdefault("_snapshot_slots", [None, None])
+        turn = self.__dict__.get("_snapshot_turn", 0)
+        self._snapshot_turn = 1 - turn
+        pixels = slots[turn]
+        if pixels is None or pixels.shape != array.shape or pixels.dtype != array.dtype:
+            pixels = slots[turn] = np.empty(array.shape, array.dtype)
+        np.copyto(pixels, array)
+
+        def encode():
+            return _build_subblock(
+                pixels, pixel_type=_DTYPE_TO_PIXELTYPE[pixels.dtype],
+                compression_code=self._cmp_code, hilo=self._hilo,
+                file_position=0, logical_shape=logical_shape,
+                pyramid_type=pyramid_type, verification_input=None,
+                scratch=_worker_scratch())
+
+        self._pending_encode = self._encode_pool.submit(encode)
+
     def _append(self, array, *, logical_shape, pyramid_type=0):
+        # With background_encode, large compressed frames without
+        # verification compress in the background while the caller moves on;
+        # at most one is in flight, and it is written out before anything
+        # that follows it. It is opt-in because it only pays when the caller
+        # has work to overlap: a caller spending about a frame's compression
+        # time producing each frame wrote 12 frames of 2048 x 2048 1.44 to
+        # 1.46x faster, but a caller with frames ready and nothing else to
+        # do was 0.96x (macOS) to 0.87x (Linux), compressing on another
+        # core than the one that just wrote the frame. Small frames would
+        # spend more on the handoff than they save, and verified writes
+        # already overlap verification with the next compression, so both
+        # stay on this thread regardless.
+        if (self._background_encode and self._verification is None
+                and self._cmp_code != 0 and array.nbytes >= _PIPELINE_MIN_BYTES):
+            try:
+                self._finish_encode()
+                self._encode_in_background(array, logical_shape, pyramid_type)
+            except BaseException:
+                self._abort()
+                raise
+            return
+        try:
+            self._finish_encode()
+        except BaseException:
+            self._abort()
+            raise
         captured = [] if self._verification is not None else None
         offset = self._position
         if self._pending_verified is not None:
@@ -561,6 +644,7 @@ class _CziStreamWriter(Writer):
         try:
             # Nothing from write() may still be pending: positions are
             # assigned in emission order and this path emits directly.
+            self._finish_encode()
             self._finish_verified()
             # A persistent pool: creating one per call costs milliseconds
             # on a many-core Linux host, more than a batch of small frames
@@ -599,11 +683,13 @@ class _CziStreamWriter(Writer):
         if self._closed:
             return
         try:
+            self._finish_encode()
             self._finish_verified()
         except BaseException:
             self._abort()
             raise
         self._closed = True
+        self._shutdown_encoder()
         if self._verification is not None:
             try:
                 self._verification.close()
@@ -627,8 +713,22 @@ class _CziStreamWriter(Writer):
             self._file = None
             self._entries.clear()
 
+    def _shutdown_encoder(self):
+        pool, self._encode_pool = self._encode_pool, None
+        if pool is not None:
+            pool.shutdown(wait=True)
+
     def _abort(self):
         self._closed = True
+        # Join a background compression before releasing anything it uses;
+        # its result, or its error, is discarded along with the file.
+        pending, self._pending_encode = self._pending_encode, None
+        if pending is not None:
+            try:
+                pending.result()
+            except BaseException:
+                pass
+        self._shutdown_encoder()
         if self._verification is not None:
             # Preserve the original encode/sink failure while still joining
             # the outstanding verification task before releasing its buffers.
@@ -654,9 +754,17 @@ class CziWriter(_CziStreamWriter):
     """Write each frame as a sub-block immediately; finalize the index on close.
 
     By default one encoded frame and the directory entries need memory. The caller
-    may reuse its array after write() or write_frame() returns. With verify=True,
-    one owned pending segment is decoded and compared while the next is encoded;
-    close joins verification before writing the final segment and directory.
+    may reuse its array after write() or write_frame() returns. With
+    background_encode=True, compressed frames of 1 MiB or more are copied and
+    compressed on a background thread while the caller prepares the next one:
+    two frame copies are held, an error compressing a frame is raised by the
+    following write() or close() (which abort the writer, as any write error
+    does), and the file is byte-identical. That is faster only when the caller
+    does work between frames (acquisition, computation); with frames ready and
+    nothing to overlap it is slower, so it is off by default. With
+    verify=True, one owned pending segment is decoded and compared while the
+    next is encoded; close joins verification before writing the final
+    segment and directory.
     """
 
     def write(self, array: np.ndarray) -> None:

@@ -200,6 +200,16 @@ class PyramidReader(ABC):
         """Yield ``(tile_id, decoded)`` for ``tile_ids`` in the given order."""
         raise NotImplementedError
 
+    def _decode_region_windows(self, level, tile_ids, owners, boxes, outs):
+        """Optional: decode each tile once straight into every output needing it.
+
+        ``owners`` maps each tile id to indices into ``boxes`` (the
+        ``(y0, y1, x0, x1, tiles)`` requests) and ``outs`` (their arrays).
+        Return True when handled; the default returns False and the planner
+        decodes owned tiles and pastes them.
+        """
+        return False
+
     def _paste_region_tile(self, level, tile_id, tile, out, y0, y1, x0, x1):
         """Place one decoded tile's intersection with the box into ``out``."""
         raise NotImplementedError
@@ -255,6 +265,8 @@ class PyramidReader(ABC):
                     owners.setdefault(t, []).append(k)
             order = sorted(owners)
             stats["unique_tiles"] += len(order)
+            if self._decode_region_windows(L, order, owners, pending, outs):
+                return outs
             for t, tile in self._decode_region_tiles(L, order):
                 for k in owners[t]:
                     y0, y1, x0, x1, _ = pending[k]

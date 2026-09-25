@@ -71,9 +71,16 @@ and checked by ``ci/check_pipeline_catalog.py``.
 - Opening is faster: the directory parses in about a third of the
   time and the pyramid reader no longer rescans it per level (180 ms to
   3 ms on a 12k-sub-block slide).
+- ``read_regions`` on CZI decodes each tile shared by several boxes once,
+  straight into every box's output (disjoint crops 6.3 to 5.0 ms against
+  the owned-tile planner on Linux).
 - The writer shuffles natively, emits sub-blocks as parts without
   copying unverified payloads, and ``write_many`` compresses frames on
   workers while keeping the file byte-identical to sequential writes.
+- ``CziWriter(background_encode=True)`` compresses frames of 1 MiB or
+  more on a background thread while the caller prepares the next one.
+  Opt-in: with work between frames it wrote 1.44 to 1.46x faster, with
+  frames ready and nothing to overlap it was 0.87 to 0.96x.
 
 0.2.0 (2026-09-09)
 ------------------

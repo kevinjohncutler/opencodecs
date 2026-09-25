@@ -1093,13 +1093,21 @@ class OmeZarrArray:
             if self._sharded and not getattr(self._store, "supports_range", False):
                 raw_size += int(np.prod(self._shard_shape)) * self.dtype.itemsize
             limit = self._max_buffer_bytes if max_buffer_bytes is None else max_buffer_bytes
-            # One task per chunk does not pay for small chunks: the
-            # pipeline's per-task bookkeeping cost more than decoding a
-            # 128 KB chunk, and 8 workers were 2.5x slower than a plain
-            # pool map of the same work. Tasks carry consecutive chunks
-            # worth about _ZARR_BATCH_BYTES of decoded data; a chunk
-            # larger than that is its own task.
-            per_task = max(1, _ZARR_BATCH_BYTES // max(1, raw_size))
+            # On local disk one task per chunk does not pay for small
+            # chunks: the pipeline's per-task bookkeeping cost more than
+            # decoding a 128 KB chunk, and 8 workers were 2.5x slower than
+            # a plain pool map of the same work. There, tasks carry
+            # consecutive chunks worth about _ZARR_BATCH_BYTES of decoded
+            # data, and never so many that fewer tasks than workers remain.
+            # Any other store is latency-bound (HTTP, object stores), and
+            # each chunk stays its own task so fetches overlap.
+            per_task = 1
+            if isinstance(self._store, _FsStore):
+                n_chunks = 1
+                for r in ranges:
+                    n_chunks *= len(r)
+                per_task = max(1, min(_ZARR_BATCH_BYTES // max(1, raw_size),
+                                      -(-n_chunks // workers)))
 
             def batches():
                 batch = []

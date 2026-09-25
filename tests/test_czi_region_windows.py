@@ -259,3 +259,47 @@ def test_overlap_follows_mosaic_index_not_directory_order():
             np.testing.assert_array_equal(p.read_region(0), canvas)
             np.testing.assert_array_equal(p.read_region(0, y=(90, 330), x=(40, 410)),
                                           canvas[90:330, 40:410])
+
+
+@pytest.mark.parametrize("workers", [1, 4])
+def test_batched_regions_decode_shared_tiles_straight_into_each_box(workers):
+    """read_regions decodes a shared tile once into every box that needs it,
+    with the same overlap rule as a single region read."""
+    rs = np.random.RandomState(16)
+    tiles = []
+    for r in range(6):
+        for c in range(6):
+            t = rs.randint(0, 65535, (128, 128)).astype(np.uint16)
+            tiles.append((t, (r * 110, c * 110)))
+    directory = [(t, pos, [(b"M", m)]) for m, (t, pos) in reversed(list(enumerate(tiles)))]
+    canvas = _canvas(tiles)
+    h, w = canvas.shape
+    boxes = [((y, min(h, y + 180)), (x, min(w, x + 240)))
+             for y in range(0, h, 150) for x in range(0, w, 200)]
+    with _reader(mosaic_czi_bytes(directory, compression=6, hilo=True),
+                 decode_workers=workers) as p:
+        got = list(p.read_regions(0, boxes))
+        stats = p.batch_stats
+        assert stats["unique_tiles"] < stats["requested_tiles"]
+    for (yy, xx), arr in zip(boxes, got):
+        np.testing.assert_array_equal(arr, canvas[yy[0]:yy[1], xx[0]:xx[1]])
+
+
+def test_native_windows_into_several_outputs():
+    z = pytest.importorskip("opencodecs.codecs._zstd")
+    rs = np.random.RandomState(17)
+    tile = rs.randint(0, 65535, (40, 50)).astype(np.uint16)
+    planes = np.ascontiguousarray(tile.reshape(-1, 1).view(np.uint8).reshape(-1, 2).T).tobytes()
+    frame = z.encode(planes, level=3)
+    a = np.zeros((30, 30), np.uint16)
+    b = np.zeros((20, 60), np.uint16)
+    outs = [a.reshape(30, -1).view(np.uint8), b.reshape(20, -1).view(np.uint8)]
+    n = z.decode_unshuffle_windows(frame, bytearray(tile.nbytes), outs, 2, 1, 40, 50,
+                                   [(0, 30, 0, 30, 0, 0, 0), (10, 30, 5, 45, 0, 10, 1)])
+    assert n == tile.nbytes
+    np.testing.assert_array_equal(a, tile[:30, :30])
+    np.testing.assert_array_equal(b[:, 10:50], tile[10:30, 5:45])
+    assert not b[:, :10].any() and not b[:, 50:].any()
+    with pytest.raises(ValueError):
+        z.decode_unshuffle_windows(frame, bytearray(tile.nbytes), outs, 2, 1, 40, 50,
+                                   [(0, 1, 0, 1, 0, 0, 2)])

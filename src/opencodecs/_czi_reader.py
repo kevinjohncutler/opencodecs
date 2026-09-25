@@ -998,7 +998,8 @@ class CziReader(Reader):
         image row; each ``(sy0, sy1, sx0, sx1, dy, dx)`` window puts tile
         rows ``sy0:sy1``, columns ``sx0:sx1`` at image row ``dy``, pixel
         column ``dx``. The caller has checked that the sub-block is
-        zstd-compressed (5 or 6) and laid out Y, X, samples.
+        zstd-compressed (5 or 6) and laid out Y, X, samples. ``out2d`` may be
+        a list of such views, with each window's seventh element naming one.
         """
         view, _ = self._pixel_data_view(entry)
         dtype, _samples = _pixel_type_dtype(entry.pixel_type)
@@ -2068,33 +2069,49 @@ class CziPyramidReader(PyramidReader):
         return layout
 
     def _decode_windows(self, level, index, hits, out, y0, y1, x0, x1, layout):
-        """Decode each hit straight into its window of ``out``.
+        """Decode each hit straight into its window of ``out``."""
+        return self._decode_windows_into(
+            level, index, hits, {i: (0,) for i in hits},
+            [(out, y0, y1, x0, x1)], layout)
 
-        Serial requests go in composition order, each tile writing its whole
-        intersection, so a later tile overwrites an earlier one. With enough
-        work to share, each tile instead writes only the pieces that no later
-        tile on its plane covers (see _CziLevelIndex.visible): those are
-        disjoint, so workers write them in any order and the result is the
-        same pixel for pixel, overlapping Zen mosaics included, and a tile
-        hidden entirely is not decoded. Returns the decision for
-        region_stats.
+    def _decode_windows_into(self, level, index, hits, owners, targets, layout):
+        """Decode each hit once, straight into its windows of every target.
+
+        ``targets`` are ``(out, y0, y1, x0, x1)`` regions and ``owners`` maps
+        each hit to the targets it intersects, so a tile shared by several
+        requested boxes decompresses once. Serial requests go in composition
+        order, each tile writing its whole intersection, so a later tile
+        overwrites an earlier one. With enough work to share, each tile
+        instead writes only the pieces that no later tile on its plane
+        covers (see _CziLevelIndex.visible): those are disjoint, so workers
+        write them in any order and the result is the same pixel for pixel,
+        overlapping Zen mosaics included, and a tile hidden entirely is not
+        decoded. Returns the decision for region_stats.
         """
         y_i, x_i = layout
         entries = level.reader
         bounds = index.bounds
-        out2d = out.reshape(out.shape[0], -1).view(np.uint8)
+        out2ds = [out.reshape(out.shape[0], -1).view(np.uint8)
+                  for out, _, _, _, _ in targets]
         czi = self._czi
 
         def clipped(i, rects):
+            """``(outputs, windows)`` for tile ``i``: only the outputs it
+            touches, since the native call converts each one it is given."""
             ty0, _, tx0, _ = bounds[i]
-            windows = []
-            for ry0, ry1, rx0, rx1 in rects:
-                iy0, iy1 = max(y0, ry0), min(y1, ry1)
-                ix0, ix1 = max(x0, rx0), min(x1, rx1)
-                if iy1 > iy0 and ix1 > ix0:
-                    windows.append((iy0 - ty0, iy1 - ty0, ix0 - tx0, ix1 - tx0,
-                                    iy0 - y0, ix0 - x0))
-            return windows
+            outs, windows = [], []
+            for k in owners[i]:
+                _, y0, y1, x0, x1 = targets[k]
+                slot = len(outs)
+                for ry0, ry1, rx0, rx1 in rects:
+                    iy0, iy1 = max(y0, ry0), min(y1, ry1)
+                    ix0, ix1 = max(x0, rx0), min(x1, rx1)
+                    if iy1 > iy0 and ix1 > ix0:
+                        windows.append((iy0 - ty0, iy1 - ty0, ix0 - tx0, ix1 - tx0,
+                                        iy0 - y0, ix0 - x0, slot))
+                if windows and windows[-1][6] == slot:
+                    outs.append(out2ds[k])
+            return outs, windows
 
         sizes = [self._region_tile_bytes(level, i) for i in hits]
         total = sum(sizes)
@@ -2102,14 +2119,16 @@ class CziPyramidReader(PyramidReader):
         workers = 1
         if n_batches >= 2 and self._decode_workers != 1:
             from .core.parallel import resolve_workers
+            # Size by decoded tile bytes as well as outputs: many small
+            # boxes (disjoint crops) write little but decode whole tiles.
             workers = resolve_workers(self._decode_workers, n_batches,
-                                      output_bytes=out.nbytes,
+                                      output_bytes=max(total, sum(t[0].nbytes for t in targets)),
                                       has_decode_work=True, max_workers=8)
         if workers <= 1:
             for i in hits:
-                windows = clipped(i, (bounds[i],))
+                outs, windows = clipped(i, (bounds[i],))
                 if windows:
-                    czi._decode_windows(entries[i], out2d, windows, y_i, x_i)
+                    czi._decode_windows(entries[i], outs, windows, y_i, x_i)
             return {"workers": 1, "batches": 0, "tiles_hidden": 0}
 
         batches, current, current_bytes = [], [], 0
@@ -2125,9 +2144,9 @@ class CziPyramidReader(PyramidReader):
         def run(batch):
             hidden = 0
             for i in batch:
-                windows = clipped(i, index.visible(i))
+                outs, windows = clipped(i, index.visible(i))
                 if windows:
-                    czi._decode_windows(entries[i], out2d, windows, y_i, x_i)
+                    czi._decode_windows(entries[i], outs, windows, y_i, x_i)
                 else:
                     hidden += 1
             return hidden
@@ -2136,12 +2155,30 @@ class CziPyramidReader(PyramidReader):
 
         from .core.pipeline import map_bounded
         # Nothing is retained between tasks (each worker decodes into its own
-        # scratch and writes the output), so no byte reservation is needed.
+        # scratch and writes the outputs), so no byte reservation is needed.
         with closing(map_bounded(run, iter(batches), workers, size=lambda b: 0,
                                  executor=_get_pool(), name="czi-region")) as results:
             hidden = sum(results)
         return {"workers": workers, "batches": len(batches),
                 "tiles_hidden": hidden}
+
+    def _decode_region_windows(self, level, tile_ids, owners, boxes, outs):
+        """Planner hook: decode shared tiles straight into every box's output.
+
+        Used by PyramidReader.iter_regions; returns False (so the planner
+        falls back to decoding owned tiles and pasting them) when the level
+        is not window-decodable or the decoded-tile cache is on.
+        """
+        if self.tile_cache is not None:
+            return False
+        layout = self._window_layout(level)
+        if layout is None:
+            return False
+        targets = [(outs[k], y0, y1, x0, x1)
+                   for k, (y0, y1, x0, x1, _) in enumerate(boxes)]
+        self._last_decode = self._decode_windows_into(
+            level, self._level_index(level), list(tile_ids), owners, targets, layout)
+        return True
 
     def _read_region(self, level, y0, y1, x0, x1):
         """Assemble a (y0:y1, x0:x1) region from a pyramid level.
