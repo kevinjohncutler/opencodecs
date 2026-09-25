@@ -556,10 +556,10 @@ investigate = []
 depends_on = ["czi_region_index"]
 current = "Level pixels count from the slide origin (the smallest level-0 start, as czifile reports it) and divide each tile's full-resolution start by the level's scale. CziPyramidReader.origin maps level pixels back to slide coordinates."
 action = "Replace the per-level extent that added stored sizes to full-resolution starts with a placement computed once per level, and build each level's index from it."
-limits = "A correctness fix found while building a slide-shaped benchmark: before it, the Axioscan corpus slide (origin 20086, -104227) reported every level as (N, 0) and read nothing, in the committed code and in the pre-optimization tree alike. Files whose tiles start at zero read exactly as before. Region coordinates on files with a nonzero origin are now relative to the origin, as czifile's are. The corpus slide is JPEG XR, which the reader cannot decode, so on real data only geometry is verified; pixels are verified on synthetic slides with a negative origin."
+limits = "A correctness fix found while building a slide-shaped benchmark: before it, the Axioscan corpus slide (origin 20086, -104227) reported every level as (N, 0) and read nothing, in the committed code and in the pre-optimization tree alike. Files whose tiles start at zero read exactly as before. Region coordinates on files with a nonzero origin are now relative to the origin, as czifile's are. Overlapping tiles now compose in ascending mosaic index, as libCZI and czifile do; directory order put the wrong tile on top for 8.9 million overlap pixels of the corpus slide. With the optional JPEG XR decoder its full level 0 matches czifile exactly."
 evidence = ["src/opencodecs/_czi_reader.py:_level_placement", "src/opencodecs/_czi_reader.py:CziPyramidReader.origin"]
-acceptance = ["Every level of a synthetic slide at a negative origin reads as the exact decimation of the full-resolution image, for whole levels and random crops.", "Level 0 of the real Axioscan slide matches czifile's origin and shape, and every level's extent matches what czifile's independently parsed directory entries give."]
-implementation_evidence = ["tests/test_czi_slide_geometry.py"]
+acceptance = ["Overlapping tiles compose with the higher mosaic index on top, whatever their directory order.", "Every level of a synthetic slide at a negative origin reads as the exact decimation of the full-resolution image, for whole levels and random crops.", "Level 0 of the real Axioscan slide matches czifile's origin and shape, and every level's extent matches what czifile's independently parsed directory entries give."]
+implementation_evidence = ["tests/test_czi_slide_geometry.py", "tests/test_jpegxr.py", "tests/test_czi_region_windows.py"]
 
 [[work]]
 id = "czi_directory_parse"
@@ -608,3 +608,19 @@ limits = "x86-64 Linux, against this round's starting tree: full 400-tile level 
 evidence = ["src/opencodecs/codecs/_zstd.pyx:decode_unshuffle_windows", "src/opencodecs/_czi_reader.py:CziPyramidReader._decode_windows", "src/opencodecs/_czi_reader.py:_CziLevelIndex.visible", "src/opencodecs/_czi_reader.py:_subtract_rect"]
 acceptance = ["Overlapping and jittered mosaics in shuffled directory order match a canvas painted from the source tiles, whole and cropped, serial and parallel, for gray, RGB, unshuffled ZSTDHDR and ZSTD0 tiles.", "Visible pieces are disjoint and repaint every pixel with its directory-order owner; fully hidden tiles are not decoded.", "A corrupt tile raises CziError from a worker; the native call matches NumPy and refuses windows outside the tile or the destination."]
 implementation_evidence = ["tests/test_czi_region_windows.py"]
+
+[[work]]
+id = "czi_jpegxr"
+title = "JPEG XR decode for CZI compression 4"
+priority = 1
+state = "complete"
+pilots = ["czi"]
+followups = []
+investigate = []
+depends_on = ["czi_slide_geometry"]
+current = "An optional _jpegxr extension decodes JPEG XR through a small C shim over jxrlib (open from memory, report the pixel layout, copy into a caller buffer), releasing the GIL for header parse and decode. The CZI reader decodes compression 4 through it into the tile's destination, in the sub-block's stored channel order."
+action = "Add jpegxr_shim.c and _jpegxr.pyx, gate the build on jxrlib's headers, and route compression 4 in CziReader._decode_payload."
+limits = "Decode only. Built when jxrlib is installed; the wheel build does not build jxrlib yet, so published wheels lack it and such sub-blocks raise CziError there. Verified on Linux and arm64 macOS; the Windows build of this extension is untested. JPEG XR tiles use the owned-tile region path, not the direct-to-output one."
+evidence = ["src/opencodecs/codecs/jpegxr_shim.c:oc_jxr_open", "src/opencodecs/codecs/_jpegxr.pyx:decode", "src/opencodecs/_czi_reader.py:CziReader._decode_jpegxr"]
+acceptance = ["Decoded pixels match imagecodecs' decode of the same stream for 8- and 16-bit and float gray, color and alpha, odd sizes, lossless and lossy.", "CZI JPEG XR mosaics read like the same tiles uncompressed; a stream of the wrong size or a corrupt stream raises CziError.", "Tiles and an overlapping region of the real Axioscan slide match czifile's decode and mosaic-order composition."]
+implementation_evidence = ["tests/test_jpegxr.py"]

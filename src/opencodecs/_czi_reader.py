@@ -119,6 +119,7 @@ def _decode_scratch() -> ScratchBuffer:
 
 
 _ZSTD = None
+_JPEGXR = None
 
 
 def _load_zstd():
@@ -891,10 +892,14 @@ class CziReader(Reader):
             return CziReader._decode_zstdhdr(
                 view, dtype, out_shape, n_pixels, dest=dest, scratch=scratch)
 
+        if compression == 4:
+            return CziReader._decode_jpegxr(
+                view, pixel_type, dtype, out_shape, n_pixels, dest=dest)
+
         if compression not in (0, 5):
-            raise CziError(  # pragma: no cover - non-{0,5,6} compression rare
+            raise CziError(  # pragma: no cover - non-{0,4,5,6} compression rare
                 f"unsupported sub-block compression {compression} "
-                f"(only 0, 5, 6 are implemented)")
+                f"(only 0, 4, 5, 6 are implemented)")
 
         out, out_bytes = _payload_destination(dest, dtype, out_shape, n_pixels)
 
@@ -913,6 +918,50 @@ class CziReader(Reader):
         if n_pixels == 0:  # pragma: no cover - empty tile defense
             return out
         CziReader._zstd_into(view, out_bytes, expected_bytes)
+        return out
+
+    @staticmethod
+    def _decode_jpegxr(view, pixel_type, dtype, out_shape, n_pixels, *, dest=None):
+        """Decode a JPEG XR (compression 4) sub-block into its tile.
+
+        Most Zeiss whole-slide scans store tiles this way. Pixels come back
+        in CZI's stored order: blue first for the BGR pixel types, whichever
+        order the stream itself uses (Zen may encode 48-bit color as RGB).
+        The stream must decode to exactly this sub-block's pixel type and
+        size; anything else is malformed for this sub-block.
+        """
+        global _JPEGXR
+        if _JPEGXR is None:
+            try:
+                from .codecs import _jpegxr
+            except ImportError as exc:
+                raise CziError(
+                    "this CZI stores JPEG XR sub-blocks (compression 4), which "
+                    "need the optional _jpegxr extension (built when jxrlib's "
+                    "headers are found)") from exc
+            _JPEGXR = _jpegxr
+        out, out_bytes = _payload_destination(dest, dtype, out_shape, n_pixels)
+        if n_pixels == 0:  # pragma: no cover - empty tile defense
+            return out
+        bgr = True if pixel_type in _BGR_PIXEL_TYPES + _BGRA_PIXEL_TYPES else None
+        try:
+            header = _JPEGXR.info(view)
+        except _JPEGXR.JpegXrError as exc:
+            raise CziError(f"CZI JPEG XR payload is not decodable: {exc}") from exc
+        itemsize = header["bits_per_pixel"] // 8
+        if header["width"] * header["height"] * itemsize != out_bytes.nbytes:
+            raise CziError(
+                f"CZI JPEG XR payload is {header['width']}x{header['height']} "
+                f"at {header['bits_per_pixel']} bits per pixel; the sub-block "
+                f"holds {out_bytes.nbytes} bytes")
+        try:
+            result = _JPEGXR.decode(view, out=out_bytes, bgr=bgr)
+        except (_JPEGXR.JpegXrError, ValueError) as exc:
+            raise CziError(f"CZI JPEG XR payload is not decodable: {exc}") from exc
+        if result.dtype != dtype:
+            raise CziError(
+                f"CZI JPEG XR payload decodes to {result.dtype}, but the "
+                f"sub-block's pixel type is {dtype}")
         return out
 
     @staticmethod
@@ -1504,7 +1553,7 @@ class _CziLevelIndex:
     touches only the cells under its box; an irregular tile simply registers
     in every cell it spans, which keeps lookups exact for uneven layouts at
     the cost of a longer candidate list. Candidates are then bounds-checked,
-    and hits come back in directory order so composition semantics do not
+    and hits come back in composition order so composition semantics do not
     change. The index never mixes planes: each tile carries a key of its
     non-spatial coordinates, and the reader refuses a request that touches
     more than one.
@@ -1607,7 +1656,7 @@ class _CziLevelIndex:
     def visible(self, i):
         """The parts of tile ``i`` that no later tile on its plane covers.
 
-        Where tiles overlap, the later one in directory order owns the pixel,
+        Where tiles overlap, the later one in composition order owns the pixel,
         so each tile only needs to write what is left of it after removing
         every later same-plane tile. Those pieces are disjoint across tiles,
         which is what lets workers write any tile at any time. Rectangles in
@@ -1641,7 +1690,7 @@ class _CziLevelIndex:
         return pieces
 
     def query(self, y0, y1, x0, x1):
-        """Return (hits in directory order, candidates examined)."""
+        """Return (hits in composition order, candidates examined)."""
         if y1 <= y0 or x1 <= x0 or not self.n:
             return [], 0
         if self.n <= self.SMALL:
@@ -1738,9 +1787,17 @@ class CziPyramidReader(PyramidReader):
         #: source. Informational; not part of the pixel contract.
         self.region_stats: dict = {}
 
-        # Build a PyramidLevel per distinct scale factor.
+        # Build a PyramidLevel per distinct scale factor. Each level lists
+        # its tiles in composition order: where tiles overlap, the later one
+        # wins. For mosaics that is ascending mosaic index (M), ties keeping
+        # directory order, the rule libCZI and czifile apply (higher M on
+        # top); directory order alone put the wrong tile on top wherever Zen
+        # wrote tiles out of M order, which it does (on the Axioscan corpus
+        # slide, 8.9 million overlap pixels at level 0). Every path below
+        # composes in this list's order, so they all inherit the rule.
         self._level_entries: list[list[CziSubBlockEntry]] = [
-            czi.entries_at_level(i) for i in range(len(self._scales))
+            _composition_order(czi.entries_at_level(i))
+            for i in range(len(self._scales))
         ]
         # Sub-block starts are full-resolution coordinates on the slide, not
         # pixels of any level: Zen scans start far from zero, often
@@ -1844,7 +1901,7 @@ class CziPyramidReader(PyramidReader):
     # ----- Batching hooks shared with the PyramidReader planner -----
 
     def _select_tiles(self, level, y0, y1, x0, x1):
-        """Intersecting sub-blocks in directory order, refusing mixed planes.
+        """Intersecting sub-blocks in composition order, refusing mixed planes.
 
         The old scan silently overwrote one plane with another when tiles
         from different channel, time, depth or scene coordinates shared a
@@ -1884,7 +1941,7 @@ class CziPyramidReader(PyramidReader):
     def _decode_region_tiles(self, level, tile_ids, *, output_bytes=None):
         """Yield ``(i, tile)`` in the given order, from the cache when enabled.
 
-        Ids arrive sorted (directory order), which is also the order claims
+        Ids arrive sorted (composition order), which is also the order claims
         are taken in, so two threads reading overlapping regions cannot wait
         on each other. Misses are decoded through the batched path in order
         and stored as they arrive; a failure releases every unstored claim
@@ -2013,7 +2070,7 @@ class CziPyramidReader(PyramidReader):
     def _decode_windows(self, level, index, hits, out, y0, y1, x0, x1, layout):
         """Decode each hit straight into its window of ``out``.
 
-        Serial requests go in directory order, each tile writing its whole
+        Serial requests go in composition order, each tile writing its whole
         intersection, so a later tile overwrites an earlier one. With enough
         work to share, each tile instead writes only the pieces that no later
         tile on its plane covers (see _CziLevelIndex.visible): those are
@@ -2093,7 +2150,7 @@ class CziPyramidReader(PyramidReader):
         bounds intersect the request. Zstd tiles decode straight into their
         window of the output (see _decode_windows); anything else, and any
         read with the tile cache on, decodes owned tiles serially or through
-        the bounded pipeline and pastes them in directory order on this
+        the bounded pipeline and pastes them in composition order on this
         thread. Either way, where tiles overlap the later one wins exactly
         as before. Pixels no tile covers stay zero. A request touching more
         than one plane is refused (see _select_tiles).
@@ -2142,12 +2199,23 @@ class CziPyramidReader(PyramidReader):
         return out
 
 
+def _composition_order(entries):
+    """Entries sorted so that a later one is drawn over an earlier one.
+
+    Ascending mosaic index when any tile has one, stable so equal indices
+    (and files without M) keep directory order.
+    """
+    if any(e.mosaic_index >= 0 for e in entries):
+        return sorted(entries, key=lambda e: e.mosaic_index)
+    return list(entries)
+
+
 def _level_placement(entries, origin, scale):
     """Each tile's (y, x) position and stored (h, w) in one level's pixels.
 
     Positions are the full-resolution start relative to ``origin``, divided
     by the level's scale and floored, so a level's grid is the full slide
-    shrunk by its scale. Returns four int64 arrays in directory order.
+    shrunk by its scale. Returns four int64 arrays in the entries' order.
     """
     ref_dims = entries[0].dims
     y_i = ref_dims.index("Y") if "Y" in ref_dims else len(ref_dims) - 2

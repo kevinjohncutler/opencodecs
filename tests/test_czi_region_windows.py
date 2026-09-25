@@ -235,3 +235,27 @@ def test_native_window_rejects_out_of_bounds_and_wrong_sizes():
     # The right frame with no windows decodes and writes nothing.
     assert z.decode_unshuffle_windows(frame, scratch, out, 2, 1, 32, 32, []) == 2048
     assert not out.any()
+
+
+def test_overlap_follows_mosaic_index_not_directory_order():
+    """Where tiles overlap, the higher mosaic index (M) is on top.
+
+    That is the libCZI and czifile rule; Zen writes tiles out of M order,
+    so directory order put the wrong tile on top. Directory order is the
+    reverse of M order here, and the parallel path must agree.
+    """
+    rs = np.random.RandomState(15)
+    tiles = []
+    for r in range(5):
+        for c in range(5):
+            t = rs.randint(0, 65535, (128, 128)).astype(np.uint16)
+            tiles.append((t, (r * 100, c * 100)))
+    m_of = list(range(len(tiles)))
+    directory = [(t, pos, [(b"M", m)]) for (t, pos), m in reversed(list(zip(tiles, m_of)))]
+    canvas = _canvas(tiles)  # painted in ascending M order
+    for workers in (1, 4):
+        with _reader(mosaic_czi_bytes(directory, compression=6, hilo=True),
+                     decode_workers=workers) as p:
+            np.testing.assert_array_equal(p.read_region(0), canvas)
+            np.testing.assert_array_equal(p.read_region(0, y=(90, 330), x=(40, 410)),
+                                          canvas[90:330, 40:410])

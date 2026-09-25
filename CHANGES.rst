@@ -27,6 +27,14 @@ and checked by ``ci/check_pipeline_catalog.py``.
 
 **CZI: faster reads and writes, and real slides read correctly**
 
+- JPEG XR sub-blocks (compression 4, used by most Zeiss slide scans) now
+  decode through a new optional ``_jpegxr`` extension over jxrlib, built
+  when jxrlib is installed. Every tile of the Axioscan corpus slide and its
+  whole 20684 x 32751 level 0 match czifile exactly.
+- Fix: overlapping mosaic tiles composed in directory order. Zen writes
+  tiles out of mosaic-index order, and libCZI and czifile draw the higher
+  mosaic index on top; each level now composes in that order, which on the
+  corpus slide changes 8.9 million overlap pixels at level 0.
 - Fix: ``CziPyramidReader`` took sub-block starts as level pixels.
   Zen stores them in full-resolution slide coordinates, often far from
   zero and negative, so a real slide reported every level as ``(N, 0)``.

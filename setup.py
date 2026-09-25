@@ -1665,6 +1665,31 @@ extensions = [
         define_macros=[("NPY_NO_DEPRECATED_API", "NPY_1_7_API_VERSION")],
         language="c",
     ),
+    # JPEG XR decode via jxrlib, for CZI sub-blocks with compression 4
+    # (most Zeiss whole-slide scans). jxrlib installs its headers under
+    # include/jxrlib/ and needs __ANSI__ off Windows; the shim declares
+    # the in-memory stream constructor its public headers leave out.
+    Extension(
+        name="opencodecs.codecs._jpegxr",
+        sources=[
+            "src/opencodecs/codecs/_jpegxr.pyx",
+            "src/opencodecs/codecs/jpegxr_shim.c",
+        ],
+        include_dirs=[
+            str(PKG_CODECS),
+            numpy.get_include(),
+            *[str(Path(d) / "jxrlib")
+              for d in _resolve_include_dirs("jxrlib/JXRGlue.h")],
+        ],
+        library_dirs=_lib_dirs_for_probes(),
+        libraries=["jxrglue", "jpegxr"],
+        define_macros=[
+            ("NPY_NO_DEPRECATED_API", "NPY_1_7_API_VERSION"),
+            *([] if sys.platform == "win32" else [("__ANSI__", "1")]),
+            ("DISABLE_PERF_MEASUREMENT", "1"),
+        ],
+        language="c",
+    ),
     # JPEG-2000 via OpenJPEG. The header lives in a versioned subdir on
     # most platforms (openjpeg-2.5/), but conda-forge installs it directly
     # at <prefix>/Library/include/openjpeg.h. Probe both layouts.
@@ -2115,6 +2140,7 @@ _REQUIRED_HEADERS = {
     "opencodecs.codecs._uhdr":   ("ultrahdr_api.h",),
     "opencodecs.codecs._isal":   ("isa-l/igzip_lib.h",),
     "opencodecs.codecs._webp":   ("webp/encode.h",),
+    "opencodecs.codecs._jpegxr": ("jxrlib/JXRGlue.h",),
     "opencodecs.codecs._jpeg2k": ("openjpeg-2.5/openjpeg.h", "openjpeg-2.4/openjpeg.h"),
     "opencodecs.codecs._avif":   ("avif/avif.h",),
     "opencodecs.codecs._heif":   ("libheif/heif.h",),

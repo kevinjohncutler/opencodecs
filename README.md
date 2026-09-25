@@ -245,9 +245,14 @@ with open_remote_hdf5("https://bucket.s3.amazonaws.com/big.h5") as f:
     arr = f["img"][:1024, :1024]                          # all from cache
 ```
 
-`czi` decodes types 0 (uncompressed) and 6 (ZSTDHDR) — the entire
-modern Zen archive. JPEG-XR sub-blocks (rare in 2022+ output) raise
-`NotImplementedError`. The reader exposes `metadata_bytes` and
+`czi` decodes compression types 0 (uncompressed), 5 (zstd), 6 (ZSTDHDR)
+and 4 (JPEG XR). JPEG XR, which most Zeiss slide scans use, needs the
+optional `_jpegxr` extension, built when jxrlib is installed (Homebrew
+`jxrlib`, conda-forge `jxrlib`, Debian/Ubuntu `libjxr-dev`); it is not in
+the published wheels yet, and a JPEG XR sub-block without it raises
+`CziError`. Pyramid levels are placed from the slide origin and scale, and
+overlapping mosaic tiles compose with the higher mosaic index on top, as
+libCZI and czifile do. The reader exposes `metadata_bytes` and
 `metadata_xml` as lazy zero-copy accessors.
 
 ### zarr v3 codecs
@@ -546,7 +551,7 @@ build).
 Deferred work (see [`docs/TODO_DEFERRED.md`](docs/TODO_DEFERRED.md)):
 
 - CCITT Fax3/Fax4 encode: legacy fax, zero scientific users
-- JPEG-XR: abandoned format outside niche DICOM
+- JPEG XR encode (decode exists for CZI; see above)
 
 GIF and JPEG XL destination writers now drain encoded frame output before close.
 The shared pipeline also supplies bounded independent-piece scheduling, seven

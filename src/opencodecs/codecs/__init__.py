@@ -123,6 +123,7 @@ _EXTENSIONS = (
     "_bcdec",       # BC1-7 / DXT / BPTC texture decoder (vendored, no deps)
     "_charls",      # JPEG-LS (optional; built when libcharls is on system)
     "_openjph",     # HTJ2K / JPEG-2000 Part-15 (optional; needs OpenJPH)
+    "_jpegxr",      # JPEG XR decode (optional; needs jxrlib), for CZI compression 4
     "_eer",         # Thermo Fisher EER cryo-EM event-list decoder (vendored)
     "_brunsli",     # lossless JPEG transcoder (~20% smaller)
     "_gif",         # GIF via giflib

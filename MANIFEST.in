@@ -21,6 +21,7 @@ recursive-include src/opencodecs *.pyx *.pxd *.h *.hpp
 include src/opencodecs/codecs/b2nd_helpers.c
 include src/opencodecs/codecs/isal_shim.c
 include src/opencodecs/codecs/webp_shim.c
+include src/opencodecs/codecs/jpegxr_shim.c
 include src/opencodecs/codecs/openjph_shim.cpp
 recursive-include 3rdparty *.c *.h *.hpp *.md *.rst *.txt *.toml *.json
 

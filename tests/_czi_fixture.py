@@ -207,6 +207,14 @@ def _build_subblock(
         data = zstd_encode(pixel_bytes, level=3)
     elif compression == 6:
         data = _zsthdr_compress(pixel_bytes, itemsize, hilo)
+    elif compression == 4:
+        # JPEG XR, written by imagecodecs (the reference binding), lossless.
+        # Grayscale only: which channel order a color stream carries is a
+        # property of the stream, tested on the codec itself.
+        import imagecodecs
+        if array.ndim != 2:
+            raise ValueError("test JPEG XR sub-blocks are grayscale")
+        data = imagecodecs.jpegxr_encode(np.ascontiguousarray(array))
     else:
         raise ValueError(f"unsupported test compression {compression}")
 
