@@ -62,7 +62,8 @@ def write_dest(data: bytes, dest: Any) -> bytes | None:
     if dest is None:
         return data
     if hasattr(dest, "write"):
-        dest.write(data)
+        from ._write_helpers import write_all
+        write_all(dest, data)
         return None
     Path(dest).write_bytes(data)
     return None

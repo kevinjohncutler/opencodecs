@@ -113,7 +113,8 @@ class ArrayReader(Reader):
     ``iter_frames`` on it whichever format was opened.
 
     A format that can fetch one plane without the others says so by
-    defining ``_frame``; ``iter_frames`` then streams rather than
+    defining ``_frame`` and keeping ``is_slice_addressable`` true;
+    ``iter_frames`` then streams rather than
     materializing the volume and slicing it, which is what keeps
     iterating a remote MRC or a DICOM series to one plane at a time.
     """
@@ -132,7 +133,7 @@ class ArrayReader(Reader):
             yield self.asarray()
             return
         frame = getattr(self, "_frame", None)
-        if frame is not None:
+        if frame is not None and getattr(self, "is_slice_addressable", True):
             for i in range(n):
                 yield frame(i)
             return
@@ -157,7 +158,7 @@ class Writer(ABC):
 
     @abstractmethod
     def write_frame(self, arr: np.ndarray, **opts) -> None:
-        """Encode one frame into the stream."""
+        """Submit a frame. The caller may reuse its buffer on return."""
 
     def close(self) -> bytes | None:  # pragma: no cover - default no-op for subclasses
         """Finalize. Returns bytes for in-memory mode, else None."""
@@ -197,6 +198,7 @@ class Codec(ABC):
     can_encode: bool = False
     can_decode: bool = False
     multi_frame: bool = False    # supports stacks / animations
+    max_writer_frames: int | None = None
     # Random-access chunks that are actually cheap: fetching chunk N
     # must not decode 0..N-1. Distinct from Reader.is_chunked, which
     # only says indexing is offered. Setting this True when the reader
@@ -206,6 +208,20 @@ class Codec(ABC):
     chunked: bool = False
     streaming_decode: bool = False  # iter_frames yields without full materialization
     parallel_decode: bool = False   # multi-chunk parallel decode supported
+    # Writer capabilities concern writer(), not the eager encode() call.
+    streaming_encode: bool = False  # encodes frames without retaining the stack
+    streaming_output: bool = False  # emits encoded bytes to dest before close
+    decode_overlap: bool = False    # bounded input prefetch overlaps native decode
+
+    @property
+    def writer_buffering(self) -> str:
+        """Retention through writer(): unsupported, all, frame, or encoded.
+
+        Encoded retention may also include one pending raw frame.
+        In-memory destinations necessarily retain their encoded output.
+        Streaming claims describe a file destination, not dest=None.
+        """
+        return "all" if self.can_encode else "unsupported"
 
     # Color / dtype support — informational
     supported_dtypes: tuple = ()  # e.g. (np.uint8, np.uint16, np.float16, np.float32)
@@ -258,6 +274,21 @@ class Codec(ABC):
                 f"has neither. Use {self.name}.decode() for the bytes, "
                 f"or open() the container the codec sits inside.")
         return _SingleFrameReader(arr)
+
+    def decode_chunks(self, chunks, **opts):
+        """Incrementally decode byte chunks with bounded emitted buffers.
+
+        This is separate from frame iteration and eager decode. Supported
+        compressors retain native state between feeds. Unsupported codecs
+        raise explicitly; output is never synthesized by slicing eager decode.
+        """
+        from .streaming import decode_chunks
+        return decode_chunks(chunks, codec=self.name, **opts)
+
+    def encode_chunks(self, chunks, **opts):
+        """Incrementally encode byte chunks; close the iterator on early exit."""
+        from .streaming import encode_chunks
+        return encode_chunks(chunks, codec=self.name, **opts)
 
     def writer(self, dest: Any = None, **opts) -> "Writer":
         """Open ``dest`` for streaming / multi-frame writing.
@@ -342,7 +373,12 @@ class _BufferedWriter(Writer):
             raise TypeError(
                 f"{self._codec.name}: per-frame options are not supported "
                 f"by the buffering writer, got {sorted(opts)}")
-        self._frames.append(np.asarray(arr))
+        limit = self._codec.max_writer_frames
+        if limit is not None and len(self._frames) >= limit:
+            raise ValueError(
+                f"{self._codec.name}: multiple-frame encoding is not supported")
+        # The caller may refill an acquisition buffer after this returns.
+        self._frames.append(np.array(arr, copy=True))
 
     def close(self) -> bytes | None:
         if self._closed:
@@ -411,6 +447,11 @@ def list_codecs() -> list[dict]:
             "multi_frame": c.multi_frame,
             "chunked": c.chunked,
             "parallel_decode": c.parallel_decode,
+            "streaming_decode": c.streaming_decode,
+            "streaming_encode": c.streaming_encode,
+            "streaming_output": c.streaming_output,
+            "decode_overlap": c.decode_overlap,
+            "writer_buffering": c.writer_buffering,
             "dtypes": [np.dtype(d).name for d in c.supported_dtypes],
         })
     out.sort(key=lambda d: d["name"])

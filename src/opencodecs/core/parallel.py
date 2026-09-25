@@ -71,7 +71,8 @@ def resolve_workers(numthreads: int | None, n_items: int, *,
     literally would mean quietly doing what the caller asked, twice as
     slowly.
     """
-    if not has_decode_work:
+    from .pipeline import in_worker
+    if not has_decode_work or in_worker():
         return 1
     if numthreads is not None:
         n = int(numthreads)
@@ -87,7 +88,7 @@ def resolve_workers(numthreads: int | None, n_items: int, *,
 
 
 def run_batched(fn: Callable[[T], None], items: Sequence[T], workers: int, *,
-                name: str = "decode") -> None:
+                name: str = "decode", budget=None) -> None:
     """Apply ``fn`` to every item, on ``workers`` threads, in batches.
 
     ``workers <= 1`` runs inline and creates no pool at all, which is
@@ -107,6 +108,13 @@ def run_batched(fn: Callable[[T], None], items: Sequence[T], workers: int, *,
         return
 
     from concurrent.futures import ThreadPoolExecutor
+    from .pipeline import WorkerBudget, in_worker
+    if in_worker():
+        for it in items:
+            fn(it)
+        return
+    budget = WorkerBudget(workers) if budget is None else budget
+    workers = min(workers, budget.workers)
 
     step = (len(items) + workers - 1) // workers
     batches = [items[i:i + step] for i in range(0, len(items), step)]
@@ -117,9 +125,78 @@ def run_batched(fn: Callable[[T], None], items: Sequence[T], workers: int, *,
 
     with ThreadPoolExecutor(max_workers=workers,
                             thread_name_prefix=f"opencodecs-{name}") as ex:
-        for _ in ex.map(_run_batch, batches):
+        for _ in ex.map(lambda batch: budget.run(_run_batch, batch), batches):
             pass
 
 
 __all__ = ["resolve_workers", "run_batched", "DEFAULT_MAX_WORKERS",
-           "DEFAULT_MIN_ITEMS", "DEFAULT_MIN_BYTES_PER_WORKER"]
+           "DEFAULT_MIN_ITEMS", "DEFAULT_MIN_BYTES_PER_WORKER", "map_batches"]
+
+
+def map_batches(fn, items, workers: int, *, batch_size: int = 16,
+                max_pending: int | None = None, name: str = "codec", budget=None):
+    """Yield ordered result batches without consuming the whole input.
+
+    Each future handles a batch, amortizing scheduling for small tiles.
+    At most max_pending batches are submitted, plus the batch currently
+    yielded to the consumer. Consumption supplies backpressure. A writer
+    can emit one result while workers encode the following batches.
+
+    The caller must consume or close the iterator. Early close or an
+    exception cancels queued work and joins running workers before return.
+    Serial mode uses the same batches and never creates a pool.
+    """
+    from itertools import islice
+    if batch_size < 1:
+        raise ValueError("batch_size must be positive")
+    from .pipeline import WorkerBudget, in_worker
+    workers = max(1, int(workers))
+    budget = WorkerBudget(workers) if budget is None else budget
+    workers = min(workers, budget.workers)
+    if in_worker():
+        workers = 1
+    if max_pending is None:
+        max_pending = workers + 1
+    if max_pending < 1:
+        raise ValueError("max_pending must be positive")
+    source = iter(items)
+
+    def batches():
+        while True:
+            batch = tuple(islice(source, batch_size))
+            if not batch:
+                return
+            yield batch
+
+    def apply(batch):
+        return tuple(fn(item) for item in batch)
+
+    if workers == 1:
+        for batch in batches():
+            yield apply(batch)
+        return
+
+    from collections import deque
+    from concurrent.futures import ThreadPoolExecutor
+    pending = deque()
+    source_batches = batches()
+    with ThreadPoolExecutor(max_workers=workers,
+                            thread_name_prefix=f"opencodecs-{name}") as pool:
+        try:
+            for batch in islice(source_batches, max_pending):
+                pending.append(pool.submit(budget.run, apply, batch))
+            # Do not retain the last input batch in the generator frame.
+            batch = None
+            while pending:
+                future = pending.popleft()
+                result = future.result()
+                del future
+                yield result
+                del result
+                batch = next(source_batches, None)
+                if batch is not None:
+                    pending.append(pool.submit(budget.run, apply, batch))
+                batch = None
+        finally:
+            for future in pending:
+                future.cancel()

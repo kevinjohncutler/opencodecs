@@ -190,7 +190,9 @@ class BackgroundChunkReader:
                 self._queue.get_nowait()
         except queue.Empty:
             pass
-        self._thread.join(timeout=1.0)
+        # An in-flight read still owns its source. Do not close it after an
+        # arbitrary timeout while that read is still using the handle.
+        self._thread.join()
         if self._owns_file and self._file is not None:
             try:
                 self._file.close()
@@ -278,7 +280,8 @@ class BufferDataSource(DataSource):
     """
 
     def __init__(self, buf: Any):
-        mv = buf if isinstance(buf, memoryview) else memoryview(buf)
+        # Own the view, not the caller's releasable memoryview object.
+        mv = memoryview(buf)
         if mv.ndim != 1 or mv.format != "B":
             # A view of an int32 array reports itemsize 4, and slicing
             # it by byte offsets would silently address the wrong
@@ -354,7 +357,7 @@ class _ClampedDataSource(DataSource):
         self._inner.close()
 
 
-_READER_POOLS: dict[str, "ThreadPoolExecutor"] = {}
+_READER_POOLS: dict[tuple[str, int], "ThreadPoolExecutor"] = {}
 _READER_POOLS_LOCK = threading.Lock()
 
 
@@ -367,19 +370,21 @@ def get_reader_pool(name: str, max_workers: int | None = None):
     build one, one gets leaked, and the work splits across two pools
     with twice the threads. CZI's copy of this was missing the lock.
     """
-    pool = _READER_POOLS.get(name)
+    if max_workers is None:
+        max_workers = max(2 * (os.cpu_count() or 4), 8)
+    max_workers = max(1, int(max_workers))
+    key = (name, max_workers)
+    pool = _READER_POOLS.get(key)
     if pool is None:
         with _READER_POOLS_LOCK:
-            pool = _READER_POOLS.get(name)
+            pool = _READER_POOLS.get(key)
             if pool is None:
                 from concurrent.futures import ThreadPoolExecutor
-                if max_workers is None:
-                    max_workers = max(2 * (os.cpu_count() or 4), 8)
                 pool = ThreadPoolExecutor(
                     max_workers=max_workers,
                     thread_name_prefix=f"opencodecs-{name}",
                 )
-                _READER_POOLS[name] = pool
+                _READER_POOLS[key] = pool
     return pool
 
 

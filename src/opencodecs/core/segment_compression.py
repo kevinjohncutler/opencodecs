@@ -153,7 +153,9 @@ def _lookup_fn(code: int, side: str) -> Callable:
             f"segment_compression: no opencodecs codec for "
             f"compression code {code} ({codec_code_to_name(code)})"
         )
-    if side == "decode":
+    if side == "encode_buffer" and code == ZSTD:
+        attr = "encode_buffer"
+    elif side == "decode":
         attr = _DECODE_FN.get(code, "decode")
     else:
         attr = _ENCODE_FN.get(code)
@@ -175,23 +177,95 @@ def _lookup_fn(code: int, side: str) -> Callable:
     return fn
 
 
+def segment_input_kind(codec: str | int) -> str:
+    """Required native input representation, independent of quality policy."""
+    return "image" if codec_name_to_code(codec) in (
+        JPEG, JPEG2000, JXL, WEBP, LERC, LERC_LEGACY) else "bytes"
+
+
+def prepare_segment_input(data, codec: str | int, *, copy=False):
+    """Preserve shape for image codecs and provide byte views to byte codecs.
+
+    A writer advancing a producer with reusable buffers must request a copy
+    before advancing. Stable borrowed arrays can stay zero-copy when contiguous.
+    Compression quality/defaults remain the caller's responsibility.
+    """
+    import numpy as np
+    if segment_input_kind(codec) == "image":
+        return (np.array(data, copy=True, order="C") if copy
+                else np.ascontiguousarray(data))
+    if isinstance(data, np.ndarray):
+        view = memoryview(np.ascontiguousarray(data)).cast("B")
+        return view.tobytes() if copy else view
+    if copy:
+        return memoryview(data).tobytes()
+    return data
+
+
 def encode_segment(data, codec: str | int, *, level: int | None = None,
-                   **codec_kwargs) -> bytes:
+                   owned_output: bool = False, **codec_kwargs) -> bytes | memoryview:
     """Compress ``data`` (bytes-like) using ``codec``.
 
     ``codec`` is either a name (``"zstd"``) or a numeric TIFF code.
     ``level`` is passed through to the underlying codec when the codec
     accepts a ``level`` kwarg (deflate, zstd, jxl, ...). Codec-specific
-    extras can be passed via ``codec_kwargs``.
+    extras can be passed via ``codec_kwargs``. ``owned_output=True`` may return
+    a read-only view retaining its encoded allocation, avoiding a final copy.
+    The caller must retain that view until the destination consumes it.
     """
     code = codec_name_to_code(codec)
     if code == NONE:
         return bytes(data) if not isinstance(data, bytes) else data
-    fn = _lookup_fn(code, "encode")
+    fn = _lookup_fn(code, "encode_buffer" if owned_output and code == ZSTD else "encode")
     kw: dict[str, Any] = dict(codec_kwargs)
     if level is not None and "level" not in kw:
         kw["level"] = level
+    if code in (ZSTD, JPEG2000, JXL):
+        from .pipeline import native_workers, in_worker
+        # Zstandard counts background workers: zero means inline serial.
+        threads = (0 if code == ZSTD and in_worker()
+                   else native_workers(kw.get("numthreads")))
+        if threads is not None:
+            kw["numthreads"] = threads
     return fn(data, **kw)
+
+
+def bind_segment_encoder(codec: str | int, *, level=None, owned_output=False,
+                         verify=False, **codec_kwargs):
+    """Bind repeated segment dispatch while retaining dynamic worker policy.
+
+    The callable owns its immutable option dictionaries, not input pixels.
+    Backend lookup and options are prepared once per writer or worker context.
+    Nested calls still select a serial native encoder at invocation time.
+    """
+    from functools import partial
+    from .pipeline import in_worker
+    if verify:
+        from .verification import verify_segment
+        encoder = bind_segment_encoder(codec, level=level, owned_output=owned_output,
+                                       **codec_kwargs)
+        def checked(data):
+            encoded = encoder(data)
+            verify_segment(data, encoded, codec)
+            return encoded
+        return checked
+    code = codec_name_to_code(codec)
+    if code == NONE:
+        return bytes
+    fn = _lookup_fn(code, "encode_buffer" if owned_output and code == ZSTD else "encode")
+    options = dict(codec_kwargs)
+    if level is not None:
+        options.setdefault("level", level)
+    eager = partial(fn, **options)
+    if code not in (ZSTD, JPEG2000, JXL):
+        return eager
+    nested_options = dict(options)
+    nested_options["numthreads"] = 0 if code == ZSTD else 1
+    nested = partial(fn, **nested_options)
+
+    def encode(data):
+        return nested(data) if in_worker() else eager(data)
+    return encode
 
 
 def decode_segment(data, codec: str | int, **codec_kwargs) -> bytes:
@@ -207,6 +281,11 @@ def decode_segment(data, codec: str | int, **codec_kwargs) -> bytes:
     if code == NONE:
         return bytes(data) if not isinstance(data, bytes) else data
     fn = _lookup_fn(code, "decode")
+    if code in (JPEG2000, JXL):
+        from .pipeline import native_workers
+        threads = native_workers(codec_kwargs.get("numthreads"))
+        if threads is not None:
+            codec_kwargs["numthreads"] = threads
     return fn(data, **codec_kwargs)
 
 
@@ -215,5 +294,5 @@ __all__ = [
     "ZSTD", "WEBP", "JXL", "JPEG2000", "LERC", "LERC_LEGACY",
     "ADOBE_DEFLATE",
     "codec_name_to_code", "codec_code_to_name",
-    "encode_segment", "decode_segment",
+    "encode_segment", "bind_segment_encoder", "decode_segment", "segment_input_kind", "prepare_segment_input",
 ]
