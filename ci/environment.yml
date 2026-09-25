@@ -37,6 +37,9 @@ dependencies:
   - snappy
   - charls
   - isa-l
+  # JPEG XR for CZI compression 4 (Zeiss whole-slide scans). conda-forge
+  # ships it static on Windows, so there is no DLL to bundle.
+  - jxrlib
   # lcms2 needed at TEST time on Windows. opencodecs._cms_codec does a
   # ctypes.CDLL("lcms2.dll") at first use; without the conda package the
   # DLL isn't on PATH and 8 test_phase7_cms.py tests fail with ImportError.

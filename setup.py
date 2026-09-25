@@ -1682,7 +1682,8 @@ extensions = [
               for d in _resolve_include_dirs("jxrlib/JXRGlue.h")],
         ],
         library_dirs=_lib_dirs_for_probes(),
-        libraries=["jxrglue", "jpegxr"],
+        # conda-forge on Windows ships static libjxrglue.lib / libjpegxr.lib.
+        libraries=[_libname("jxrglue", "libjxrglue"), _libname("jpegxr", "libjpegxr")],
         define_macros=[
             ("NPY_NO_DEPRECATED_API", "NPY_1_7_API_VERSION"),
             *([] if sys.platform == "win32" else [("__ANSI__", "1")]),

@@ -11,6 +11,12 @@
 
 #include "jpegxr_shim.h"
 
+/* Without __ANSI__ (it is only defined off Windows) jxrlib's headers use
+ * the Windows SDK's legacy SAL annotations such as __in, which come with
+ * windows.h. */
+#ifdef _WIN32
+#include <windows.h>
+#endif
 #include <JXRGlue.h>
 
 ERR CreateWS_Memory(struct WMPStream **ppWS, void *pv, size_t cb);

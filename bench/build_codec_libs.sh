@@ -109,6 +109,8 @@ VERSIONS=(
     # closes the gap.
     "CharLS          2.4.3"
 
+    "jxrlib          2019.10.9"
+
     # Marquee codec — delegated to the dedicated script for parity with
     # the per-developer flow (some users only want to source-build libjxl
     # and rely on system libs for the rest).
@@ -854,6 +856,49 @@ build_libaec() {
     mark_built libaec "$v"
 }
 
+# ---- jxrlib (JPEG XR, for CZI compression 4) ---------------------------
+# Microsoft's reference codec, BSD-2. Upstream builds only with a Makefile
+# and installs headers under include/libjxr/..., while Homebrew, conda-forge
+# and Debian ship them flat under include/jxrlib/, which is what setup.py
+# probes. So: build the two static libraries position-independent (they
+# link into the _jpegxr extension, nothing to bundle) and install the ten
+# public headers flat. The CFLAGS replace the Makefile's own: jxrlib is old
+# C that gcc 14 rejects outright (implicit declarations, pointer types)
+# even under the -w it already passes. Linux and macOS only: Windows wheels
+# take jxrlib from conda-forge.
+build_jxrlib() {
+    local v="$(get_version jxrlib)"
+    case "$(uname -s)" in
+        MINGW*|MSYS*|CYGWIN*)
+            echo "  jxrlib: Windows takes it from conda-forge, skipping"; return ;;
+    esac
+    is_built jxrlib "$v" && { echo "  jxrlib $v already built"; return; }
+    echo "==> jxrlib $v"
+    local src
+    src=$(fetch_tar jxrlib "$v" \
+        "https://github.com/4creators/jxrlib/archive/refs/tags/v$v.tar.gz")
+    local build="$src/_build"
+    rm -rf "$build"
+    local cflags="-I. -Icommon/include -Iimage/sys -D__ANSI__"
+    cflags+=" -DDISABLE_PERF_MEASUREMENT -w -fPIC -O2"
+    cflags+=" -Wno-error=implicit-function-declaration"
+    cflags+=" -Wno-error=incompatible-pointer-types -Wno-error=int-conversion"
+    ( cd "$src" && make -j"$JOBS" DIR_BUILD="$build" CFLAGS="$cflags" \
+        "$build/libjpegxr.a" "$build/libjxrglue.a" )
+    install -d "$PREFIX/include/jxrlib" "$PREFIX/lib"
+    install -m 644 "$build/libjpegxr.a" "$build/libjxrglue.a" "$PREFIX/lib/"
+    install -m 644 \
+        "$src/jxrgluelib/JXRGlue.h" "$src/jxrgluelib/JXRMeta.h" \
+        "$src/jxrtestlib/JXRTest.h" "$src/image/sys/windowsmediaphoto.h" \
+        "$src/common/include/guiddef.h" "$src/common/include/wmsal.h" \
+        "$src/common/include/wmspecstring.h" \
+        "$src/common/include/wmspecstrings_adt.h" \
+        "$src/common/include/wmspecstrings_strict.h" \
+        "$src/common/include/wmspecstrings_undef.h" \
+        "$PREFIX/include/jxrlib/"
+    mark_built jxrlib "$v"
+}
+
 # ---- lerc (Esri Limited Error Raster Compression) ----------------------
 build_lerc() {
     local v="$(get_version lerc)"
@@ -1215,6 +1260,7 @@ ORDERED=(
     pcodec
     brunsli
     CharLS
+    jxrlib
     libjxl
 )
 
@@ -1251,6 +1297,7 @@ for name in "${ORDERED[@]}"; do
             pcodec)          build_pcodec ;;
             brunsli)         build_brunsli ;;
             CharLS)          build_CharLS ;;
+            jxrlib)          build_jxrlib ;;
             libjxl)          build_libjxl ;;
         esac
     fi

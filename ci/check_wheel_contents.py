@@ -32,6 +32,7 @@ MUST_SHIP_ALL_PLATFORMS = {
     "_pcodec",
     "_sperr",
     "_brunsli",
+    "_jpegxr",
     "_aec",
     "_lerc",
     "_zfp",
