@@ -49,7 +49,9 @@ and checked by ``ci/check_pipeline_catalog.py``.
 - JPEG XR sub-blocks (compression 4, used by most Zeiss slide scans) now
   decode through a new optional ``_jpegxr`` extension over jxrlib, built
   when jxrlib is installed. Every tile of the Axioscan corpus slide and its
-  whole 20684 x 32751 level 0 match czifile exactly.
+  whole 20684 x 32751 level 0 match czifile exactly. The wheels build
+  jxrlib from source (conda-forge on Windows) and link it statically.
+- Build: SZ3 3.3.2, since upstream deleted the 3.3.1 tag.
 - Fix: overlapping mosaic tiles composed in directory order. Zen writes
   tiles out of mosaic-index order, and libCZI and czifile draw the higher
   mosaic index on top; each level now composes in that order, which on the

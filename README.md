@@ -248,9 +248,9 @@ with open_remote_hdf5("https://bucket.s3.amazonaws.com/big.h5") as f:
 `czi` decodes compression types 0 (uncompressed), 5 (zstd), 6 (ZSTDHDR)
 and 4 (JPEG XR). JPEG XR, which most Zeiss slide scans use, needs the
 optional `_jpegxr` extension, built when jxrlib is installed (Homebrew
-`jxrlib`, conda-forge `jxrlib`, Debian/Ubuntu `libjxr-dev`); it is not in
-the published wheels yet, and a JPEG XR sub-block without it raises
-`CziError`. Pyramid levels are placed from the slide origin and scale, and
+`jxrlib`, conda-forge `jxrlib`, Debian/Ubuntu `libjxr-dev`). Wheels built
+from `main` carry it, statically linked, on every platform; the 0.2.0 wheels
+on PyPI predate that. A JPEG XR sub-block without it raises `CziError`. Pyramid levels are placed from the slide origin and scale, and
 overlapping mosaic tiles compose with the higher mosaic index on top, as
 libCZI and czifile do. The reader exposes `metadata_bytes` and
 `metadata_xml` as lazy zero-copy accessors.
