@@ -1,6 +1,6 @@
 # Minimal Cython declarations for libbrotli (encode + decode).
 
-from libc.stdint cimport uint8_t
+from libc.stdint cimport uint8_t, uint32_t
 
 cdef extern from 'brotli/encode.h' nogil:
     ctypedef enum BROTLI_BOOL:
@@ -53,3 +53,19 @@ cdef extern from 'brotli/decode.h' nogil:
     BROTLI_BOOL BrotliDecoderIsFinished(const BrotliDecoderState* state)
     int BrotliDecoderGetErrorCode(const BrotliDecoderState* state)
     const char* BrotliDecoderErrorString(int c)
+
+cdef extern from 'brotli/encode.h' nogil:
+    ctypedef struct BrotliEncoderState:
+        pass
+    ctypedef enum BrotliEncoderOperation:
+        BROTLI_OPERATION_PROCESS
+        BROTLI_OPERATION_FINISH
+    ctypedef enum BrotliEncoderParameter:
+        BROTLI_PARAM_QUALITY
+    BrotliEncoderState* BrotliEncoderCreateInstance(void* alloc_func, void* free_func, void* opaque)
+    void BrotliEncoderDestroyInstance(BrotliEncoderState* state)
+    BROTLI_BOOL BrotliEncoderSetParameter(BrotliEncoderState* state, BrotliEncoderParameter param, uint32_t value)
+    BROTLI_BOOL BrotliEncoderCompressStream(BrotliEncoderState* state, BrotliEncoderOperation op,
+        size_t* available_in, const uint8_t** next_in, size_t* available_out,
+        uint8_t** next_out, size_t* total_out)
+    BROTLI_BOOL BrotliEncoderIsFinished(BrotliEncoderState* state)

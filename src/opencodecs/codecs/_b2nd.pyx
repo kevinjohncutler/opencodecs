@@ -30,7 +30,7 @@ cimport numpy as cnp
 from b2nd cimport (
     OC_B2ND_MAX_DIM,
     oc_b2nd_encode, oc_b2nd_inspect, oc_b2nd_release, oc_b2nd_decode,
-    oc_b2nd_decode_slice,
+    oc_b2nd_decode_slice, oc_b2nd_open, oc_b2nd_read_slice,
 )
 
 
@@ -67,7 +67,7 @@ def encode(arr,
            *,
            level: int = 5,
            compressor: str | None = "zstd",
-           shuffle="bit") -> bytes:
+           shuffle="bit", path=None):
     """Encode an ndarray as a self-contained b2nd cframe (bytes).
 
     Parameters
@@ -103,6 +103,8 @@ def encode(arr,
         int64_t out_len = 0
         int rc
         bytes out
+        bytes path_bytes
+        const char* urlpath = NULL
 
     if not isinstance(arr, np.ndarray):
         arr = np.asarray(arr)
@@ -128,6 +130,13 @@ def encode(arr,
         comp_bytes = compressor.encode("ascii")
         comp_cstr = comp_bytes
 
+    if path is not None:
+        import os
+        path_bytes = os.fsencode(path)
+        if b"\0" in path_bytes:
+            raise ValueError("B2nd path contains a null byte")
+        urlpath = path_bytes
+
     cdef Py_ssize_t data_size = <Py_ssize_t> contig.nbytes
     cdef const void* data_ptr = <const void*> contig.data
 
@@ -137,10 +146,12 @@ def encode(arr,
             ndim, shape_buf,
             itemsize, dtype_cstr,
             level_c, comp_cstr, shuffle_c,
-            &out_buf, &out_len,
+            &out_buf, &out_len, urlpath,
         )
     if rc != 0:
         raise B2ndError(f"oc_b2nd_encode failed: blosc2 error {rc}")
+    if path is not None:
+        return None
     try:
         out = PyBytes_FromStringAndSize(<const char*> out_buf, <Py_ssize_t> out_len)
     finally:
@@ -368,6 +379,95 @@ def inspect(data) -> dict:
         "itemsize": int(itemsize),
         "dtype": dtype_str,
     }
+
+
+cdef class FileReader:
+    """Owned persistent B2nd file and decompression context.
+
+    Calls are serialized per reader. Distinct readers may decompress in
+    parallel. Returned arrays own their pixels; close does not invalidate them.
+    """
+    cdef void* handle
+    cdef object lock
+    cdef readonly object shape
+    cdef readonly object dtype
+
+    def __cinit__(self):
+        self.handle = NULL
+
+    def __init__(self, path):
+        import os
+        import threading
+        cdef bytes encoded = os.fsencode(path)
+        cdef const char* path_ptr = encoded
+        cdef int8_t ndim = 0
+        cdef int64_t shape[8]
+        cdef char* dtype = NULL
+        cdef int rc
+        if b"\0" in encoded:
+            raise ValueError("B2nd path contains a null byte")
+        self.lock = threading.RLock()
+        # Initialization runs under the GIL, including blosc2 registration.
+        rc = oc_b2nd_open(path_ptr, &ndim, shape, &dtype, &self.handle)
+        if rc != 0:
+            raise B2ndError(f"b2nd_open failed: blosc2 error {rc}")
+        self.shape = tuple(int(shape[i]) for i in range(ndim))
+        self.dtype = np.dtype(dtype.decode() if dtype != NULL else "u1")
+        if self.dtype.hasobject:
+            self.close()
+            raise ValueError("B2nd object dtypes are unsupported")
+
+    def read_slice(self, start, stop, *, out=None, numthreads=None):
+        import operator
+        cdef int64_t c_start[8]
+        cdef int64_t c_stop[8]
+        cdef cnp.ndarray result
+        cdef int64_t result_size
+        cdef int rc
+        cdef int threads = 1 if numthreads is None else max(1, int(numthreads))
+        if threads > 32767:
+            raise ValueError("numthreads exceeds the native limit")
+        start = tuple(operator.index(v) for v in start)
+        stop = tuple(operator.index(v) for v in stop)
+        if len(start) != len(self.shape) or len(stop) != len(self.shape):
+            raise ValueError("start and stop must match the array dimensions")
+        for i in range(len(self.shape)):
+            if not 0 <= start[i] <= stop[i] <= self.shape[i]:
+                raise ValueError(f"slice axis {i} is outside the array")
+            c_start[i] = start[i]
+            c_stop[i] = stop[i]
+        shape = tuple(b - a for a, b in zip(start, stop))
+        if out is None:
+            result = np.empty(shape, dtype=self.dtype)
+        else:
+            if not isinstance(out, np.ndarray):
+                raise TypeError("out must be a NumPy array")
+            if out.shape != shape or out.dtype != self.dtype:
+                raise ValueError("out shape and dtype must match the slice")
+            if not out.flags.c_contiguous or not out.flags.writeable:
+                raise ValueError("out must be writable and C-contiguous")
+            result = out
+        result_size = result.nbytes
+        with self.lock:
+            if self.handle == NULL:
+                raise ValueError("B2nd reader is closed")
+            if result.size:
+                with nogil:
+                    rc = oc_b2nd_read_slice(self.handle, c_start, c_stop,
+                                           result.data, result_size, threads)
+                if rc != 0:
+                    raise B2ndError(f"b2nd read_slice failed: blosc2 error {rc}")
+        return result
+
+    def close(self):
+        with self.lock:
+            if self.handle != NULL:
+                oc_b2nd_release(self.handle)
+                self.handle = NULL
+
+    def __dealloc__(self):
+        if self.handle != NULL:
+            oc_b2nd_release(self.handle)
 
 
 def check_signature(data) -> bool:

@@ -1,6 +1,6 @@
 # Minimal Cython declarations for libheif.
 
-from libc.stdint cimport uint8_t, uint16_t
+from libc.stdint cimport uint8_t, uint16_t, int64_t
 
 cdef extern from 'heif_shim.h' nogil:
     ctypedef struct heif_context:
@@ -68,6 +68,17 @@ cdef extern from 'heif_shim.h' nogil:
     heif_error heif_context_read_from_memory_without_copy(
         heif_context*, const void* mem, size_t size,
         const void* options)
+    cdef enum heif_reader_grow_status:
+        heif_reader_grow_status_size_reached
+        heif_reader_grow_status_size_beyond_eof
+    cdef struct heif_reader:
+        int reader_api_version
+        int64_t (*get_position)(void*) noexcept nogil
+        int (*read)(void*, size_t, void*) noexcept nogil
+        int (*seek)(int64_t, void*) noexcept nogil
+        heif_reader_grow_status (*wait_for_file_size)(int64_t, void*) noexcept nogil
+    heif_error heif_context_read_from_reader(
+        heif_context*, const heif_reader*, void*, const void*)
     heif_error heif_context_get_primary_image_handle(
         heif_context*, heif_image_handle**)
 

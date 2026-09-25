@@ -226,3 +226,105 @@ def check_signature(data) -> bool:
     # Brotli streams have no magic bytes. Return False to avoid false-positives
     # in `codec_for_bytes`. Callers must use extension/format= dispatch.
     return False
+
+
+cdef class StreamDecoder:
+    """One bounded native decode step, retaining only Brotli decoder state."""
+    cdef BrotliDecoderState* _state
+    cdef bint _finished
+
+    def __cinit__(self):
+        self._state = BrotliDecoderCreateInstance(NULL, NULL, NULL)
+        if self._state == NULL:
+            raise MemoryError()
+
+    def close(self):
+        if self._state != NULL:
+            BrotliDecoderDestroyInstance(self._state)
+            self._state = NULL
+
+    def __dealloc__(self):
+        if self._state != NULL:
+            BrotliDecoderDestroyInstance(self._state)
+
+    def process(self, const uint8_t[::1] data, Py_ssize_t output_size):
+        cdef size_t available_in = data.shape[0]
+        cdef size_t available_out
+        cdef size_t total_out = 0
+        cdef const uint8_t* next_in = &data[0] if available_in else NULL
+        cdef uint8_t* next_out
+        cdef bytes result
+        cdef BrotliDecoderResult status
+        if self._state == NULL or self._finished:
+            raise ValueError("brotli stream is closed or finished")
+        if output_size <= 0:
+            raise ValueError("output_size must be positive")
+        result = PyBytes_FromStringAndSize(NULL, output_size)
+        next_out = <uint8_t*> PyBytes_AsString(result)
+        available_out = output_size
+        with nogil:
+            status = BrotliDecoderDecompressStream(
+                self._state, &available_in, &next_in,
+                &available_out, &next_out, &total_out)
+        if status == BROTLI_DECODER_RESULT_ERROR:
+            raise BrotliError(BrotliDecoderErrorString(
+                BrotliDecoderGetErrorCode(self._state)).decode())
+        self._finished = status == BROTLI_DECODER_RESULT_SUCCESS
+        return (data.shape[0] - available_in,
+                result[:output_size - available_out], bool(self._finished))
+
+
+from brotli cimport (BrotliEncoderState, BrotliEncoderCreateInstance,
+    BrotliEncoderDestroyInstance, BrotliEncoderSetParameter,
+    BrotliEncoderCompressStream, BrotliEncoderIsFinished,
+    BrotliEncoderOperation, BROTLI_PARAM_QUALITY,
+    BROTLI_OPERATION_PROCESS, BROTLI_OPERATION_FINISH)
+
+
+cdef class StreamEncoder:
+    """Incremental Brotli encoder with a caller-bounded output step."""
+    cdef BrotliEncoderState* _state
+
+    def __cinit__(self, level=None):
+        cdef int quality = 3 if level is None else int(level)
+        if quality < 0 or quality > 11:
+            raise ValueError("brotli level must be between 0 and 11")
+        self._state = BrotliEncoderCreateInstance(NULL, NULL, NULL)
+        if self._state == NULL:
+            raise MemoryError()
+        if not BrotliEncoderSetParameter(self._state, BROTLI_PARAM_QUALITY, quality):
+            raise BrotliError("could not set streaming compression level")
+
+    def close(self):
+        if self._state != NULL:
+            BrotliEncoderDestroyInstance(self._state)
+            self._state = NULL
+
+    def __dealloc__(self):
+        if self._state != NULL:
+            BrotliEncoderDestroyInstance(self._state)
+
+    def process(self, const uint8_t[::1] data, Py_ssize_t output_size, bint finish=False):
+        cdef size_t available_in = data.shape[0]
+        cdef size_t available_out
+        cdef size_t total_out = 0
+        cdef const uint8_t* next_in = &data[0] if available_in else NULL
+        cdef uint8_t* next_out
+        cdef bytes result
+        cdef BROTLI_BOOL status
+        cdef BrotliEncoderOperation operation = BROTLI_OPERATION_FINISH if finish else BROTLI_OPERATION_PROCESS
+        if self._state == NULL:
+            raise ValueError("brotli stream is closed")
+        if output_size <= 0:
+            raise ValueError("output_size must be positive")
+        result = PyBytes_FromStringAndSize(NULL, output_size)
+        next_out = <uint8_t*> PyBytes_AsString(result)
+        available_out = output_size
+        with nogil:
+            status = BrotliEncoderCompressStream(self._state, operation,
+                &available_in, &next_in, &available_out, &next_out, &total_out)
+        if not status:
+            raise BrotliError("streaming encode failed")
+        return (data.shape[0] - available_in,
+                result[:output_size - available_out],
+                bool(BrotliEncoderIsFinished(self._state)))

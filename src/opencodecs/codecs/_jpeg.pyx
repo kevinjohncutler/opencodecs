@@ -257,8 +257,43 @@ def _resolve_scale(scale, scale_num, scale_denom):
     return best
 
 
+cdef class DecoderContext:
+    """Explicit owned decoder handle, serialized across callers."""
+    cdef tjhandle handle
+    cdef object lock
+
+    def __cinit__(self):
+        import threading
+        self.lock = threading.RLock()
+        self.handle = tj3Init(TJINIT_DECOMPRESS)
+        if self.handle == NULL:
+            raise JpegError("decoder context initialization failed")
+
+    def decode(self, data, **options):
+        with self.lock:
+            if self.handle == NULL:
+                raise ValueError("decoder context is closed")
+            return decode(data, _context=self, **options)
+
+    def close(self):
+        with self.lock:
+            if self.handle != NULL:
+                tj3Destroy(self.handle)
+                self.handle = NULL
+
+    def __dealloc__(self):
+        if self.handle != NULL:
+            tj3Destroy(self.handle)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+
+
 def decode(data, *, out=None, scale=None,
-           scale_num=None, scale_denom=None) -> np.ndarray:
+           scale_num=None, scale_denom=None, DecoderContext _context=None) -> np.ndarray:
     """Decode JPEG bytes into a uint8 array.
 
     Parameters
@@ -309,7 +344,7 @@ def decode(data, *, out=None, scale=None,
 
     s_num, s_den = _resolve_scale(scale, scale_num, scale_denom)
 
-    handle = tj3Init(TJINIT_DECOMPRESS)
+    handle = tj3Init(TJINIT_DECOMPRESS) if _context is None else _context.handle
     if handle == NULL:
         raise JpegError('tj3Init(DECOMPRESS) failed')
     try:
@@ -322,7 +357,7 @@ def decode(data, *, out=None, scale=None,
         # surfaces with libjpeg-turbo's own diagnostic. Skip the call
         # at 1/1 (default) so we don't pay the per-decode round-trip
         # for full-resolution decodes.
-        if (s_num, s_den) != (1, 1):
+        if _context is not None or (s_num, s_den) != (1, 1):
             factor.num = s_num
             factor.denom = s_den
             if tj3SetScalingFactor(handle, factor) < 0:
@@ -363,7 +398,7 @@ def decode(data, *, out=None, scale=None,
             if out.dtype != np.uint8:
                 raise ValueError(
                     f"jpeg decode: out= dtype must be uint8, got {out.dtype}")
-            if not out.flags['C_CONTIGUOUS']:
+            if not out.flags['C_CONTIGUOUS'] or not out.flags.writeable:
                 raise ValueError("jpeg decode: out= must be C-contiguous")
             out_arr = out
         else:
@@ -379,7 +414,8 @@ def decode(data, *, out=None, scale=None,
                 f'tj3Decompress8: {tj3GetErrorStr(handle).decode()}')
         return out_arr
     finally:
-        tj3Destroy(handle)
+        if _context is None:
+            tj3Destroy(handle)
 
 
 def read_icc_profile(data) -> bytes | None:

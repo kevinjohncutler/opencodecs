@@ -20,6 +20,7 @@ cdef extern from "b2nd_helpers.h" nogil:
         int do_bitshuffle,
         uint8_t** out_cframe,
         int64_t* out_cframe_len,
+        const char* urlpath,
     )
 
     int oc_b2nd_inspect(
@@ -33,6 +34,12 @@ cdef extern from "b2nd_helpers.h" nogil:
     )
 
     void oc_b2nd_release(void* handle)
+
+    int oc_b2nd_open(const char* path, int8_t* ndim, int64_t* shape,
+                    char** dtype, void** handle)
+    int oc_b2nd_read_slice(void* handle, const int64_t* start,
+                          const int64_t* stop, void* dest, int64_t size,
+                          int nthreads)
 
     int oc_b2nd_decode_slice(
         const void* cframe,

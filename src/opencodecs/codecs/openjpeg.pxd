@@ -1,6 +1,6 @@
 # Minimal Cython declarations for OpenJPEG 2.5+ memory-stream API.
 
-from libc.stdint cimport int32_t, uint32_t, uint8_t
+from libc.stdint cimport int32_t, uint32_t, uint8_t, uint64_t
 from libc.stddef cimport size_t
 
 cdef extern from 'openjpeg.h' nogil:
@@ -118,6 +118,7 @@ cdef extern from 'openjpeg.h' nogil:
     void opj_image_destroy(opj_image_t* image)
 
     opj_stream_t* opj_stream_default_create(OPJ_BOOL p_is_input)
+    opj_stream_t* opj_stream_create(OPJ_SIZE_T buffer_size, OPJ_BOOL p_is_input)
     void opj_stream_destroy(opj_stream_t* p_stream)
 
     ctypedef OPJ_SIZE_T (*opj_stream_read_fn)(
@@ -142,7 +143,7 @@ cdef extern from 'openjpeg.h' nogil:
         opj_stream_t* p_stream, void* p_data,
         opj_stream_free_user_data_fn p_function)
     void opj_stream_set_user_data_length(
-        opj_stream_t* p_stream, OPJ_UINT32 data_length)
+        opj_stream_t* p_stream, uint64_t data_length)
 
     opj_codec_t* opj_create_decompress(CODEC_FORMAT format)
     opj_codec_t* opj_create_compress(CODEC_FORMAT format)

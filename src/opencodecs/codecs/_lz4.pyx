@@ -232,3 +232,121 @@ def check_signature(data) -> bool:
         except Exception:
             return False
     return head == b'\x04\x22\x4d\x18'
+
+
+cdef class StreamDecoder:
+    """One bounded LZ4 frame decode step with persistent native state."""
+    cdef LZ4F_dctx* _state
+    cdef bint _finished
+
+    def __cinit__(self):
+        cdef size_t status = LZ4F_createDecompressionContext(&self._state, LZ4F_VERSION)
+        if LZ4F_isError(status):
+            raise Lz4Error(LZ4F_getErrorName(status).decode())
+
+    def close(self):
+        if self._state != NULL:
+            LZ4F_freeDecompressionContext(self._state)
+            self._state = NULL
+
+    def __dealloc__(self):
+        if self._state != NULL:
+            LZ4F_freeDecompressionContext(self._state)
+
+    def process(self, const uint8_t[::1] data, Py_ssize_t output_size):
+        cdef size_t consumed = data.shape[0]
+        cdef size_t produced
+        cdef size_t status
+        cdef const void* source = &data[0] if consumed else NULL
+        cdef void* destination
+        cdef bytes result
+        if self._state == NULL or self._finished:
+            raise ValueError("lz4 stream is closed or finished")
+        if output_size <= 0:
+            raise ValueError("output_size must be positive")
+        result = PyBytes_FromStringAndSize(NULL, output_size)
+        destination = <void*> PyBytes_AsString(result)
+        produced = output_size
+        with nogil:
+            status = LZ4F_decompress(self._state, destination, &produced,
+                                     source, &consumed, NULL)
+        if LZ4F_isError(status):
+            raise Lz4Error(LZ4F_getErrorName(status).decode())
+        self._finished = status == 0
+        return consumed, result[:produced], bool(self._finished)
+
+
+from lz4 cimport (LZ4F_cctx, LZ4F_createCompressionContext,
+    LZ4F_freeCompressionContext, LZ4F_compressBound, LZ4F_compressBegin,
+    LZ4F_compressUpdate, LZ4F_compressEnd, LZ4F_max64KB,
+    LZ4F_contentChecksumEnabled)
+
+
+cdef class StreamEncoder:
+    """Incremental LZ4 frame writer with at most one 64 KiB input block."""
+    cdef LZ4F_cctx* _state
+    cdef LZ4F_preferences_t _prefs
+    cdef bytes _pending
+    cdef bint _ended
+
+    def __cinit__(self, level=None):
+        cdef size_t status
+        cdef bytes header
+        memset(&self._prefs, 0, sizeof(LZ4F_preferences_t))
+        self._prefs.compressionLevel = 0 if level is None else int(level)
+        self._prefs.frameInfo.blockSizeID = LZ4F_max64KB
+        self._prefs.frameInfo.contentChecksumFlag = LZ4F_contentChecksumEnabled
+        self._prefs.autoFlush = 1
+        status = LZ4F_createCompressionContext(&self._state, LZ4F_VERSION)
+        if LZ4F_isError(status):
+            raise Lz4Error(LZ4F_getErrorName(status).decode())
+        header = PyBytes_FromStringAndSize(NULL, 19)
+        status = LZ4F_compressBegin(self._state, <void*> PyBytes_AsString(header),
+                                    19, &self._prefs)
+        if LZ4F_isError(status):
+            raise Lz4Error(LZ4F_getErrorName(status).decode())
+        self._pending = header[:status]
+
+    def close(self):
+        if self._state != NULL:
+            LZ4F_freeCompressionContext(self._state)
+            self._state = NULL
+        self._pending = b""
+
+    def __dealloc__(self):
+        if self._state != NULL:
+            LZ4F_freeCompressionContext(self._state)
+
+    def process(self, const uint8_t[::1] data, Py_ssize_t output_size, bint finish=False):
+        cdef size_t consumed = 0
+        cdef size_t capacity
+        cdef size_t status
+        cdef bytes result
+        cdef void* destination
+        if self._state == NULL:
+            raise ValueError("lz4 stream is closed")
+        if output_size <= 0:
+            raise ValueError("output_size must be positive")
+        if not self._pending and not self._ended:
+            consumed = min(<size_t> data.shape[0], <size_t> 65536)
+            if finish and consumed:
+                raise ValueError("finish requires empty input")
+            capacity = LZ4F_compressBound(consumed, &self._prefs)
+            result = PyBytes_FromStringAndSize(NULL, capacity)
+            destination = <void*> PyBytes_AsString(result)
+            if finish:
+                with nogil:
+                    status = LZ4F_compressEnd(self._state, destination, capacity, NULL)
+                self._ended = True
+            elif consumed:
+                with nogil:
+                    status = LZ4F_compressUpdate(self._state, destination, capacity,
+                                                 &data[0], consumed, NULL)
+            else:
+                status = 0
+            if LZ4F_isError(status):
+                raise Lz4Error(LZ4F_getErrorName(status).decode())
+            self._pending = result[:status]
+        result = self._pending[:output_size]
+        self._pending = self._pending[output_size:]
+        return consumed, result, bool(self._ended and not self._pending)

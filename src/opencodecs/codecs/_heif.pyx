@@ -10,8 +10,8 @@
 
 from cpython.bytes cimport PyBytes_FromStringAndSize, PyBytes_AsString
 from libc.stdlib cimport malloc, realloc, free
-from libc.string cimport memcpy
-from libc.stdint cimport uint8_t, uint16_t
+from libc.string cimport memcpy, memset
+from libc.stdint cimport uint8_t, uint16_t, int64_t
 
 import numpy as np
 cimport numpy as cnp
@@ -20,6 +20,9 @@ from heif cimport (
     heif_init, heif_context, heif_context_alloc, heif_context_free,
     heif_error_code, heif_chroma,
     heif_context_read_from_memory_without_copy,
+    heif_reader, heif_reader_grow_status,
+    heif_reader_grow_status_size_reached, heif_reader_grow_status_size_beyond_eof,
+    heif_context_read_from_reader,
     heif_context_get_primary_image_handle,
     heif_context_get_number_of_top_level_images,
     heif_context_get_list_of_top_level_image_IDs,
@@ -66,6 +69,50 @@ class HeifError(RuntimeError):
 cdef bint _heif_initialized = False
 
 
+cdef int64_t _source_position(void* userdata) noexcept with gil:
+    return (<object>userdata).position
+
+
+cdef int _source_seek(int64_t position, void* userdata) noexcept with gil:
+    source = <object>userdata
+    if position < 0 or position > source.size:
+        return -1
+    source.position = position
+    return 0
+
+
+cdef heif_reader_grow_status _source_size(int64_t size, void* userdata) noexcept with gil:
+    return (heif_reader_grow_status_size_reached if size <= (<object>userdata).size
+            else heif_reader_grow_status_size_beyond_eof)
+
+
+cdef int _source_read(void* output, size_t size, void* userdata) noexcept with gil:
+    source = <object>userdata
+    cdef const uint8_t[::1] data
+    cdef size_t offset = 0
+    try:
+        while offset < size:
+            data = source.read_at(source.position, size - offset)
+            if not data.shape[0]:
+                raise EOFError("truncated HEIF source")
+            memcpy(<uint8_t*>output + offset, &data[0], data.shape[0])
+            offset += data.shape[0]
+            source.position += data.shape[0]
+        return 0
+    except BaseException as error:
+        source.error = error
+        return -1
+
+
+cdef heif_reader _source_reader
+memset(&_source_reader, 0, sizeof(heif_reader))
+_source_reader.reader_api_version = 1
+_source_reader.get_position = _source_position
+_source_reader.read = _source_read
+_source_reader.seek = _source_seek
+_source_reader.wait_for_file_size = _source_size
+
+
 cdef _ensure_init():
     global _heif_initialized
     if not _heif_initialized:
@@ -87,17 +134,26 @@ def frame_count(data) -> int:
         int n
 
     _ensure_init()
-    if isinstance(data, (bytes, bytearray)):
-        src = data
+    if hasattr(data, "read_at"):
+        data.reset()
+        src = b""
+        srcsize = data.size
     else:
-        src = bytes(data)
-    srcsize = <size_t> src.shape[0]
+        if isinstance(data, (bytes, bytearray)):
+            src = data
+        else:
+            src = bytes(data)
+        srcsize = <size_t> src.shape[0]
     ctx = heif_context_alloc()
     if ctx == NULL:
         raise HeifError('heif_context_alloc failed')
     try:
-        err = heif_context_read_from_memory_without_copy(
-            ctx, &src[0], srcsize, NULL)
+        if hasattr(data, "read_at"):
+            err = heif_context_read_from_reader(ctx, &_source_reader, <void*>data, NULL)
+            data.raise_error()
+        else:
+            err = heif_context_read_from_memory_without_copy(
+                ctx, &src[0], srcsize, NULL)
         if err.code != 0:
             raise HeifError(
                 f'heif_context_read_from_memory: {err.message.decode()}')
@@ -108,7 +164,7 @@ def frame_count(data) -> int:
 
 
 def decode(data, *, numthreads: int | None = None, out=None,
-           index=None) -> np.ndarray:
+           index=None, _info=False) -> np.ndarray:
     """Decode HEIF/HEIC bytes to a numpy array.
 
     Returns uint8 for 8-bit HEIFs, uint16 for 10/12-bit HEIFs (values
@@ -154,11 +210,16 @@ def decode(data, *, numthreads: int | None = None, out=None,
 
     _ensure_init()
 
-    if isinstance(data, (bytes, bytearray)):
-        src = data
+    if hasattr(data, "read_at"):
+        data.reset()
+        src = b""
+        srcsize = data.size
     else:
-        src = bytes(data)
-    srcsize = <size_t> src.shape[0]
+        if isinstance(data, (bytes, bytearray)):
+            src = data
+        else:
+            src = bytes(data)
+        srcsize = <size_t> src.shape[0]
 
     ctx = heif_context_alloc()
     if ctx == NULL:
@@ -168,8 +229,12 @@ def decode(data, *, numthreads: int | None = None, out=None,
             _heif_n = int(numthreads)
             if _heif_n < 1: _heif_n = 1
             heif_context_set_max_decoding_threads(ctx, _heif_n)
-        err = heif_context_read_from_memory_without_copy(
-            ctx, &src[0], srcsize, NULL)
+        if hasattr(data, "read_at"):
+            err = heif_context_read_from_reader(ctx, &_source_reader, <void*>data, NULL)
+            data.raise_error()
+        else:
+            err = heif_context_read_from_memory_without_copy(
+                ctx, &src[0], srcsize, NULL)
         if err.code != 0:
             raise HeifError(
                 f'heif_context_read_from_memory: {err.message.decode()}')
@@ -217,6 +282,9 @@ def decode(data, *, numthreads: int | None = None, out=None,
         if img_depth <= 0:
             img_depth = 8
         dtype_bytes = 1 if img_depth <= 8 else 2
+        if _info:
+            return {"shape": (height, width, channels),
+                    "dtype": np.dtype("u1" if dtype_bytes == 1 else "u2")}
 
         if dtype_bytes == 1:
             chroma = (heif_chroma_interleaved_RGBA if has_alpha
@@ -229,6 +297,8 @@ def decode(data, *, numthreads: int | None = None, out=None,
             err = heif_decode_image(
                 handle, &img, heif_colorspace_RGB, chroma, NULL,
             )
+        if hasattr(data, "raise_error"):
+            data.raise_error()
         if err.code != 0:
             raise HeifError(f'heif_decode_image: {err.message.decode()}')
 
@@ -285,10 +355,16 @@ def decode(data, *, numthreads: int | None = None, out=None,
 # ---------------------------------------------------------------------------
 
 
+def decode_info(data, *, index=None):
+    """Read image geometry without decoding pixels."""
+    return decode(data, index=index, _info=True)
+
+
 cdef struct write_buffer:
     uint8_t* data
     size_t cap
     size_t size
+    void* sink
 
 
 # Static-storage empty/error strings for the writer callback's
@@ -305,6 +381,21 @@ cdef extern from *:
     const char* _HEIF_WRITER_OOM
 
 
+cdef int _write_destination(void* sink, const void* data, size_t size) noexcept with gil:
+    cdef object target = <object> sink
+    cdef size_t offset = 0
+    cdef size_t count
+    try:
+        while offset < size:
+            count = min(size - offset, <size_t> 65536)
+            target.write(PyBytes_FromStringAndSize(<const char*> data + offset, count))
+            offset += count
+        return 0
+    except BaseException as exc:
+        target.error = exc
+        return -1
+
+
 cdef heif_error _writer_cb(
     heif_context* ctx, const void* data, size_t size, void* userdata,
 ) noexcept nogil:
@@ -315,6 +406,11 @@ cdef heif_error _writer_cb(
     err.message = _HEIF_WRITER_OK
     cdef size_t new_cap
     cdef uint8_t* new_data
+    if buf.sink != NULL:
+        if _write_destination(buf.sink, data, size) != 0:
+            err.code = <heif_error_code> 1
+            err.message = _HEIF_WRITER_OOM
+        return err
     if buf.size + size > buf.cap:
         new_cap = buf.cap * 2 if buf.cap else 65536
         while new_cap < buf.size + size:
@@ -335,7 +431,7 @@ def encode(data, *, level: int | None = None,
            lossless: bool = False, color=None,
            bit_depth: int | None = None,
            numthreads: int | None = None,
-           iccprofile: bytes | None = None) -> bytes:
+           iccprofile: bytes | None = None, destination=None):
     """Encode an array as HEIC.
 
     Parameters
@@ -552,14 +648,19 @@ def encode(data, *, level: int | None = None,
         wbuf.data = NULL
         wbuf.cap = 0
         wbuf.size = 0
+        wbuf.sink = NULL if destination is None else <void*> destination
         wr.writer_api_version = 1
         wr.write = _writer_cb
 
         err = heif_context_write(ctx, &wr, &wbuf)
+        if destination is not None and destination.error is not None:
+            raise destination.error
         if err.code != 0:
             free(wbuf.data)
             raise HeifError(f'heif_context_write: {err.message.decode()}')
 
+        if destination is not None:
+            return None
         try:
             out = PyBytes_FromStringAndSize(<char*> wbuf.data,
                                             <Py_ssize_t> wbuf.size)
@@ -594,11 +695,16 @@ def read_icc_profile(data) -> bytes | None:
         bytes out_bytes
 
     _ensure_init()
-    if isinstance(data, (bytes, bytearray)):
-        src = data
+    if hasattr(data, "read_at"):
+        data.reset()
+        src = b""
+        srcsize = data.size
     else:
-        src = bytes(data)
-    srcsize = <size_t> src.shape[0]
+        if isinstance(data, (bytes, bytearray)):
+            src = data
+        else:
+            src = bytes(data)
+        srcsize = <size_t> src.shape[0]
     if srcsize < 12:
         return None
 
@@ -606,8 +712,12 @@ def read_icc_profile(data) -> bytes | None:
     if ctx == NULL:
         raise HeifError('heif_context_alloc failed')
     try:
-        err = heif_context_read_from_memory_without_copy(
-            ctx, &src[0], srcsize, NULL)
+        if hasattr(data, "read_at"):
+            err = heif_context_read_from_reader(ctx, &_source_reader, <void*>data, NULL)
+            data.raise_error()
+        else:
+            err = heif_context_read_from_memory_without_copy(
+                ctx, &src[0], srcsize, NULL)
         if err.code != 0:
             return None
         err = heif_context_get_primary_image_handle(ctx, &handle)

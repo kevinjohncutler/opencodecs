@@ -15,7 +15,7 @@ runs in parallel across threads (vs the GIL-serialized numpy path).
 """
 
 from cpython.bytes cimport PyBytes_FromStringAndSize, PyBytes_AsString
-from libc.stdint cimport uint8_t
+from libc.stdint cimport uint8_t, uint32_t, uint64_t
 cimport cython
 
 
@@ -292,3 +292,73 @@ def xor_decode_inplace(delta_t[:, ::1] arr, Py_ssize_t dist=1):
                     while i < n:
                         arr[r, i] = <delta_t>(arr[r, i] ^ arr[r, i - dist])
                         i += dist
+
+
+cdef uint32_t _crc32c_table[256]
+
+
+cdef void _initialize_crc32c() noexcept nogil:
+    cdef unsigned int index, bit
+    cdef uint32_t value
+    for index in range(256):
+        value = index
+        for bit in range(8):
+            if value & 1:
+                value = (value >> 1) ^ <uint32_t> 0x82f63b78
+            else:
+                value >>= 1
+        _crc32c_table[index] = value
+
+
+_initialize_crc32c()
+
+
+def crc32c(data):
+    """Return the Castagnoli checksum while releasing the interpreter lock."""
+    cdef const uint8_t[::1] source
+    cdef Py_ssize_t index, size
+    cdef uint32_t value = <uint32_t> 0xffffffff
+    try:
+        source = data
+    except (TypeError, ValueError, BufferError):
+        source = bytes(data)
+    size = source.shape[0]
+    with nogil:
+        for index in range(size):
+            value = _crc32c_table[(value ^ source[index]) & 255] ^ (value >> 8)
+    return value ^ <uint32_t> 0xffffffff
+
+
+
+def unpackints_into(data, out, int bits, Py_ssize_t count,
+                    int itemsize, bint little_endian=True):
+    """Unpack most-significant-bit-first samples into caller byte storage."""
+    cdef const uint8_t[::1] source = data
+    cdef uint8_t[::1] target = out
+    cdef Py_ssize_t i, byte_index = 0, dest_index
+    cdef int bit_index = 0, left, take, j
+    cdef uint64_t value
+    if bits < 1 or bits > 64 or itemsize not in (1, 2, 4, 8):
+        raise ValueError("invalid packed integer width or output itemsize")
+    if count < 0 or count > (source.shape[0] * 8) // bits:
+        raise ValueError("packed integer input is truncated")
+    if count > target.shape[0] // itemsize:
+        raise ValueError("packed integer output is too small")
+    with nogil:
+        for i in range(count):
+            value = 0
+            left = bits
+            while left:
+                take = 8 - bit_index
+                if take > left:
+                    take = left
+                value = (value << take) | ((source[byte_index] >> (8 - bit_index - take)) & ((1 << take) - 1))
+                left -= take
+                bit_index += take
+                if bit_index == 8:
+                    byte_index += 1
+                    bit_index = 0
+            for j in range(itemsize):
+                dest_index = i * itemsize + (j if little_endian else itemsize - 1 - j)
+                target[dest_index] = <uint8_t> (value >> (8 * j))
+    return out

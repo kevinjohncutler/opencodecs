@@ -41,7 +41,8 @@ int oc_b2nd_encode(
     const char* compressor,
     int do_bitshuffle,
     uint8_t** out_cframe,
-    int64_t* out_cframe_len
+    int64_t* out_cframe_len,
+    const char* urlpath
 ) {
     if (ndim < 1 || ndim > OC_B2ND_MAX_DIM) return -1;
     if (data == NULL || shape == NULL) return -1;
@@ -101,6 +102,10 @@ int oc_b2nd_encode(
     blosc2_storage storage = BLOSC2_STORAGE_DEFAULTS;
     storage.cparams = &cparams;
     storage.dparams = &dparams;
+    if (urlpath != NULL) {
+        storage.urlpath = (char*)urlpath;
+        storage.contiguous = true;
+    }
 
     b2nd_context_t* ctx = b2nd_create_ctx(
         &storage,
@@ -119,6 +124,14 @@ int oc_b2nd_encode(
     if (rc != BLOSC2_ERROR_SUCCESS) {
         b2nd_free_ctx(ctx);
         return rc;
+    }
+
+    if (urlpath != NULL) {
+        b2nd_free(array);
+        b2nd_free_ctx(ctx);
+        *out_cframe = NULL;
+        *out_cframe_len = 0;
+        return 0;
     }
 
     uint8_t* cframe = NULL;
@@ -214,6 +227,36 @@ static void oc_b2nd_set_nthreads(b2nd_array_t* array, int nthreads) {
     dparams.nthreads = (int16_t)nthreads;
     array->sc->storage->dparams->nthreads = (int16_t)nthreads;
     array->sc->dctx = blosc2_create_dctx(dparams);
+}
+
+int oc_b2nd_open(const char* path, int8_t* ndim, int64_t* shape,
+                 char** dtype, void** handle) {
+    oc_ensure_blosc2_init();
+    b2nd_array_t* array = NULL;
+    int rc = b2nd_open(path, &array);
+    if (rc != BLOSC2_ERROR_SUCCESS) return rc;
+    *handle = array;
+    *ndim = array->ndim;
+    for (int i = 0; i < array->ndim; ++i) shape[i] = array->shape[i];
+    *dtype = array->dtype;
+    return 0;
+}
+
+int oc_b2nd_read_slice(void* handle, const int64_t* start,
+                       const int64_t* stop, void* dest, int64_t size,
+                       int nthreads) {
+    b2nd_array_t* array = (b2nd_array_t*)handle;
+    if (array == NULL || array->sc == NULL || dest == NULL) return -1;
+    int64_t buffershape[OC_B2ND_MAX_DIM];
+    for (int i = 0; i < array->ndim; ++i) {
+        if (start[i] < 0 || stop[i] > array->shape[i] || start[i] > stop[i])
+            return -1;
+        buffershape[i] = stop[i] - start[i];
+    }
+    if (array->sc->storage->dparams->nthreads != nthreads)
+        oc_b2nd_set_nthreads(array, nthreads);
+    if (array->sc->dctx == NULL) return -1;
+    return b2nd_get_slice_cbuffer(array, start, stop, dest, buffershape, size);
 }
 
 int oc_b2nd_decode(

@@ -40,10 +40,20 @@ cdef struct _Sink:
     uint8_t* data
     size_t size      # bytes written
     size_t cap       # capacity allocated
+    void* writer_state
 
 
 cdef size_t _sink_write(void* sink, const uint8_t* buf, size_t n) noexcept nogil:
     cdef _Sink* s = <_Sink*> sink
+    if s.writer_state != NULL:
+        with gil:
+            try:
+                (<object> s.writer_state).write(
+                    PyBytes_FromStringAndSize(<const char*> buf, <Py_ssize_t> n))
+            except BaseException as exc:
+                (<object> s.writer_state).error = exc
+                return 0
+        return n
     cdef size_t need = s.size + n
     cdef size_t new_cap
     cdef uint8_t* new_data
@@ -68,81 +78,61 @@ class BrunsliError(RuntimeError):
     """Raised on Brunsli encode/decode failures."""
 
 
-def encode_jpeg(data) -> bytes:
-    """Transcode JPEG bytes → Brunsli bytes.
+def encode_jpeg(data, *, dest=None):
+    """Transcode a complete JPEG to bytes or directly to a destination."""
+    return _transcode(data, True, dest)
 
-    Parameters
-    ----------
-    data : bytes-like
-        Complete JPEG bitstream (must start with SOI 0xFFD8).
 
-    Returns
-    -------
-    bytes
-        Brunsli bitstream — typically 15-25% smaller than the input
-        JPEG, decodable losslessly back to the same JPEG.
-    """
+def decode_jpeg(data, *, dest=None):
+    """Recover the original JPEG bytes or write them to a destination."""
+    return _transcode(data, False, dest)
+
+
+cdef _transcode(data, bint encode, dest):
     cdef const uint8_t[::1] src
     cdef _Sink sink
     cdef int rc
-    cdef bytes out
-
-    try:
-        src = data
-    except (TypeError, ValueError, BufferError):
-        src = bytes(data)
-    if src.shape[0] < 4 or src[0] != 0xff or src[1] != 0xd8:
-        raise BrunsliError("encode_jpeg: input does not look like a JPEG "
-                           "(missing SOI 0xFFD8 marker)")
-
-    sink.data = NULL
-    sink.size = 0
-    sink.cap = 0
-    cdef size_t srcsize = <size_t> src.shape[0]
-
-    with nogil:
-        rc = EncodeBrunsli(srcsize, &src[0], <void*> &sink, _sink_write)
-
-    try:
-        if rc != 1:
-            raise BrunsliError(f"EncodeBrunsli returned {rc}")
-        out = PyBytes_FromStringAndSize(<const char*> sink.data, <Py_ssize_t> sink.size)
-    finally:
-        if sink.data != NULL:
-            free(sink.data)
-    return out
-
-
-def decode_jpeg(data) -> bytes:
-    """Transcode Brunsli bytes → JPEG bytes (byte-identical recovery)."""
-    cdef const uint8_t[::1] src
-    cdef _Sink sink
-    cdef int rc
-    cdef bytes out
+    cdef object state = None
+    cdef object context
+    cdef size_t srcsize
+    from contextlib import nullcontext
+    from opencodecs.core._write_helpers import binary_destination
+    from opencodecs.core.buffers import CallbackDestination
 
     try:
         src = data
     except (TypeError, ValueError, BufferError):
         src = bytes(data)
     if src.shape[0] < 4:
-        raise BrunsliError("decode_jpeg: input too short")
-
+        raise BrunsliError("transcode input is too short")
+    if encode and (src[0] != 0xff or src[1] != 0xd8):
+        raise BrunsliError("encode_jpeg: input does not look like a JPEG (missing SOI 0xFFD8 marker)")
     sink.data = NULL
     sink.size = 0
     sink.cap = 0
-    cdef size_t srcsize = <size_t> src.shape[0]
-
-    with nogil:
-        rc = DecodeBrunsli(srcsize, &src[0], <void*> &sink, _sink_write)
-
+    sink.writer_state = NULL
+    srcsize = <size_t> src.shape[0]
+    context = nullcontext(None) if dest is None else binary_destination(dest)
     try:
-        if rc != 1:
-            raise BrunsliError(f"DecodeBrunsli returned {rc}")
-        out = PyBytes_FromStringAndSize(<const char*> sink.data, <Py_ssize_t> sink.size)
+        with context as target:
+            if dest is not None:
+                state = CallbackDestination(target)
+                sink.writer_state = <void*> state
+            with nogil:
+                if encode:
+                    rc = EncodeBrunsli(srcsize, &src[0], <void*> &sink, _sink_write)
+                else:
+                    rc = DecodeBrunsli(srcsize, &src[0], <void*> &sink, _sink_write)
+            if state is not None and state.error is not None:
+                raise state.error
+            if rc != 1:
+                raise BrunsliError(f"Brunsli transcode returned {rc}")
+            if dest is None:
+                return PyBytes_FromStringAndSize(<const char*> sink.data, <Py_ssize_t> sink.size)
+            return None
     finally:
         if sink.data != NULL:
             free(sink.data)
-    return out
 
 
 def check_signature(data) -> bool:

@@ -944,30 +944,37 @@ def undo_horizontal_u32(uint32_t[:, :, ::1] arr not None):
 
 
 def undo_floating_point(uint8_t[:, :, ::1] arr not None, int bytes_per_sample):
-    """In-place undo of TIFF predictor 3 (floating-point predictor).
+    """Undo TIFF predictor 3 in a writable contiguous byte view.
 
-    Per TIFF Tech Note 3: each row was byte-shuffled (high bytes first,
-    then medium, then low) and horizontal-differenced. Inverse:
-    1. Cumsum the differences along the row axis (treating bytes as u8).
-    2. Un-shuffle: bytes for the i'th sample come from positions
-       [i, i+cols, i+2*cols, ...] of the de-differenced row.
+    Shape is (rows, columns, samples_per_pixel * bytes_per_sample).
+    Shuffled byte planes are most-significant first regardless of file
+    byte order. Reconstruct native-endian sample bytes in place.
     """
     cdef Py_ssize_t r, c
     cdef Py_ssize_t rows = arr.shape[0]
     cdef Py_ssize_t cols = arr.shape[1]
-    cdef Py_ssize_t spp = arr.shape[2]
-    cdef Py_ssize_t total_bytes = cols * spp * bytes_per_sample
+    cdef Py_ssize_t pixel_bytes = arr.shape[2]
     cdef Py_ssize_t bps = bytes_per_sample
-    cdef Py_ssize_t n_samples = cols * spp
+    cdef Py_ssize_t spp, total_bytes, n_samples
     cdef Py_ssize_t lane, samp_i, src_idx, dst_idx
     cdef uint8_t* row_p
     cdef uint8_t* tmp
+    cdef uint16_t endian_probe = 1
+    cdef bint little_endian = (<uint8_t*>&endian_probe)[0] == 1
 
     if bps != 2 and bps != 4 and bps != 8:
         raise TiffError(
             f"predictor 3: bytes_per_sample must be 2/4/8, got {bps}"
         )
-
+    if pixel_bytes == 0 or pixel_bytes % bps != 0:
+        raise TiffError("predictor 3: last dimension must contain whole samples")
+    if rows == 0 or cols == 0:
+        return
+    total_bytes = cols * pixel_bytes
+    if arr.strides[1] != pixel_bytes or arr.strides[0] != total_bytes:
+        raise TiffError("predictor 3: expected contiguous rows and columns")
+    spp = pixel_bytes // bps
+    n_samples = cols * spp
     tmp = <uint8_t*> PyMem_Malloc(total_bytes)
     if tmp == NULL:
         raise MemoryError()
@@ -975,19 +982,13 @@ def undo_floating_point(uint8_t[:, :, ::1] arr not None, int bytes_per_sample):
         with nogil:
             for r in range(rows):
                 row_p = &arr[r, 0, 0]
-                # Step 1: prefix-sum along this row's flat byte array.
-                for c in range(1, total_bytes):
-                    row_p[c] = <uint8_t>(row_p[c] + row_p[c - 1])
-                # Step 2: un-shuffle. The encoder placed all
-                # high-bytes first, then mid, then low. We reverse by
-                # interleaving the bps "lanes" back together.
-                # Source layout: [hi0, hi1, ..., hiN-1, mid0, ..., midN-1, lo0, ...]
-                # Dest layout:   [hi0, mid0, lo0, hi1, mid1, lo1, ...]
-                # where N = cols * spp.
+                # Each channel has its own recurrence across the byte planes.
+                for c in range(spp, total_bytes):
+                    row_p[c] = <uint8_t>(row_p[c] + row_p[c - spp])
                 for samp_i in range(n_samples):
                     for lane in range(bps):
                         src_idx = lane * n_samples + samp_i
-                        dst_idx = samp_i * bps + lane
+                        dst_idx = samp_i * bps + (bps - 1 - lane if little_endian else lane)
                         tmp[dst_idx] = row_p[src_idx]
                 memcpy(row_p, tmp, total_bytes)
     finally:

@@ -201,7 +201,7 @@ def encode(arr, *,
     return header + payload
 
 
-def decode(data) -> 'np.ndarray':
+def decode(data, *, int nthreads=0) -> 'np.ndarray':
     """Decode an SPERR blob (preamble + bitstream) to an ndarray."""
     cdef:
         const uint8_t[::1] src
@@ -241,6 +241,7 @@ def decode(data) -> 'np.ndarray':
     cdef size_t pl = <size_t> payload_len
     cdef size_t dx = <size_t> dimx, dy = <size_t> dimy
     cdef int isf = int(is_float)
+    cdef size_t workers = max(0, nthreads)
 
     if ndim == 2:
         with nogil:
@@ -248,7 +249,7 @@ def decode(data) -> 'np.ndarray':
     else:
         with nogil:
             rc = sperr_decomp_3d(
-                src_ptr, pl, isf, 0,
+                src_ptr, pl, isf, workers,
                 &out_dimx, &out_dimy, &out_dimz,
                 &dst,
             )

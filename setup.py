@@ -1362,6 +1362,10 @@ extensions = [
     Extension(
         name="opencodecs.codecs._zstd",
         sources=["src/opencodecs/codecs/_zstd.pyx"],
+        # The fused decode calls run the byte-plane loop in byteplanes.h,
+        # whose restrict pointers let clang vectorize it; gcc also needs
+        # -O3, as conda's default -O2 leaves it scalar (see _bytetools).
+        extra_compile_args=["-O3"] if sys.platform != "win32" else ["/O2"],
         include_dirs=[
             str(PKG_CODECS),
             *_resolve_include_dirs("zstd.h"),
@@ -1721,6 +1725,13 @@ extensions = [
         name="opencodecs.codecs._bytetools",
         sources=["src/opencodecs/codecs/_bytetools.pyx"],
         include_dirs=[str(PKG_CODECS)],
+        # Byte-plane shuffles are strided byte loops that only pay when the
+        # compiler vectorizes them. conda's default CFLAGS build at -O2,
+        # where gcc's cheap-cost vectorizer leaves them scalar: measured on
+        # x86-64 Linux, the native encode was 1.4-1.7x SLOWER than a
+        # NumPy transpose at -O2. clang vectorizes at -O2 (arm64 macOS
+        # measured 6-10x faster than NumPy), so this only moves gcc.
+        extra_compile_args=["-O3"] if sys.platform != "win32" else ["/O2"],
         language="c",
     ),
     # Native TIFF IFD walker — pure-Python parsing logic in Cython for

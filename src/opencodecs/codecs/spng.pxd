@@ -95,3 +95,19 @@ cdef extern from 'spng.h' nogil:
     int spng_set_iccp(spng_ctx* ctx, spng_iccp* iccp)
 
     const char* spng_strerror(int err)
+
+    cdef enum spng_decode_flags:
+        SPNG_DECODE_PROGRESSIVE
+    cdef enum spng_errno:
+        SPNG_EOI
+    ctypedef struct spng_row_info "struct spng_row_info":
+        uint32_t scanline_idx
+        uint32_t row_num
+        int pass_num "pass"
+        uint8_t filter
+    ctypedef int spng_rw_fn(spng_ctx* ctx, void* user, void* data, size_t length) noexcept
+    int spng_set_png_stream(spng_ctx* ctx, spng_rw_fn* callback, void* user)
+    int spng_get_row_info(spng_ctx* ctx, spng_row_info* row_info)
+    int spng_decode_scanline(spng_ctx* ctx, void* out, size_t length)
+    int spng_decode_chunks(spng_ctx* ctx)
+    int spng_encode_row(spng_ctx* ctx, const void* row, size_t length)

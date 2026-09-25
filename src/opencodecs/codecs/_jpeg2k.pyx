@@ -29,7 +29,7 @@ from openjpeg cimport (
     opj_set_default_encoder_parameters, opj_setup_decoder,
     opj_setup_encoder,
     opj_dparameters_t, opj_cparameters_t,
-    opj_stream_t, opj_stream_default_create, opj_stream_destroy,
+    opj_stream_t, opj_stream_default_create, opj_stream_create, opj_stream_destroy,
     opj_stream_set_read_function, opj_stream_set_write_function,
     opj_stream_set_skip_function, opj_stream_set_seek_function,
     opj_stream_set_user_data, opj_stream_set_user_data_length,
@@ -51,6 +51,7 @@ cdef struct mem_buffer_read:
     const uint8_t* data
     OPJ_SIZE_T size
     OPJ_SIZE_T offset
+    void* source
 
 
 cdef struct mem_buffer_write:
@@ -58,12 +59,15 @@ cdef struct mem_buffer_write:
     OPJ_SIZE_T cap
     OPJ_SIZE_T size
     OPJ_SIZE_T offset
+    void* destination
 
 
 cdef OPJ_SIZE_T _read_cb(
     void* p_buffer, OPJ_SIZE_T p_nb_bytes, void* p_user_data
 ) noexcept nogil:
     cdef mem_buffer_read* buf = <mem_buffer_read*> p_user_data
+    if buf.source != NULL:
+        return _source_read_cb(p_buffer, p_nb_bytes, buf)
     cdef OPJ_SIZE_T remaining = buf.size - buf.offset
     if remaining == 0:
         return <OPJ_SIZE_T> -1
@@ -73,13 +77,33 @@ cdef OPJ_SIZE_T _read_cb(
     return n
 
 
+cdef OPJ_SIZE_T _source_read_cb(
+    void* output, OPJ_SIZE_T size, mem_buffer_read* buf
+) noexcept with gil:
+    cdef const uint8_t[::1] data
+    source = <object>buf.source
+    try:
+        if buf.offset >= buf.size:
+            return <OPJ_SIZE_T>-1
+        data = source.read_at(buf.offset, size)
+        memcpy(output, &data[0], data.shape[0])
+        buf.offset += data.shape[0]
+        return data.shape[0]
+    except BaseException as error:
+        source.error = error
+        return <OPJ_SIZE_T>-1
+
+
 cdef OPJ_OFF_T _skip_read_cb(OPJ_OFF_T p_nb_bytes, void* p_user_data) noexcept nogil:
     cdef mem_buffer_read* buf = <mem_buffer_read*> p_user_data
-    cdef OPJ_SIZE_T remaining = buf.size - buf.offset
-    cdef OPJ_OFF_T n = p_nb_bytes if <OPJ_SIZE_T> p_nb_bytes < remaining else <OPJ_OFF_T> remaining
-    if n <= 0:
+    cdef OPJ_OFF_T target = <OPJ_OFF_T>buf.offset + p_nb_bytes
+    cdef OPJ_OFF_T n
+    if target < 0:
         return -1
-    buf.offset += <OPJ_SIZE_T> n
+    if <OPJ_SIZE_T>target > buf.size:
+        target = <OPJ_OFF_T>buf.size
+    n = target - <OPJ_OFF_T>buf.offset
+    buf.offset = <OPJ_SIZE_T>target
     return n
 
 
@@ -95,6 +119,8 @@ cdef OPJ_SIZE_T _write_cb(
     void* p_buffer, OPJ_SIZE_T p_nb_bytes, void* p_user_data
 ) noexcept nogil:
     cdef mem_buffer_write* buf = <mem_buffer_write*> p_user_data
+    if buf.destination != NULL:
+        return _destination_write_cb(p_buffer, p_nb_bytes, buf)
     cdef OPJ_SIZE_T new_cap
     cdef uint8_t* new_data
     if buf.offset + p_nb_bytes > buf.cap:
@@ -111,6 +137,26 @@ cdef OPJ_SIZE_T _write_cb(
     if buf.offset > buf.size:
         buf.size = buf.offset
     return p_nb_bytes
+
+
+cdef OPJ_SIZE_T _destination_write_cb(
+    void* data, OPJ_SIZE_T size, mem_buffer_write* buf
+) noexcept with gil:
+    destination = <object>buf.destination
+    cdef OPJ_SIZE_T copied = 0
+    cdef OPJ_SIZE_T count
+    try:
+        while copied < size:
+            count = min(<OPJ_SIZE_T>65536, size - copied)
+            destination.write_at(buf.offset, PyBytes_FromStringAndSize(<char*>data + copied, count))
+            copied += count
+            buf.offset += count
+        if buf.offset > buf.size:
+            buf.size = buf.offset
+        return size
+    except BaseException as error:
+        destination.error = error
+        return <OPJ_SIZE_T>-1
 
 
 cdef OPJ_OFF_T _skip_write_cb(OPJ_OFF_T p_nb_bytes, void* p_user_data) noexcept nogil:
@@ -175,11 +221,18 @@ def decode(data, *, numthreads: int | None = None, reduce: int = 0,
     if reduce < 0:
         raise ValueError(f'reduce must be >= 0, got {reduce}')
 
-    if isinstance(data, (bytes, bytearray)):
-        src = data
+    rdbuf.source = NULL
+    if hasattr(data, "read_at"):
+        data.reset()
+        src = data.read_at(0, 12)
+        srcsize = data.size
+        rdbuf.source = <void*>data
     else:
-        src = bytes(data)
-    srcsize = <OPJ_SIZE_T> src.shape[0]
+        if isinstance(data, (bytes, bytearray)):
+            src = data
+        else:
+            src = bytes(data)
+        srcsize = <OPJ_SIZE_T>src.shape[0]
     if srcsize < 12:
         raise Jpeg2kError('input too short')
 
@@ -196,12 +249,13 @@ def decode(data, *, numthreads: int | None = None, reduce: int = 0,
     rdbuf.size = srcsize
     rdbuf.offset = 0
 
-    stream = opj_stream_default_create(1)  # is_input=1
+    stream = (opj_stream_create(4096, 1) if rdbuf.source != NULL
+              else opj_stream_default_create(1))  # is_input=1
     if stream == NULL:
         raise Jpeg2kError('opj_stream_default_create failed')
     try:
         opj_stream_set_user_data(stream, &rdbuf, NULL)
-        opj_stream_set_user_data_length(stream, <OPJ_UINT32> srcsize)
+        opj_stream_set_user_data_length(stream, srcsize)
         opj_stream_set_read_function(stream, _read_cb)
         opj_stream_set_skip_function(stream, _skip_read_cb)
         opj_stream_set_seek_function(stream, _seek_read_cb)
@@ -262,6 +316,8 @@ def decode(data, *, numthreads: int | None = None, reduce: int = 0,
         if codec != NULL:
             opj_destroy_codec(codec)
         opj_stream_destroy(stream)
+        if rdbuf.source != NULL:
+            data.raise_error()
 
 
 def decode_region(data, y0: int, y1: int, x0: int, x1: int, *,
@@ -299,11 +355,18 @@ def decode_region(data, y0: int, y1: int, x0: int, x1: int, *,
         raise ValueError(
             f'empty region: y[{y0}:{y1}] x[{x0}:{x1}]')
 
-    if isinstance(data, (bytes, bytearray)):
-        src = data
+    rdbuf.source = NULL
+    if hasattr(data, "read_at"):
+        data.reset()
+        src = data.read_at(0, 12)
+        srcsize = data.size
+        rdbuf.source = <void*>data
     else:
-        src = bytes(data)
-    srcsize = <OPJ_SIZE_T> src.shape[0]
+        if isinstance(data, (bytes, bytearray)):
+            src = data
+        else:
+            src = bytes(data)
+        srcsize = <OPJ_SIZE_T>src.shape[0]
     if srcsize < 12:
         raise Jpeg2kError('input too short')
 
@@ -317,12 +380,13 @@ def decode_region(data, y0: int, y1: int, x0: int, x1: int, *,
     rdbuf.size = srcsize
     rdbuf.offset = 0
 
-    stream = opj_stream_default_create(1)
+    stream = (opj_stream_create(4096, 1) if rdbuf.source != NULL
+              else opj_stream_default_create(1))
     if stream == NULL:
         raise Jpeg2kError('opj_stream_default_create failed')
     try:
         opj_stream_set_user_data(stream, &rdbuf, NULL)
-        opj_stream_set_user_data_length(stream, <OPJ_UINT32> srcsize)
+        opj_stream_set_user_data_length(stream, srcsize)
         opj_stream_set_read_function(stream, _read_cb)
         opj_stream_set_skip_function(stream, _skip_read_cb)
         opj_stream_set_seek_function(stream, _seek_read_cb)
@@ -377,6 +441,8 @@ def decode_region(data, y0: int, y1: int, x0: int, x1: int, *,
         if codec != NULL:
             opj_destroy_codec(codec)
         opj_stream_destroy(stream)
+        if rdbuf.source != NULL:
+            data.raise_error()
 
 
 def decode_tile(data, tile_index: int, *, numthreads: int | None = None):
@@ -402,11 +468,18 @@ def decode_tile(data, tile_index: int, *, numthreads: int | None = None):
     if tile_index < 0:
         raise ValueError(f'tile_index must be >= 0, got {tile_index}')
 
-    if isinstance(data, (bytes, bytearray)):
-        src = data
+    rdbuf.source = NULL
+    if hasattr(data, "read_at"):
+        data.reset()
+        src = data.read_at(0, 12)
+        srcsize = data.size
+        rdbuf.source = <void*>data
     else:
-        src = bytes(data)
-    srcsize = <OPJ_SIZE_T> src.shape[0]
+        if isinstance(data, (bytes, bytearray)):
+            src = data
+        else:
+            src = bytes(data)
+        srcsize = <OPJ_SIZE_T>src.shape[0]
     if srcsize < 12:
         raise Jpeg2kError('input too short')
 
@@ -420,12 +493,13 @@ def decode_tile(data, tile_index: int, *, numthreads: int | None = None):
     rdbuf.size = srcsize
     rdbuf.offset = 0
 
-    stream = opj_stream_default_create(1)
+    stream = (opj_stream_create(4096, 1) if rdbuf.source != NULL
+              else opj_stream_default_create(1))
     if stream == NULL:
         raise Jpeg2kError('opj_stream_default_create failed')
     try:
         opj_stream_set_user_data(stream, &rdbuf, NULL)
-        opj_stream_set_user_data_length(stream, <OPJ_UINT32> srcsize)
+        opj_stream_set_user_data_length(stream, srcsize)
         opj_stream_set_read_function(stream, _read_cb)
         opj_stream_set_skip_function(stream, _skip_read_cb)
         opj_stream_set_seek_function(stream, _seek_read_cb)
@@ -466,6 +540,8 @@ def decode_tile(data, tile_index: int, *, numthreads: int | None = None):
         if codec != NULL:
             opj_destroy_codec(codec)
         opj_stream_destroy(stream)
+        if rdbuf.source != NULL:
+            data.raise_error()
 
 
 def decode_info(data, *, reduce: int = 0) -> dict:
@@ -495,11 +571,18 @@ def decode_info(data, *, reduce: int = 0) -> dict:
     if reduce < 0:
         raise ValueError(f'reduce must be >= 0, got {reduce}')
 
-    if isinstance(data, (bytes, bytearray)):
-        src = data
+    rdbuf.source = NULL
+    if hasattr(data, "read_at"):
+        data.reset()
+        src = data.read_at(0, 12)
+        srcsize = data.size
+        rdbuf.source = <void*>data
     else:
-        src = bytes(data)
-    srcsize = <OPJ_SIZE_T> src.shape[0]
+        if isinstance(data, (bytes, bytearray)):
+            src = data
+        else:
+            src = bytes(data)
+        srcsize = <OPJ_SIZE_T>src.shape[0]
     if srcsize < 12:
         raise Jpeg2kError('input too short')
 
@@ -515,12 +598,13 @@ def decode_info(data, *, reduce: int = 0) -> dict:
     rdbuf.size = srcsize
     rdbuf.offset = 0
 
-    stream = opj_stream_default_create(1)
+    stream = (opj_stream_create(4096, 1) if rdbuf.source != NULL
+              else opj_stream_default_create(1))
     if stream == NULL:
         raise Jpeg2kError('opj_stream_default_create failed')
     try:
         opj_stream_set_user_data(stream, &rdbuf, NULL)
-        opj_stream_set_user_data_length(stream, <OPJ_UINT32> srcsize)
+        opj_stream_set_user_data_length(stream, srcsize)
         opj_stream_set_read_function(stream, _read_cb)
         opj_stream_set_skip_function(stream, _skip_read_cb)
         opj_stream_set_seek_function(stream, _seek_read_cb)
@@ -560,6 +644,8 @@ def decode_info(data, *, reduce: int = 0) -> dict:
         if codec != NULL:
             opj_destroy_codec(codec)
         opj_stream_destroy(stream)
+        if rdbuf.source != NULL:
+            data.raise_error()
 
 
 cdef cnp.ndarray _image_to_ndarray(opj_image_t* image, object out):
@@ -669,7 +755,7 @@ cdef cnp.ndarray _image_to_ndarray(opj_image_t* image, object out):
 
 def encode(data, *, level: int | None = None,
            lossless: bool = False, codec: str = 'jp2',
-           numthreads: int | None = None) -> bytes:
+           numthreads: int | None = None, destination=None) -> bytes:
     """Encode a numpy array as JPEG-2000 (JP2 by default; ``codec='j2k'`` for
     raw codestream).
 
@@ -817,6 +903,7 @@ def encode(data, *, level: int | None = None,
     wrbuf.cap = 0
     wrbuf.size = 0
     wrbuf.offset = 0
+    wrbuf.destination = NULL if destination is None else <void*>destination
 
     stream = opj_stream_default_create(0)  # is_input=0
     if stream == NULL:
@@ -835,6 +922,9 @@ def encode(data, *, level: int | None = None,
             raise Jpeg2kError('opj_encode failed')
         if not opj_end_compress(opj_codec, stream):
             raise Jpeg2kError('opj_end_compress failed')
+        if destination is not None:
+            destination.finish(wrbuf.size)
+            return None
         out = PyBytes_FromStringAndSize(<char*> wrbuf.data,
                                         <Py_ssize_t> wrbuf.size)
         return out
@@ -844,6 +934,8 @@ def encode(data, *, level: int | None = None,
         opj_image_destroy(image)
         if wrbuf.data != NULL:
             free(wrbuf.data)
+        if destination is not None and destination.error is not None:
+            raise destination.error
 
 
 def check_signature(data) -> bool:

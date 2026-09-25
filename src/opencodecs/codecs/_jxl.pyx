@@ -2100,6 +2100,12 @@ cdef class JxlWriter:
         self._frame_count += 1
 
         if rc == _ENC_OK:
+            if not self._is_buffer:
+                try:
+                    self._flush_to_dest()
+                except BaseException:
+                    self.abort()
+                    raise
             return
         if rc == _ENC_ERR_REALLOC:
             raise MemoryError('jxl: failed to grow output buffer')
@@ -2168,7 +2174,11 @@ cdef class JxlWriter:
         if self._is_buffer:
             return  # close() will materialize bytes directly from _outbuf
         cdef bytes payload = (<char*> self._outbuf)[:self._outbuf_used]
-        self._dest_obj.write(payload)
+        from opencodecs.core._write_helpers import write_all
+        write_all(self._dest_obj, payload)
+        flush = getattr(self._dest_obj, "flush", None)
+        if flush is not None:
+            flush()
         self._outbuf_used = 0
 
     # ------------------------------------------------------------------ ctx
@@ -2180,39 +2190,40 @@ cdef class JxlWriter:
         if exc_type is None:
             self.close()
         else:
-            # On error, still release native resources.
-            self._destroy_native()
+            self.abort()
         return False
 
-    def close(self):
-        """Finalize encoding and release resources.
+    @property
+    def output_buffer_capacity(self):
+        """Native output allocation, reusable after each destination flush."""
+        return self._outbuf_capacity
 
-        Returns the encoded bytes if dest was None (in-memory mode),
-        otherwise returns None.
-        """
+    def abort(self):
+        """Release native state and an owned destination without finalizing."""
+        self._closed = True
+        self._destroy_native()
+        if self._own_dest and self._dest_obj is not None:
+            self._dest_obj.close()
+
+    def close(self):
+        """Finalize output, preserving caller ownership of borrowed streams."""
         if self._closed:
             return None
-        if self._encoder != NULL:
-            # Make sure CloseInput was called and remaining output drained.
-            JxlEncoderCloseInput(self._encoder)
-            self._drain_all()
-        result = None
-        if self._is_buffer:
-            # Single memcpy from _outbuf -> bytes. No BytesIO round-trip.
-            if self._outbuf_used > 0:
-                result = (<char*> self._outbuf)[:self._outbuf_used]
-            else:
-                result = b""
-        else:
+        try:
+            if self._frame_count == 0:
+                raise ValueError("jxl: closed without writing a frame")
+            if self._encoder != NULL:
+                JxlEncoderCloseInput(self._encoder)
+                self._drain_all()
+            if self._is_buffer:
+                return (<char*> self._outbuf)[:self._outbuf_used] if self._outbuf_used else b""
             self._flush_to_dest()
+            return None
+        finally:
+            self._closed = True
+            self._destroy_native()
             if self._own_dest:
-                try:
-                    self._dest_obj.close()
-                except Exception:
-                    pass
-        self._destroy_native()
-        self._closed = True
-        return result
+                self._dest_obj.close()
 
     cdef _destroy_native(self):
         if self._encoder != NULL:

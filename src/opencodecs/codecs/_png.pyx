@@ -28,7 +28,7 @@ Encode picks color type / bit depth from numpy shape and dtype:
 """
 
 from cpython.bytes cimport PyBytes_FromStringAndSize, PyBytes_AsString
-from libc.string cimport memcpy
+from libc.string cimport memcpy, memset
 from libc.stdint cimport uint8_t, uint32_t
 from libc.stdlib cimport free
 from libc.stddef cimport size_t
@@ -463,3 +463,260 @@ def check_signature(data) -> bool:
         except Exception:
             return False
     return head == b'\x89PNG\r\n\x1a\n'
+
+
+from spng cimport (spng_set_png_stream, spng_row_info, spng_get_row_info,
+    spng_decode_scanline, spng_decode_chunks, spng_encode_row,
+    SPNG_DECODE_PROGRESSIVE, SPNG_ENCODE_PROGRESSIVE, SPNG_EOI)
+
+
+cdef int _row_read_callback(spng_ctx* ctx, void* user, void* dest,
+                            size_t length) noexcept with gil:
+    cdef object bridge = <object> user
+    cdef bytes data
+    try:
+        data = bridge.read_exact(length)
+        if len(data) != length:
+            raise EOFError("truncated PNG input")
+        memcpy(dest, PyBytes_AsString(data), length)
+        return 0
+    except BaseException as exc:
+        bridge.error = exc
+        return -1
+
+
+cdef int _row_write_callback(spng_ctx* ctx, void* user, void* source,
+                             size_t length) noexcept with gil:
+    cdef object bridge = <object> user
+    try:
+        bridge.write(PyBytes_FromStringAndSize(<const char*> source, length))
+        return 0
+    except BaseException as exc:
+        bridge.error = exc
+        return -1
+
+
+cdef class RowDecoder:
+    """Decode one PNG scanline per call, including explicit Adam7 updates."""
+    cdef spng_ctx* _ctx
+    cdef object _bridge
+    cdef object _dtype
+    cdef unsigned _width
+    cdef unsigned _height
+    cdef int _channels
+    cdef bint _interlaced
+    cdef bint _finished
+
+    def __init__(self, bridge):
+        cdef spng_ihdr header
+        cdef int status
+        cdef int fmt = SPNG_FMT_PNG
+        self._bridge = bridge
+        self._ctx = spng_ctx_new(0)
+        if self._ctx == NULL:
+            raise MemoryError()
+        _check(spng_set_image_limits(self._ctx, 200000, 200000), "image limits")
+        _check(spng_set_chunk_limits(self._ctx, 64 << 20, 64 << 20), "chunk limits")
+        _check(spng_set_png_stream(self._ctx, _row_read_callback, <void*> bridge),
+               "PNG read callback")
+        with nogil:
+            status = spng_get_ihdr(self._ctx, &header)
+        self._check_status(status)
+        self._width = header.width
+        self._height = header.height
+        self._interlaced = header.interlace_method != 0
+        self._dtype = np.dtype(np.uint16 if header.bit_depth == 16 else np.uint8)
+        if header.color_type == SPNG_COLOR_TYPE_INDEXED or header.bit_depth < 8:
+            fmt = SPNG_FMT_RGBA8
+            self._channels = 4
+            self._dtype = np.dtype(np.uint8)
+        elif header.color_type == SPNG_COLOR_TYPE_GRAYSCALE:
+            self._channels = 1
+        elif header.color_type == SPNG_COLOR_TYPE_GRAYSCALE_ALPHA:
+            self._channels = 2
+        elif header.color_type == SPNG_COLOR_TYPE_TRUECOLOR:
+            self._channels = 3
+        elif header.color_type == SPNG_COLOR_TYPE_TRUECOLOR_ALPHA:
+            self._channels = 4
+        else:
+            raise PngError("unsupported PNG color type")
+        with nogil:
+            status = spng_decode_image(self._ctx, NULL, 0, fmt, SPNG_DECODE_PROGRESSIVE)
+        self._check_status(status)
+
+    cdef _check_status(self, int status):
+        if self._bridge.error is not None:
+            raise self._bridge.error
+        _check(status, "PNG row decode")
+
+    @property
+    def info(self):
+        shape = (self._height, self._width)
+        if self._channels != 1:
+            shape += (self._channels,)
+        return {"shape": shape, "dtype": self._dtype, "interlaced": bool(self._interlaced)}
+
+    def read_row(self):
+        cdef spng_row_info info
+        cdef int status
+        cdef int x_start = 0
+        cdef int x_step = 1
+        cdef Py_ssize_t width
+        cdef cnp.ndarray row
+        cdef size_t size
+        cdef void* output
+        if self._ctx == NULL:
+            raise ValueError("PNG row decoder is closed")
+        if self._finished:
+            return None
+        self._check_status(spng_get_row_info(self._ctx, &info))
+        if self._interlaced:
+            x_start = (0, 4, 0, 2, 0, 1, 0)[info.pass_num]
+            x_step = (8, 8, 4, 4, 2, 2, 1)[info.pass_num]
+        width = (self._width - x_start + x_step - 1) // x_step
+        if self._channels == 1:
+            shape = (width,)
+        else:
+            shape = (width, self._channels)
+        row = np.empty(shape, dtype=self._dtype)
+        output = <void*> row.data
+        size = row.nbytes
+        with nogil:
+            status = spng_decode_scanline(self._ctx, output, size)
+        if status == SPNG_EOI:
+            self._finished = True
+            # Validate the remainder, including the final chunk checksum.
+            with nogil:
+                status = spng_decode_chunks(self._ctx)
+        self._check_status(status)
+        return int(info.row_num), x_start, x_step, int(info.pass_num), row
+
+    def close(self):
+        if self._ctx != NULL:
+            spng_ctx_free(self._ctx)
+            self._ctx = NULL
+        self._bridge = None
+
+    def __dealloc__(self):
+        if self._ctx != NULL:
+            spng_ctx_free(self._ctx)
+
+
+cdef class RowEncoder:
+    """Encode sequential ordinary PNG rows directly to a destination callback."""
+    cdef spng_ctx* _ctx
+    cdef object _bridge
+    cdef object _dtype
+    cdef object _row_shape
+    cdef unsigned _height
+    cdef unsigned _written
+
+    def __init__(self, bridge, shape, dtype, *, level=None, filter_choice="fast",
+                 strategy=None, iccprofile=None, iccprofile_name="ICC profile"):
+        cdef spng_ihdr header
+        cdef spng_iccp profile
+        cdef int channels
+        cdef int status
+        cdef int choice
+        cdef bytes profile_data
+        cdef bytes profile_name
+        self._bridge = bridge
+        self._dtype = np.dtype(dtype)
+        shape = tuple(shape)
+        if len(shape) not in (2, 3) or any(int(n) != n or n <= 0 for n in shape):
+            raise ValueError("PNG row shape must have positive height, width and optional channels")
+        if shape[0] > 200000 or shape[1] > 200000:
+            raise ValueError("PNG row shape exceeds image limits")
+        channels = 1 if len(shape) == 2 else shape[2]
+        if channels not in (1, 2, 3, 4):
+            raise ValueError("PNG rows need 1, 2, 3 or 4 channels")
+        if self._dtype not in (np.dtype(np.uint8), np.dtype(np.uint16)):
+            raise ValueError("PNG rows need native uint8 or uint16 samples")
+        self._height = shape[0]
+        self._row_shape = shape[1:]
+        self._ctx = spng_ctx_new(SPNG_CTX_ENCODER)
+        if self._ctx == NULL:
+            raise MemoryError()
+        header.width = shape[1]
+        header.height = shape[0]
+        header.bit_depth = self._dtype.itemsize * 8
+        header.color_type = (SPNG_COLOR_TYPE_GRAYSCALE,
+                             SPNG_COLOR_TYPE_GRAYSCALE_ALPHA,
+                             SPNG_COLOR_TYPE_TRUECOLOR,
+                             SPNG_COLOR_TYPE_TRUECOLOR_ALPHA)[channels - 1]
+        header.compression_method = 0
+        header.filter_method = 0
+        header.interlace_method = 0
+        _check(spng_set_ihdr(self._ctx, &header), "PNG row header")
+        _check(spng_set_png_stream(self._ctx, _row_write_callback, <void*> bridge),
+               "PNG write callback")
+        if level is not None:
+            _check(spng_set_option(self._ctx, SPNG_IMG_COMPRESSION_LEVEL,
+                                   max(0, min(9, int(level)))), "PNG compression level")
+        if filter_choice is not None:
+            if isinstance(filter_choice, str):
+                key = filter_choice.lower().strip()
+                if key not in _FILTER_CHOICE_MAP:
+                    raise ValueError("unknown PNG filter choice")
+                choice = _FILTER_CHOICE_MAP[key]
+            else:
+                choice = int(filter_choice)
+            _check(spng_set_option(self._ctx, SPNG_FILTER_CHOICE, choice), "PNG filter choice")
+        if strategy is not None:
+            _check(spng_set_option(self._ctx, SPNG_IMG_COMPRESSION_STRATEGY, int(strategy)),
+                   "PNG compression strategy")
+        if iccprofile is not None:
+            profile_data = bytes(iccprofile)
+            profile_name = str(iccprofile_name).encode("ascii", "replace")[:79]
+            memset(profile.profile_name, 0, 80)
+            memcpy(profile.profile_name, PyBytes_AsString(profile_name), len(profile_name))
+            profile.profile_len = len(profile_data)
+            profile.profile = PyBytes_AsString(profile_data)
+            _check(spng_set_iccp(self._ctx, &profile), "PNG color profile")
+        with nogil:
+            status = spng_encode_image(self._ctx, NULL, 0, SPNG_FMT_PNG,
+                                       SPNG_ENCODE_PROGRESSIVE | SPNG_ENCODE_FINALIZE)
+        self._check_status(status)
+
+    cdef _check_status(self, int status):
+        if self._bridge.error is not None:
+            raise self._bridge.error
+        _check(status, "PNG row encode")
+
+    def write_row(self, row):
+        cdef cnp.ndarray array
+        cdef int status
+        cdef const void* data
+        cdef size_t size
+        if self._ctx == NULL:
+            raise ValueError("PNG row encoder is closed")
+        if self._written >= self._height:
+            raise ValueError("too many PNG rows")
+        array = np.asarray(row)
+        if tuple(array.shape[i] for i in range(array.ndim)) != self._row_shape:
+            raise ValueError("PNG row has the wrong shape")
+        if array.dtype != self._dtype:
+            raise ValueError("PNG row has the wrong dtype")
+        array = np.ascontiguousarray(array)
+        data = <const void*> array.data
+        size = array.nbytes
+        with nogil:
+            status = spng_encode_row(self._ctx, data, size)
+        if status == SPNG_EOI:
+            status = 0
+        self._check_status(status)
+        self._written += 1
+
+    def finish(self):
+        if self._written != self._height:
+            raise ValueError("not enough PNG rows")
+
+    def close(self):
+        if self._ctx != NULL:
+            spng_ctx_free(self._ctx)
+            self._ctx = NULL
+        self._bridge = None
+
+    def __dealloc__(self):
+        if self._ctx != NULL:
+            spng_ctx_free(self._ctx)

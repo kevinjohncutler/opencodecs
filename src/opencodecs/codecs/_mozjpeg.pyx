@@ -213,8 +213,43 @@ def _resolve_scale(scale, scale_num, scale_denom):
     return min(factors, key=lambda nd: abs(nd[0] / nd[1] - f))
 
 
+cdef class DecoderContext:
+    """Explicit owned decoder handle, serialized across callers."""
+    cdef tjhandle handle
+    cdef object lock
+
+    def __cinit__(self):
+        import threading
+        self.lock = threading.RLock()
+        self.handle = tjInitDecompress()
+        if self.handle == NULL:
+            raise MozJpegError("decoder context initialization failed")
+
+    def decode(self, data, **options):
+        with self.lock:
+            if self.handle == NULL:
+                raise ValueError("decoder context is closed")
+            return decode(data, _context=self, **options)
+
+    def close(self):
+        with self.lock:
+            if self.handle != NULL:
+                tjDestroy(self.handle)
+                self.handle = NULL
+
+    def __dealloc__(self):
+        if self.handle != NULL:
+            tjDestroy(self.handle)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+
+
 def decode(data, *, out=None, scale=None,
-           scale_num=None, scale_denom=None) -> np.ndarray:
+           scale_num=None, scale_denom=None, DecoderContext _context=None) -> np.ndarray:
     """Decode JPEG bytes into a uint8 array.
 
     Decode is standard JPEG — the output is identical regardless of
@@ -266,7 +301,7 @@ def decode(data, *, out=None, scale=None,
     if srcsize < 3:
         raise MozJpegError('input too short to be JPEG')
 
-    handle = tjInitDecompress()
+    handle = tjInitDecompress() if _context is None else _context.handle
     if handle == NULL:
         raise MozJpegError('tjInitDecompress failed')
     try:
@@ -312,7 +347,7 @@ def decode(data, *, out=None, scale=None,
                 raise ValueError(
                     f"mozjpeg decode: out= dtype must be uint8, "
                     f"got {out.dtype}")
-            if not out.flags['C_CONTIGUOUS']:
+            if not out.flags['C_CONTIGUOUS'] or not out.flags.writeable:
                 raise ValueError("mozjpeg decode: out= must be C-contiguous")
             out_arr = out
         else:
@@ -335,7 +370,8 @@ def decode(data, *, out=None, scale=None,
             raise MozJpegError(f'tjDecompress2: {err}')
         return out_arr
     finally:
-        tjDestroy(handle)
+        if _context is None:
+            tjDestroy(handle)
 
 
 def check_signature(data) -> bool:

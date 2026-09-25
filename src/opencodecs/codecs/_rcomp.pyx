@@ -67,7 +67,9 @@ def encode(data, *, int blocksize=32) -> bytes:
     if data.dtype.kind not in 'iu':
         raise RcompError(f'rcomp: requires int dtype, got {data.dtype}')
 
-    arr = np.ascontiguousarray(data).ravel()
+    if blocksize <= 0:
+        raise RcompError('rcomp: blocksize must be positive')
+    arr = np.ascontiguousarray(data, dtype=data.dtype.newbyteorder('=')).ravel()
     n = arr.shape[0]
     if n > 0x7fffffff:
         raise RcompError(f'rcomp: too many elements ({n} > 2^31)')
@@ -123,7 +125,7 @@ def decode(data, *, out=None):
     typed ``out=`` to the codec wrapper."""
     cdef:
         Py_ssize_t total_in
-        int nbytes
+        unsigned int nbytes
         unsigned int blocksize
         int bpp
         Py_ssize_t header_size
@@ -142,11 +144,15 @@ def decode(data, *, out=None):
         )
 
     nbytes, blocksize, bpp = _HEADER.unpack(data[:header_size])
+    if bpp not in (1, 2, 4) or nbytes % bpp:
+        raise RcompError('rcomp: invalid pixel size or byte count')
+    if blocksize == 0 or blocksize > 0x7fffffff or nbytes // bpp > 0x7fffffff:
+        raise RcompError('rcomp: invalid blocksize or element count')
     payload_size = total_in - header_size
     if payload_size > 0x7fffffff:
         raise RcompError(f'rcomp: payload too large ({payload_size} > 2^31)')
 
-    cdef const unsigned char[::1] payload_mv = data[header_size:]
+    cdef const unsigned char[::1] payload_mv = memoryview(data)[header_size:]
     cdef unsigned char* payload_ptr
     if payload_size > 0:
         payload_ptr = <unsigned char*> &payload_mv[0]
@@ -155,8 +161,16 @@ def decode(data, *, out=None):
 
     # cfitsio's rdecomp writes UNSIGNED output. Map dtype by bpp.
     nx = <int> (nbytes // bpp)
+    dtype = np.dtype(f'u{bpp}')
+    if out is None:
+        dst = np.empty(nx, dtype=dtype)
+    else:
+        if not isinstance(out, np.ndarray):
+            raise TypeError('rcomp out must be an ndarray')
+        if out.dtype != dtype or out.size != nx or not out.flags.c_contiguous or not out.flags.writeable:
+            raise ValueError('rcomp out must be writable contiguous native unsigned storage of matching size')
+        dst = out
     if bpp == 1:
-        dst = np.empty(nx, dtype=np.uint8)
         if nx > 0:
             with nogil:
                 rc = rdecomp_byte(
@@ -167,7 +181,6 @@ def decode(data, *, out=None):
         else:
             rc = 0
     elif bpp == 2:
-        dst = np.empty(nx, dtype=np.uint16)
         if nx > 0:
             with nogil:
                 rc = rdecomp_short(
@@ -178,7 +191,6 @@ def decode(data, *, out=None):
         else:
             rc = 0
     elif bpp == 4:
-        dst = np.empty(nx, dtype=np.uint32)
         if nx > 0:
             with nogil:
                 rc = rdecomp_int(
@@ -212,6 +224,8 @@ def decode_raw(data, *, int nelements, int blocksize, int bytes_per_pixel):
         cnp.ndarray dst
         int rc
 
+    if nelements < 0 or blocksize <= 0:
+        raise RcompError('rcomp_raw: invalid element count or blocksize')
     if not isinstance(data, (bytes, bytearray, memoryview)):
         data = bytes(data)
     payload_mv = data

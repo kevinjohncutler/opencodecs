@@ -9,14 +9,16 @@
 """Native AVIF codec via libavif (linked against system aom)."""
 
 from cpython.bytes cimport PyBytes_FromStringAndSize
-from libc.string cimport memcpy
-from libc.stdint cimport uint8_t, uint16_t
+from cpython.bytearray cimport PyByteArray_AS_STRING
+from libc.string cimport memcpy, memset
+from libc.stdint cimport uint8_t, uint16_t, uint32_t, uint64_t
 
 import numpy as np
 cimport numpy as cnp
 
 from avif cimport (
-    AVIF_QUALITY_LOSSLESS, AVIF_RESULT_OK,
+    AVIF_QUALITY_LOSSLESS, AVIF_RESULT_OK, AVIF_RESULT_IO_ERROR,
+    avifIO, avifROData, avifResult, avifDecoderSetIO,
     AVIF_PIXEL_FORMAT_YUV444, AVIF_PIXEL_FORMAT_YUV422,
     AVIF_PIXEL_FORMAT_YUV420, AVIF_PIXEL_FORMAT_YUV400,
     AVIF_RGB_FORMAT_RGB, AVIF_RGB_FORMAT_RGBA,
@@ -485,6 +487,30 @@ def decode(data, *, numthreads: int | None = None, out=None) -> np.ndarray:
         avifDecoderDestroy(decoder)
 
 
+cdef avifResult _source_read(avifIO* io, uint32_t flags, uint64_t offset,
+                            size_t size, avifROData* output) noexcept with gil:
+    source = <object>io.data
+    cdef const uint8_t[::1] piece
+    cdef char* buffer
+    cdef size_t copied = 0
+    try:
+        if flags or offset > source.size:
+            raise ValueError("invalid AVIF source range")
+        size = min(size, source.size - offset)
+        source._avif_buffer = bytearray(size)
+        buffer = PyByteArray_AS_STRING(source._avif_buffer)
+        while copied < size:
+            piece = source.read_at(offset + copied, size - copied)
+            memcpy(buffer + copied, &piece[0], piece.shape[0])
+            copied += piece.shape[0]
+        output.data = <const uint8_t*>buffer
+        output.size = size
+        return AVIF_RESULT_OK
+    except BaseException as error:
+        source.error = error
+        return AVIF_RESULT_IO_ERROR
+
+
 cdef class AvifSequence:
     """An open AVIF decoder, for files that hold more than one image.
 
@@ -506,6 +532,9 @@ cdef class AvifSequence:
     """
     cdef avifDecoder* _decoder
     cdef object _buf
+    cdef object _source
+    cdef avifIO _io
+    cdef int _default_threads
     cdef readonly int n_frames
     cdef readonly int width
     cdef readonly int height
@@ -520,9 +549,13 @@ cdef class AvifSequence:
 
         self._decoder = NULL
         # Held for the decoder's lifetime: SetIOMemory borrows it.
-        self._buf = data if isinstance(data, bytes) else bytes(data)
-        src = self._buf
-        srcsize = <size_t> src.shape[0]
+        if hasattr(data, "read_at"):
+            self._source = data
+            self._source.reset()
+        else:
+            self._buf = data if isinstance(data, bytes) else bytes(data)
+            src = self._buf
+            srcsize = <size_t> src.shape[0]
 
         self._decoder = avifDecoderCreate()
         if self._decoder == NULL:
@@ -533,12 +566,24 @@ cdef class AvifSequence:
         else:
             self._decoder.maxThreads = int(numthreads)
 
-        rc = avifDecoderSetIOMemory(self._decoder, &src[0], srcsize)
+        self._default_threads = self._decoder.maxThreads
+        if self._source is not None:
+            memset(&self._io, 0, sizeof(avifIO))
+            self._io.read = _source_read
+            self._io.sizeHint = self._source.size
+            self._io.persistent = 0
+            self._io.data = <void*>self._source
+            avifDecoderSetIO(self._decoder, &self._io)
+            rc = AVIF_RESULT_OK
+        else:
+            rc = avifDecoderSetIOMemory(self._decoder, &src[0], srcsize)
         if rc != AVIF_RESULT_OK:
             raise AvifError(
                 f'avifDecoderSetIOMemory: {avifResultToString(rc).decode()}')
         with nogil:
             rc = avifDecoderParse(self._decoder)
+        if self._source is not None:
+            self._source.raise_error()
         if rc != AVIF_RESULT_OK:
             raise AvifError(
                 f'avifDecoderParse: {avifResultToString(rc).decode()}')
@@ -560,7 +605,7 @@ cdef class AvifSequence:
             avifDecoderDestroy(self._decoder)
             self._decoder = NULL
 
-    def frame(self, int index):
+    def frame(self, int index, *, numthreads=None):
         """Decode frame ``index`` and copy it out as an ndarray."""
         cdef int rc
         cdef unsigned int idx
@@ -571,6 +616,9 @@ cdef class AvifSequence:
         cdef size_t row_bytes_out
         cdef avifImage* image
 
+        if self._decoder == NULL:
+            raise ValueError("AVIF decoder is closed")
+        self._decoder.maxThreads = self._default_threads if numthreads is None else max(1, int(numthreads))
         if index < 0:
             index += self.n_frames
         if not 0 <= index < self.n_frames:
@@ -579,6 +627,8 @@ cdef class AvifSequence:
         idx = <unsigned int> index
         with nogil:
             rc = avifDecoderNthImage(self._decoder, idx)
+        if self._source is not None:
+            self._source.raise_error()
         if rc != AVIF_RESULT_OK:
             raise AvifError(
                 f'avifDecoderNthImage({index}): '

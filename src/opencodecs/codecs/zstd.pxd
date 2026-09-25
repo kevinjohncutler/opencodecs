@@ -51,3 +51,27 @@ cdef extern from 'zstd.h' nogil:
         void* dst, size_t dstCapacity,
         const void* src, size_t srcSize,
     )
+
+    ctypedef struct ZSTD_DCtx:
+        pass
+    ctypedef struct ZSTD_inBuffer:
+        const void* src
+        size_t size
+        size_t pos
+    ctypedef struct ZSTD_outBuffer:
+        void* dst
+        size_t size
+        size_t pos
+    ZSTD_DCtx* ZSTD_createDCtx()
+    size_t ZSTD_freeDCtx(ZSTD_DCtx* dctx)
+    size_t ZSTD_decompressDCtx(ZSTD_DCtx* dctx, void* dst, size_t dstCapacity,
+                               const void* src, size_t srcSize)
+    size_t ZSTD_decompressStream(ZSTD_DCtx* dctx,
+                                 ZSTD_outBuffer* output,
+                                 ZSTD_inBuffer* input)
+
+    ctypedef enum ZSTD_EndDirective:
+        ZSTD_e_continue
+        ZSTD_e_end
+    size_t ZSTD_compressStream2(ZSTD_CCtx* cctx, ZSTD_outBuffer* output,
+                                ZSTD_inBuffer* input, ZSTD_EndDirective endOp)

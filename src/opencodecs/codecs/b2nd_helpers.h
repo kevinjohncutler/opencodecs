@@ -39,6 +39,9 @@ extern "C" {
  *   compressor   - inner blosc2 codec ("zstd","lz4","lz4hc","blosclz","zlib"); NULL = default
  *   do_bitshuffle - 0 = byte shuffle, 1 = bit shuffle, -1 = no shuffle
  *
+ * A non-NULL urlpath writes a contiguous persistent frame directly and
+ * returns NULL/zero output pointers instead of allocating a serialized copy.
+ *
  * On success returns 0, sets *out_cframe to a freshly allocated buffer
  * (caller must free via free()) and *out_cframe_len to its length.
  * Returns a negative blosc2 error code on failure.
@@ -54,7 +57,8 @@ int oc_b2nd_encode(
     const char* compressor,
     int do_bitshuffle,
     uint8_t** out_cframe,
-    int64_t* out_cframe_len
+    int64_t* out_cframe_len,
+    const char* urlpath
 );
 
 /* Inspect a cframe's metadata without decompressing the data.
@@ -79,6 +83,12 @@ int oc_b2nd_inspect(
 
 /* Release the b2nd_array_t handle returned by oc_b2nd_inspect. */
 void oc_b2nd_release(void* handle);
+
+int oc_b2nd_open(const char* path, int8_t* ndim, int64_t* shape,
+                 char** dtype, void** handle);
+int oc_b2nd_read_slice(void* handle, const int64_t* start,
+                       const int64_t* stop, void* dest, int64_t size,
+                       int nthreads);
 
 /* Decode a cframe into a pre-allocated buffer.
  *

@@ -87,3 +87,14 @@ cdef extern from 'lz4frame.h' nogil:
         LZ4F_frameInfo_t* frameInfoPtr,
         const void* srcBuffer, size_t* srcSizePtr,
     )
+
+    ctypedef struct LZ4F_cctx:
+        pass
+    LZ4F_errorCode_t LZ4F_createCompressionContext(LZ4F_cctx** cctx, unsigned version)
+    LZ4F_errorCode_t LZ4F_freeCompressionContext(LZ4F_cctx* cctx)
+    size_t LZ4F_compressBound(size_t srcSize, const LZ4F_preferences_t* prefs)
+    size_t LZ4F_compressBegin(LZ4F_cctx* cctx, void* dst, size_t capacity,
+                              const LZ4F_preferences_t* prefs)
+    size_t LZ4F_compressUpdate(LZ4F_cctx* cctx, void* dst, size_t capacity,
+                               const void* src, size_t srcSize, const void* opts)
+    size_t LZ4F_compressEnd(LZ4F_cctx* cctx, void* dst, size_t capacity, const void* opts)

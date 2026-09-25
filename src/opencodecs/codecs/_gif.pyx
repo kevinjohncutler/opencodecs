@@ -1132,6 +1132,22 @@ cdef class GifWriter:
                 f"{GifErrorString(self._gif.Error).decode()}"
             )
 
+    def drain(self):
+        """Return completed output bytes while retaining the encoder state."""
+        cdef bytes result
+        if self._closed:
+            raise GifError("drain on a closed GifWriter")
+        result = PyBytes_FromStringAndSize(
+            <const char*> self._mem.data, <Py_ssize_t> self._mem.size)
+        self._mem.size = 0
+        self._mem.offset = 0
+        return result
+
+    @property
+    def output_buffer_capacity(self):
+        """Native output allocation, reusable after each drain."""
+        return self._mem.capacity
+
     def close(self):
         """Finalize the stream and return the encoded bytes."""
         cdef int err = 0

@@ -1,10 +1,11 @@
 # Minimal Cython declarations for libavif.
 
-from libc.stdint cimport uint8_t, uint16_t, uint32_t
+from libc.stdint cimport uint8_t, uint16_t, uint32_t, uint64_t
 
 cdef extern from 'avif/avif.h' nogil:
     int AVIF_QUALITY_LOSSLESS
     int AVIF_RESULT_OK
+    int AVIF_RESULT_IO_ERROR
 
     ctypedef uint16_t avifColorPrimaries
     ctypedef uint16_t avifTransferCharacteristics
@@ -29,6 +30,17 @@ cdef extern from 'avif/avif.h' nogil:
         AVIF_RGB_FORMAT_GRAYA
 
     ctypedef int avifResult
+
+    ctypedef struct avifROData:
+        const uint8_t* data
+        size_t size
+
+    ctypedef struct avifIO:
+        void (*destroy)(avifIO*) noexcept nogil
+        avifResult (*read)(avifIO*, uint32_t, uint64_t, size_t, avifROData*) noexcept nogil
+        uint64_t sizeHint
+        int persistent
+        void* data
 
     ctypedef struct avifRWData:
         uint8_t* data
@@ -132,6 +144,7 @@ cdef extern from 'avif/avif.h' nogil:
     # the caller has to keep the bytes alive for the decoder's life.
     avifResult avifDecoderSetIOMemory(
         avifDecoder* decoder, const uint8_t* data, size_t size)
+    void avifDecoderSetIO(avifDecoder* decoder, avifIO* io)
     avifResult avifDecoderParse(avifDecoder* decoder)
     avifResult avifDecoderNextImage(avifDecoder* decoder)
     avifResult avifDecoderNthImage(
