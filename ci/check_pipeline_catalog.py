@@ -60,7 +60,9 @@ def validate(catalog, codec_names, root):
             for item in evidence:
                 path, _, symbol = item.partition(':')
                 relative = Path(path)
-                if relative.is_absolute() or '..' in relative.parts:
+                # anchor, not is_absolute(): on Windows '/etc/passwd' has a root
+                # but no drive, so is_absolute() calls it relative.
+                if relative.anchor or '..' in relative.parts:
                     errors.append(f'{label}: evidence must be repository-relative: {item}')
                     continue
                 if not (root / path).is_file():
