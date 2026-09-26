@@ -1,12 +1,13 @@
-"""DICOMweb client tests.
-
-We don't have a live PACS endpoint in CI, so the tests focus on:
+"""DICOMweb client tests. Covered:
 
   - multipart/related parsing of synthetic responses
   - RLE Lossless decode (DICOM Annex G PackBits-like layout)
   - Transfer-syntax dispatch when given a synthesized response body
     that wraps a known-codec encoded payload
   - Error handling for unsupported transfer syntaxes
+  - The whole client over HTTP, against the local DICOMweb server in
+    _dicomweb_server.py (QIDO-RS search, WADO-RS frames, content
+    negotiation, errors), with no network access
 """
 
 from __future__ import annotations
@@ -244,83 +245,156 @@ def test_client_constructs_with_auth_header():
 
 
 # ---------------------------------------------------------------------------
-# Live smoke test against Orthanc's public demo server.
-#
-# demo.orthanc-server.com is the canonical free public DICOMweb test
-# endpoint (BSD-licensed Orthanc team has hosted it for years for
-# tutorials + interop testing). We only hit it when reachable so CI
-# without network just skips.
+# End to end over HTTP, against the local DICOMweb server in
+# _dicomweb_server.py: a synthetic study whose frames were written by
+# reference encoders (imagecodecs, pydicom).
 # ---------------------------------------------------------------------------
 
+AS_STORED = 'multipart/related; type="application/octet-stream"; transfer-syntax=*'
 
-_ORTHANC_URL = "https://demo.orthanc-server.com/dicom-web"
+
+@pytest.fixture(scope="module")
+def study():
+    pytest.importorskip("imagecodecs")
+    pytest.importorskip("pydicom")
+    from _dicomweb_server import synthetic_study
+    return synthetic_study()
 
 
-def _orthanc_reachable() -> bool:
+@pytest.fixture(scope="module")
+def served(study):
+    from _dicomweb_server import dicomweb_server
+    with dicomweb_server(study) as (base, requests):
+        yield base, requests
+
+
+def _qido(url):
+    import json
     import urllib.request
-    try:
-        req = urllib.request.Request(
-            _ORTHANC_URL + "/studies",
-            headers={"Accept": "application/dicom+json"},
-        )
-        urllib.request.urlopen(req, timeout=3).close()
-        return True
-    except Exception:
-        return False
+    req = urllib.request.Request(url, headers={"Accept": "application/dicom+json"})
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        return json.loads(resp.read())
 
 
-@pytest.mark.skipif(
-    not _orthanc_reachable(),
-    reason="Orthanc demo endpoint unreachable (offline or blocked)",
-)
-def test_dicomweb_live_orthanc_demo_end_to_end():
-    """End-to-end DICOMweb fetch against demo.orthanc-server.com.
+def _value(element, tag):
+    return element[tag]["Value"][0]
 
-    Picks the first study/series/instance via QIDO, then pulls frame 1
-    via WADO and decodes it. Validates the whole multipart/related →
-    transfer-syntax-dispatch → codec pipeline against a real PACS
-    server, not a synthesized response."""
-    import urllib.request, json as _json
 
-    client = dw.DicomwebClient(_ORTHANC_URL, timeout=10.0)
-
-    # QIDO: pick the first study and its first series + instance.
-    req = urllib.request.Request(
-        _ORTHANC_URL + "/studies",
-        headers={"Accept": "application/dicom+json"},
+def _pixel_options(instance_json):
+    return dict(
+        rows=_value(instance_json, "00280010"),
+        columns=_value(instance_json, "00280011"),
+        bits_allocated=_value(instance_json, "00280100"),
+        samples_per_pixel=_value(instance_json, "00280002"),
+        pixel_representation=_value(instance_json, "00280103"),
     )
-    studies = _json.loads(urllib.request.urlopen(req, timeout=10).read())
-    assert studies, "no studies returned from orthanc demo"
-    study_uid = studies[0]["0020000D"]["Value"][0]
 
-    req = urllib.request.Request(
-        f"{_ORTHANC_URL}/studies/{study_uid}/series",
-        headers={"Accept": "application/dicom+json"},
-    )
-    series = _json.loads(urllib.request.urlopen(req, timeout=10).read())
-    assert series
-    series_uid = series[0]["0020000E"]["Value"][0]
 
-    instances = client.list_instances(study_uid, series_uid)
-    assert instances
-    instance_uid = instances[0]["00080018"]["Value"][0]
+def _walk(base):
+    """Every (study, series, instance JSON) found by QIDO-RS alone."""
+    client = dw.DicomwebClient(base, timeout=10)
+    for study_json in _qido(f"{base}/studies"):
+        study_uid = _value(study_json, "0020000D")
+        for series_json in _qido(f"{base}/studies/{study_uid}/series"):
+            series_uid = _value(series_json, "0020000E")
+            for inst in client.list_instances(study_uid, series_uid):
+                yield study_uid, series_uid, inst
 
-    # Fetch + decode frame 1. The demo studies are mostly
-    # 8/16-bit grayscale Explicit VR LE — opencodecs decodes those.
-    # Pass shape hints so the raw / RLE branch knows what to do
-    # without a SOP-instance-tags fetch.
-    rows = int(instances[0].get("00280010", {}).get("Value", [512])[0])
-    cols = int(instances[0].get("00280011", {}).get("Value", [512])[0])
-    bits = int(instances[0].get("00280100", {}).get("Value", [16])[0])
-    samples = int(instances[0].get("00280002", {}).get("Value", [1])[0])
-    pixrep = int(instances[0].get("00280103", {}).get("Value", [0])[0])
-    frame = client.get_frame(
-        study_uid, series_uid, instance_uid, frame=1,
-        rows=rows, columns=cols, bits_allocated=bits,
-        samples_per_pixel=samples, pixel_representation=pixrep,
-    )
-    assert frame.size > 0
-    expected_shape = (rows, cols) if samples == 1 else (rows, cols, samples)
-    assert frame.shape == expected_shape, (
-        f"frame shape {frame.shape} != expected {expected_shape}"
-    )
+
+def test_qido_walk_finds_every_instance(study, served):
+    base, _ = served
+    found = {_value(i, "00080018"): _value(i, "00083002") for *_, i in _walk(base)}
+    expected = {i.uid: i.transfer_syntax for s in study.series for i in s.instances}
+    assert found == expected
+
+
+def _modules_for(ts):
+    return {
+        dw.TS_JPEG_BASELINE_1: "opencodecs.codecs._jpeg",
+        dw.TS_JPEGLS_LOSSLESS: "opencodecs.codecs._charls",
+        dw.TS_JPEG2K_LOSSLESS: "opencodecs.codecs._jpeg2k",
+        dw.TS_HTJ2K_LOSSLESS: "opencodecs.codecs._openjph",
+    }.get(ts)
+
+
+def test_every_stored_syntax_decodes_to_the_reference(study, served):
+    """Each frame as stored, fetched and decoded by the client."""
+    base, _ = served
+    client = dw.DicomwebClient(base, timeout=10)
+    checked = set()
+    for study_uid, series_uid, inst_json in _walk(base):
+        inst = study.instance(_value(inst_json, "00080018"))
+        module = _modules_for(inst.transfer_syntax)
+        if module is not None:
+            try:
+                __import__(module)
+            except ImportError:
+                continue
+        for n in range(1, inst.pixels.shape[0] + 1):
+            frame = client.get_frame(study_uid, series_uid, inst.uid, n,
+                                     accept=AS_STORED, **_pixel_options(inst_json))
+            np.testing.assert_array_equal(
+                frame, inst.expected[n - 1],
+                err_msg=f"{inst.transfer_syntax} frame {n}")
+        checked.add(inst.transfer_syntax)
+    # Raw and RLE need no optional codec, so they are always exercised.
+    assert {dw.TS_EXPLICIT_VR_LE, dw.TS_RLE_LOSSLESS} <= checked
+
+
+def test_default_accept_asks_for_uncompressed_frames(study, served):
+    """The client's default Accept names no transfer syntax, which PS3.18
+    reads as Explicit VR Little Endian: a conforming server transcodes, so
+    the caller gets raw bytes and must supply the pixel geometry."""
+    base, _ = served
+    client = dw.DicomwebClient(base, timeout=10)
+    study_uid, series_uid, inst_json = next(
+        t for t in _walk(base) if _value(t[2], "00083002") == dw.TS_JPEGLS_LOSSLESS)
+    inst = study.instance(_value(inst_json, "00080018"))
+    frame = client.get_frame(study_uid, series_uid, inst.uid, 1,
+                             **_pixel_options(inst_json))
+    np.testing.assert_array_equal(frame, inst.pixels[0])
+    with pytest.raises(DicomwebError, match="rows/columns/bits_allocated"):
+        client.get_frame(study_uid, series_uid, inst.uid, 1)
+
+
+def test_iter_frames_over_http_keeps_request_order(study, served):
+    base, _ = served
+    client = dw.DicomwebClient(base, timeout=10)
+    study_uid, series_uid, inst_json = next(
+        t for t in _walk(base) if _value(t[2], "00280008") > 1)
+    inst = study.instance(_value(inst_json, "00080018"))
+    order = [3, 1, 5, 2, 4]
+    frames = list(client.iter_frames(
+        study_uid, series_uid, inst.uid, order, max_frame_bytes=1 << 20,
+        numthreads=3, accept=AS_STORED, **_pixel_options(inst_json)))
+    for n, frame in zip(order, frames):
+        np.testing.assert_array_equal(frame, inst.pixels[n - 1])
+    with pytest.raises(DicomwebError, match="max_response_bytes"):
+        list(client.iter_frames(study_uid, series_uid, inst.uid, [1],
+                                max_frame_bytes=64, accept=AS_STORED,
+                                **_pixel_options(inst_json)))
+
+
+def test_client_headers_reach_the_server(served):
+    base, requests = served
+    client = dw.DicomwebClient(base, headers={"Authorization": "Bearer t0ken"})
+    study_uid = _value(_qido(f"{base}/studies")[0], "0020000D")
+    series_uid = _value(_qido(f"{base}/studies/{study_uid}/series")[0], "0020000E")
+    del requests[:]
+    client.list_instances(study_uid, series_uid)
+    assert requests[-1]["headers"].get("Authorization") == "Bearer t0ken"
+    assert requests[-1]["headers"].get("Accept") == "application/dicom+json"
+
+
+def test_missing_instance_and_frame_are_http_errors(study, served):
+    import urllib.error
+    base, _ = served
+    client = dw.DicomwebClient(base, timeout=10)
+    series = study.series[0]
+    inst = series.instances[0]
+    with pytest.raises(urllib.error.HTTPError) as err:
+        client.get_frame(study.uid, series.uid, "2.25.1", 1, accept=AS_STORED)
+    assert err.value.code == 404
+    with pytest.raises(urllib.error.HTTPError) as err:
+        client.get_frame(study.uid, series.uid, inst.uid, 99, accept=AS_STORED)
+    assert err.value.code == 404
