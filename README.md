@@ -248,9 +248,9 @@ with open_remote_hdf5("https://bucket.s3.amazonaws.com/big.h5") as f:
 `czi` decodes compression types 0 (uncompressed), 5 (zstd), 6 (ZSTDHDR)
 and 4 (JPEG XR). JPEG XR, which most Zeiss slide scans use, needs the
 optional `_jpegxr` extension, built when jxrlib is installed (Homebrew
-`jxrlib`, conda-forge `jxrlib`, Debian/Ubuntu `libjxr-dev`). Wheels built
-from `main` carry it, statically linked, on every platform; the 0.2.0 wheels
-on PyPI predate that. A JPEG XR sub-block without it raises `CziError`. Pyramid levels are placed from the slide origin and scale, and
+`jxrlib`, conda-forge `jxrlib`, Debian/Ubuntu `libjxr-dev`). The wheels
+carry it from 0.3.0 on, statically linked on every platform. A JPEG XR
+sub-block without it raises `CziError`. Pyramid levels are placed from the slide origin and scale, and
 overlapping mosaic tiles compose with the higher mosaic index on top, as
 libCZI and czifile do. The reader exposes `metadata_bytes` and
 `metadata_xml` as lazy zero-copy accessors.
@@ -272,6 +272,64 @@ z = zarr.create_array(
 ```
 
 ## Performance
+
+### 0.3.0 against 0.2.0
+
+0.3.0 is mostly a speed release. Each row below ran both versions in fresh
+processes on the same inputs, alternating which went first, and counts only
+where both returned identical pixels. Medians in milliseconds, on a 20-core
+Apple silicon Mac and a 64-core x86-64 Linux workstation.
+
+| Workload | Mac 0.2.0 | Mac 0.3.0 | Mac speedup | Linux 0.2.0 | Linux 0.3.0 | Linux speedup |
+|---|---:|---:|---:|---:|---:|---:|
+| CZI | | | | | | |
+| Open a whole-slide file | 77.6 | 27.9 | 2.8x | 88.4 | 48.7 | 1.8x |
+| Open it and read the first crop | 255 | 39.1 | 6.5x | 267 | 58.7 | 4.6x |
+| Build the pyramid reader | 174 | 3.4 | 51.1x | 164 | 4.7 | 35.0x |
+| Read a 20 x 20 tile mosaic | 23.9 | 10.1 | 2.4x | 55.8 | 18.4 | 3.0x |
+| Small crops of the mosaic | 69.5 | 26.6 | 2.6x | 121 | 54.7 | 2.2x |
+| 50 disjoint crops, one call each | 17.2 | 6.7 | 2.6x | 29.8 | 11.3 | 2.6x |
+| 50 disjoint crops, `read_regions` | 17.2 | 3.1 | 5.5x | 29.8 | 5.1 | 5.9x |
+| Stack read, 8 workers | 2.5 | 1.7 | 1.5x | 12.0 | 3.9 | 3.1x |
+| Write 8 frames, zstd | 82.1 | 53.9 | 1.5x | 189 | 89.3 | 2.1x |
+| Write 8 frames, zstd, `write_many` | 82.1 | 19.9 | 4.1x | 189 | 40.9 | 4.6x |
+| Write 8 frames, uncompressed | 28.9 | 10.1 | 2.8x | 226 | 38.3 | 5.9x |
+| Zarr, 4096 x 4096 uint16 in 256 x 256 chunks, whole array | | | | | | |
+| v2 zstd, default | 50.1 | 45.6 | 1.1x | 72.9 | 62.2 | 1.2x |
+| v2 zstd, `num_workers=8` | 50.1 | 14.9 | 3.4x | 72.9 | 19.6 | 3.7x |
+| v2 zlib, `num_workers=8` | 80.5 | 25.9 | 3.1x | 184 | 38.8 | 4.7x |
+| v2 blosc, default | 37.5 | 20.0 | 1.9x | 35.1 | 29.4 | 1.2x |
+| v3 zstd, `num_workers=8` | 51.3 | 14.6 | 3.5x | 62.1 | 19.4 | 3.2x |
+| blosc2 from 8 threads, 64 chunks of 1 MiB | | | | | | |
+| Decode | 25.4 | 3.9 | 6.5x | 38.0 | 6.1 | 6.2x |
+| Encode | 32.9 | 5.0 | 6.6x | 47.9 | 6.8 | 7.1x |
+| TIFF | | | | | | |
+| Tiled, deflate with horizontal predictor, 4096 x 4096 | 20.5 | 17.5 | 1.2x | 25.4 | 23.4 | 1.1x |
+
+Rows that name `num_workers=8`, `read_regions` or `write_many` use options
+new in 0.3.0; they are compared with the only way 0.2.0 could do the same
+work. Zarr regional reads stay serial unless you pass `num_workers`
+(to `read_region` or `OmeZarrArray`).
+
+Where it comes from:
+
+- **CZI**: the directory parses with precompiled structs, pyramid levels
+  are grouped once instead of per level, and each tile is decompressed,
+  unshuffled and written into the output in one native call that releases
+  the GIL once. Separate calls made threads queue for the GIL between
+  steps. Regional reads use a spatial index and decode only the tiles a
+  box touches; `read_regions` decodes a tile shared by several boxes once.
+- **Zarr**: parallel regional reads are new, with consecutive chunks
+  batched into tasks of about 2 MiB, plain zstd chunks decompressed
+  straight into the output, and v2 blosc chunks decoded through the native
+  blosc2 extension rather than numcodecs, whose binding serializes calls
+  across threads.
+- **blosc2**: each call now has its own compression context. The old path
+  selected the compressor through process-global state behind a global
+  mutex, which serialized every thread and could hand one thread another's
+  compressor (a correctness bug, also fixed).
+
+### Across releases
 
 Headline numbers from the latest bench run (`bench/run_benchmarks.py
 --fast`, macOS M1 Ultra, vs `imagecodecs` / `tifffile` / `ndstorage`):
@@ -527,10 +585,10 @@ build).
 
 ## Status
 
-- **v0.2.0** on PyPI (September 2026). Every wheel carries the same 39
+- **v0.3.0** on PyPI (September 2026). Every wheel carries the same 40
   compiled extensions, and `ci/check_wheel_contents.py` fails the
   release build if one goes missing.
-- About 3,000 tests locally, including a 40-dataset conformance corpus;
+- About 4,000 tests locally, including a 40-dataset conformance corpus;
   CI runs the corpus-independent suite on macOS, Linux and Windows for
   Python 3.10 and 3.13.
 - Native readers and writers for the common scientific containers

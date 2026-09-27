@@ -10,8 +10,12 @@ Versions follow the same ``YYYY.M.D`` cadence as upstream when we
 publish; the entries below cluster work by date rather than by
 release because most of it has shipped continuously to ``main``.
 
-Unreleased
-----------
+0.3.0 (2026-09-27)
+------------------
+
+Mostly a speed release. Figures below compare against 0.2.0 unless they
+say otherwise; the README's Performance section has the full table for a
+Mac and a Linux workstation.
 
 **Shared bounded pipeline across readers and writers**
 
@@ -27,22 +31,27 @@ and checked by ``ci/check_pipeline_catalog.py``.
 
 **Zarr, TIFF and blosc2 under many threads**
 
-- Zarr regional reads group chunks into tasks of about 2 MiB on a
-  persistent pool, read chunk files with os-level calls, and decompress
-  plain zstd chunks straight into the output. Eight workers reading a
-  4096 x 4096 array in 256 x 256 chunks: zstd 47.5 to 19.0 ms on Linux
-  (30.8 to 14.3 ms on macOS), zlib 58.8 to 38.0 ms.
+- Zarr regional reads can run in parallel, with ``num_workers`` on
+  ``read_region`` or ``OmeZarrArray``; the default stays serial. Chunks
+  are grouped into tasks of about 2 MiB on a persistent pool, chunk files
+  are read with os-level calls, and plain zstd chunks decompress straight
+  into the output. A 4096 x 4096 array in 256 x 256 chunks, 0.2.0's serial
+  read against eight workers: zstd 72.9 to 19.6 ms on Linux (50.1 to
+  14.9 ms on macOS), zlib 184 to 38.8 ms (80.5 to 25.9 ms).
 - Zarr v2 ``blosc`` chunks decode through the native blosc2 extension
-  instead of numcodecs, whose binding serializes calls across threads
-  (eight workers had been slower than one): 53.7 to 24.5 ms.
+  instead of numcodecs, whose binding serializes calls across threads:
+  the default serial read goes 37.5 to 20.0 ms on macOS and 35.1 to
+  29.4 ms on Linux.
 - Fix: blosc2 encode selected its compressor through process-global
   state, so concurrent encodes could use another thread's compressor.
   Encode, decode and partial decode now each use a context of their own,
-  which also stops them queuing on blosc2's global mutex. Chunks written
-  with item size 1 and shuffle carry slightly different header flags;
-  old and new chunks decode in both versions.
+  which also stops them queuing on blosc2's global mutex: from eight
+  threads, 64 chunks of 1 MiB decode 6.2 to 6.5x and encode 6.6 to 7.1x
+  faster. Chunks written with item size 1 and shuffle carry slightly
+  different header flags; old and new chunks decode in both versions.
 - TIFF tiles with the horizontal predictor decode into a writable array,
-  so the predictor no longer copies each tile first (about 14% faster).
+  so the predictor no longer copies each tile first (1.1 to 1.2x on a
+  tiled 4096 x 4096 deflate image).
 
 **CZI: faster reads and writes, and real slides read correctly**
 
@@ -51,7 +60,6 @@ and checked by ``ci/check_pipeline_catalog.py``.
   when jxrlib is installed. Every tile of the Axioscan corpus slide and its
   whole 20684 x 32751 level 0 match czifile exactly. The wheels build
   jxrlib from source (conda-forge on Windows) and link it statically.
-- Build: SZ3 3.3.2, since upstream deleted the 3.3.1 tag.
 - Fix: overlapping mosaic tiles composed in directory order. Zen writes
   tiles out of mosaic-index order, and libCZI and czifile draw the higher
   mosaic index on top; each level now composes in that order, which on the
@@ -64,7 +72,8 @@ and checked by ``ci/check_pipeline_catalog.py``.
 - Sub-blocks decode straight into their destination. Whole-stack
   ``read`` accepts ``out=`` (``numpy.memmap`` included). zstd
   decompression and the byte unshuffle run as one native call, which
-  let several threads decode small tiles at once.
+  let several threads decode small tiles at once: a stack read with eight
+  workers goes 12.0 to 3.9 ms on Linux (2.5 to 1.7 ms on macOS).
 - Regional reads use a lazily built spatial index and write each tile
   straight into the output; overlapping tiles still resolve to the
   later one in the directory. ``PyramidReader.read_regions`` decodes
@@ -74,15 +83,30 @@ and checked by ``ci/check_pipeline_catalog.py``.
   time and the pyramid reader no longer rescans it per level (180 ms to
   3 ms on a 12k-sub-block slide).
 - ``read_regions`` on CZI decodes each tile shared by several boxes once,
-  straight into every box's output (disjoint crops 6.3 to 5.0 ms against
-  the owned-tile planner on Linux).
+  straight into every box's output: 50 disjoint crops take 5.1 ms on
+  Linux against 29.8 ms one call at a time in 0.2.0 (3.1 against 17.2 ms
+  on macOS).
 - The writer shuffles natively, emits sub-blocks as parts without
   copying unverified payloads, and ``write_many`` compresses frames on
   workers while keeping the file byte-identical to sequential writes.
+  Eight 2048 x 2048 frames with zstd: 189 to 89 ms one frame at a time on
+  Linux and 41 ms with ``write_many`` (82 to 54 and 20 ms on macOS).
 - ``CziWriter(background_encode=True)`` compresses frames of 1 MiB or
   more on a background thread while the caller prepares the next one.
   Opt-in: with work between frames it wrote 1.44 to 1.46x faster, with
   frames ready and nothing to overlap it was 0.87 to 0.96x.
+
+**Build and tests**
+
+- Every wheel now carries the same 40 compiled extensions, the 39 of
+  0.2.0 plus ``_jpegxr``, and ``ci/check_wheel_contents.py`` requires it.
+- SZ3 3.3.2, since upstream deleted the 3.3.1 tag.
+- The DICOMweb client is tested over HTTP against a local server
+  (``tests/_dicomweb_server.py``) serving a synthetic study written by
+  reference encoders, instead of a public demo server.
+- Fix: the pipeline catalog check accepted a rooted evidence path such
+  as ``/etc/passwd`` on Windows, where ``Path.is_absolute()`` needs a
+  drive letter.
 
 0.2.0 (2026-09-09)
 ------------------
