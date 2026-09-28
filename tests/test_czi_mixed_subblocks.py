@@ -10,9 +10,8 @@ element count the caller never chose -- on a real AxioScan slide,
 neither the file's shape mix nor the API that does work. These pin the
 up-front refusal and the fact that a uniform file is untouched by it.
 
-Also here: the whole-stack read hands work out in byte-sized tasks rather
-than one contiguous run per worker, so the parallel result has to stay
-identical to the serial one whatever the sub-block size.
+The dispatch that read uses to fill that stack is covered separately, in
+test_czi_read_dispatch.py.
 """
 from __future__ import annotations
 
@@ -81,21 +80,3 @@ def test_mixed_file_still_reads_one_tile_at_a_time():
     with CziReader(buffer=data) as r:
         for i, expected in enumerate(tiles):
             assert np.array_equal(r.read_tile(i), expected)
-
-
-@pytest.mark.parametrize("n_tiles,size", [
-    (40, 16),    # many sub-blocks well under one task's byte budget
-    (3, 512),    # each sub-block its own task
-])
-def test_parallel_read_matches_serial(n_tiles, size):
-    tiles = [_tile(size, size, i) for i in range(n_tiles)]
-    data = mosaic_czi_bytes(
-        [(t, (0, i * size)) for i, t in enumerate(tiles)], compression=6,
-        hilo=True)
-    with CziReader(buffer=data) as r:
-        serial = r.read(n_workers=1)
-        parallel = r.read()
-        assert np.array_equal(serial, parallel)
-        assert np.array_equal(serial, np.stack(tiles, axis=0))
-        # An explicit count is a budget, not an instruction to spend it.
-        assert np.array_equal(serial, r.read(n_workers=64))

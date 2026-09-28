@@ -79,6 +79,29 @@ _READ_MAX_WORKERS = 32
 _READ_TASK_BYTES = 8 << 20
 
 
+def _read_tasks(n_entries: int, tile_bytes: int,
+                budget: int | None = None) -> list[range]:
+    """Partition sub-block indices into tasks of roughly ``budget`` bytes.
+
+    A sub-block at or above the budget gets a task to itself; smaller ones
+    ride together up to it. Kept out of ``read`` so the partition can be
+    asserted on its own: it is the part of this with an off-by-one to get
+    wrong, and comparing decoded pixels cannot see such a bug, because
+    every partition of the same sub-blocks decodes to the same array.
+
+    ``budget`` defaults to ``_READ_TASK_BYTES`` read at call time, not as a
+    default argument value: a default would bind the number at import and
+    leave the module constant looking tunable while changing nothing.
+    """
+    if n_entries <= 0:  # pragma: no cover - empty CZI defense
+        return []
+    if budget is None:
+        budget = _READ_TASK_BYTES
+    per_task = max(1, budget // tile_bytes) if tile_bytes > 0 else n_entries
+    return [range(i, min(i + per_task, n_entries))
+            for i in range(0, n_entries, per_task)]
+
+
 def _get_pool() -> ThreadPoolExecutor:
     # Shared with the other readers that do this. The local copy was
     # missing the double-checked lock, so a race on the first call
@@ -1369,11 +1392,7 @@ class CziReader(Reader):
             from .core.parallel import resolve_workers
 
             n = len(self.entries)
-            tile_bytes = out.nbytes // n
-            per_task = (max(1, _READ_TASK_BYTES // tile_bytes)
-                        if tile_bytes else n)
-            tasks = [range(i, min(i + per_task, n))
-                     for i in range(0, n, per_task)]
+            tasks = _read_tasks(n, out.nbytes // n)
             if n_workers is not None:
                 workers = max(1, min(int(n_workers), len(tasks)))
             else:
