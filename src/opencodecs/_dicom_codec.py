@@ -81,9 +81,10 @@ class DicomCodec(Codec):
         frame = opts.pop("frame", None)
         out = opts.pop("out", None)
         rescale = bool(opts.pop("rescale", False))
+        numthreads = opts.pop("numthreads", None)
         with self.open(src) as r:
             arr = r.frame(int(frame)) if frame is not None \
-                else r.asarray(rescale=rescale)
+                else r.asarray(rescale=rescale, numthreads=numthreads)
         if out is not None:
             out[...] = arr
             return out
