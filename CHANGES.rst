@@ -10,6 +10,48 @@ Versions follow the same ``YYYY.M.D`` cadence as upstream when we
 publish; the entries below cluster work by date rather than by
 release because most of it has shipped continuously to ``main``.
 
+0.3.1 (2026-09-28)
+------------------
+
+A CZI read scheduling fix, and a clear refusal for the files that cannot
+stack. Figures compare against 0.3.0 on the same machines.
+
+**CZI whole-stack reads hand out work by bytes**
+
+``read`` derived its batch size from the worker count, giving each worker
+``ceil(n/workers)`` consecutive sub-blocks. That makes the read wait on
+that many sub-blocks even when most workers have already finished: nine
+8 MiB sub-blocks over eight workers is two rounds, and measured 15.1 ms
+against 7.9 ms for nine one-sub-block tasks. Tasks are now sized by
+output bytes, about 8 MiB each, so a large sub-block gets a task to
+itself and small ones ride together. That keeps the reason batching
+existed, which is that a 0.7 MiB tile cannot pay for its own future,
+without paying the rounding. ``_READ_MAX_WORKERS`` goes 8 to 32: the old
+value was measured against the dispatch above, where extra workers could
+not help. With byte-sized tasks, 20 to 32 measured fastest on both a
+20-core arm64 Mac and a 128-core x86-64 Linux host, and past 32 the Linux
+host gives it back to memory-bandwidth contention. A semaphore keeps the
+resolved worker count a real bound when the byte sizing yields more tasks
+than that.
+
+Eight files of 2000 x 2000 uint16 ZSTDHDR sub-blocks, read back to back:
+22.1 to about 15 ms per file on macOS, which moves a whole-stack read
+from a little behind aicspylibczi to about 1.3x ahead of it.
+
+**A mixed sub-block CZI says so, instead of failing inside the codec**
+
+``read`` stacks every sub-block into one array, and sized that array from
+the first sub-block, which is wrong for any file whose sub-blocks differ:
+a pyramidal slide scan interleaves down-scaled sub-blocks with
+full-resolution ones, and a mosaic can clip its edge tiles. The decode
+destination check then failed with an element count the caller never
+chose, naming neither the file's shape mix nor a way forward. It now
+refuses up front, listing the shapes it cannot stack and the APIs that do
+work (``CziPyramidReader.read_region``, ``entries_at_level``,
+``read_tile`` and ``iter_tiles``), and the new ``CziReader.is_uniform``
+lets a caller branch before asking. Decoding was never at fault: JPEG XR
+sub-blocks are pixel-exact against aicspylibczi.
+
 0.3.0 (2026-09-27)
 ------------------
 
