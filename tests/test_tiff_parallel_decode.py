@@ -176,8 +176,20 @@ def test_a_worker_exception_is_not_swallowed(tmp_path, monkeypatch):
         w.write_page(img, tile=(64, 64), compression="deflate")
     with oc.get_codec("tiff").open(str(p), numthreads=4) as r:
         page = r.page(0)
+        # The general per-segment path.
+        monkeypatch.setattr(page, "_fused_segment_codec", lambda: None)
         monkeypatch.setattr(page, "_decode_segment",
                             lambda raw: (_ for _ in ()).throw(
                                 RuntimeError("segment exploded")))
         with pytest.raises(RuntimeError, match="segment exploded"):
             page.asarray(numthreads=4)
+    # The fused path: a batch call failing inside a worker.
+    from opencodecs.codecs import _tiff
+
+    def batch_exploded(*a, **k):
+        raise RuntimeError("batch exploded")
+
+    monkeypatch.setattr(_tiff, "decode_segments_into", batch_exploded)
+    with oc.get_codec("tiff").open(str(p), numthreads=4) as r:
+        with pytest.raises(RuntimeError, match="batch exploded"):
+            r.page(0).asarray(numthreads=4)

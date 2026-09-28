@@ -386,3 +386,62 @@ def check_signature(data) -> bool:
         return False
     # zlib: CMF (0x78 typical) + FLG; (CMF*256 + FLG) % 31 == 0.
     return (head[0] & 0x0F) == 0x08 and ((head[0] * 256 + head[1]) % 31 == 0)
+
+
+# ---------------------------------------------------------------------------
+# C-level decoder for other extensions (see oc_decoder_vtable.h)
+# ---------------------------------------------------------------------------
+
+from cpython.pycapsule cimport PyCapsule_New
+from libc.stddef cimport ptrdiff_t
+
+cdef extern from "oc_decoder_vtable.h":
+    ctypedef struct oc_decoder_vtable:
+        void* (*create)() noexcept nogil
+        void (*destroy)(void*) noexcept nogil
+        ptrdiff_t (*decode)(void*, const uint8_t*, size_t, uint8_t*, size_t) noexcept nogil
+    const char* OC_DECODER_VTABLE_CAPSULE
+
+
+cdef void* _vt_create() noexcept nogil:
+    # zlib needs no state; any non-NULL value means "ready".
+    if OPENCODECS_HAVE_LIBDEFLATE:
+        return <void*> libdeflate_alloc_decompressor()
+    return <void*> 1
+
+
+cdef void _vt_destroy(void* ctx) noexcept nogil:
+    if OPENCODECS_HAVE_LIBDEFLATE and ctx != NULL:
+        libdeflate_free_decompressor(<libdeflate_decompressor*> ctx)
+
+
+cdef ptrdiff_t _vt_decode(void* ctx, const uint8_t* src, size_t n,
+                          uint8_t* dst, size_t cap) noexcept nogil:
+    """A zlib stream, as TIFF deflate (compression 8 and 32946) stores it."""
+    cdef size_t written = 0
+    cdef uLongf dstsize
+    cdef int rc
+    if ctx == NULL:
+        return -1
+    if OPENCODECS_HAVE_LIBDEFLATE:
+        if libdeflate_zlib_decompress(<libdeflate_decompressor*> ctx,
+                                      <const void*> src, n, <void*> dst, cap,
+                                      &written) != LIBDEFLATE_SUCCESS:
+            return -1
+        return <ptrdiff_t> written
+    dstsize = <uLongf> cap
+    rc = uncompress(dst, &dstsize, src, <uLong> n)
+    if rc != Z_OK:
+        return -1
+    return <ptrdiff_t> dstsize
+
+
+cdef oc_decoder_vtable _VTABLE
+_VTABLE.create = _vt_create
+_VTABLE.destroy = _vt_destroy
+_VTABLE.decode = _vt_decode
+
+
+def decoder_capsule():
+    """This module's decompressor as a C table, for a nogil caller in C."""
+    return PyCapsule_New(<void*> &_VTABLE, OC_DECODER_VTABLE_CAPSULE, NULL)

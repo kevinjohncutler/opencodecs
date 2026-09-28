@@ -1010,3 +1010,294 @@ def check_signature(data) -> bool:
     if head[:2] == b"MM":
         return head[2:4] in (b"\x00\x2a", b"\x00\x2b")
     return False
+
+
+
+# ---------------------------------------------------------------------------
+# Whole segments into the output: decode, un-predict and place, one call
+# ---------------------------------------------------------------------------
+#
+# The per-segment path decoded a tile in one native call, undid the
+# predictor in a second and copied it into the output with numpy, handing
+# the GIL back and forth between each. With several reader threads those
+# handoffs queue, and eight threads reading a tiled 4096 x 4096 TIFF got
+# 0.69x the throughput of the same eight reading serially. Here a batch of
+# segments goes through all three steps under one GIL release.
+
+from cpython.pycapsule cimport PyCapsule_GetPointer
+from libc.stddef cimport ptrdiff_t
+from libc.stdlib cimport malloc, free
+from libc.string cimport memset
+
+cdef extern from "oc_decoder_vtable.h":
+    ctypedef struct oc_decoder_vtable:
+        void* (*create)() noexcept nogil
+        void (*destroy)(void*) noexcept nogil
+        ptrdiff_t (*decode)(void*, const uint8_t*, size_t, uint8_t*, size_t) noexcept nogil
+    const char* OC_DECODER_VTABLE_CAPSULE
+
+cdef enum:
+    _SEG_NONE = 0
+    _SEG_LZW = 1
+    _SEG_PACKBITS = 2
+    _SEG_EXTERNAL = 3
+
+#: ``codec`` values for :func:`decode_segments_into`.
+SEGMENT_NONE = _SEG_NONE
+SEGMENT_LZW = _SEG_LZW
+SEGMENT_PACKBITS = _SEG_PACKBITS
+SEGMENT_EXTERNAL = _SEG_EXTERNAL   # ``decoder`` is a capsule from _deflate or _zstd
+
+
+cdef Py_ssize_t _packbits_into(const uint8_t* src, Py_ssize_t n,
+                               uint8_t* dst, Py_ssize_t cap) noexcept nogil:
+    """PackBits, as packbits_decode does it; -1 on a malformed stream."""
+    cdef Py_ssize_t i = 0, o = 0, k
+    cdef int8_t c
+    while i < n:
+        c = <int8_t> src[i]
+        i += 1
+        if c >= 0:
+            k = <Py_ssize_t> c + 1
+            if i + k > n or o + k > cap:
+                return -1
+            memcpy(dst + o, src + i, <size_t> k)
+            i += k
+            o += k
+        elif c != -128:
+            k = 1 - <Py_ssize_t> c
+            if i >= n or o + k > cap:
+                return -1
+            memset(dst + o, src[i], <size_t> k)
+            i += 1
+            o += k
+    return o
+
+
+ctypedef fused _uint_t:
+    uint8_t
+    uint16_t
+    uint32_t
+
+
+cdef void _undo_rows(_uint_t* p0, Py_ssize_t rows, Py_ssize_t cols,
+                     Py_ssize_t samples, Py_ssize_t row_elems) noexcept nogil:
+    """Predictor 2, with the running sum in registers for 1, 3 and 4 samples.
+
+    The obvious ``p[i] += p[i - samples]`` makes every sample wait for the
+    one just stored, and over a 4096 x 4096 image that made a serial read
+    0.71x on arm64 and 0.83x on x86-64 against these per-layout loops.
+    """
+    cdef Py_ssize_t r, c
+    cdef _uint_t s0, s1, s2, s3
+    cdef _uint_t* p
+    for r in range(rows):
+        p = p0 + r * row_elems
+        if samples == 1:
+            s0 = p[0]
+            for c in range(1, cols):
+                s0 = <_uint_t> (s0 + p[c])
+                p[c] = s0
+        elif samples == 3:
+            s0 = p[0]; s1 = p[1]; s2 = p[2]
+            for c in range(1, cols):
+                s0 = <_uint_t> (s0 + p[c * 3]); p[c * 3] = s0
+                s1 = <_uint_t> (s1 + p[c * 3 + 1]); p[c * 3 + 1] = s1
+                s2 = <_uint_t> (s2 + p[c * 3 + 2]); p[c * 3 + 2] = s2
+        elif samples == 4:
+            s0 = p[0]; s1 = p[1]; s2 = p[2]; s3 = p[3]
+            for c in range(1, cols):
+                s0 = <_uint_t> (s0 + p[c * 4]); p[c * 4] = s0
+                s1 = <_uint_t> (s1 + p[c * 4 + 1]); p[c * 4 + 1] = s1
+                s2 = <_uint_t> (s2 + p[c * 4 + 2]); p[c * 4 + 2] = s2
+                s3 = <_uint_t> (s3 + p[c * 4 + 3]); p[c * 4 + 3] = s3
+        else:
+            for c in range(samples, cols * samples):
+                p[c] = <_uint_t> (p[c] + p[c - samples])
+
+
+cdef void _undo_horizontal(uint8_t* buf, Py_ssize_t rows, Py_ssize_t cols,
+                           Py_ssize_t samples, Py_ssize_t itemsize,
+                           Py_ssize_t row_bytes) noexcept nogil:
+    """Predictor 2 on the first ``cols`` pixels of ``rows`` rows."""
+    if itemsize == 1:
+        _undo_rows(<uint8_t*> buf, rows, cols, samples, row_bytes)
+    elif itemsize == 2:
+        _undo_rows(<uint16_t*> buf, rows, cols, samples, row_bytes // 2)
+    else:
+        _undo_rows(<uint32_t*> buf, rows, cols, samples, row_bytes // 4)
+
+
+cdef void _undo_float(uint8_t* buf, Py_ssize_t rows, Py_ssize_t cols,
+                      Py_ssize_t samples, Py_ssize_t itemsize,
+                      Py_ssize_t row_bytes, uint8_t* tmp) noexcept nogil:
+    """Predictor 3 on ``rows`` whole rows; see undo_floating_point."""
+    cdef Py_ssize_t r, c, lane, samp_i, n_samples = cols * samples
+    cdef Py_ssize_t total = cols * samples * itemsize
+    cdef uint8_t* row_p
+    cdef uint16_t endian_probe = 1
+    cdef bint little_endian = (<uint8_t*> &endian_probe)[0] == 1
+    for r in range(rows):
+        row_p = buf + r * row_bytes
+        for c in range(samples, total):
+            row_p[c] = <uint8_t> (row_p[c] + row_p[c - samples])
+        for samp_i in range(n_samples):
+            for lane in range(itemsize):
+                tmp[samp_i * itemsize
+                    + (itemsize - 1 - lane if little_endian else lane)] = \
+                    row_p[lane * n_samples + samp_i]
+        memcpy(row_p, tmp, <size_t> total)
+
+
+def decode_segments_into(segments, out, const Py_ssize_t[:, ::1] geometry, *,
+                         int codec, decoder=None, Py_ssize_t segment_cols,
+                         Py_ssize_t samples, Py_ssize_t itemsize,
+                         int predictor):
+    """Decode TIFF segments, undo their predictor and place them, one call.
+
+    ``segments`` holds each segment's stored bytes (bytes or any buffer).
+    ``out`` is the image as a C-contiguous 2D byte view, one row per image
+    row. Row ``i`` of ``geometry`` describes segment ``i`` as
+    ``(decoded_rows, crop_rows, crop_cols, dst_row, dst_col)``: the segment
+    decodes to ``decoded_rows`` rows of ``segment_cols`` pixels of
+    ``samples`` samples of ``itemsize`` bytes, and its top-left
+    ``crop_rows`` x ``crop_cols`` pixels land at ``out`` pixel
+    ``(dst_row, dst_col)``. ``predictor`` is TIFF's 1, 2 or 3; samples must
+    already be in native byte order unless it is 3, whose byte planes are
+    order-independent.
+
+    Every segment runs under one GIL release. A segment that does not
+    decode to exactly its expected size is left unwritten and its index
+    returned, so the caller can redo it on the general path, which raises
+    the precise error.
+    """
+    cdef:
+        uint8_t[:, ::1] dst = out
+        Py_ssize_t nseg = len(segments)
+        Py_ssize_t s, r, expected, got, max_rows = 0
+        Py_ssize_t pixel_bytes = samples * itemsize
+        Py_ssize_t row_bytes = segment_cols * pixel_bytes
+        Py_ssize_t dec_rows, crop_rows, crop_cols, dst_row, dst_col
+        const uint8_t[::1] view
+        const uint8_t** srcs = NULL
+        Py_ssize_t* lens = NULL
+        char* failed = NULL
+        uint8_t* scratch = NULL
+        uint8_t* tmp = NULL
+        const uint8_t* data
+        uint8_t* target
+        bint direct
+        oc_decoder_vtable* vt = NULL
+        void* ctx = NULL
+        list keep = []
+
+    if geometry.shape[0] != nseg or geometry.shape[1] != 5:
+        raise ValueError(f"geometry must be ({nseg}, 5), got "
+                         f"({geometry.shape[0]}, {geometry.shape[1]})")
+    if samples < 1 or segment_cols < 1:
+        raise ValueError("samples and segment_cols must be positive")
+    if predictor == 2 and itemsize not in (1, 2, 4):
+        raise ValueError(f"predictor 2 takes 1, 2 or 4 byte samples, not {itemsize}")
+    if predictor == 3 and itemsize not in (2, 4, 8):
+        raise ValueError(f"predictor 3 takes 2, 4 or 8 byte samples, not {itemsize}")
+    if predictor not in (1, 2, 3):
+        raise ValueError(f"TIFF predictor {predictor} not supported")
+    for s in range(nseg):
+        dec_rows = geometry[s, 0]; crop_rows = geometry[s, 1]
+        crop_cols = geometry[s, 2]; dst_row = geometry[s, 3]; dst_col = geometry[s, 4]
+        if (crop_rows < 0 or crop_cols < 0 or crop_rows > dec_rows
+                or crop_cols > segment_cols or dst_row < 0 or dst_col < 0
+                or dst_row + crop_rows > dst.shape[0]
+                or (dst_col + crop_cols) * pixel_bytes > dst.shape[1]):
+            raise ValueError(f"segment {s} does not fit the output")
+        if dec_rows > max_rows:
+            max_rows = dec_rows
+    if codec == _SEG_EXTERNAL:
+        vt = <oc_decoder_vtable*> PyCapsule_GetPointer(decoder, OC_DECODER_VTABLE_CAPSULE)
+    elif codec not in (_SEG_NONE, _SEG_LZW, _SEG_PACKBITS):
+        raise ValueError(f"unknown segment codec {codec}")
+    if nseg == 0:
+        return []
+
+    srcs = <const uint8_t**> malloc(nseg * sizeof(uint8_t*))
+    lens = <Py_ssize_t*> malloc(nseg * sizeof(Py_ssize_t))
+    failed = <char*> malloc(nseg)
+    scratch = <uint8_t*> malloc(max(1, max_rows * row_bytes))
+    tmp = <uint8_t*> malloc(max(1, row_bytes))
+    try:
+        if (srcs == NULL or lens == NULL or failed == NULL or scratch == NULL
+                or tmp == NULL):
+            raise MemoryError()
+        for s in range(nseg):
+            # The memoryview in ``keep`` holds each buffer's export for the
+            # whole call, so its pointer stays valid without the GIL.
+            keep.append(memoryview(segments[s]).cast("B"))
+            view = keep[s]
+            lens[s] = view.shape[0]
+            srcs[s] = &view[0] if view.shape[0] else NULL
+            failed[s] = 0
+        with nogil:
+            if vt != NULL:
+                ctx = vt.create()
+            for s in range(nseg):
+                dec_rows = geometry[s, 0]; crop_rows = geometry[s, 1]
+                crop_cols = geometry[s, 2]; dst_row = geometry[s, 3]
+                dst_col = geometry[s, 4]
+                expected = dec_rows * row_bytes
+                if srcs[s] == NULL and expected:
+                    failed[s] = 1
+                    continue
+                # A whole strip is whole output rows: decode straight into
+                # them. Tile rows are strided in the output, so a tile goes
+                # through scratch and is copied in.
+                direct = (crop_rows == dec_rows and crop_cols == segment_cols
+                          and dst_col == 0 and dst.shape[1] == row_bytes
+                          and expected > 0)
+                target = &dst[dst_row, 0] if direct else scratch
+                if codec == _SEG_NONE:
+                    if lens[s] != expected:
+                        failed[s] = 1
+                        continue
+                    if predictor == 1 and not direct:
+                        data = srcs[s]
+                    else:
+                        memcpy(target, srcs[s], <size_t> expected)
+                        data = target
+                else:
+                    if codec == _SEG_LZW:
+                        got = oc_tifflzw_decode(srcs[s], <size_t> lens[s],
+                                                target, <size_t> expected)
+                    elif codec == _SEG_PACKBITS:
+                        got = _packbits_into(srcs[s], lens[s], target, expected)
+                    elif ctx != NULL:
+                        got = vt.decode(ctx, srcs[s], <size_t> lens[s],
+                                        target, <size_t> expected)
+                    else:
+                        got = -1
+                    if got != expected:
+                        # A direct decode may have written part of these
+                        # rows; the caller redoes the whole segment.
+                        failed[s] = 1
+                        continue
+                    data = target
+                if predictor == 2:
+                    _undo_horizontal(target, crop_rows, crop_cols, samples,
+                                     itemsize, row_bytes)
+                elif predictor == 3:
+                    _undo_float(target, crop_rows, segment_cols, samples,
+                                itemsize, row_bytes, tmp)
+                if direct:
+                    continue
+                for r in range(crop_rows):
+                    memcpy(&dst[dst_row + r, dst_col * pixel_bytes],
+                           data + r * row_bytes,
+                           <size_t> (crop_cols * pixel_bytes))
+            if vt != NULL and ctx != NULL:
+                vt.destroy(ctx)
+        return [s for s in range(nseg) if failed[s]]
+    finally:
+        free(srcs)
+        free(lens)
+        free(failed)
+        free(scratch)
+        free(tmp)

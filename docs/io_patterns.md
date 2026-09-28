@@ -150,6 +150,25 @@ nogil-byteshuffle + persistent-pool combination.
   on a 128-thread host (each call was already capped at 16), which is
   how the distinction showed up.
 
+* **Fuse the steps of a piece, then fuse the pieces.** A TIFF tile was
+  inflated in one native call, un-predicted in a second and copied into
+  the output with numpy, handing the GIL back between each step; the CZI
+  reader had the same shape with zstd and a byte unshuffle. Eight readers
+  of a tiled TIFF, all threading by default, got 0.69x of what the same
+  eight got reading serially. `_tiff.decode_segments_into` now takes a
+  batch of segments through decompression, predictor and placement under
+  one GIL release, calling the zlib and zstd decoders through a C table
+  their own modules export (`oc_decoder_vtable.h`) rather than linking
+  them into `_tiff` too. A whole strip decompresses straight into its
+  output rows. Against 0.3.1 on a 64-core Linux host: one reader 2.38x,
+  eight readers 3.65x.
+
+  One trap on the way: the first version undid the predictor with the
+  generic `p[i] += p[i - samples]`, which makes every sample wait for the
+  store before it, and made a serial read 0.83x on x86-64 and 0.71x on
+  arm64. Loops specialized for 1, 3 and 4 samples that keep the running
+  sums in registers, as the old per-tile kernels did, put it back to 1.0x.
+
 * **Don't blindly use `MADV_SEQUENTIAL`.** It tells the kernel to
   evict pages aggressively after read. On warm-cache scenarios (calling
   the reader repeatedly on the same file, common in pipelines) that's

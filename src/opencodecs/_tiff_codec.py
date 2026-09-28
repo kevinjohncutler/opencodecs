@@ -17,10 +17,12 @@ the first IFD.
 
 from __future__ import annotations
 
+import importlib
 import io
 import mmap
 import os
 import sys
+import threading
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
@@ -552,6 +554,89 @@ class TiffPage:
             return _get_decoder("opencodecs.codecs._jpeg")(stitched)
         return _get_decoder("opencodecs.codecs._jpeg")(tile_bytes)
 
+    def _fused_segment_codec(self):
+        """(codec, decoder) for _tiff.decode_segments_into, or None.
+
+        None sends the page down the general per-segment path: layouts the
+        fused call does not handle (separate planes, bilevel, a byte order
+        that needs swapping, image codecs) and any compression whose
+        decoder is not built here.
+        """
+        cmp = self.compression
+        if self.planar_config == 2 and self.samples_per_pixel > 1:
+            return None
+        if self.bits_per_sample != 8 * self.dtype.itemsize:
+            return None
+        kind, size = self.dtype.kind, self.dtype.itemsize
+        if self.predictor == 1 or self.predictor == 2:
+            if self.predictor == 2 and (kind not in "ui" or size not in (1, 2, 4)):
+                return None
+            if _byteorder_differs(self.dtype.newbyteorder(self._stream._byte_order),
+                                  self.dtype):
+                return None
+        elif self.predictor == 3:
+            if kind != "f" or size not in (2, 4, 8):
+                return None
+        else:
+            return None
+        from .codecs import _tiff
+        if cmp == CMP_NONE:
+            return _tiff.SEGMENT_NONE, None
+        if cmp == CMP_LZW:
+            return _tiff.SEGMENT_LZW, None
+        if cmp == CMP_PACKBITS:
+            return _tiff.SEGMENT_PACKBITS, None
+        if cmp in (CMP_DEFLATE, CMP_ADOBE_DEFLATE, CMP_ZSTD):
+            name = "_zstd" if cmp == CMP_ZSTD else "_deflate"
+            try:
+                module = importlib.import_module(f"opencodecs.codecs.{name}")
+                return _tiff.SEGMENT_EXTERNAL, module.decoder_capsule()
+            except (ImportError, AttributeError):
+                return None
+        return None
+
+    def _decode_fused(self, out, fused, numthreads, fetch, slow_segment) -> None:
+        """Decode every segment of a chunky page through decode_segments_into.
+
+        Segments go to the workers in contiguous chunks, each one native
+        call that decodes, un-predicts and places its segments under a
+        single GIL release. Anything the native call rejects is redone on
+        the general path by ``slow_segment``, which raises the precise
+        error for a malformed segment.
+        """
+        from .codecs._tiff import decode_segments_into
+        codec, decoder = fused
+        n = self.tiles_y * self.tiles_x
+        geometry = np.empty((n, 5), dtype=np.intp)
+        for ty in range(self.tiles_y):
+            for tx in range(self.tiles_x):
+                h, w = self._segment_shape(tx, ty)[:2]
+                geometry[ty * self.tiles_x + tx] = (
+                    self.tile_height if self.is_tiled else h,
+                    h, w, ty * self.tile_height, tx * self.tile_width)
+        out2d = out.view(np.uint8).reshape(self.height, -1)
+        workers = _resolve_tiff_workers(
+            numthreads, n, has_decode_work=self.compression != CMP_NONE,
+            output_bytes=out.nbytes)
+        # A few chunks per worker keeps the load even when segments differ
+        # in cost; 64 segments at most keeps a serial read's buffered input
+        # bounded when the source returns bytes rather than a mapped view.
+        step = max(1, min(64, -(-n // (4 * workers))))
+        chunks = [range(i, min(i + step, n)) for i in range(0, n, step)]
+
+        def _chunk(indices):
+            raws = [fetch(i) for i in indices]
+            failed = decode_segments_into(
+                raws, out2d, geometry[indices.start:indices.stop], codec=codec,
+                decoder=decoder, segment_cols=self.tile_width,
+                samples=self.samples_per_pixel, itemsize=self.dtype.itemsize,
+                predictor=self.predictor)
+            for k in failed:
+                i = indices.start + k
+                slow_segment(i // self.tiles_x, i % self.tiles_x)
+
+        run_batched(_chunk, chunks, workers, name="tiff")
+
     def _undo_predictor(self, arr: np.ndarray) -> np.ndarray:
         """Apply the inverse of TAG_PREDICTOR (tag 317) in-place when
         possible. Predictor 1 = identity (no-op)."""
@@ -882,12 +967,33 @@ class TiffPage:
                 for tx in range(self.tiles_x):
                     tasks.append((plane, plane_view, ty, tx))
 
+        fused = self._fused_segment_codec() if n_planes == 1 else None
+        if fused is not None:
+            # One lock for every read of a shared seek+read handle, the
+            # fallback path included; a mapping needs none.
+            fetch_lock = threading.Lock()
+            read_lock = fetch_lock
+
+            def _fetch(idx):
+                if prefetched is not None:
+                    return prefetched[idx]
+                offset = int(self.offsets[idx])
+                nbytes = int(self.byte_counts[idx])
+                if self._stream._mmap is not None:
+                    return self._stream._read(offset, nbytes)
+                with fetch_lock:
+                    return self._stream._read(offset, nbytes)
+
+            self._decode_fused(
+                out, fused, numthreads, _fetch,
+                lambda ty, tx: _do_segment(0, out, ty, tx))
+            return out
+
         workers = _resolve_tiff_workers(
             numthreads, len(tasks),
             has_decode_work=self.compression != CMP_NONE,
             output_bytes=out.nbytes)
         if workers > 1 and prefetched is None:
-            import threading
             read_lock = threading.Lock()
         run_batched(lambda t: _do_segment(*t), tasks, workers, name="tiff")
         return out

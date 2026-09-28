@@ -596,3 +596,50 @@ cdef class StreamEncoder:
         if ZSTD_isError(status):
             raise ZstdError(ZSTD_getErrorName(status).decode())
         return source.pos, result[:destination.pos], bool(finish and status == 0)
+
+
+# ---------------------------------------------------------------------------
+# C-level decoder for other extensions (see oc_decoder_vtable.h)
+# ---------------------------------------------------------------------------
+
+from cpython.pycapsule cimport PyCapsule_New
+from libc.stddef cimport ptrdiff_t
+
+cdef extern from "oc_decoder_vtable.h":
+    ctypedef struct oc_decoder_vtable:
+        void* (*create)() noexcept nogil
+        void (*destroy)(void*) noexcept nogil
+        ptrdiff_t (*decode)(void*, const uint8_t*, size_t, uint8_t*, size_t) noexcept nogil
+    const char* OC_DECODER_VTABLE_CAPSULE
+
+
+cdef void* _vt_create() noexcept nogil:
+    return <void*> ZSTD_createDCtx()
+
+
+cdef void _vt_destroy(void* ctx) noexcept nogil:
+    if ctx != NULL:
+        ZSTD_freeDCtx(<ZSTD_DCtx*> ctx)
+
+
+cdef ptrdiff_t _vt_decode(void* ctx, const uint8_t* src, size_t n,
+                          uint8_t* dst, size_t cap) noexcept nogil:
+    cdef size_t ret
+    if ctx == NULL:
+        return -1
+    ret = ZSTD_decompressDCtx(<ZSTD_DCtx*> ctx, <void*> dst, cap,
+                              <const void*> src, n)
+    if ZSTD_isError(ret):
+        return -1
+    return <ptrdiff_t> ret
+
+
+cdef oc_decoder_vtable _VTABLE
+_VTABLE.create = _vt_create
+_VTABLE.destroy = _vt_destroy
+_VTABLE.decode = _vt_decode
+
+
+def decoder_capsule():
+    """This module's decompressor as a C table, for a nogil caller in C."""
+    return PyCapsule_New(<void*> &_VTABLE, OC_DECODER_VTABLE_CAPSULE, NULL)
