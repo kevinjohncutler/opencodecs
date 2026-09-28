@@ -60,12 +60,23 @@ _DEFAULT_POOL_SIZE = max(2 * (os.cpu_count() or 4), 8)
 _POOL: ThreadPoolExecutor | None = None
 
 #: Most concurrent workers a whole-stack read() will use when the caller
-#: gives no count. Measured on a 20-core arm64 Mac and a 128-core x86-64 Linux host with
-#: the batched persistent-pool dispatch below and a FRESH output each read
-#: (a sweep that recycled the output favored 16, which does not survive
-#: contact with real page faults): 8 and 12 tie on both machines, 16 doubles
-#: the time on Linux.
-_READ_MAX_WORKERS = 8
+#: gives no count, on top of the per-machine cap of one worker per core.
+#: An earlier sweep set this to 8, but it was measured against a dispatch
+#: that derived the batch size from the worker count, where extra workers
+#: could not help (see the task sizing in ``read``). With tasks sized by
+#: bytes, a fresh output each read, and 8 MB sub-blocks, 20-32 measured
+#: fastest on both a 20-core arm64 Mac and a 128-core x86-64 Linux host,
+#: and past 32 the Linux host gives it back to memory-bandwidth contention.
+_READ_MAX_WORKERS = 32
+
+#: How much decoded output one scheduled task should carry. A sub-block at
+#: or above this size gets a task to itself; smaller ones ride together up
+#: to roughly this much. Below it the pool's own scheduling and the
+#: first-touch faults on a fresh output cost more than the extra
+#: concurrency buys, and above it the read waits on the tail of a long
+#: task. 8 MB was the best common value across 0.7 MB and 8 MB sub-blocks
+#: on both machines.
+_READ_TASK_BYTES = 8 << 20
 
 
 def _get_pool() -> ThreadPoolExecutor:
@@ -512,11 +523,16 @@ class CziReader(Reader):
         # Lazy caches for metadata accessors.
         self._metadata_bytes_cache: bytes | None = None
         self._metadata_xml_cache: str | None = None
+        self._uniform_cache: bool | None = None
 
         self._parse_header()
 
         # Reader-ABC contract: populate shape/dtype/n_frames eagerly so
-        # callers can inspect a file without decoding it.
+        # callers can inspect a file without decoding it. This describes the
+        # stack ``read`` returns, which only exists when every sub-block
+        # stores the same number of pixels - see ``is_uniform``. A pyramidal
+        # or otherwise mixed CZI has no such stack, and ``read`` says so
+        # rather than sizing one from the first sub-block.
         if self.entries:
             first = self.entries[0]
             self.dtype = first.dtype
@@ -1279,6 +1295,8 @@ class CziReader(Reader):
         """
         if not self.entries:  # pragma: no cover - empty CZI defense
             return np.empty((0,))
+        if not self.is_uniform:
+            raise self._nonuniform_error("read()")
 
         first = self.entries[0]
         tile_shape = first.stored_shape
@@ -1338,34 +1356,54 @@ class CziReader(Reader):
             # call: creating one costs 1-2 ms on macOS and several on a
             # 128-core Linux host, which is more than the read itself.
             #
-            # And never one task per tile: with decode writing straight
-            # into the fresh output, too many threads first-touching one
-            # large allocation measured 44% slower on macOS than a cap of
-            # eight; Linux prefers more. A thread count is a budget:
-            # resolve it from the output size under the platform's
-            # measured cap, and give each worker a contiguous run.
+            # Work is handed out by BYTES, not by worker count. Deriving
+            # the batch size from the worker count -- ceil(n/workers)
+            # sub-blocks each -- makes the read wait on that many
+            # sub-blocks even when most workers have already finished:
+            # nine 8 MB sub-blocks over eight workers is two rounds, and
+            # measured 15.1 ms against 7.9 ms for nine one-sub-block
+            # tasks on the same machine. Sizing a task by output bytes
+            # gives a big sub-block its own task and groups small ones,
+            # which keeps the original reason for batching (a 0.7 MB tile
+            # cannot pay for its own future) without paying the rounding.
             from .core.parallel import resolve_workers
 
             n = len(self.entries)
+            tile_bytes = out.nbytes // n
+            per_task = (max(1, _READ_TASK_BYTES // tile_bytes)
+                        if tile_bytes else n)
+            tasks = [range(i, min(i + per_task, n))
+                     for i in range(0, n, per_task)]
             if n_workers is not None:
-                workers = max(1, min(int(n_workers), n))
+                workers = max(1, min(int(n_workers), len(tasks)))
             else:
                 workers = resolve_workers(
-                    None, n, output_bytes=out.nbytes,
+                    None, len(tasks), output_bytes=out.nbytes,
                     has_decode_work=any(e.compression != 0 for e in self.entries),
                     max_workers=_READ_MAX_WORKERS)
-            if workers <= 1:
-                for i in range(n):
+
+            def _run_task(batch):
+                for i in batch:
                     _worker(i)
+
+            if workers <= 1 or len(tasks) == 1:
+                for batch in tasks:
+                    _run_task(batch)
+            elif workers >= len(tasks):
+                list(_get_pool().map(_run_task, tasks))
             else:
-                step = (n + workers - 1) // workers
-                batches = [range(i, min(i + step, n)) for i in range(0, n, step)]
+                # More tasks than the resolved budget: the pool is shared
+                # and larger than that budget, so map alone would run
+                # every task at once. A semaphore keeps the budget a
+                # budget while still letting a worker pick up the next
+                # task the moment it finishes one.
+                gate = threading.Semaphore(workers)
 
-                def _run_batch(batch):
-                    for i in batch:
-                        _worker(i)
+                def _gated(batch):
+                    with gate:
+                        _run_task(batch)
 
-                list(_get_pool().map(_run_batch, batches))
+                list(_get_pool().map(_gated, tasks))
 
         if as_rgb:
             out = _bgr_to_rgb(out, first.pixel_type)
@@ -1397,6 +1435,50 @@ class CziReader(Reader):
                 f"read(out=...) destination shape {out.shape} must be "
                 f"{full} or {squeezed}")
         return out
+
+    # ----- Sub-block uniformity -----
+
+    @property
+    def is_uniform(self) -> bool:
+        """True when every sub-block decodes to the same pixel count and type.
+
+        This is exactly the condition under which the sub-blocks stack into
+        one rectangular array, so it is what ``read``, ``__getitem__`` with a
+        slice and ``self.shape`` depend on. Pyramidal CZIs interleave
+        down-scaled sub-blocks with the full-resolution ones and are not
+        uniform; neither is a mosaic whose edge tiles are clipped.
+
+        Compares pixel counts rather than shapes because CZI sizes a decode
+        destination by element count, so sub-blocks differing only in
+        singleton axes stack fine.
+        """
+        if self._uniform_cache is None:
+            self._uniform_cache = len({
+                (math.prod(e.stored_shape), e.pixel_type)
+                for e in self.entries}) <= 1
+        return self._uniform_cache
+
+    def _nonuniform_error(self, call: str) -> "CziError":
+        """The error for asking a mixed-sub-block CZI for a single stack.
+
+        Sizing the stack from the first sub-block and letting the decode
+        destination check fail deep in the codec reports an element count the
+        caller never chose, which says nothing about the file or the way out.
+        """
+        shapes = sorted({tuple(s for s in e.stored_shape if s != 1)
+                         for e in self.entries})
+        preview = ", ".join(str(sh) for sh in shapes[:4])
+        if len(shapes) > 4:
+            preview += ", ..."
+        return CziError(
+            f"{call} stacks sub-blocks into one array, but this CZI stores "
+            f"{len(shapes)} different sub-block shapes ({preview}), so no "
+            f"such array exists"
+            + (" - the file is pyramidal" if self.is_pyramidal else "")
+            + ". Use CziPyramidReader(reader).read_region(level, y=..., x=...)"
+            " for one resolution level, entries_at_level(n) to select a "
+            "level's sub-blocks, or read_tile(i) / iter_tiles() for "
+            "tile-at-a-time access.")
 
     # ----- Pyramid support -----
 
