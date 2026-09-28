@@ -98,7 +98,7 @@ cdef object _encode_impl(object data, object level, object numthreads,
     out = PyBytes_FromStringAndSize(NULL, <Py_ssize_t> dstcap)
     # IMPORTANT: cast ``out`` to a memoryview (``dst``) and use
     # ``&dst[0]`` instead of ``PyBytes_AsString(out)``. Empirically
-    # ~450 us faster on a 10 MB encode (M1 Ultra), reproducible.
+    # ~450 us faster on a 10 MB encode (Apple silicon), reproducible.
     # The win seems to come from how Cython's buffer-export machinery
     # interacts with the page-fault pattern libzstd's writes produce;
     # we couldn't fully isolate the mechanism but the speedup is

@@ -332,7 +332,7 @@ Where it comes from:
 ### Across releases
 
 Headline numbers from the latest bench run (`bench/run_benchmarks.py
---fast`, macOS M1 Ultra, vs `imagecodecs` / `tifffile` / `ndstorage`):
+--fast`, Apple silicon Mac, vs `imagecodecs` / `tifffile` / `ndstorage`):
 
 | Workload | opencodecs | reference | ratio |
 |---|---:|---:|---:|
@@ -365,7 +365,7 @@ to 8× wall-clock).
 Scientific microscopy CZI (66 MB, 14 sub-blocks of 2000×2000 uint16,
 ZSTDHDR), single-file warm cache:
 
-| Reader        | Mac M3 | Threadripper x86_64 |
+| Reader        | Apple silicon Mac | x86-64 Linux |
 |---------------|-------:|--------------------:|
 | czifile (Python ref) | 148 ms | 414 ms       |
 | aicspylibczi (C++)   |  17 ms | 140 ms       |

@@ -169,7 +169,7 @@ def encode(arr, *,
         # route writes through the buffer-export path, which lines
         # up better with libzfp's page-fault pattern than the raw
         # PyBytes_AsString pointer. ~5-10 us / encode on a 56 KB
-        # output (M1 Ultra).
+        # output (Apple silicon).
         dst_mv = out
         bs = stream_open(<void*> &dst_mv[0], cap)
         if bs == NULL:

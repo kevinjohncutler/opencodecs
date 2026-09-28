@@ -32,8 +32,8 @@ baselines were captured 2026-05-17 on:
 
 | machine            | architecture | system                       |
 |--------------------|--------------|------------------------------|
-| M1 Ultra           | arm64        | macOS 15.5, clang from Xcode |
-| Threadripper-class | x86_64       | Ubuntu, gcc 13               |
+| Apple silicon      | arm64        | macOS 15.5, clang from Xcode |
+| 64-core x86-64     | x86_64       | Ubuntu, gcc 13               |
 
 `--check` compares the current run to the baseline keyed by
 `platform.machine()` and fails if any encode-or-decode ratio drifts
@@ -101,7 +101,7 @@ git commit -m "perf: record new setpoints after <change>"
   * `jpeg2k/kodak_photo` on x86_64 is 1.8× slower for the same
     underlying reason — different default precincts / progression.
 
-* **The Threadripper x86_64 baseline in this repo was captured against
+* **The x86_64 baseline in this repo was captured against
   an outdated pip-installed `opencodecs`** that masked the source-tree
   rebuild via `site-packages` precedence. A fresh re-bench needs:
   `python setup.py build_ext --inplace && pip install -e .

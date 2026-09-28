@@ -1127,9 +1127,9 @@ streaming write-out without changing their code.
 * Locally validated on a Windows VM (MSVC 14.44 — same as CI) and
   a Linux x86_64 host: ``bash bench/build_codec_libs.sh
   --only=mozjpeg`` followed by ``setup.py build_ext --inplace``
-  produces ``_mozjpeg.{pyd,so}`` cleanly. Per the new lesson in
-  CLAUDE.md, this iteration was validated end-to-end through the
-  same script CI runs, with the same env vars, before any push.
+  produces ``_mozjpeg.{pyd,so}`` cleanly. This iteration was validated
+  end-to-end through the same script CI runs, with the same env vars,
+  before any push.
 
 **Post-publish wheel coverage check (CI hardening)**
 

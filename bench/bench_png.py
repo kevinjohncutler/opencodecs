@@ -88,7 +88,7 @@ def _make_images() -> dict[str, np.ndarray]:
 
 # Regression ceilings — oc/ic ratio must stay BELOW these.
 # Smaller is faster, so the ceiling is "how slow are we allowed to get".
-# Numbers are ~15% above the best ratios observed on M1 Ultra.
+# Numbers are ~15% above the best ratios observed on Apple silicon.
 _CEILINGS = {
     "4mp_rgb_u8_random":    0.60,    # measured 0.506
     "4mp_rgb_u16_random":   0.60,    # measured 0.517
