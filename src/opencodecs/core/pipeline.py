@@ -7,8 +7,7 @@ arrays are outside that reservation. A single oversized item runs alone.
 from __future__ import annotations
 
 from collections import deque
-from concurrent.futures import CancelledError, ThreadPoolExecutor
-from contextlib import nullcontext
+from concurrent.futures import CancelledError
 from dataclasses import dataclass
 import operator
 import threading
@@ -71,7 +70,8 @@ def map_bounded(fn, items, workers=1, *, max_pending=None,
     The current yielded result remains reserved until iteration resumes. Close
     this iterator on early exit (for example with contextlib.closing): queued
     work is canceled and running source users are joined before close returns.
-    A supplied executor remains caller-owned and usable after close. Cleanup
+    Without an executor the work runs on the process-wide shared pool. A
+    supplied executor remains caller-owned and usable after close. Cleanup
     joins only this iterator's submitted work, never unrelated executor jobs.
     The source iterator itself remains caller-owned. Adapter-internal caches,
     native allocator overhead, and the caller's final output need separate limits.
@@ -123,10 +123,9 @@ def map_bounded(fn, items, workers=1, *, max_pending=None,
     lookahead = sentinel
     exhausted = False
     reserved = 0
-    context = (ThreadPoolExecutor(max_workers=workers,
-                                  thread_name_prefix=f'opencodecs-{name}')
-               if executor is None else nullcontext(executor))
-    with context as pool:
+    from .parallel import parallel_call, shared_pool
+    pool = shared_pool() if executor is None else executor
+    with parallel_call():
         try:
             while pending or not exhausted:
                 while len(pending) < max_pending and not exhausted:

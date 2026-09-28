@@ -361,6 +361,23 @@ _READER_POOLS: dict[tuple[str, int], "ThreadPoolExecutor"] = {}
 _READER_POOLS_LOCK = threading.Lock()
 
 
+def _forget_pools_after_fork() -> None:
+    """A forked child inherits the pool objects but none of their threads.
+
+    Submitting to one would queue work that nothing ever runs: the
+    executor believes its workers exist and starts no more. The child
+    also inherits the lock in whatever state the fork caught it. So the
+    child starts clean and builds pools as it needs them.
+    """
+    global _READER_POOLS_LOCK
+    _READER_POOLS.clear()
+    _READER_POOLS_LOCK = threading.Lock()
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_forget_pools_after_fork)
+
+
 def get_reader_pool(name: str, max_workers: int | None = None):
     """A process-wide thread pool per reader family, created on demand.
 
