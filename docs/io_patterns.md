@@ -42,7 +42,7 @@ Two benchmark exercises drove these conclusions:
   mmap + parallel zstd decode.
 
 Numbers from the CZI bench (66 MB file, 14 sub-blocks of 2000×2000
-uint16, ZSTDHDR compression, M3 Mac, 2 × cpu_count workers):
+uint16, ZSTDHDR compression, Apple silicon Mac, 2 × cpu_count workers):
 
 | Reader                            | Local warm | Local cold | NAS warm | NAS cold |
 |-----------------------------------|------------|------------|----------|----------|
@@ -126,6 +126,29 @@ nogil-byteshuffle + persistent-pool combination.
   variance) to 13.7 ms median (variance ≈ 0.3 ms), pushing us ~20%
   ahead of aicspylibczi. The pool sticks around for the life of the
   Python process; it's daemon-thread-backed so it doesn't block exit.
+
+  The batch helpers every other reader uses (`run_batched`,
+  `map_batches`, `map_bounded`) learned the same lesson later: they now
+  run on one shared pool (`core.parallel.shared_pool`). A 144-tile TIFF
+  read went from 9.2 to 6.9 ms on a 64-core Linux host, more than the
+  pool's own creation cost (0.7 ms for 8 workers) would explain, since
+  warm threads also skip their start-up. A persistent pool must be
+  rebuilt in a forked child, which inherits the pool object but none of
+  its threads: without that, the first submit in a DataLoader-style
+  worker waits forever.
+
+* **Divide the default between concurrent callers, and know what you are
+  dividing.** Eight threads each reading a tiled TIFF with the automatic
+  16 workers got 0.69x the throughput of the same eight reading serially,
+  and 8 JPEG XL decodes at libjxl's default each started a thread per
+  hardware thread (905 at once). Automatic counts now shrink while other
+  parallel calls run. What they share differs: Python pool workers hand
+  the GIL back and forth between the steps of each tile, and a process
+  has one GIL however many cores it has, so they split one call's full
+  width; native codec threads that never touch the GIL split the CPU
+  count. Dividing the CPU count for the pool helpers did almost nothing
+  on a 128-thread host (each call was already capped at 16), which is
+  how the distinction showed up.
 
 * **Don't blindly use `MADV_SEQUENTIAL`.** It tells the kernel to
   evict pages aggressively after read. On warm-cache scenarios (calling

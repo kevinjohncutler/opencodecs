@@ -41,7 +41,8 @@ identifiers.
 | Byte and task backpressure | core.pipeline.map_bounded | TIFF, CZI, Zarr, N5, HDF5, FITS, VSI, OIB, NDTiff and DICOMweb adapters use ordered bounded work where appropriate |
 | Worker budget | core.pipeline.WorkerBudget | Shared budgets cap concurrent outer workers; nested piece work runs inline; inner native codecs avoid multiplied worker pools |
 | Typed input ownership | core.segment_compression.prepare_segment_input | Image compressors receive shaped arrays; byte compressors receive byte views; reused producer pixels and metadata are snapshotted before advancing |
-| Persistent executors | core.io.get_reader_pool | Small repeated workloads reuse family-owned pools; closing an iterator joins only its own work |
+| Persistent executors | core.io.get_reader_pool, core.parallel.shared_pool | run_batched, map_batches and map_bounded share one process-wide pool; readers reuse family-owned pools; closing an iterator joins only its own work; a forked child builds fresh pools |
+| Fair share | core.parallel.fair_share, auto_threads | Automatic worker counts shrink while other parallel calls run: pool helpers split one call's full width (one GIL per process), native codec threads split the CPU count; explicit counts are honored |
 | Offset sources | core.io, core.native_source | Checked range responses, covering caches, coalescing and private native callback cursors; borrowed sources remain open |
 | Direct placement | Format-specific adapters | TIFF regions, HDF5-family chunks, ND2 frames and fixed-rate ZFP bands land in the final destination |
 | Bounded serialization | core._write_helpers | MRC, NIfTI and NumPy destination output avoids a complete serialized-volume temporary; short writes are checked |

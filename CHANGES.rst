@@ -10,6 +10,44 @@ Versions follow the same ``YYYY.M.D`` cadence as upstream when we
 publish; the entries below cluster work by date rather than by
 release because most of it has shipped continuously to ``main``.
 
+Unreleased
+----------
+
+How opencodecs spends threads, especially when several of your threads
+call it at once. Figures compare against 0.3.1 on a 20-core arm64 Mac and
+a 64-core x86-64 Linux workstation: both builds in fresh processes,
+alternating, each process one sample, identical decoded pixels required.
+
+- **One shared pool.** ``run_batched``, ``map_batches`` and ``map_bounded``
+  (under TIFF, DICOM, EER, FITS, HDF5, CZI, Zarr and more) built a
+  ThreadPoolExecutor per call. They now share one process-wide pool. A
+  144-tile TIFF reads 1.34x faster on Linux (9.2 to 6.9 ms) and 1.11x on
+  the Mac.
+- **Concurrent callers share instead of multiplying.** An automatic worker
+  count now shrinks while other parallel calls are running; a lone call
+  keeps full width and an explicit ``numthreads`` is honored as given.
+  Pool workers split one call's width, since a process has one GIL however
+  many cores it has; native codec threads split the CPU count. Two to
+  eight threads reading a tiled TIFF at once: 1.24 to 1.29x the throughput
+  on Linux, 1.10 to 1.17x on the Mac.
+- **JPEG XL sizes its threads to the image.** One-shot ``decode`` used
+  libjxl's default of one thread per hardware thread, all created for
+  each call whatever the image size. It now reads the size from the
+  header and uses about one thread per 64K pixels, up to 20. 512 x 512:
+  2.54x faster on Linux (12.9 to 5.1 ms, 5 threads instead of 129) and
+  1.24x on the Mac; 2048 x 2048: 1.10x for one caller and 1.56x for
+  eight on Linux, parity on the Mac.
+- **AVIF decode uses up to 8 threads by default** instead of one per
+  core: AV1 decodes in parallel across tiles, and past 8 threads there
+  was nothing left to gain. 1.07 to 1.13x on Linux, 1.00 to 1.03x on the
+  Mac. ``numthreads=0`` still means every core.
+- Fix: the DICOM codec dropped ``numthreads``, so ``numthreads=1`` still
+  decoded on several threads.
+- Fix: pools created before ``os.fork()`` hung in the child, which
+  inherits the pool object but none of its threads (the first submit
+  in a forked DataLoader-style worker waited forever). A forked child
+  now builds fresh pools.
+
 0.3.1 (2026-09-28)
 ------------------
 

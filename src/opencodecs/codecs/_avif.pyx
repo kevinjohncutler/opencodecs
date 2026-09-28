@@ -369,6 +369,23 @@ def encode(data, *, level: int | None = None,
         avifImageDestroy(image)
 
 
+#: Most threads an AVIF decode uses when the caller leaves it to us. AV1
+#: decodes in parallel across tiles, so threads only help a tiled image,
+#: and there they stop helping around 8. Measured on a 64-core x86-64 host,
+#: 2048 x 2048: untiled 189 ms on 1 thread, 189 on 8 and 199 on one thread
+#: per hardware thread; tiled 129 ms on 1, 75 on 8 and 83 on all of them.
+_AVIF_DECODE_MAX_THREADS = 8
+
+
+def _decode_threads(numthreads):
+    """numthreads None: up to 8, within this call's fair share; <= 0: every core."""
+    if numthreads is not None and numthreads <= 0:
+        import os as _os
+        return _os.cpu_count() or 4
+    from opencodecs.core.parallel import auto_threads
+    return auto_threads(numthreads, max_threads=_AVIF_DECODE_MAX_THREADS)
+
+
 def decode(data, *, numthreads: int | None = None, out=None) -> np.ndarray:
     """Decode AVIF bytes to a numpy array.
 
@@ -413,15 +430,13 @@ def decode(data, *, numthreads: int | None = None, out=None) -> np.ndarray:
     if image == NULL:
         avifDecoderDestroy(decoder)
         raise AvifError('avifImageCreateEmpty failed')
-    if numthreads is None or numthreads <= 0:
-        import os as _os
-        decoder.maxThreads = _os.cpu_count() or 4
-    else:
-        decoder.maxThreads = int(numthreads)
+    decoder.maxThreads = _decode_threads(numthreads)
 
+    from opencodecs.core.parallel import parallel_call
     try:
-        with nogil:
-            rc = avifDecoderReadMemory(decoder, image, &src[0], srcsize)
+        with parallel_call():
+            with nogil:
+                rc = avifDecoderReadMemory(decoder, image, &src[0], srcsize)
         if rc != AVIF_RESULT_OK:
             raise AvifError(
                 f'avifDecoderReadMemory: {avifResultToString(rc).decode()}')
@@ -560,11 +575,7 @@ cdef class AvifSequence:
         self._decoder = avifDecoderCreate()
         if self._decoder == NULL:
             raise AvifError('avifDecoderCreate failed')
-        if numthreads is None or numthreads <= 0:
-            import os as _os
-            self._decoder.maxThreads = _os.cpu_count() or 4
-        else:
-            self._decoder.maxThreads = int(numthreads)
+        self._decoder.maxThreads = _decode_threads(numthreads)
 
         self._default_threads = self._decoder.maxThreads
         if self._source is not None:

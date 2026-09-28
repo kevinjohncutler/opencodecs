@@ -2323,6 +2323,64 @@ def encode(arr, *, color=None, lossless=None, quality=None, distance=None,
         return w.close()
 
 
+#: One decode thread per this many pixels when the caller leaves the count
+#: to us, up to _JXL_MAX_THREADS. Measured on a 64-core x86-64 host: a
+#: 512 x 512 image decodes in 7.0 ms on 1 thread, 3.3 ms on 4 and 11.1 ms
+#: on libjxl's default of one thread per hardware thread (128 there).
+#: For 2048 x 2048, medians over rotated processes, in ms:
+#:
+#:   threads         8     12    16    20    24    32
+#:   x86-64 Linux  36.1  30.3  31.8  31.4  32.2  33.7
+#:   arm64 Mac     20.9  17.1  15.7  15.3  15.3  15.5
+#:
+#: 20 is within 4% of the best on both, and beats 16 and 32 on both.
+_JXL_PIXELS_PER_THREAD = 1 << 16
+_JXL_MAX_THREADS = 20
+
+
+cdef Py_ssize_t _header_pixels(data) except -1:
+    """Pixel count from the JPEG XL header, or 0 when it cannot be read.
+
+    Parses only as far as the basic info, which sits in the first few
+    hundred bytes, so sizing the decode's threads costs microseconds.
+    Paths are read for their first 64 KiB; other sources return 0.
+    """
+    cdef const uint8_t[::1] src
+    cdef JxlDecoder* dec
+    cdef JxlBasicInfo info
+    cdef Py_ssize_t n = 0
+    if isinstance(data, (bytes, bytearray)):
+        src = data
+    elif isinstance(data, str) or hasattr(data, "__fspath__"):
+        try:
+            with open(data, "rb") as fh:
+                src = fh.read(1 << 16)
+        except OSError:
+            return 0
+    else:
+        try:
+            src = memoryview(data).cast("B")
+        except (TypeError, ValueError):
+            return 0
+    if src.shape[0] == 0:
+        return 0
+    dec = JxlDecoderCreate(NULL)
+    if dec == NULL:
+        return 0
+    try:
+        if JxlDecoderSubscribeEvents(dec, JXL_DEC_BASIC_INFO) != JXL_DEC_SUCCESS:
+            return 0
+        if JxlDecoderSetInput(dec, &src[0], <size_t> src.shape[0]) != JXL_DEC_SUCCESS:
+            return 0
+        JxlDecoderCloseInput(dec)
+        if (JxlDecoderProcessInput(dec) == JXL_DEC_BASIC_INFO
+                and JxlDecoderGetBasicInfo(dec, &info) == JXL_DEC_SUCCESS):
+            n = <Py_ssize_t> info.xsize * <Py_ssize_t> info.ysize
+    finally:
+        JxlDecoderDestroy(dec)
+    return n
+
+
 def decode(data, *, numthreads=None, keep_orientation=False,
            coalesce=True, parse_color=False, streaming=False,
            index=None, downsample=1, subsample='top-left'):
@@ -2353,7 +2411,15 @@ def decode(data, *, numthreads=None, keep_orientation=False,
     way, only the speed differs.
     """
     cdef int skip = int(index) if index is not None else 0
-    with JxlReader(
+    from opencodecs.core.parallel import auto_threads, parallel_call
+    if numthreads is None:
+        # Size the runner to the image: libjxl's own default is one
+        # thread per hardware thread whatever the image, and every one
+        # of them is created for this call.
+        numthreads = auto_threads(None, work=_header_pixels(data),
+                                  per_thread=_JXL_PIXELS_PER_THREAD,
+                                  max_threads=_JXL_MAX_THREADS)
+    with parallel_call(), JxlReader(
         data, numthreads=numthreads,
         keep_orientation=keep_orientation, coalesce=coalesce,
         parse_color=parse_color, streaming=streaming,
