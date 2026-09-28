@@ -519,23 +519,23 @@ def encode_native(hdr, sdr=None, *,
             arr, quality, subsampling=sdr_subsampling)
 
     if parallel:
-        ex = _cf.ThreadPoolExecutor(max_workers=3)
-        try:
-            base_fut = ex.submit(_encode_base, sdr_arr)
-            gain_fut = ex.submit(_cython_gain_map, hdr_arr, sdr_arr,
-                                 sdr_white_nits=sdr_white_nits,
-                                 max_content_boost=mcb,
-                                 min_content_boost=min_content_boost,
-                                 gamma=gamma)
-            gain_full, metadata = gain_fut.result()
-            gain_u8 = _maybe_downscale_gain(gain_full)
-            gainmap_fut = ex.submit(
-                imagecodecs.jpeg_encode, gain_u8, gain_quality,
-                subsampling='440')
-            base_jpeg = base_fut.result()
-            gainmap_jpeg = gainmap_fut.result()
-        finally:
-            ex.shutdown(wait=False)
+        # A persistent pool of its own: these steps wait on kernels
+        # that run on the shared pool, so they must not run there.
+        from .core.io import get_reader_pool
+        ex = get_reader_pool("uhdr")
+        base_fut = ex.submit(_encode_base, sdr_arr)
+        gain_fut = ex.submit(_cython_gain_map, hdr_arr, sdr_arr,
+                             sdr_white_nits=sdr_white_nits,
+                             max_content_boost=mcb,
+                             min_content_boost=min_content_boost,
+                             gamma=gamma)
+        gain_full, metadata = gain_fut.result()
+        gain_u8 = _maybe_downscale_gain(gain_full)
+        gainmap_fut = ex.submit(
+            imagecodecs.jpeg_encode, gain_u8, gain_quality,
+            subsampling='440')
+        base_jpeg = base_fut.result()
+        gainmap_jpeg = gainmap_fut.result()
     else:
         gain_full, metadata = _cython_gain_map(
             hdr_arr, sdr_arr,
@@ -706,14 +706,14 @@ def decode_native(data, *, parallel=True, dtype=None,
             return _ic.jpeg_decode(b)
 
     if parallel:
-        ex = _cf.ThreadPoolExecutor(max_workers=2)
-        try:
-            sdr_fut = ex.submit(_decode, base_jpeg)
-            gain_fut = ex.submit(_decode, gainmap_jpeg)
-            sdr_u8 = sdr_fut.result()
-            gain_u8 = gain_fut.result()
-        finally:
-            ex.shutdown(wait=False)
+        # A persistent pool of its own: these steps wait on kernels
+        # that run on the shared pool, so they must not run there.
+        from .core.io import get_reader_pool
+        ex = get_reader_pool("uhdr")
+        sdr_fut = ex.submit(_decode, base_jpeg)
+        gain_fut = ex.submit(_decode, gainmap_jpeg)
+        sdr_u8 = sdr_fut.result()
+        gain_u8 = gain_fut.result()
     else:
         sdr_u8 = _decode(base_jpeg)
         gain_u8 = _decode(gainmap_jpeg)

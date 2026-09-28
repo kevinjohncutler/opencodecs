@@ -41,6 +41,25 @@ alternating, each process one sample, identical decoded pixels required.
   core: AV1 decodes in parallel across tiles, and past 8 threads there
   was nothing left to gain. 1.07 to 1.13x on Linux, 1.00 to 1.03x on the
   Mac. ``numthreads=0`` still means every core.
+- **TIFF segments decode, un-predict and land in one native call.** A
+  tile used to be inflated in one call, un-predicted in a second and
+  copied into the output with numpy, with a GIL handoff between each,
+  which is what capped concurrent readers. Now a batch of segments goes
+  through all three under one GIL release (``_tiff.decode_segments_into``),
+  for no compression, deflate, zstd, LZW and PackBits with predictors 1
+  to 3, and a whole strip decompresses straight into its output rows.
+  zlib and zstd are reached through a C table their own modules export,
+  so ``_tiff`` links neither. Separate planes, bilevel and byte-swapped
+  files keep the general path, as does any segment the native call
+  rejects, which also keeps its exact error. Against 0.3.1, a tiled 4096 x
+  4096 uint16 image with the horizontal predictor: one reader 2.94x on the
+  Mac and 2.38x on Linux, eight readers 3.65x on both; a 144-tile image
+  1.98x and 1.96x; the same pixels in strips 1.28x and 1.37x for one
+  reader, 1.59x and 1.94x for eight. Serial reads are unchanged or faster.
+- **Ultra HDR** runs its kernels on the shared pool and its encode and
+  decode steps on a persistent pool of their own, instead of building up
+  to five pools per call: encode 1.06x on the Mac and 1.30x on Linux,
+  decode 1.09x on both.
 - Fix: the DICOM codec dropped ``numthreads``, so ``numthreads=1`` still
   decoded on several threads.
 - Fix: pools created before ``os.fork()`` hung in the child, which

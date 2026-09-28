@@ -278,6 +278,21 @@ cdef const unsigned char[::1] _coerce_bytes_view(data):
 import cython
 
 
+def _auto_threads(int cpus):
+    """Every core for a lone call, a fair share when others are running.
+
+    The kernels below split rows across threads from the shared pool;
+    see opencodecs.core.parallel for why concurrent calls divide it.
+    """
+    from opencodecs.core.parallel import auto_threads
+    return auto_threads(None, max_threads=cpus)
+
+
+def run_batched(fn, items, workers, *, name):
+    from opencodecs.core.parallel import run_batched as _run
+    _run(fn, items, workers, name=name)
+
+
 # ---------------------------------------------------------------------------
 # Native fast path: fused gain-map + SDR-base Cython kernels
 # ---------------------------------------------------------------------------
@@ -571,13 +586,12 @@ def upscale_gainmap(gain_u8, target_h, target_w, *, numthreads=None):
     cdef uint8_t* dp = <uint8_t*>cnp.PyArray_DATA(dst)
 
     if numthreads is None:
-        numthreads = os.cpu_count() or 1
+        numthreads = _auto_threads(os.cpu_count() or 1)
     if numthreads <= 1 or sH < 64:
         with nogil:
             _upscale_gainmap_kernel(sp, dp, 0, sH, sH, sW, gH, gW, channels)
         return dst
 
-    import concurrent.futures as _cf
     n_workers = int(numthreads)
     rows_per = (sH + n_workers - 1) // n_workers
     ranges = []
@@ -589,9 +603,9 @@ def upscale_gainmap(gain_u8, target_h, target_w, *, numthreads=None):
     dp_int = <size_t>dp
     def _py_worker(rs):
         _upscale_chunk(sp_int, dp_int, rs[0], rs[1], sH, sW, gH, gW, channels)
-    with _cf.ThreadPoolExecutor(max_workers=n_workers) as ex:
-        list(ex.map(_py_worker, ranges))
+    run_batched(_py_worker, ranges, n_workers, name="uhdr")
     return dst
+
 
 
 def _gain_map_chunk(size_t hp_int, size_t sp_int, size_t gp_int,
@@ -704,7 +718,7 @@ def compute_gain_map_u8(hdr_lin_p3, sdr_u8, *,
         _init_srgb_eotf_lut()
 
     if numthreads is None:
-        numthreads = os.cpu_count() or 1
+        numthreads = _auto_threads(os.cpu_count() or 1)
     if numthreads <= 1 or n_pixels < 32768:
         # Small enough to skip threading overhead.
         with nogil:
@@ -715,7 +729,6 @@ def compute_gain_map_u8(hdr_lin_p3, sdr_u8, *,
         # Split pixels across N worker threads. The kernel is nogil so
         # actual parallel execution. Each chunk gets the same kernel
         # invocation, pointing at the slice's start.
-        import concurrent.futures as _cf
         n_workers = int(numthreads)
         chunk = (n_pixels + n_workers - 1) // n_workers
         # Pre-bundle (start, len) per worker so each only does C work.
@@ -736,8 +749,7 @@ def compute_gain_map_u8(hdr_lin_p3, sdr_u8, *,
             _gain_map_chunk(h_ptr_int, s_ptr_int, g_ptr_int,
                              start_length[0], start_length[1],
                              hs, mb, xb, l2n, l2x, gm)
-        with _cf.ThreadPoolExecutor(max_workers=n_workers) as ex:
-            list(ex.map(_py_worker, ranges))
+        run_batched(_py_worker, ranges, n_workers, name="uhdr")
 
     metadata = {
         'max_content_boost': float(max_b),
@@ -814,13 +826,12 @@ def compute_sdr_base_u8(hdr_lin_p3, peak=None, *, numthreads=None):
         _init_srgb_oetf_u8_lut()
 
     if numthreads is None:
-        numthreads = os.cpu_count() or 1
+        numthreads = _auto_threads(os.cpu_count() or 1)
     if numthreads <= 1 or total < 32768:
         with nogil:
             _sdr_from_hdr_kernel(hdr_ptr, sdr_ptr, total, inv_peak)
         return sdr_out
 
-    import concurrent.futures as _cf
     n_workers = int(numthreads)
     chunk = (total + n_workers - 1) // n_workers
     # Snap chunks to channel boundaries (3 floats per pixel) so we don't
@@ -837,8 +848,7 @@ def compute_sdr_base_u8(hdr_lin_p3, peak=None, *, numthreads=None):
     ip = float(inv_peak)
     def _py_worker(start_length):
         _sdr_chunk(hp_int, sp_int, start_length[0], start_length[1], ip)
-    with _cf.ThreadPoolExecutor(max_workers=n_workers) as ex:
-        list(ex.map(_py_worker, ranges))
+    run_batched(_py_worker, ranges, n_workers, name="uhdr")
     return sdr_out
 
 
@@ -1049,7 +1059,7 @@ def apply_gainmap_fp32(sdr_u8, gain_u8, metadata, *, display_boost=None,
         _init_srgb_eotf_lut()
 
     if numthreads is None:
-        numthreads = os.cpu_count() or 1
+        numthreads = _auto_threads(os.cpu_count() or 1)
     if numthreads <= 1 or n_pixels < 32768:
         with nogil:
             _apply_gainmap_kernel(
@@ -1058,7 +1068,6 @@ def apply_gainmap_fp32(sdr_u8, gain_u8, metadata, *, display_boost=None,
                 display_weight, multi_channel,
             )
     else:
-        import concurrent.futures as _cf
         n_workers = int(numthreads)
         chunk = (n_pixels + n_workers - 1) // n_workers
         ranges = []
@@ -1092,8 +1101,7 @@ def apply_gainmap_fp32(sdr_u8, gain_u8, metadata, *, display_boost=None,
                 lmin_int, lmax_int, gamma_int, osdr_int, ohdr_int,
                 _dw, _mc)
 
-        with _cf.ThreadPoolExecutor(max_workers=n_workers) as ex:
-            list(ex.map(_py_worker, ranges))
+        run_batched(_py_worker, ranges, n_workers, name="uhdr")
     return out
 
 
