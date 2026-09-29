@@ -14,18 +14,6 @@
 
 #include <stdint.h>
 #include <stddef.h>
-
-/* Same guard as 3rdparty/rgbe/rgbe.h: ssize_t is POSIX, and this file
-   includes no Python headers, so on MSVC it has to be typedef'd here. */
-#ifndef HAVE_SSIZE_T
-#if defined(_MSC_VER)
-#include <BaseTsd.h>
-typedef SSIZE_T ssize_t;
-#define HAVE_SSIZE_T 1
-#else
-#include <sys/types.h>
-#endif
-#endif
 #include <string.h>
 #include <stdlib.h>
 
@@ -36,7 +24,7 @@ typedef SSIZE_T ssize_t;
  * a negative ISAL_* error code (see igzip_lib.h). ``level`` is one
  * of 0/1/2/3 — ISA-L only defines four compression levels, the input
  * is clamped to [0, 3] here. */
-ssize_t
+ptrdiff_t
 opencodecs_isal_zlib_encode(
     const uint8_t* src, size_t srcsize,
     uint8_t* dst, size_t dstcap,
@@ -72,8 +60,8 @@ opencodecs_isal_zlib_encode(
 
     int rc = isal_deflate_stateless(&stream);
     free(level_buf);
-    if (rc != COMP_OK) return (ssize_t)rc;
-    return (ssize_t)stream.total_out;
+    if (rc != COMP_OK) return (ptrdiff_t)rc;
+    return (ptrdiff_t)stream.total_out;
 }
 
 /* Decode a zlib-format stream from ``src`` into ``dst``. Returns the
@@ -86,7 +74,7 @@ opencodecs_isal_zlib_encode(
  * which works for incompressible input (one literal block) but
  * silently truncates after the first block on real compressible
  * input. */
-ssize_t
+ptrdiff_t
 opencodecs_isal_zlib_decode(
     const uint8_t* src, size_t srcsize,
     uint8_t* dst, size_t dstcap)
@@ -105,7 +93,7 @@ opencodecs_isal_zlib_decode(
      * ``block_state`` field tells us when we're truly done. */
     while (1) {
         int rc = isal_inflate(&state);
-        if (rc != ISAL_DECOMP_OK) return (ssize_t)rc;
+        if (rc != ISAL_DECOMP_OK) return (ptrdiff_t)rc;
         if (state.block_state == ISAL_BLOCK_FINISH) break;
         if (state.avail_in == 0 && state.avail_out > 0) {
             /* Input exhausted before the stream finished — caller's
@@ -119,5 +107,5 @@ opencodecs_isal_zlib_decode(
             return -2;
         }
     }
-    return (ssize_t)state.total_out;
+    return (ptrdiff_t)state.total_out;
 }

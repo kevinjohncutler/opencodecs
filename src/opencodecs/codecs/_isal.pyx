@@ -22,6 +22,7 @@ clamps caller-passed levels to that range.
 """
 
 from cpython.bytes cimport PyBytes_FromStringAndSize, PyBytes_AsString
+from libc.stddef cimport ptrdiff_t
 from libc.stdint cimport uint8_t
 
 
@@ -29,18 +30,16 @@ cdef extern from *:
     """
     #include <stddef.h>
     #include <stdint.h>
-    /* Py_ssize_t, not ssize_t: this block is copied into the generated C
-       verbatim, and MSVC has no ssize_t. isal_shim.c defines these with
-       the matching width via its own HAVE_SSIZE_T guard. */
-    extern Py_ssize_t opencodecs_isal_zlib_encode(
+    /* ptrdiff_t, the standard C signed size: ssize_t is POSIX only. */
+    extern ptrdiff_t opencodecs_isal_zlib_encode(
         const uint8_t*, size_t, uint8_t*, size_t, int);
-    extern Py_ssize_t opencodecs_isal_zlib_decode(
+    extern ptrdiff_t opencodecs_isal_zlib_decode(
         const uint8_t*, size_t, uint8_t*, size_t);
     """
-    Py_ssize_t opencodecs_isal_zlib_encode(
+    ptrdiff_t opencodecs_isal_zlib_encode(
         const uint8_t* src, size_t srcsize,
         uint8_t* dst, size_t dstcap, int level) nogil
-    Py_ssize_t opencodecs_isal_zlib_decode(
+    ptrdiff_t opencodecs_isal_zlib_decode(
         const uint8_t* src, size_t srcsize,
         uint8_t* dst, size_t dstcap) nogil
 

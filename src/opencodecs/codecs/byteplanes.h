@@ -17,13 +17,9 @@
 #include <stdint.h>
 #include <string.h>
 
-#if defined(_MSC_VER)
-#define OC_INLINE static __inline
-#else
-#define OC_INLINE static inline
-#endif
-
-OC_INLINE void oc_unshuffle(uint8_t *__restrict dst,
+/* Plain C99 static inline: every compiler that builds CPython 3.10
+   extensions accepts it, MSVC included (CPython's own headers use it). */
+static inline void oc_unshuffle(uint8_t *__restrict dst,
                                 const uint8_t *__restrict src,
                                 size_t plane, size_t count, size_t k)
 {
