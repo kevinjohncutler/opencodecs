@@ -51,10 +51,8 @@ def _register_windows_dll_dirs() -> None:
     The directories come from the same prefixes the build used, so this
     exposes nothing that was not already linked against.
     """
-    if os.name != "nt":  # pragma: no cover - Windows-only branch
-        return
-    add = getattr(os, "add_dll_directory", None)
-    if add is None:  # pragma: no cover - Python < 3.8
+    add = getattr(os, "add_dll_directory", None)  # Windows only
+    if add is None:
         return
     seen: set[str] = set()
     for env in ("OPENCODECS_CODEC_LIBS_PREFIX", "OPENCODECS_LIBS_PREFIX",
@@ -169,27 +167,48 @@ def _build_lib_search_paths() -> list[Path]:
 _SO_SEARCH_PATHS: list[Path] = [_THIS_DIR, *_build_lib_search_paths()]
 
 
+_NETWORK_MOUNTS: tuple[str, ...] | None = None
+
+
+def _network_mount_points() -> tuple[str, ...]:
+    """Mount points of network filesystems, read from ``mount`` once.
+
+    Every extension asks, and each ``mount`` is a subprocess of about
+    4.5 ms: reading the table once per process saves about 200 ms of each
+    ``import opencodecs`` on macOS.
+    """
+    global _NETWORK_MOUNTS
+    if _NETWORK_MOUNTS is None:
+        points = []
+        try:
+            out = subprocess.check_output(["mount"], text=True)
+        except Exception:  # pragma: no cover - mount never fails on a Mac
+            out = ""
+        for line in out.splitlines():
+            if " on " not in line or " (" not in line:  # pragma: no cover
+                continue
+            mount_point, opts = line.split(" on ", 1)[1].split(" (", 1)
+            if "smbfs" in opts or "nfs" in opts or "afpfs" in opts:
+                points.append(mount_point.rstrip())
+        _NETWORK_MOUNTS = tuple(points)
+    return _NETWORK_MOUNTS
+
+
 def _on_remote_mount(path: Path) -> bool:
-    """True if `path` lives on a network filesystem dyld is hostile to."""
+    """True if an extension at `path` should be loaded from a local copy.
+
+    Operating-system policies, so they are named. macOS Gatekeeper
+    refuses code loaded from a quarantined network mount. Windows loads
+    from a UNC share but keeps a loaded DLL's file open and unwritable,
+    so a copy leaves the shared build free to be rebuilt from another
+    machine. Linux loads from NFS and SMB as it would from a local disk.
+    """
     if os.name == "nt":  # pragma: no cover - Windows-only branch
         return path.is_absolute() and path.anchor.startswith("\\\\")
     if sys.platform != "darwin":  # pragma: no cover - Linux test path
-        # On Linux NFS works fine for dlopen; only macOS smbfs is hostile.
-        return False
-    try:
-        out = subprocess.check_output(["mount"], text=True)
-    except Exception:  # pragma: no cover - mount command never fails on dev mac
         return False
     abs_path = str(path.resolve())
-    for line in out.splitlines():
-        if " on " not in line or " (" not in line:  # pragma: no cover - malformed mount line
-            continue
-        mount_point, opts = line.split(" on ", 1)[1].split(" (", 1)
-        if abs_path.startswith(mount_point.rstrip()) and (
-            "smbfs" in opts or "nfs" in opts or "afpfs" in opts
-        ):
-            return True
-    return False  # pragma: no cover - dev env mounts everything from SMB
+    return any(abs_path.startswith(p) for p in _network_mount_points())
 
 
 def _find_so(basename: str) -> Path | None:
