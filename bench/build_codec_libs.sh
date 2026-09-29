@@ -151,14 +151,30 @@ want() {
 HERE=$(cd "$(dirname "$0")" && pwd)
 REPO=$(cd "$HERE/.." && pwd)
 
+# The per-user cache, where setup.py looks (its _user_cache): macOS's
+# cache folder, else XDG's.
+oc_cache_dir() {
+    if [ "$(uname)" = "Darwin" ]; then
+        echo "${HOME}/Library/Caches/opencodecs"
+    else
+        echo "${XDG_CACHE_HOME:-$HOME/.cache}/opencodecs"
+    fi
+}
+
+# Apple Silicon tuning for the libraries built -O3 into their own cache
+# prefix. By CPU, not by operating system: clang rejects -mcpu=apple-m1
+# for an Intel Mac.
+APPLE_SILICON_CFLAGS=""
+if [ "$(uname)" = "Darwin" ] && [ "$(uname -m)" = "arm64" ]; then
+    APPLE_SILICON_CFLAGS="-mcpu=apple-m1"
+fi
+
 if [ -n "${OPENCODECS_LIBS_PREFIX:-}" ]; then
     PREFIX="$OPENCODECS_LIBS_PREFIX"
 elif [ "$(id -u)" = "0" ]; then
     PREFIX="/usr/local"
-elif [ "$(uname)" = "Darwin" ]; then
-    PREFIX="${HOME}/Library/Caches/opencodecs/libs"
 else
-    PREFIX="${XDG_CACHE_HOME:-$HOME/.cache}/opencodecs/libs"
+    PREFIX="$(oc_cache_dir)/libs"
 fi
 
 JOBS="${JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)}"
@@ -395,15 +411,8 @@ build_zstd() {
     local src
     src=$(fetch_tar zstd "$v" "https://github.com/facebook/zstd/releases/download/v$v/zstd-$v.tar.gz")
     local zstd_prefix
-    if [ "$(uname)" = "Darwin" ]; then
-        zstd_prefix="${HOME}/Library/Caches/opencodecs/zstd"
-    else
-        zstd_prefix="${XDG_CACHE_HOME:-$HOME/.cache}/opencodecs/zstd"
-    fi
-    local cflags="-O3 -DNDEBUG -fomit-frame-pointer -flto"
-    if [ "$(uname)" = "Darwin" ]; then
-        cflags="$cflags -mcpu=apple-m1"
-    fi
+    zstd_prefix="$(oc_cache_dir)/zstd"
+    local cflags="-O3 -DNDEBUG -fomit-frame-pointer -flto $APPLE_SILICON_CFLAGS"
     ( cd "$src/lib" && make clean >/dev/null 2>&1 || true \
         && make -j"$JOBS" CFLAGS="$cflags" libzstd \
         && make PREFIX="$zstd_prefix" install )
@@ -441,15 +450,8 @@ build_giflib() {
     src=$(fetch_tar giflib "$v" \
         "https://sourceforge.net/projects/giflib/files/giflib-$v.tar.gz/download")
     local prefix
-    if [ "$(uname)" = "Darwin" ]; then
-        prefix="${HOME}/Library/Caches/opencodecs/giflib"
-    else
-        prefix="${XDG_CACHE_HOME:-$HOME/.cache}/opencodecs/giflib"
-    fi
-    local oflags="-O3 -DNDEBUG -fomit-frame-pointer -fvisibility=hidden -flto"
-    if [ "$(uname)" = "Darwin" ]; then
-        oflags="$oflags -mcpu=apple-m1"
-    fi
+    prefix="$(oc_cache_dir)/giflib"
+    local oflags="-O3 -DNDEBUG -fomit-frame-pointer -fvisibility=hidden -flto $APPLE_SILICON_CFLAGS"
     ( cd "$src" && make clean >/dev/null 2>&1 || true \
         && OFLAGS="$oflags" make -j"$JOBS" all \
         && make PREFIX="$prefix" install-include install-lib )
@@ -467,15 +469,8 @@ build_brotli() {
     local src
     src=$(fetch_tar brotli "$v" "https://github.com/google/brotli/archive/refs/tags/v$v.tar.gz")
     local brotli_prefix
-    if [ "$(uname)" = "Darwin" ]; then
-        brotli_prefix="${HOME}/Library/Caches/opencodecs/brotli"
-    else
-        brotli_prefix="${XDG_CACHE_HOME:-$HOME/.cache}/opencodecs/brotli"
-    fi
-    local cflags="-O3 -DNDEBUG"
-    if [ "$(uname)" = "Darwin" ]; then
-        cflags="$cflags -mcpu=apple-m1"
-    fi
+    brotli_prefix="$(oc_cache_dir)/brotli"
+    local cflags="-O3 -DNDEBUG $APPLE_SILICON_CFLAGS"
     local build="$src/_build"
     rm -rf "$build"
     mkdir -p "$build"
@@ -532,14 +527,12 @@ build_mozjpeg() {
         "https://github.com/mozilla/mozjpeg/archive/refs/tags/v$v.tar.gz")
     local mozjpeg_prefix
     case "$(uname -s)" in
-        Darwin)
-            mozjpeg_prefix="${HOME}/Library/Caches/opencodecs/mozjpeg"
-            ;;
         MINGW*|MSYS*|CYGWIN*)
+            # Beside the rest, where setup.py probes the Windows prefix.
             mozjpeg_prefix="${PREFIX}/mozjpeg"
             ;;
         *)
-            mozjpeg_prefix="${XDG_CACHE_HOME:-$HOME/.cache}/opencodecs/mozjpeg"
+            mozjpeg_prefix="$(oc_cache_dir)/mozjpeg"
             ;;
     esac
     install -d "$mozjpeg_prefix"
@@ -914,11 +907,7 @@ build_lerc() {
     local prev_prefix="${CMAKE_INSTALL_PREFIX:-}"
     local prev_cflags="${CMAKE_C_FLAGS_RELEASE_OVERRIDE:-}"
     local lerc_prefix
-    if [ "$(uname)" = "Darwin" ]; then
-        lerc_prefix="${HOME}/Library/Caches/opencodecs/lerc"
-    else
-        lerc_prefix="${XDG_CACHE_HOME:-$HOME/.cache}/opencodecs/lerc"
-    fi
+    lerc_prefix="$(oc_cache_dir)/lerc"
     local build="$src/_build"
     rm -rf "$build"
     mkdir -p "$build"

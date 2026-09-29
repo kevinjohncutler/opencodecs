@@ -39,6 +39,7 @@ VENDOR="$REPO/vendor"
 if [ -n "${OPENCODECS_LIBJXL_PREFIX:-}" ]; then
     PREFIX="$OPENCODECS_LIBJXL_PREFIX"
 elif [ "$(uname)" = "Darwin" ]; then
+    # The per-user cache, as in build_codec_libs.sh and setup.py.
     PREFIX="${HOME}/Library/Caches/opencodecs/libjxl"
 else
     PREFIX="${XDG_CACHE_HOME:-$HOME/.cache}/opencodecs/libjxl"
