@@ -38,6 +38,7 @@ import sys
 import threading
 import weakref
 
+from .core.io import O_BINARY
 from .core.checksums import strip_crc32c
 import urllib.error
 import urllib.request
@@ -55,7 +56,7 @@ from .core.pyramid import PyramidLevel, PyramidReader, _normalize_axis
 # ---------------------------------------------------------------------------
 
 
-_O_READ = os.O_RDONLY | getattr(os, "O_BINARY", 0)
+_O_READ = os.O_RDONLY | O_BINARY
 
 #: Decoded bytes per parallel region task (see OmeZarrArray.read_region).
 _ZARR_BATCH_BYTES = 2 << 20

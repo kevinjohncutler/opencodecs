@@ -36,7 +36,6 @@ import mmap
 import operator
 import os
 import struct
-import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -47,6 +46,7 @@ from typing import Iterator, Sequence
 import numpy as np
 
 from .core.codec import Reader
+from .core.io import O_BINARY
 from .core.scratch import ScratchBuffer
 
 
@@ -507,17 +507,12 @@ class CziReader(Reader):
             self._mmap = _RangeBuffer(data_source, size)
         elif path is not None:
             self.path = str(path)
-            self._fd = os.open(self.path, os.O_RDONLY)
+            self._fd = os.open(self.path, os.O_RDONLY | O_BINARY)
             self._size = os.fstat(self._fd).st_size
             self._owns_fd = True
-            # mmap takes different keyword args on POSIX vs Windows. POSIX
-            # uses prot=PROT_READ; Windows uses access=ACCESS_READ.
-            if sys.platform == "win32":
-                self._mmap = mmap.mmap(
-                    self._fd, self._size, access=mmap.ACCESS_READ)
-            else:
-                self._mmap = mmap.mmap(
-                    self._fd, self._size, prot=mmap.PROT_READ)
+            # ACCESS_READ is the portable spelling: PROT_READ and a shared
+            # mapping on POSIX, a read-only view on Windows.
+            self._mmap = mmap.mmap(self._fd, self._size, access=mmap.ACCESS_READ)
         elif buffer is not None:
             self.path = "<buffer>"
             self._fd = -1

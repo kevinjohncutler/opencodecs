@@ -357,6 +357,52 @@ class _ClampedDataSource(DataSource):
         self._inner.close()
 
 
+#: Add to os.open flags for binary I/O: Windows otherwise translates line
+#: endings in descriptor reads and writes. Zero where there is no such mode.
+O_BINARY = getattr(os, "O_BINARY", 0)
+
+
+def pread_all(handle: int, n: int, offset: int, lock=None) -> bytes:
+    """Read ``n`` bytes at ``offset``, short only at end of file.
+
+    Uses os.pread, which leaves the descriptor's position alone and so is
+    safe from any number of threads. Where it is missing (Windows) the
+    read is a seek then read, which moves the shared position: pass the
+    ``lock`` every reader of this descriptor holds, or give each thread a
+    descriptor of its own and no lock. Either call may return short, so
+    both loop.
+    """
+    n, offset = int(n), int(offset)
+    if hasattr(os, "pread"):
+        buf = os.pread(handle, n, offset)
+        while len(buf) < n:
+            more = os.pread(handle, n - len(buf), offset + len(buf))
+            if not more:
+                break
+            buf += more
+        return buf
+    with lock if lock is not None else _NO_LOCK:
+        os.lseek(handle, offset, os.SEEK_SET)
+        buf = os.read(handle, n)
+        while len(buf) < n:
+            more = os.read(handle, n - len(buf))
+            if not more:
+                break
+            buf += more
+        return buf
+
+
+class _NoLock:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+_NO_LOCK = _NoLock()
+
+
 _READER_POOLS: dict[tuple[str, int], "ThreadPoolExecutor"] = {}
 _READER_POOLS_LOCK = threading.Lock()
 

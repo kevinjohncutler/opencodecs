@@ -45,6 +45,7 @@ from typing import Any, Callable, Iterator
 
 import numpy as np
 
+from .core.io import O_BINARY, pread_all
 from .core.codec import Reader
 from .core._optional_backend import import_or_stubs
 
@@ -353,7 +354,7 @@ class NDTiffDataset(Reader):
                 "NDTiffDataset has no path; pass a custom "
                 "data_source_factory for non-local data sources"
             )
-        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
+        flags = os.O_RDONLY | O_BINARY
         fd = os.open(str(self._path / filename), flags)
         # Stash fd on the closure so close() can release it.
         self._owned_fds.append(fd)
@@ -675,40 +676,10 @@ def _make_pread_callable(fd: int) -> Callable[[int, int], bytes]:
     Windows falls back to a locked seek+read since pread is unavailable.
     Both paths loop on short reads.
     """
-    has_pread = hasattr(os, "pread")
-    if has_pread:
-        def read_at(offset: int, n: int) -> bytes:
-            buf = os.pread(fd, int(n), int(offset))
-            need = int(n) - len(buf)
-            cur = int(offset) + len(buf)
-            while need > 0:
-                more = os.pread(fd, need, cur)
-                if not more:
-                    break  # EOF — caller handles short return
-                buf += more
-                cur += len(more)
-                need -= len(more)
-            return buf
-        return read_at
-
-    # Windows: serialize seek+read with a lock since the fd has shared
-    # state. Slower than pread under contention, but correctness first;
-    # users wanting parallel I/O on Windows should use HTTPDataSource.
-    lock = threading.Lock()
-
-    def read_at(offset: int, n: int) -> bytes:
-        with lock:
-            os.lseek(fd, int(offset), os.SEEK_SET)
-            buf = os.read(fd, int(n))
-            need = int(n) - len(buf)
-            while need > 0:
-                more = os.read(fd, need)
-                if not more:
-                    break
-                buf += more
-                need -= len(more)
-            return buf
-    return read_at
+    # Where there is no pread, reads share the descriptor's position and
+    # take turns on this lock.
+    lock = None if hasattr(os, "pread") else threading.Lock()
+    return lambda offset, n: pread_all(fd, n, offset, lock)
 
 
 __all__ = ["NDTiffDataset", "NDTiffIndexEntry"]

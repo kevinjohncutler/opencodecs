@@ -16,10 +16,8 @@ Patterns ported from earlier in-house parallel-I/O work.
 from __future__ import annotations
 
 import os
-import sys
 
-# fcntl is POSIX-only; on Windows the F_NOCACHE optimization below is
-# a no-op anyway, so we silently fall back when the module is absent.
+# fcntl is POSIX-only; see _F_NOCACHE below.
 try:
     import fcntl as _fcntl
 except ImportError:  # pragma: no cover - Windows-only branch
@@ -30,6 +28,7 @@ from pathlib import Path
 from typing import Callable, Iterable, Iterator
 
 import numpy as np
+from .core.io import O_BINARY
 
 # Backend optional — see opencodecs.jxl for the full pattern. If libjxl
 # isn't built we still allow `import opencodecs.parallel` and only fail
@@ -52,8 +51,11 @@ except ImportError as _exc:  # pragma: no cover - libjxl-missing stub; tested vi
 
     _jxl_decode = _jxl_frame_count = _missing  # type: ignore[assignment]
 
-# F_NOCACHE on Darwin is fcntl command 48 (not exposed in Python's fcntl).
-_F_NOCACHE_DARWIN = 48
+# How each platform says "do not cache this file", where it can: macOS
+# has fcntl F_NOCACHE, Linux posix_fadvise(DONTNEED). Probed, not named;
+# where neither exists (Windows) an uncached open is an ordinary one.
+_F_NOCACHE = getattr(_fcntl, "F_NOCACHE", None) if _fcntl is not None else None
+_FADVISE = getattr(os, "posix_fadvise", None)
 
 
 def _default_n_workers() -> int:
@@ -73,17 +75,14 @@ def open_uncached(path: str | Path) -> int:
     kernel buffer cache and returns in microseconds regardless of the
     underlying network.
     """
-    fd = os.open(str(path), os.O_RDONLY | getattr(os, "O_BINARY", 0))
-    if sys.platform == "darwin":
-        try:
-            _fcntl.fcntl(fd, _F_NOCACHE_DARWIN, 1)
-        except OSError:  # pragma: no cover - rare kernel reject of F_NOCACHE
-            pass
-    elif sys.platform.startswith("linux"):  # pragma: no cover - Linux-only branch
-        try:
-            os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
-        except (AttributeError, OSError):
-            pass
+    fd = os.open(str(path), os.O_RDONLY | O_BINARY)
+    try:
+        if _F_NOCACHE is not None:
+            _fcntl.fcntl(fd, _F_NOCACHE, 1)
+        elif _FADVISE is not None:
+            _FADVISE(fd, 0, 0, os.POSIX_FADV_DONTNEED)
+    except OSError:  # pragma: no cover - a filesystem that refuses the hint
+        pass
     return fd
 
 

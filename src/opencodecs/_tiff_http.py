@@ -43,6 +43,7 @@ import urllib.request
 from collections import OrderedDict
 from typing import Any, Sequence
 
+from .core.io import O_BINARY, pread_all
 from .core.io import DataSource, Range, coalesce_ranges
 from .core._range_index import RangeIndex
 
@@ -735,7 +736,7 @@ class FileDataSource(DataSource):
         # Windows os.open() defaults to TEXT mode: a 0x1A byte (Ctrl-Z)
         # in binary data triggers a soft-EOF mid-file, and CR/LF gets
         # translated. OR in O_BINARY when available (Windows only).
-        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
+        flags = os.O_RDONLY | O_BINARY
         self._fd = os.open(self.path, flags)
         self._has_pread = hasattr(os, "pread")
         self._lock = None if self._has_pread else threading.Lock()
@@ -751,33 +752,7 @@ class FileDataSource(DataSource):
 
     def read_at(self, offset: int, n: int) -> bytes:
         self._total_requests += 1
-        # Both os.pread and os.read can return short. POSIX guarantees
-        # full read for files (only signals or EOF cause short reads),
-        # but Windows os.read often returns one block at a time. Loop
-        # until n bytes are accumulated or read() returns 0 (EOF).
-        if self._has_pread:
-            buf = os.pread(self._fd, int(n), int(offset))
-            need = int(n) - len(buf)
-            cur_off = int(offset) + len(buf)
-            while need > 0:
-                more = os.pread(self._fd, need, cur_off)
-                if not more:
-                    break
-                buf += more
-                cur_off += len(more)
-                need -= len(more)
-            return buf
-        with self._lock:
-            os.lseek(self._fd, int(offset), os.SEEK_SET)
-            buf = os.read(self._fd, int(n))
-            need = int(n) - len(buf)
-            while need > 0:
-                more = os.read(self._fd, need)
-                if not more:
-                    break
-                buf += more
-                need -= len(more)
-            return buf
+        return pread_all(self._fd, n, offset, self._lock)
 
     def read_many(self, ranges: Sequence[Range]) -> list[bytes]:
         """Parallel ``pread`` fan-out on POSIX (where it's thread-safe).

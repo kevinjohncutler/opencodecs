@@ -32,6 +32,7 @@ from pathlib import Path
 
 import numpy as np
 import tifffile
+from .core.io import O_BINARY, pread_all
 
 
 _HAS_PREAD = hasattr(os, "pread")
@@ -46,14 +47,13 @@ def _read_at(fd_or_path, offset: int, nbytes: int,
     own fd in ``tls.fd`` for the life of the worker.
     """
     if _HAS_PREAD:
-        return os.pread(fd_or_path, nbytes, offset)
-    # Windows fallback: per-thread fd, seek+read
+        return pread_all(fd_or_path, nbytes, offset)
+    # No pread: a descriptor per thread, so seek+read needs no lock.
     fd = getattr(tls, "fd", None)
     if fd is None:
-        fd = os.open(str(fd_or_path), os.O_RDONLY | getattr(os, "O_BINARY", 0))
+        fd = os.open(str(fd_or_path), os.O_RDONLY | O_BINARY)
         tls.fd = fd
-    os.lseek(fd, offset, 0)
-    return os.read(fd, nbytes)
+    return pread_all(fd, nbytes, offset)
 
 
 def _read_one_page_parallel(
@@ -180,7 +180,7 @@ def imread(
         if _HAS_PREAD:
             # POSIX: open one shared fd for all workers; pread releases the
             # GIL and takes its own offset.
-            fd = os.open(str(path), os.O_RDONLY)
+            fd = os.open(str(path), os.O_RDONLY | O_BINARY)
             try:
                 return _read_one_page_parallel(tpage, fd, n_workers)
             finally:
@@ -218,7 +218,7 @@ def imread_stack(
                 p.init_decode()
 
     # POSIX: shared fd + os.pread; Windows: per-thread fd via threading.local.
-    fd = os.open(str(path), os.O_RDONLY) if _HAS_PREAD else None
+    fd = os.open(str(path), os.O_RDONLY | O_BINARY) if _HAS_PREAD else None
     use_path = None if _HAS_PREAD else str(path)
     tls = threading.local() if not _HAS_PREAD else None
     _per_thread_tls: list = []
@@ -249,7 +249,7 @@ def imread_stack(
             if bc == 0 or off == 0:  # pragma: no cover - empty-tile sparse-TIFF edge
                 data = None
             elif _HAS_PREAD:
-                data = os.pread(fd, bc, off)
+                data = pread_all(fd, bc, off)
             else:
                 # Windows: per-thread fd kept on threading.current_thread()
                 t = threading.current_thread()
