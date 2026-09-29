@@ -74,11 +74,15 @@ from ._czi_writer import CziWriter, CziPyramidWriter
 from ._tiff_pyramid import TiffPyramidReader
 from ._tiff_http import HTTPDataSource, FileDataSource
 from .core.pyramid import PyramidReader, PyramidLevel
+from .core.parallel import parallel_call as _parallel_call
 
 
 def read(src: Any, *, format: str | None = None, **opts):
     """Decode `src` to an ndarray. Codec auto-detected from path/bytes."""
-    return _resolve_codec(src, format=format).decode(src, **opts)
+    # The whole call counts as in flight, so concurrent calls size their
+    # threads knowing about this one (see core.parallel.parallel_call).
+    with _parallel_call():
+        return _resolve_codec(src, format=format).decode(src, **opts)
 
 
 def write(
@@ -102,7 +106,8 @@ def write(
             )
     else:
         codec = get_codec(format)
-    return codec.encode(arr, dest=dest, **opts)
+    with _parallel_call():
+        return codec.encode(arr, dest=dest, **opts)
 
 
 def open(  # noqa: A001

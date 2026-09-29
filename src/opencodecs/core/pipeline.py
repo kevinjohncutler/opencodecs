@@ -123,9 +123,9 @@ def map_bounded(fn, items, workers=1, *, max_pending=None,
     lookahead = sentinel
     exhausted = False
     reserved = 0
-    from .parallel import parallel_call, shared_pool
+    from .parallel import _in_flight, shared_pool
     pool = shared_pool() if executor is None else executor
-    with parallel_call():
+    with _in_flight():  # a generator: no thread-local state
         try:
             while pending or not exhausted:
                 while len(pending) < max_pending and not exhausted:

@@ -35,15 +35,19 @@ and its WorkerBudget gates them.
 
 **Sharing the process.** When several threads call in at once, each
 automatic worker count is a share rather than the whole
-(``fair_share``). For these helpers the share is of one call's full
-width, not of the CPU count: their workers hand the GIL back and forth
-between the steps of every piece, and a process has one GIL however
-many cores it has. Eight callers reading a tiled TIFF with 16 workers
-each measured 0.69x the throughput of the same callers reading serially
-on a 64-core host. Native codec threads that never touch the GIL (JPEG
-XL, AVIF) divide the CPU count instead (``auto_threads``). A lone call
-still gets full width, and an explicit ``numthreads`` is always honored
-as given.
+(``fair_share``). For these helpers the share is of a fixed width,
+``SHARED_WORKERS``, not of the CPU count: their workers hand the GIL
+back and forth between batches, and a process has one GIL however many
+cores it has. Eight callers reading a tiled TIFF with 16 workers each
+measured 0.69x the throughput of the same callers reading serially on a
+64-core host. The width is twice one call's: counting every call for
+its whole duration (``parallel_call``), a width of 16 left workers idle
+between batches, and 32 was the fastest width measured on both a 20-core
+Mac and a 64-core Linux host for 2, 4 and 8 concurrent readers of tiled
+and stripped deflate TIFFs, 1.1x to 1.3x the throughput of 16. Native
+codec threads that never touch the GIL (JPEG XL, AVIF) divide the CPU
+count instead (``auto_threads``). A lone call still gets its full width
+of 16, and an explicit ``numthreads`` is always honored as given.
 """
 
 from __future__ import annotations
@@ -59,6 +63,10 @@ T = TypeVar("T")
 #: costing pool overhead and memory bandwidth contention.
 DEFAULT_MAX_WORKERS = 16
 
+#: What concurrent pool-helper calls divide between them (see "Sharing
+#: the process"); each call still takes at most its own max_workers.
+SHARED_WORKERS = 32
+
 #: Fewer pieces than this and the pool costs more than it saves.
 DEFAULT_MIN_ITEMS = 4
 
@@ -68,14 +76,15 @@ DEFAULT_MIN_BYTES_PER_WORKER = 1 << 20
 
 _INFLIGHT = 0
 _INFLIGHT_LOCK = threading.Lock()
+_LOCAL = threading.local()
 
 
 @contextmanager
-def parallel_call():
-    """Mark a call as spending more than one thread while it runs.
+def _in_flight():
+    """Count one call as in flight for as long as this block runs.
 
-    Explicit and automatic counts both register: either way the call is
-    using the machine, and later automatic calls should see that.
+    Safe in a generator, which may be resumed or closed on another thread:
+    it touches only the process-wide count, never thread-local state.
     """
     global _INFLIGHT
     with _INFLIGHT_LOCK:
@@ -87,29 +96,65 @@ def parallel_call():
             _INFLIGHT -= 1
 
 
+@contextmanager
+def parallel_call():
+    """Mark this thread's call as using the machine while it runs.
+
+    Registered for the whole call, not just its threaded part: a reader
+    that is still parsing a header is about to read, and a share sized
+    without it was too large. Eight concurrent readers of an uncompressed
+    TIFF, counted only while their bytes moved, peaked at 56 threads where
+    the shares they should have taken add up to 16. Nested calls on the
+    same thread count once, and a call leaves itself out when sizing its
+    own share. Serial calls register too: they use a core as well.
+    """
+    depth = getattr(_LOCAL, "depth", 0)
+    _LOCAL.depth = depth + 1
+    try:
+        if depth:
+            yield
+        else:
+            with _in_flight():
+                yield
+    finally:
+        _LOCAL.depth = depth
+
+
+def others_in_flight() -> int:
+    """Calls in flight other than the one this thread is making."""
+    return max(0, _INFLIGHT - (1 if getattr(_LOCAL, "depth", 0) else 0))
+
+
 def fair_share(total: int | None = None) -> int:
     """This call's share of ``total`` threads (default: the CPU count).
 
-    Divided between the parallel calls already running and this one, so
-    a lone call gets all of it and N overlapping calls get about 1/N
-    each. A call keeps the share it was given when it started; it is not
-    rebalanced as others begin or end.
+    Divided between the calls already in flight and this one, so a lone
+    call gets all of it and N overlapping calls get about 1/N each. A call
+    keeps the share it was given when it started; it is not rebalanced as
+    others begin or end.
     """
     if total is None:
         total = os.cpu_count() or 1
-    return max(1, total // (_INFLIGHT + 1))
+    return max(1, total // (others_in_flight() + 1))
 
 
 def auto_threads(numthreads: int | None, *, work: int | None = None,
                  per_thread: int = 1,
-                 max_threads: int = DEFAULT_MAX_WORKERS) -> int:
-    """Thread count for a native codec's own threads (JPEG XL, AVIF).
+                 max_threads: int = DEFAULT_MAX_WORKERS,
+                 share_of: int | None = None) -> int:
+    """Thread count for work that sizes its own threads (JPEG XL, AVIF, reads).
 
     An explicit count is returned as given. ``None`` sizes by the work
     (``work // per_thread`` threads, when the work is known) under
-    ``max_threads``, the CPU count and this call's fair share; inside an
-    outer worker it is 1, since that worker is already one of the
-    threads the machine is being divided between.
+    ``max_threads``, the CPU count and this call's fair share of
+    ``share_of`` (default: the CPU count); inside an outer worker it is 1,
+    since that worker is already one of the threads being divided.
+
+    What to share depends on what runs out first. Native decoders are
+    bound by cores, so they share the CPU count. Copying file bytes into
+    memory is bound by memory bandwidth and page faults: eight readers
+    each splitting a 32 MB read four ways was slower than each reading
+    alone, so reads share their own maximum width instead.
     """
     if numthreads is not None:
         return int(numthreads)
@@ -117,7 +162,7 @@ def auto_threads(numthreads: int | None, *, work: int | None = None,
     if in_worker():
         return 1
     n = max_threads if not work else max(1, int(work) // max(1, per_thread))
-    return max(1, min(n, max_threads, os.cpu_count() or 1, fair_share()))
+    return max(1, min(n, max_threads, os.cpu_count() or 1, fair_share(share_of)))
 
 
 def shared_pool():
@@ -140,9 +185,10 @@ def resolve_workers(numthreads: int | None, n_items: int, *,
     """How many threads to decode ``n_items`` independent pieces with.
 
     ``None`` means "decide": scale with the CPU count, never exceed the
-    number of pieces, stay serial when there is too little to divide, and
-    take only this call's share of ``max_workers`` when other parallel
-    calls are already running (see "Sharing the process" above). An
+    number of pieces and ``max_workers``, stay serial when there is too
+    little to divide, and take only this call's share of
+    ``SHARED_WORKERS`` when other parallel calls are already running (see
+    "Sharing the process" above). An
     explicit number is honored as given, so a caller can pin it,
     including to 1 for a reproducible serial run.
 
@@ -168,7 +214,7 @@ def resolve_workers(numthreads: int | None, n_items: int, *,
         return min(n, max(1, n_items))
     if n_items < min_items:
         return 1
-    cap = min(os.cpu_count() or 1, n_items, fair_share(max_workers))
+    cap = min(os.cpu_count() or 1, n_items, max_workers, fair_share(SHARED_WORKERS))
     if output_bytes is not None:
         cap = min(cap, output_bytes // min_bytes_per_worker)
     return max(1, cap)
@@ -224,7 +270,8 @@ def run_batched(fn: Callable[[T], None], items: Sequence[T], workers: int, *,
 
 __all__ = ["resolve_workers", "run_batched", "DEFAULT_MAX_WORKERS",
            "DEFAULT_MIN_ITEMS", "DEFAULT_MIN_BYTES_PER_WORKER", "map_batches",
-           "shared_pool", "parallel_call", "fair_share", "auto_threads"]
+           "shared_pool", "parallel_call", "fair_share", "auto_threads",
+           "others_in_flight"]
 
 
 def map_batches(fn, items, workers: int, *, batch_size: int = 16,
@@ -276,7 +323,7 @@ def map_batches(fn, items, workers: int, *, batch_size: int = 16,
     pending = deque()
     source_batches = batches()
     pool = shared_pool()
-    with parallel_call():
+    with _in_flight():  # a generator: no thread-local state
         try:
             for batch in islice(source_batches, max_pending):
                 pending.append(pool.submit(budget.run, apply, batch))

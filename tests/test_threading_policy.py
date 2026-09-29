@@ -106,12 +106,19 @@ def test_automatic_counts_take_a_fair_share_and_explicit_ones_do_not(monkeypatch
     monkeypatch.setattr(parallel.os, "cpu_count", lambda: 16)
     big = 1 << 40
     assert resolve_workers(None, 256, output_bytes=big) == 16  # alone: full width
-    with parallel_call(), parallel_call(), parallel_call():
+    # Three calls in flight on other threads (the global count only).
+    with parallel._in_flight(), parallel._in_flight(), parallel._in_flight():
         assert fair_share() == 4
-        assert resolve_workers(None, 256, output_bytes=big) == 4
+        # Pool helpers divide SHARED_WORKERS (32 // 4); native threads the CPUs.
+        assert resolve_workers(None, 256, output_bytes=big) == 8
         assert resolve_workers(12, 256) == 12
         assert auto_threads(None) == 4
         assert auto_threads(7) == 7
+    with parallel._in_flight(), parallel._in_flight():
+        assert resolve_workers(None, 256, output_bytes=big) == 32 // 3
+    # Alone on 64 CPUs a call gets its own cap of 16, not all 32 shared.
+    monkeypatch.setattr(parallel.os, "cpu_count", lambda: 64)
+    assert resolve_workers(None, 256, output_bytes=big) == 16
     assert resolve_workers(None, 256, output_bytes=big) == 16
 
 
@@ -231,3 +238,46 @@ def test_abandoned_iterators_give_their_share_back():
     del it
     gc.collect()
     assert parallel._INFLIGHT == before
+
+
+def test_a_call_counts_once_and_not_against_itself():
+    """Whole calls register; nesting on one thread and self are not others."""
+    import threading
+    assert parallel.others_in_flight() == 0
+    with parallel_call():
+        assert parallel.others_in_flight() == 0
+        with parallel_call():  # nested: still one call
+            assert parallel.others_in_flight() == 0
+        started, release = threading.Event(), threading.Event()
+
+        def other():
+            with parallel_call():
+                started.set()
+                release.wait()
+
+        t = threading.Thread(target=other)
+        t.start()
+        started.wait()
+        assert parallel.others_in_flight() == 1
+        release.set()
+        t.join()
+    assert parallel._INFLIGHT == 0
+
+
+def test_oc_read_counts_as_one_call_in_flight(tmp_path, monkeypatch):
+    tifffile = pytest.importorskip("tifffile")
+    import opencodecs as oc
+    from opencodecs import _tiff_codec
+    img = np.arange(64 * 80, dtype=np.uint16).reshape(64, 80)
+    path = tmp_path / "x.tif"
+    tifffile.imwrite(path, img)
+    seen = []
+    real = _tiff_codec.TiffPage.asarray
+
+    def spy(self, **kw):
+        seen.append((parallel._INFLIGHT, parallel.others_in_flight()))
+        return real(self, **kw)
+
+    monkeypatch.setattr(_tiff_codec.TiffPage, "asarray", spy)
+    np.testing.assert_array_equal(oc.read(str(path)), img)
+    assert seen == [(1, 0)]  # registered, and not counted against itself
