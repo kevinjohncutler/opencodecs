@@ -708,7 +708,7 @@ class TiffPage:
             return (self.tile_height, self.tile_width)
         return (self.tile_height, self.tile_width, self.samples_per_pixel)
 
-    def _read_strips_into(self, out: np.ndarray) -> None:
+    def _read_strips_into(self, out: np.ndarray, numthreads: int | None = None) -> None:
         """Copy all uncompressed strips directly into ``out``'s buffer.
 
         Strips in a TIFF are stored row-major: strip 0 is rows 0..rps-1,
@@ -723,7 +723,22 @@ class TiffPage:
           * byte order matches host (otherwise need byteswap)
         """
         view = out.view(np.uint8).reshape(-1)
-        # Hot path: in-memory bytes/memoryview source. The whole TIFF
+        # A local file with its strips end to end (what nearly every writer
+        # produces) is read straight into the output; core.io.read_file_into
+        # chooses how (parallel positioned reads, or a copy from this
+        # stream's mapping for a lone serial read) and records why.
+        path = self._stream._src
+        if isinstance(path, (str, os.PathLike)) and len(self.offsets) > 0:
+            offsets = np.asarray(self.offsets, dtype=np.int64)
+            counts = np.asarray(self.byte_counts, dtype=np.int64)
+            total = int(counts.sum())
+            if (total <= view.nbytes
+                    and np.array_equal(offsets[1:], offsets[:-1] + counts[:-1])):
+                from .core.io import read_file_into
+                read_file_into(path, int(offsets[0]), view[:total],
+                               numthreads=numthreads, mapping=self._stream._mmap)
+                return
+        # In-memory bytes/memoryview source (or a mapping). The whole TIFF
         # buffer is reachable via the read_at callable's `_buf`
         # attribute; pass it to a Cython memcpy loop and run all strip
         # copies without re-entering Python per strip.
@@ -893,7 +908,7 @@ class TiffPage:
                 and (self.dtype.itemsize == 1 or
                      (self._stream._byte_order in ("<", "=")
                       and self.dtype.byteorder in ("<", "=", "|")))):
-            self._read_strips_into(out)
+            self._read_strips_into(out, numthreads)
             return out
 
         # General path: per-tile/strip decode + (optional) predictor +

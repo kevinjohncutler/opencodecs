@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import os
 import queue
+import sys
 import threading
 from abc import ABC, abstractmethod
 from pathlib import Path
@@ -449,6 +450,139 @@ def get_reader_pool(name: str, max_workers: int | None = None):
                 )
                 _READER_POOLS[key] = pool
     return pool
+
+
+#: About how much of a read one part carries when it is split. Each part
+#: is one positioned read call: once a thread's worth of bytes is copied
+#: from the mapping where that wins, fewer calls are never slower.
+_READ_PART = 4 << 20
+
+#: Most parts one read splits into, and the width concurrent reads share
+#: (see auto_threads): alone a read splits 8 ways, two at once 8 each, and
+#: eight at once 2 each. Measured best on both a 20-core arm64 Mac and a
+#: 64-core x86-64 Linux host; see read_file_into.
+_READ_MAX_PARTS = 8
+_READ_SHARED_WIDTH = 16
+
+#: Whether one thread copies a file's bytes out of the caller's mapping of
+#: it faster than it reads them. A property of the kernel that nothing can
+#: probe, so it is named, and it holds alone and under load alike: macOS
+#: copies faster (and its reads of a mapped file slow down when several
+#: threads read that file), Linux reads faster (and copies from mappings
+#: contend, each set up and torn down under a lock every thread of the
+#: process shares). See read_file_into for the measurements.
+_COPY_FROM_MAPPING_BEATS_READ = sys.platform == "darwin"
+
+
+def read_file_into(path, offset: int, view, *, numthreads: int | None = None,
+                   mapping=None) -> None:
+    """Fill ``view`` with the bytes of ``path`` starting at ``offset``.
+
+    As positioned reads on one descriptor, split into parts of about 4 MB
+    that run in parallel on the shared pool, one call per part; no part
+    moves a file offset another part depends on. ``numthreads`` is the usual
+    budget: None sizes it by the bytes and takes a fair share of a width
+    of 16 while other calls are in flight, 1 reads on this thread only.
+
+    ``mapping`` is a memory map of the same file that the caller already
+    holds. Where the kernel copies from a mapping faster than it reads
+    (``_COPY_FROM_MAPPING_BEATS_READ``), one thread's worth of bytes (a
+    single part, or any read while other calls are in flight) is copied
+    from it instead: after advising the kernel the range will be needed
+    when the read is alone, without the advice, which costs more than it
+    saves when threads compete, when it is not.
+
+    32 MB of contiguous strips from one file, with the caller's mapping
+    held as the TIFF reader holds one, on a 20-core arm64 Mac and a
+    64-core x86-64 Linux host. Wall milliseconds per read, lower is
+    better, for a lone reader and for eight reading the file at once; "*"
+    marks what this function does:
+
+      ================================  ============  ============
+      strategy                          macOS 1 / 8   Linux 1 / 8
+      ================================  ============  ============
+      copy from the mapping (0.3.1)     3.01 / 1.07*  11.1 / 3.65
+      advise, then copy                 1.87*/ 1.33   11.3 / 3.75
+      read, 1 part                      3.4  / 1.22   10.8*/ 2.25*
+      positioned reads, 2 parts            - / 1.11      - / 2.02*
+      positioned reads, 8 parts         1.10*/ -      2.59*/ -
+      ================================  ============  ============
+
+    A single thread is capped by first-touching the fresh output pages,
+    so splitting pays even for one reader, on both kernels. Python has no
+    os.preadv on Windows, where each part opens its own handle and seeks,
+    and no mmap.madvise there either.
+
+    Raises OSError if the file ends before ``view`` is full.
+    """
+    from .parallel import auto_threads, others_in_flight, parallel_call
+    view = memoryview(view).cast("B")
+    total = view.nbytes
+    if total == 0:
+        return
+    with parallel_call():
+        parts = auto_threads(numthreads, work=total, per_thread=_READ_PART,
+                             max_threads=_READ_MAX_PARTS,
+                             share_of=_READ_SHARED_WIDTH)
+        parts = max(1, min(parts, -(-total // _READ_PART)))
+        others = others_in_flight()
+        if (mapping is not None and _COPY_FROM_MAPPING_BEATS_READ
+                and (parts == 1 or others)):
+            _copy_from_mapping(mapping, offset, view,
+                               advise=not others and hasattr(mapping, "madvise"))
+            return
+        _positioned_reads(path, offset, view, parts)
+
+
+def _copy_from_mapping(mapping, offset: int, view, advise: bool = False) -> None:
+    """Copy ``len(view)`` bytes at ``offset`` out of ``mapping``."""
+    import mmap
+
+    import numpy as np
+    total = view.nbytes
+    if offset < 0 or offset + total > len(mapping):
+        raise OSError(f"range {offset}+{total} is outside the {len(mapping)}-byte file")
+    if advise:
+        start = offset - offset % mmap.PAGESIZE
+        mapping.madvise(mmap.MADV_WILLNEED, start, offset + total - start)
+    # A plain numpy copy of a byte array runs without the GIL.
+    np.asarray(view)[:] = np.frombuffer(mapping, dtype=np.uint8, count=total,
+                                        offset=offset)
+
+
+def _positioned_reads(path, offset: int, view, parts: int) -> None:
+    """Read ``view`` from ``path`` at ``offset`` in ``parts`` parallel spans."""
+    from .parallel import run_batched
+    total = view.nbytes
+    step = -(-total // parts)
+    spans = [(lo, min(total, lo + step)) for lo in range(0, total, step)]
+    positioned = hasattr(os, "preadv")
+    handle = os.open(path, os.O_RDONLY | O_BINARY) if positioned else -1
+
+    def fill(span):
+        lo, hi = span
+        if positioned:
+            done = lo
+            while done < hi:
+                n = os.preadv(handle, [view[done:hi]], offset + done)
+                if n <= 0:
+                    raise OSError(f"{path}: file ends {hi - done} bytes early")
+                done += n
+            return
+        with open(path, "rb", buffering=0) as fh:
+            fh.seek(offset + lo)
+            done = lo
+            while done < hi:
+                n = fh.readinto(view[done:hi])
+                if not n:
+                    raise OSError(f"{path}: file ends {hi - done} bytes early")
+                done += n
+
+    try:
+        run_batched(fill, spans, len(spans), name="read")
+    finally:
+        if handle >= 0:
+            os.close(handle)
 
 
 def normalize_source(src: Any):
