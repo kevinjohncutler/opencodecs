@@ -93,6 +93,13 @@ alternating, each process one sample, identical decoded pixels required.
   agrees with the input. 185 MB takes 122 ms against 340 ms for ZEISS's
   czicompress, and 297 ms with ``verify=True``, which decodes every
   sub-block back before it is written.
+- **Windows wheels use libdeflate**, as macOS and Linux wheels already
+  did. conda-forge names its import library ``deflate.lib``, which the
+  old probe did not recognize, so Windows fell back to zlib. On a Windows
+  VM, against 0.3.1: deflate encode 2.79x and decode 1.79x, PNG encode
+  2.82x (decode stays on zlib, level), a tiled deflate TIFF read 1.33x;
+  output at the default level is 0.7% (deflate) to 1.5% (PNG) larger,
+  the same trade macOS and Linux make.
 - ``import opencodecs`` on macOS ran ``mount`` once per extension, about
   4.5 ms each; the mount table is now read once, about 200 ms per import.
 - Fix: the DICOM codec dropped ``numthreads``, so ``numthreads=1`` still
