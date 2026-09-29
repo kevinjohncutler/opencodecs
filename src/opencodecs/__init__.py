@@ -70,7 +70,8 @@ from ._fits import FitsStream, FitsHDU, imread as fits_imread
 from ._rgbe import encode as rgbe_encode, decode as rgbe_decode, \
     imread as rgbe_imread, imwrite as rgbe_imwrite
 from ._czi_reader import CziPyramidReader
-from ._czi_writer import CziWriter, CziPyramidWriter
+from ._czi_writer import (CziWriter, CziPyramidWriter,
+                          czi_recompress, subblock_dims)
 from ._tiff_pyramid import TiffPyramidReader
 from ._tiff_http import HTTPDataSource, FileDataSource
 from .core.pyramid import PyramidReader, PyramidLevel
@@ -344,7 +345,7 @@ __all__ = [
     "FitsStream", "FitsHDU", "fits_imread",
     "rgbe_encode", "rgbe_decode", "rgbe_imread", "rgbe_imwrite",
     "CziPyramidReader",
-    "CziWriter", "CziPyramidWriter",
+    "CziWriter", "CziPyramidWriter", "czi_recompress", "subblock_dims",
 ]
 
 __version__ = "0.3.1"

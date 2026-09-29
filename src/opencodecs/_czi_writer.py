@@ -240,6 +240,81 @@ def _zstdhdr_encode(pixel_bytes, itemsize: int, hilo: bool, *, scratch=None):
     return header + payload
 
 
+#: Dimensions CZI addresses with a single index rather than an extent. The
+#: reader splits these out of its ``dims`` tuple into ``mosaic_index`` and
+#: ``scene_index``, so a round-trip has to put them back.
+_INDEX_DIMS = (b"M", b"S")
+
+
+def _normalize_dims(dims):
+    """Validate a caller's dimension list into the 5-tuples the format wants.
+
+    Accepts ``(name, start, size, stored)`` or the full
+    ``(name, start, size, coordinate, stored)``, with ``name`` as ``str`` or
+    ``bytes``. A dimension name is one to four characters in the file, so it
+    is padded rather than truncated silently: a wrong name here produces a
+    file that reads back with dimensions nobody asked for.
+    """
+    out = []
+    for d in dims:
+        if len(d) == 4:
+            name, start, size, stored = d
+            coord = 0.0
+        elif len(d) == 5:
+            name, start, size, coord, stored = d
+        else:
+            raise CziWriterError(
+                f"czi: a dimension is (name, start, size[, coordinate], "
+                f"stored_size), got {len(d)} values: {d!r}")
+        if isinstance(name, str):
+            name = name.encode("ascii")
+        if not isinstance(name, (bytes, bytearray)) or not 1 <= len(name) <= 4:
+            raise CziWriterError(
+                f"czi: dimension name must be 1-4 characters, got {name!r}")
+        # ``start`` may be negative: a mosaic tile's X/Y start is a stage
+        # coordinate, and a real slide scan puts tiles left of and above the
+        # origin. Only the extents have to be non-negative.
+        for label, value in (("size", size), ("stored_size", stored)):
+            if int(value) < 0:
+                raise CziWriterError(
+                    f"czi: dimension {name!r} has negative {label} {value}")
+        out.append((bytes(name).ljust(4, b"\x00"), int(start), int(size),
+                    float(coord), int(stored)))
+    if not out:
+        raise CziWriterError("czi: a sub-block needs at least one dimension")
+    return tuple(out)
+
+
+def subblock_dims(entry):
+    """The dimension list that rewrites ``entry`` faithfully.
+
+    Three things have to be undone to get back to what the file stores.
+    ``CziSubBlockEntry.dims`` is in REVERSE file order, because the reader
+    presents axes slowest-first like an array shape. Its last element is a
+    synthetic ``"S"`` standing for samples-per-pixel, which is not a file
+    dimension at all: emitting it produces a file whose scene index reads
+    back as 0 instead of absent. And the two index-only dimensions, M and S,
+    are pulled out of ``dims`` into ``mosaic_index`` and ``scene_index``, so
+    they have to be put back.
+
+    M and S are appended rather than restored to their original positions,
+    which the entry does not record. libCZI does not care about the order,
+    and the reader drops them from ``dims`` again on the way back in, so a
+    round-trip still compares equal.
+    """
+    n = len(entry.dims) - 1          # drop the trailing samples axis
+    dims = [
+        (entry.dims[i], entry.start[i], entry.shape[i], 0.0,
+         entry.stored_shape[i])
+        for i in reversed(range(n))  # reader order is reversed file order
+    ]
+    if entry.mosaic_index >= 0:
+        dims.append((b"M", entry.mosaic_index, 1, 0.0, 1))
+    if entry.scene_index >= 0:
+        dims.append((b"S", entry.scene_index, 1, 0.0, 1))
+    return _normalize_dims(dims)
+
+
 def _build_subblock(
     array: np.ndarray,
     *,
@@ -250,6 +325,7 @@ def _build_subblock(
     logical_shape: tuple[int, int],
     location: tuple[int, int] = (0, 0),
     pyramid_type: int = 0,
+    dims: tuple | None = None,
     verification_input: list | None = None,
     scratch=None,
 ) -> tuple[_SubBlockSegment, dict]:
@@ -269,10 +345,14 @@ def _build_subblock(
     logical_h, logical_w = logical_shape
     start_y, start_x = location
 
-    dims = [
-        (b"X", start_x, logical_w, 0.0, w),
-        (b"Y", start_y, logical_h, 0.0, h),
-    ]
+    if dims is None:
+        # The plain case: one plane, addressed only in X and Y.
+        dims = (
+            (b"X", start_x, logical_w, 0.0, w),
+            (b"Y", start_y, logical_h, 0.0, h),
+        )
+    else:
+        dims = _normalize_dims(dims)
     de_header = struct.pack(
         "<2siqiiBB4si",
         b"DV", pixel_type, file_position, 0,
@@ -331,6 +411,9 @@ def _build_subblock(
         "stored_w": w, "stored_h": h,
         "logical_w": logical_w, "logical_h": logical_h,
         "start_x": start_x, "start_y": start_y,
+        # The directory must describe the same dimensions as the sub-block
+        # itself, so it is written from the same list rather than rebuilt.
+        "dims": dims,
     }
     return seg, de_dict
 
@@ -339,20 +422,20 @@ def _build_directory_segment(entries: list[dict]) -> bytes:
     sid = _DIR_MAGIC + b"\x00"
     body = struct.pack("<I", len(entries)) + b"\x00" * 124
     for e in entries:
+        dims = e.get("dims")
+        if dims is None:
+            dims = (
+                (b"X", e.get("start_x", 0), e["logical_w"], 0.0, e["stored_w"]),
+                (b"Y", e.get("start_y", 0), e["logical_h"], 0.0, e["stored_h"]),
+            )
         body += struct.pack(
             "<2siqiiBB4si",
             b"DV", e["pixel_type"], e["file_position"], 0,
             e["compression"], e.get("pyramid_type", 0),
-            0, b"\x00\x00\x00\x00", 2,
+            0, b"\x00\x00\x00\x00", len(dims),
         )
-        body += struct.pack(
-            "<4siifi", b"X",
-            e.get("start_x", 0), e["logical_w"], 0.0, e["stored_w"],
-        )
-        body += struct.pack(
-            "<4siifi", b"Y",
-            e.get("start_y", 0), e["logical_h"], 0.0, e["stored_h"],
-        )
+        for name, start, size, coord, stored in dims:
+            body += struct.pack("<4siifi", name, start, size, coord, stored)
     return _pad_segment(sid + body)
 
 
@@ -466,7 +549,7 @@ class _CziStreamWriter(Writer):
         entry["file_position"] = position
         self._emit_subblock(segment.with_position(position), entry)
 
-    def _encode_in_background(self, array, logical_shape, pyramid_type):
+    def _encode_in_background(self, array, logical_shape, pyramid_type, *, dims=None):
         """Snapshot the frame and compress it on this writer's own thread."""
         if self._encode_pool is None:
             from concurrent.futures import ThreadPoolExecutor
@@ -489,12 +572,12 @@ class _CziStreamWriter(Writer):
                 pixels, pixel_type=_DTYPE_TO_PIXELTYPE[pixels.dtype],
                 compression_code=self._cmp_code, hilo=self._hilo,
                 file_position=0, logical_shape=logical_shape,
-                pyramid_type=pyramid_type, verification_input=None,
+                pyramid_type=pyramid_type, dims=dims, verification_input=None,
                 scratch=_worker_scratch())
 
         self._pending_encode = self._encode_pool.submit(encode)
 
-    def _append(self, array, *, logical_shape, pyramid_type=0):
+    def _append(self, array, *, logical_shape, pyramid_type=0, dims=None):
         # With background_encode, large compressed frames without
         # verification compress in the background while the caller moves on;
         # at most one is in flight, and it is written out before anything
@@ -511,7 +594,8 @@ class _CziStreamWriter(Writer):
                 and self._cmp_code != 0 and array.nbytes >= _PIPELINE_MIN_BYTES):
             try:
                 self._finish_encode()
-                self._encode_in_background(array, logical_shape, pyramid_type)
+                self._encode_in_background(array, logical_shape, pyramid_type,
+                                           dims=dims)
             except BaseException:
                 self._abort()
                 raise
@@ -530,7 +614,7 @@ class _CziStreamWriter(Writer):
                 array, pixel_type=_DTYPE_TO_PIXELTYPE[array.dtype],
                 compression_code=self._cmp_code, hilo=self._hilo,
                 file_position=offset, logical_shape=logical_shape,
-                pyramid_type=pyramid_type, verification_input=captured,
+                pyramid_type=pyramid_type, dims=dims, verification_input=captured,
                 scratch=self._shuffle_scratch,
             )
             if self._verification is None:
@@ -593,12 +677,36 @@ class _CziStreamWriter(Writer):
         workers = max(1, int(workers))
 
         def snapshot(frame):
-            """Own the frame's pixels before the producer can touch them."""
+            """Own the frame's pixels before the producer can touch them.
+
+            A frame is an array, ``(array, dims)`` to place the sub-block in
+            more than X and Y, or ``(array, dims, pyramid_type)`` to also say
+            it is a down-scaled level. Those forms are what make a faithful
+            re-encode possible on this path as well as on ``write_frame``.
+            """
+            dims = override_pyramid = None
+            if isinstance(frame, tuple):
+                if len(frame) == 2:
+                    frame, dims = frame
+                elif len(frame) == 3:
+                    frame, dims, override_pyramid = frame
+                else:
+                    raise CziWriterError(
+                        "czi: a frame is an array, (array, dims) or "
+                        f"(array, dims, pyramid_type), got a {len(frame)}-tuple")
+                if dims is not None:
+                    dims = _normalize_dims(dims)
             self._validate(frame)
             pixels = (np.array(frame, order="C", copy=True) if copy_frames
                       else np.ascontiguousarray(frame))
             logical_shape, pyramid_type = self._plan_frame(pixels)
-            return pixels, logical_shape, pyramid_type
+            if override_pyramid is not None:
+                pyramid_type = int(override_pyramid)
+            if dims is not None:
+                sizes = {d[0].rstrip(b"\x00"): d[2] for d in dims}
+                if b"Y" in sizes and b"X" in sizes:
+                    logical_shape = (sizes[b"Y"], sizes[b"X"])
+            return pixels, logical_shape, pyramid_type, dims
 
         def batches():
             # One task per frame does not pay for small frames: an 8 KB frame
@@ -627,14 +735,14 @@ class _CziStreamWriter(Writer):
         def encode(batch):
             out = []
             scratch = _worker_scratch()
-            for pixels, logical_shape, pyramid_type in batch:
+            for pixels, logical_shape, pyramid_type, dims in batch:
                 captured = [] if verify else None
                 segment, entry = _build_subblock(
                     pixels, pixel_type=_DTYPE_TO_PIXELTYPE[pixels.dtype],
                     compression_code=self._cmp_code, hilo=self._hilo,
                     file_position=0, logical_shape=logical_shape,
-                    pyramid_type=pyramid_type, verification_input=captured,
-                    scratch=scratch,
+                    pyramid_type=pyramid_type, dims=dims,
+                    verification_input=captured, scratch=scratch,
                 )
                 if verify:
                     self._verify_subblock(captured[0], segment, entry)
@@ -771,10 +879,39 @@ class CziWriter(_CziStreamWriter):
         self._validate(array)
         self._append(array, logical_shape=array.shape)
 
-    def write_frame(self, arr, **opts):
+    def write_frame(self, arr, *, dims=None, pyramid_type=0, **opts):
+        """Write one sub-block, optionally saying where it sits.
+
+        ``dims`` gives this sub-block's own dimensions as
+        ``(name, start, size[, coordinate], stored_size)``, which is what
+        lets a file with channels, z-planes, scenes, mosaic tiles or pyramid
+        levels be written rather than a bare stack of planes. Without it the
+        sub-block is addressed in X and Y only, exactly as ``write`` does.
+
+        ``subblock_dims(entry)`` builds the list from a ``CziSubBlockEntry``,
+        so re-encoding a file is a read, a transform and a write that keeps
+        every coordinate it came with.
+
+        ``pyramid_type`` is the CZI ``PyramidType`` byte: 0 for a
+        full-resolution sub-block, 2 for a down-scaled pyramid level.
+        """
         if opts:
             raise TypeError(f"czi: write_frame takes no options, got {sorted(opts)}")
-        self.write(arr)
+        if dims is None and not pyramid_type:
+            self.write(arr)
+            return
+        self._validate(arr)
+        logical_shape = arr.shape
+        if dims is not None:
+            dims = _normalize_dims(dims)
+            # The logical extent lives in the dimension list now; keep the
+            # X/Y scalars consistent with it so the directory and the
+            # sub-block cannot disagree.
+            sizes = {d[0].rstrip(b"\x00"): (d[2], d[4]) for d in dims}
+            if b"Y" in sizes and b"X" in sizes:
+                logical_shape = (sizes[b"Y"][0], sizes[b"X"][0])
+        self._append(arr, logical_shape=logical_shape,
+                     pyramid_type=pyramid_type, dims=dims)
 
 
 class CziPyramidWriter(_CziStreamWriter):
@@ -839,3 +976,54 @@ class CziPyramidWriter(_CziStreamWriter):
 
 
 __all__ = ["CziWriter", "CziPyramidWriter", "CziWriterError"]
+
+
+def czi_recompress(src, dst, *, compression: str = "zstdhdr", hilo: bool = True,
+               workers=None, verify: bool = False,
+               background_encode: bool = False) -> dict:
+    """Rewrite a CZI with different compression, keeping the container.
+
+    Every sub-block keeps its dimension coordinates, its scene and mosaic
+    position, its pyramid level and its pixels; only the encoding of the
+    payload changes. The file's metadata XML is carried across unchanged.
+    This is the operation ZEISS's ``czicompress`` performs, and the point of
+    doing it here is that the pixels are already decoded in this process, so
+    a caller can hash, verify or inspect them on the same pass instead of
+    re-reading the file two or three more times.
+
+    ``verify=True`` decodes each sub-block back from its encoded payload and
+    compares it with the input before the sub-block is allowed into the
+    file, which makes a lossless claim something the writer checked rather
+    than something the format promises.
+
+    Returns a summary dict: sub-block count, input and output sizes, and the
+    compression that was applied.
+    """
+    import os
+
+    from ._czi_reader import CziReader
+
+    with CziReader(str(src)) as reader:
+        n = len(reader.entries)
+        if not n:
+            raise CziWriterError(f"czi: {src} has no sub-blocks to recompress")
+        metadata = reader.metadata_bytes or b"<Metadata/>"
+
+        def frames():
+            # One sub-block at a time: a slide scan does not fit in memory,
+            # and write_many only needs the next frame, not all of them.
+            for i in range(n):
+                entry = reader.entries[i]
+                yield reader[i], subblock_dims(entry), entry.pyramid_type
+
+        with CziWriter(str(dst), compression=compression, hilo=hilo,
+                       metadata_xml=metadata, verify=verify,
+                       background_encode=background_encode) as writer:
+            writer.write_many(frames(), workers=workers, copy_frames=False)
+
+    return {
+        "subblocks": n,
+        "src_bytes": os.path.getsize(src),
+        "dst_bytes": os.path.getsize(dst),
+        "compression": compression,
+    }
