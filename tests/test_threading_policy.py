@@ -214,3 +214,20 @@ def test_avif_decode_thread_defaults():
     assert 1 <= _avif._decode_threads(None) <= 8
     assert _avif._decode_threads(3) == 3
     assert _avif._decode_threads(0) == (os.cpu_count() or 4)  # explicit: every core
+
+
+def test_abandoned_iterators_give_their_share_back():
+    """A half-consumed iterator counts as in flight only while it exists."""
+    import gc
+    before = parallel._INFLIGHT
+    it = map_batches(lambda i: i, range(100), 4, batch_size=2)
+    next(it)
+    assert parallel._INFLIGHT == before + 1
+    del it
+    gc.collect()
+    assert parallel._INFLIGHT == before
+    it = map_bounded(lambda i: i, range(100), 4)
+    next(it)
+    del it
+    gc.collect()
+    assert parallel._INFLIGHT == before
