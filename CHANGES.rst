@@ -14,7 +14,8 @@ Unreleased
 ----------
 
 How opencodecs spends threads, especially when several of your threads
-call it at once. Figures compare against 0.3.1 on a 20-core arm64 Mac and
+call it at once, and one place for each thing it does differently by
+operating system. Figures compare against 0.3.1 on a 20-core arm64 Mac and
 a 64-core x86-64 Linux workstation: both builds in fresh processes,
 alternating, each process one sample, identical decoded pixels required.
 
@@ -23,13 +24,15 @@ alternating, each process one sample, identical decoded pixels required.
   ThreadPoolExecutor per call. They now share one process-wide pool. A
   144-tile TIFF reads 1.34x faster on Linux (9.2 to 6.9 ms) and 1.11x on
   the Mac.
-- **Concurrent callers share instead of multiplying.** An automatic worker
-  count now shrinks while other parallel calls are running; a lone call
-  keeps full width and an explicit ``numthreads`` is honored as given.
-  Pool workers split one call's width, since a process has one GIL however
-  many cores it has; native codec threads split the CPU count. Two to
-  eight threads reading a tiled TIFF at once: 1.24 to 1.29x the throughput
-  on Linux, 1.10 to 1.17x on the Mac.
+- **Concurrent callers share instead of multiplying.** A call counts as
+  in flight for its whole duration, and an automatic worker count is its
+  share of what the calls in flight divide: the pool helpers' workers,
+  which hand the GIL back and forth, share 32 between calls (each call
+  still takes at most 16), and native codec threads share the CPU count.
+  A lone call keeps full width and an explicit ``numthreads`` is honored
+  as given. With the TIFF work below, two and eight threads reading a
+  tiled deflate TIFF at once: 3.46x and 4.63x on Linux, 3.61x and 4.01x
+  on the Mac; eight JPEG XL readers 1.86x on Linux and 1.03x on the Mac.
 - **JPEG XL sizes its threads to the image.** One-shot ``decode`` used
   libjxl's default of one thread per hardware thread, all created for
   each call whatever the image size. It now reads the size from the
@@ -56,12 +59,43 @@ alternating, each process one sample, identical decoded pixels required.
   Mac and 2.38x on Linux, eight readers 3.65x on both; a 144-tile image
   1.98x and 1.96x; the same pixels in strips 1.28x and 1.37x for one
   reader, 1.59x and 1.94x for eight. Serial reads are unchanged or faster.
+- **Uncompressed TIFF strips laid out end to end go straight into the
+  output** (``core.io.read_file_into``): positioned reads split across
+  the shared pool, where one thread used to copy them out of the file
+  mapping. One reader 2.29x on the Mac and 3.79x on Linux; with
+  ``numthreads=1``, 1.65x on the Mac and level on Linux; eight readers
+  1.66x on Linux and level on the Mac, where both versions copy from the
+  mapping. One choice depends on the kernel, and is named for it: macOS
+  copies one thread's worth of bytes out of the reader's file mapping
+  faster than it reads them, and Linux reads faster, alone and with
+  eight readers alike, so that is what each does.
+- The README compares TIFF reads directly with tifffile: 2.7 to 4.3x
+  faster on the Mac and 4.0 to 7.7x on Linux for one reader of a tiled
+  compressed image, up to 13.4x for eight concurrent readers.
 - **Ultra HDR** runs its kernels on the shared pool and its encode and
   decode steps on a persistent pool of their own, instead of building up
   to five pools per call: encode 1.06x on the Mac and 1.30x on Linux,
   decode 1.09x on both.
+- **Each operating-system difference is named once.** ``setup.py``
+  states its platform conventions in one place and links the library
+  files it finds by path on every platform; descriptor reads and writes,
+  Windows' binary-mode flag and uncached opens each have one
+  implementation; capabilities are probed instead of inferred from the
+  platform. A test lists the nine operating-system branches left in the
+  package and ``setup.py``, each with the reason it cannot be a probe,
+  and fails on a new one.
+- ``import opencodecs`` on macOS ran ``mount`` once per extension, about
+  4.5 ms each; the mount table is now read once, about 200 ms per import.
 - Fix: the DICOM codec dropped ``numthreads``, so ``numthreads=1`` still
   decoded on several threads.
+- Fix: the NDTiff writer counted the buffers after a partial ``writev``
+  twice, so its position ran ahead of the file, and ``tiff_reader`` took
+  one ``os.pread`` as complete even when it returned short.
+- Fix (building from source): with a per-user cache of source-built
+  libraries present, a Windows build handed MSVC ``.so`` paths and
+  ``-Wl,-rpath`` flags; the MozJPEG extension on Linux had no rpath to its
+  own library, so the loader could take the system's libturbojpeg for it;
+  ``bench/build_codec_libs.sh`` passed ``-mcpu=apple-m1`` on Intel Macs.
 - Fix: pools created before ``os.fork()`` hung in the child, which
   inherits the pool object but none of its threads (the first submit
   in a forked DataLoader-style worker waited forever). A forked child

@@ -273,6 +273,37 @@ z = zarr.create_array(
 
 ## Performance
 
+### TIFF against tifffile
+
+Reading the same files, all written by tifffile, and requiring identical
+pixels from both. "1 reader" is each library's default call; "1 thread"
+forces both to a single thread (`numthreads=1`, `maxworkers=1`); "8
+readers" is eight threads each reading at once, both on defaults. Each
+number is how many times faster opencodecs is, the median over fresh
+processes alternating the two libraries, on a 20-core Apple silicon Mac
+(tifffile 2026.3.3) and a 64-core x86-64 Linux workstation (tifffile
+2026.5.2).
+
+| 4096 x 4096 uint16 | Mac, 1 reader | Mac, 1 thread | Mac, 8 readers | Linux, 1 reader | Linux, 1 thread | Linux, 8 readers |
+|---|---:|---:|---:|---:|---:|---:|
+| Tiled, deflate + predictor | 3.2x | 1.0x | 4.0x | 5.7x | 1.3x | 9.9x |
+| Tiled, zstd | 4.3x | 1.1x | 5.1x | 7.7x | 1.7x | 10.0x |
+| Tiled, LZW + predictor | 2.7x | 1.3x | 2.8x | 4.0x | 1.3x | 6.5x |
+| Strips, deflate + predictor | 2.0x | 1.0x | 2.0x | 5.2x | 1.3x | 5.1x |
+| Strips, uncompressed | 3.2x | 2.3x | 1.6x | 3.7x | 1.0x | 1.0x |
+| 3072 x 3072 uint8, 144 tiles, deflate | 2.1x | 1.0x | 4.7x | 4.5x | 1.1x | 13.4x |
+
+A tiled deflate image with the predictor takes 6.3 ms against 20.4 ms on
+the Mac and 10.1 ms against 57.6 ms on Linux. Most of the gap is how the
+work is spread: a batch of tiles decompresses, has its predictor undone
+and lands in the output in one native call that releases the GIL once,
+so threads spend their time decoding rather than queuing for it, and
+concurrent readers share the machine instead of each taking all of it.
+Uncompressed strips are a copy for both libraries; opencodecs splits it
+into positioned reads on several threads, and for one thread's worth
+does whichever its kernel does faster: macOS copies out of the file
+mapping, Linux reads.
+
 ### 0.3.0 against 0.2.0
 
 0.3.0 is mostly a speed release. Each row below ran both versions in fresh
