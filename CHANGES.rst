@@ -10,8 +10,8 @@ Versions follow the same ``YYYY.M.D`` cadence as upstream when we
 publish; the entries below cluster work by date rather than by
 release because most of it has shipped continuously to ``main``.
 
-Unreleased
-----------
+0.4.0 (2026-09-29)
+------------------
 
 How opencodecs spends threads, especially when several of your threads
 call it at once, and one place for each thing it does differently by
@@ -84,6 +84,15 @@ alternating, each process one sample, identical decoded pixels required.
   platform. A test lists the nine operating-system branches left in the
   package and ``setup.py``, each with the reason it cannot be a probe,
   and fails on a new one.
+- **A CZI file's compression can be rewritten without losing its
+  container.** ``czi_recompress(src, dst)`` re-encodes every sub-block
+  and keeps its dimensions, scene, mosaic index and pyramid level, and
+  the metadata XML; ``write_frame`` and ``write_many`` take a sub-block's
+  own dimension list, and ``subblock_dims`` builds one from a reader's
+  entry. libCZI reads the output of a 481 sub-block slide scan and
+  agrees with the input. 185 MB takes 122 ms against 340 ms for ZEISS's
+  czicompress, and 297 ms with ``verify=True``, which decodes every
+  sub-block back before it is written.
 - ``import opencodecs`` on macOS ran ``mount`` once per extension, about
   4.5 ms each; the mount table is now read once, about 200 ms per import.
 - Fix: the DICOM codec dropped ``numthreads``, so ``numthreads=1`` still

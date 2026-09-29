@@ -616,7 +616,7 @@ build).
 
 ## Status
 
-- **v0.3.0** on PyPI (September 2026). Every wheel carries the same 40
+- **v0.4.0** on PyPI (September 2026). Every wheel carries the same 40
   compiled extensions, and `ci/check_wheel_contents.py` fails the
   release build if one goes missing.
 - About 4,000 tests locally, including a 40-dataset conformance corpus;
