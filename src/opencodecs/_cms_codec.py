@@ -60,11 +60,13 @@ def _load_lcms2():
         path = ctypes.util.find_library(name)
         if path:
             candidates.append(path)
-    # Common explicit paths on macOS / Linux.
+    # Then Homebrew's prefixes, which the macOS loader does not search on
+    # its own, and bare names the loader resolves from its own search path
+    # (ld.so's cache covers every Debian multiarch directory). A candidate
+    # a platform does not have just fails to load and the next is tried.
     candidates += [
         "/opt/homebrew/opt/little-cms2/lib/liblcms2.dylib",
         "/usr/local/opt/little-cms2/lib/liblcms2.dylib",
-        "/usr/lib/x86_64-linux-gnu/liblcms2.so.2",
         "liblcms2.so.2",
         "lcms2.dll",
     ]
