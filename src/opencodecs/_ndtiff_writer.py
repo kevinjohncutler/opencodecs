@@ -29,7 +29,6 @@ from __future__ import annotations
 
 import io
 import json
-import mmap
 import os
 import struct
 import sys
@@ -41,6 +40,8 @@ from typing import Any, Iterable
 
 import numpy as np
 
+from .core.io import O_BINARY
+from .core._write_helpers import fd_pwrite_all, fd_write_all, fd_writev_all
 from .core.codec import Writer
 
 _ENCODE_BATCH_BYTES = 256 << 10
@@ -144,18 +145,11 @@ class NDTiffWriter(Writer):
 
         # State.
         self._stack_index = 0           # 0 → NDTiffStack.tif, then _1, _2, ...
-        # Raw FD + mmap of the pre-allocated 4 GB stack envelope. We
-        # write through mmap (memcpy into a page-cache-backed region)
-        # rather than os.write — measured ~1.4× faster on the standard
-        # 800 MB / 250-frame workload because:
-        #   1. No per-write syscall overhead — the kernel sees one
-        #      big region that it flushes on its own schedule.
-        #   2. memcpy from a numpy array into mmap is faster than
-        #      writev's IOV walk for our 3-piece (header + pixels +
-        #      metadata) frame shape.
-        # On close we ftruncate down to the actual bytes written.
+        # A raw descriptor on the pre-allocated stack envelope, written
+        # with one writev per frame (header, pixels, metadata) and
+        # truncated to the bytes written on close. Writing through an
+        # mmap was measured and lost; see _open_next_stack.
         self._fd: int = -1
-        self._mmap: mmap.mmap | None = None
         self._pos: int = 0
         self._cur_path: Path | None = None
         self._next_ifd_offset_location = -1
@@ -383,15 +377,12 @@ class NDTiffWriter(Writer):
         write-back path (measured 30-50ms saved per 4GB envelope on
         APFS vs synchronous ``F_PREALLOCATE``).
 
-        On Windows we explicitly use the ``seek + write 1 byte``
-        pattern. ``os.ftruncate`` on NTFS goes through ``_chsize_s``
-        which zero-fills the extension synchronously (~2 GB/s, so
-        ~2s of CPU per 4 GiB stack file) — ndstorage hits this
-        cliff too if it uses ftruncate; matching its lseek+write
-        pattern keeps the per-file open cost in milliseconds because
-        NTFS's "valid data length" semantics let the gap between the
-        current position and the written sentinel byte stay
-        physically unallocated.
+        On Windows there is no pre-extension at all. ``os.ftruncate``
+        on NTFS goes through ``_chsize_s``, which zero-fills the
+        extension synchronously (about 2 s per 4 GiB), and a sentinel
+        byte written at the end instead made the close-time truncate
+        stall (3.9 s to 7.7 s, bimodal). The file grows as frames are
+        written, losing only a contiguous-extent hint.
 
         We tried also ``mmap``-based writes (no per-frame syscall,
         memcpy into a page-cache-backed region). In isolation the
@@ -402,25 +393,20 @@ class NDTiffWriter(Writer):
         frame) which the kernel can pipeline with write-back.
         """
         self._cur_path = self._dir / self._stack_filename(self._stack_index)
-        flags = os.O_RDWR | os.O_CREAT | os.O_TRUNC | getattr(os, "O_BINARY", 0)
+        flags = os.O_RDWR | os.O_CREAT | os.O_TRUNC | O_BINARY
         self._fd = os.open(str(self._cur_path), flags, 0o644)
-        if sys.platform == "win32":  # pragma: no cover - covered by windows-vm bench
-            # On Windows NTFS we *skip* the 4 GiB pre-extension
-            # entirely. Both ``os.ftruncate`` and ``lseek + write
-            # sentinel`` perturb the file's valid-data-length so that
-            # the close-time ``ftruncate(actual)`` measurably stalls
-            # (3.9 s -> 7.7 s bimodal in windows-vm/qcow2). The on-demand
-            # extension path is fast and correct; we only lose the
-            # marginal contiguous-extent hint that pre-allocation
-            # would have given the filesystem.
-            pass
-        else:
+        # NTFS gets no 4 GiB pre-extension. Both ``os.ftruncate`` and
+        # ``lseek + write sentinel`` perturb the file's valid-data-length
+        # so that the close-time ``ftruncate(actual)`` measurably stalls
+        # (3.9 s -> 7.7 s, bimodal, measured in a Windows VM). Extending
+        # on demand is fast and correct there; it loses only the
+        # contiguous-extent hint pre-allocation gives the filesystem.
+        if sys.platform != "win32":
             try:
                 os.ftruncate(self._fd, _MAX_FILE_SIZE)
             except OSError:  # pragma: no cover - exotic filesystems
                 os.lseek(self._fd, _MAX_FILE_SIZE - 1, os.SEEK_SET)
                 os.write(self._fd, b"\x00")
-        self._mmap = None
         self._pos = 0
         self._write_header_and_summary()
         self._next_ifd_offset_location = -1
@@ -431,22 +417,8 @@ class NDTiffWriter(Writer):
             return
         # Patch null next-IFD-offset for the last frame in this file.
         if self._next_ifd_offset_location >= 0:
-            null = struct.pack("<I", 0)
-            if self._mmap is not None:
-                off = self._next_ifd_offset_location
-                self._mmap[off:off + 4] = null
-            else:
-                self._pwrite(self._next_ifd_offset_location, null)
+            self._pwrite(self._next_ifd_offset_location, struct.pack("<I", 0))
         actual = self._pos
-        # Tear down mmap before truncating the file — truncating
-        # under an active mmap is undefined behavior on some kernels.
-        if self._mmap is not None:
-            try:
-                self._mmap.flush()
-            except OSError:  # pragma: no cover - flush may fail on weird FS
-                pass
-            self._mmap.close()
-            self._mmap = None
         # Truncate the 4GB envelope down to the actual bytes written.
         try:
             os.ftruncate(self._fd, actual)
@@ -473,116 +445,18 @@ class NDTiffWriter(Writer):
     # mmap / raw-fd write helpers
     # ------------------------------------------------------------------
 
-    # writev is POSIX-only; on Windows we fall back to looping os.write
-    # (only used when mmap was unavailable).
-    _HAVE_WRITEV = hasattr(os, "writev")
-
     def _write(self, data) -> None:
-        """Sequential write at the current tracked position.
-
-        ``len(ndarray)`` is the first dimension, not the byte count;
-        normalize to a 1-D byte memoryview so cursor tracking +
-        short-write retries see byte counts uniformly.
-        """
-        if isinstance(data, np.ndarray):
-            view = memoryview(data).cast("B")
-        elif isinstance(data, memoryview):
-            view = data if data.format == "B" else data.cast("B")
-        else:
-            view = data
-        nbytes = len(view)
-        if self._mmap is not None:
-            self._mmap[self._pos:self._pos + nbytes] = (
-                view if isinstance(view, (bytes, bytearray))
-                else bytes(view)
-            )
-            self._pos += nbytes
-            return
-        n = os.write(self._fd, view)
-        if n != nbytes:  # pragma: no cover - partial-write loop
-            mv = view if isinstance(view, memoryview) else memoryview(view)
-            written = n
-            while written < nbytes:
-                more = os.write(self._fd, mv[written:])
-                if not more:
-                    raise OSError("short write to NDTiff stack file")
-                written += more
-        self._pos += nbytes
+        """Sequential write at the current tracked position."""
+        self._pos += fd_write_all(self._fd, data)
 
     def _writev(self, buffers) -> None:
-        """One-shot scatter write at the current position.
-
-        Fast path: ``self._mmap`` is set — copy each buffer into the
-        mmap'd region and advance ``self._pos``. No syscalls.
-
-        Fallback: ``os.writev`` on POSIX, ``os.write`` loop on
-        Windows. Used when mmap couldn't be acquired (rare).
-        """
-        if self._mmap is not None:
-            m = self._mmap
-            pos = self._pos
-            for buf in buffers:
-                # mmap[a:b] = X requires X to support __len__ and the
-                # buffer protocol. numpy arrays via memoryview work.
-                if isinstance(buf, np.ndarray):
-                    view = memoryview(buf).cast("B")
-                    bl = view.nbytes
-                else:
-                    view = buf
-                    bl = len(buf)
-                m[pos:pos + bl] = view
-                pos += bl
-            self._pos = pos
-            return
-
-        if self._HAVE_WRITEV:
-            vs = [memoryview(b) if not isinstance(b, (bytes, bytearray, memoryview))
-                  else b for b in buffers]
-            total = sum(len(b) for b in vs)
-            n = os.writev(self._fd, vs)  # type: ignore[attr-defined]
-            if n != total:  # pragma: no cover - partial writev
-                remaining = n
-                for buf in vs:
-                    bl = len(buf)
-                    if remaining >= bl:
-                        remaining -= bl
-                        continue
-                    rest = memoryview(buf)[remaining:]
-                    written = 0
-                    while written < len(rest):
-                        m_ = os.write(self._fd, rest[written:])
-                        if not m_:
-                            raise OSError("short writev tail")
-                        written += m_
-                    remaining = 0
-                    self._pos += bl
-                else:
-                    pass
-            self._pos += total
-        else:
-            for buf in buffers:
-                bl = len(buf)
-                written = 0
-                view = memoryview(buf) if not isinstance(
-                    buf, (bytes, bytearray, memoryview)) else buf
-                while written < bl:
-                    m_ = os.write(self._fd, view[written:] if written else view)
-                    if not m_:
-                        raise OSError("short write to NDTiff stack file")
-                    written += m_
-                self._pos += bl
+        """One scatter write at the current position."""
+        self._pos += fd_writev_all(self._fd, buffers)
 
     def _pwrite(self, offset: int, data) -> None:
-        """Positional write — used for patching the trailing IFD's
-        next-offset slot at close time without disturbing the position
-        cursor's invariant."""
-        if hasattr(os, "pwrite"):
-            os.pwrite(self._fd, data, offset)
-        else:  # pragma: no cover - non-POSIX fallback
-            saved = os.lseek(self._fd, 0, os.SEEK_CUR)
-            os.lseek(self._fd, offset, os.SEEK_SET)
-            os.write(self._fd, data)
-            os.lseek(self._fd, saved, os.SEEK_SET)
+        """Positional write: patches the trailing IFD's next-offset slot at
+        close without disturbing the position cursor."""
+        fd_pwrite_all(self._fd, data, offset)
 
     # ------------------------------------------------------------------
     # File header / IFD writing

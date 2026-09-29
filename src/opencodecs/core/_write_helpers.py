@@ -59,6 +59,81 @@ def iter_array_buffers(array, *, dtype=None, order="C", buffer_bytes=1 << 20):
                 yield memoryview(chunk).cast("B")
 
 
+# Raw file descriptors ------------------------------------------------------
+#
+# The TIFF and NDTiff writers each carried a copy of this, and the copies
+# had drifted: one chunked writev by IOV_MAX and one did not, and one
+# counted a partially written writev twice. The platform differences are
+# capabilities, probed rather than named: writev and pwrite are missing on
+# Windows.
+
+try:
+    # Half the platform's iovec limit, so a resubmitted tail has headroom.
+    _IOV_MAX = max(64, min(512, os.sysconf("SC_IOV_MAX") // 2))
+except (ValueError, OSError, AttributeError):  # no sysconf (Windows)
+    _IOV_MAX = 512
+
+
+def _byte_view(data):
+    return memoryview(data).cast("B")
+
+
+def fd_write_all(handle: int, data) -> int:
+    """Write all of ``data`` at the descriptor's position; returns its size."""
+    view = _byte_view(data)
+    done = 0
+    while done < view.nbytes:
+        n = os.write(handle, view[done:])
+        if n <= 0:
+            raise OSError("short write")
+        done += n
+    return view.nbytes
+
+
+def fd_writev_all(handle: int, buffers) -> int:
+    """Write every buffer in order, as few writev calls as the kernel allows.
+
+    Returns the total size. A writev that stops partway is finished with
+    plain writes before the next call, so the file and the returned size
+    always match the buffers exactly.
+    """
+    views = [_byte_view(b) for b in buffers]
+    total = sum(v.nbytes for v in views)
+    if not hasattr(os, "writev"):
+        for v in views:
+            fd_write_all(handle, v)
+        return total
+    for i in range(0, len(views), _IOV_MAX):
+        chunk = views[i:i + _IOV_MAX]
+        n = os.writev(handle, chunk)
+        for v in chunk:
+            if n >= v.nbytes:
+                n -= v.nbytes
+                continue
+            fd_write_all(handle, v[n:])
+            n = 0
+    return total
+
+
+def fd_pwrite_all(handle: int, data, offset: int) -> None:
+    """Write all of ``data`` at ``offset`` without moving the position."""
+    view = _byte_view(data)
+    if hasattr(os, "pwrite"):
+        done = 0
+        while done < view.nbytes:
+            n = os.pwrite(handle, view[done:], offset + done)
+            if n <= 0:
+                raise OSError("short positional write")
+            done += n
+        return
+    saved = os.lseek(handle, 0, os.SEEK_CUR)
+    try:
+        os.lseek(handle, offset, os.SEEK_SET)
+        fd_write_all(handle, view)
+    finally:
+        os.lseek(handle, saved, os.SEEK_SET)
+
+
 class CompleteWriter:
     """Adapt a borrowed destination for libraries that assume complete writes."""
 

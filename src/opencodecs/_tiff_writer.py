@@ -30,6 +30,8 @@ from typing import Any, Iterable
 
 import numpy as np
 
+from .core.io import O_BINARY
+from .core._write_helpers import fd_pwrite_all, fd_write_all, fd_writev_all
 from .core.codec import Writer
 
 
@@ -362,13 +364,13 @@ class TiffWriter(Writer):
         if isinstance(dest, (str, os.PathLike)):
             self._path = Path(dest)
             flags = (os.O_RDWR | os.O_CREAT | os.O_TRUNC
-                     | getattr(os, "O_BINARY", 0))
+                     | O_BINARY)
             # In streaming mode an O_WRONLY open is sufficient and avoids
             # accidentally promising back-patch capabilities we shouldn't
             # exercise.
             if self._streaming:
                 flags = (os.O_WRONLY | os.O_CREAT | os.O_TRUNC
-                         | getattr(os, "O_BINARY", 0))
+                         | O_BINARY)
             self._fd = os.open(str(self._path), flags, 0o644)
             self._owns_fh = True
         elif hasattr(dest, "write"):
@@ -1575,105 +1577,29 @@ class TiffWriter(Writer):
     # Raw-fd / buffered-fh write helpers
     # ------------------------------------------------------------------
 
-    _HAVE_WRITEV = hasattr(os, "writev")
-    _HAVE_PWRITE = hasattr(os, "pwrite")
-    # IOV_MAX caps how many iovecs we can pass to writev in one call.
-    # macOS = 1024, Linux = 1024 typically. Stick to half the platform
-    # limit so partial-writev retries that resubmit have headroom.
-    try:
-        _IOV_MAX = max(64, min(512, os.sysconf("SC_IOV_MAX") // 2))
-    except (ValueError, OSError, AttributeError):  # pragma: no cover - non-POSIX
-        _IOV_MAX = 512
-
     def _write(self, data) -> None:
-        """Sequential write at the current tracked position.
-
-        ``len(ndarray)`` is the FIRST DIMENSION, not the byte count.
-        Normalize ndarrays to a 1-D byte memoryview so cursor tracking
-        and short-write retries see byte counts uniformly.
-        """
-        if isinstance(data, np.ndarray):
-            view = memoryview(data).cast("B")
-        elif isinstance(data, memoryview):
-            view = data if data.format == "B" else data.cast("B")
-        else:
-            view = data  # bytes / bytearray
-        nbytes = len(view)
+        """Sequential write at the current tracked position."""
         if self._fd >= 0:
-            n = os.write(self._fd, view)
-            if n != nbytes:  # pragma: no cover - short-write retry
-                mv = view if isinstance(view, memoryview) else memoryview(view)
-                written = n
-                while written < nbytes:
-                    more = os.write(self._fd, mv[written:])
-                    if not more:
-                        raise OSError("short write to TIFF file")
-                    written += more
-            self._pos += nbytes
+            self._pos += fd_write_all(self._fd, data)
         else:
+            view = memoryview(data).cast("B")
             self._fh.write(view)
-            self._pos += nbytes
+            self._pos += view.nbytes
 
     def _writev(self, buffers) -> None:
-        """Scatter-gather write at the current position.
-
-        On raw-fd (POSIX), batches into one ``os.writev`` syscall per
-        chunk of up to ``_IOV_MAX`` buffers. For longer lists we issue
-        multiple syscalls — still vastly fewer than one-per-buffer,
-        and required because the kernel caps writev's iovec count
-        (IOV_MAX=1024 on macOS / typical Linux).
-
-        Fallback (file-like dest, or Windows raw-fd without writev):
-        serial buffered writes.
-        """
-        if self._fd >= 0 and self._HAVE_WRITEV:
-            # Normalize each buffer to a memoryview that the kernel
-            # can use directly. numpy arrays cast to bytes; bytes-like
-            # objects pass through.
-            vs = [
-                memoryview(b).cast("B") if isinstance(b, np.ndarray)
-                else (memoryview(b) if not isinstance(
-                    b, (bytes, bytearray, memoryview)) else b)
-                for b in buffers
-            ]
-            cap = self._IOV_MAX
-            i = 0
-            while i < len(vs):
-                chunk = vs[i:i + cap]
-                chunk_total = sum(len(b) for b in chunk)
-                n = os.writev(self._fd, chunk)  # type: ignore[attr-defined]
-                if n != chunk_total:  # pragma: no cover - partial writev retry
-                    remaining = n
-                    for buf in chunk:
-                        bl = len(buf)
-                        if remaining >= bl:
-                            remaining -= bl
-                            continue
-                        rest = memoryview(buf)[remaining:]
-                        written = 0
-                        while written < len(rest):
-                            m_ = os.write(self._fd, rest[written:])
-                            if not m_:
-                                raise OSError("short writev tail")
-                            written += m_
-                        remaining = 0
-                self._pos += chunk_total
-                i += cap
+        """Scatter-gather write at the current position (one writev per
+        up to IOV_MAX/2 buffers on a descriptor that has it)."""
+        if self._fd >= 0:
+            self._pos += fd_writev_all(self._fd, buffers)
         else:
-            # Buffered-fh fallback (or Windows raw-fd without writev).
             for buf in buffers:
                 self._write(buf)
 
     def _pwrite(self, offset: int, data) -> None:
-        """Positional write — for back-patching the IFD chain at close
-        without disturbing the sequential cursor."""
-        if self._fd >= 0 and self._HAVE_PWRITE:
-            os.pwrite(self._fd, data, offset)
-        elif self._fd >= 0:  # pragma: no cover - non-POSIX raw-fd fallback
-            saved = os.lseek(self._fd, 0, os.SEEK_CUR)
-            os.lseek(self._fd, offset, os.SEEK_SET)
-            os.write(self._fd, data)
-            os.lseek(self._fd, saved, os.SEEK_SET)
+        """Positional write: back-patches the IFD chain at close without
+        disturbing the sequential cursor."""
+        if self._fd >= 0:
+            fd_pwrite_all(self._fd, data, offset)
         else:
             saved = self._fh.tell()
             self._fh.seek(offset)
