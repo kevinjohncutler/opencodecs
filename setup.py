@@ -30,6 +30,7 @@ from __future__ import annotations
 import glob
 import os
 import re
+import shutil
 import sys
 import sysconfig
 from pathlib import Path
@@ -42,6 +43,132 @@ from setuptools import Extension, setup
 from setuptools.command.build_ext import build_ext as _build_ext
 
 HERE = Path(__file__).resolve().parent
+
+
+# ---------------------------------------------------------------------------
+# Platform conventions
+#
+# Every way this build differs by operating system is named once, here,
+# and everything below asks these helpers instead of testing sys.platform.
+# What can be probed (a directory, a file, a tool) is probed and never
+# branched on: a path that does not exist on this platform is not found.
+# ---------------------------------------------------------------------------
+
+#: Windows: libraries are import libraries (NAME.lib), and there is no
+#: rpath; DLLs are found through os.add_dll_directory or bundled next to
+#: the extension by delvewheel.
+_WINDOWS = sys.platform == "win32"
+
+
+def _user_cache() -> Path:
+    """Where bench/build_codec_libs.sh and build_libjxl.sh install by default.
+
+    The same rule as the scripts: macOS's cache folder, else XDG's (under
+    MSYS on Windows that is the same home directory). Off the source tree,
+    so a repository on a network share does not trip macOS Gatekeeper when
+    an extension loads a library from it.
+    """
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Caches" / "opencodecs"
+    return Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "opencodecs"
+
+
+def _with_library(prefix: Path) -> list[Path]:
+    """``prefix``, preceded by ``prefix/Library`` where that exists.
+
+    conda-forge on Windows installs under <env>/Library (include/, lib/,
+    bin/), mirroring a Unix prefix one level down; elsewhere the
+    environment is the prefix itself.
+    """
+    lib = prefix / "Library"
+    return [lib, prefix] if lib.is_dir() else [prefix]
+
+
+#: Linux links with GNU ld, whose -Wl,--disable-new-dtags and -l:FILE
+#: the libjxl link uses.
+_GNU_LD = sys.platform.startswith("linux")
+
+#: Subdirectories of a prefix that hold libraries: AlmaLinux CMake
+#: installs to lib64, conda-forge on Windows to Library/lib, Debian to
+#: lib/<multiarch triple>.
+_LIB_SUBDIRS = ("lib", "lib64", "Library/lib",
+                "lib/x86_64-linux-gnu", "lib/aarch64-linux-gnu")
+
+
+def _lib_dirs(prefix: Path) -> list[Path]:
+    """The library directories under ``prefix`` (see _LIB_SUBDIRS)."""
+    return [prefix / sub for sub in _LIB_SUBDIRS]
+
+
+def _lib_patterns(stem: str) -> tuple[str, ...]:
+    """File names library ``stem`` may have, unversioned first.
+
+    Windows links an import library, which conda-forge sometimes prefixes
+    with lib (libwebp.lib) or suffixes with a version (charls-2.lib,
+    openjph.0.31.lib). Elsewhere a shared library.
+    """
+    if _WINDOWS:
+        return (f"{stem}.lib", f"lib{stem}.lib", f"{stem}-*.lib", f"{stem}.*.lib")
+    return (f"lib{stem}.dylib", f"lib{stem}.so", f"lib{stem}.*.dylib",
+            f"lib{stem}.so.*")
+
+
+def _find_lib(stem: str, dirs) -> Path | None:
+    """The first file for library ``stem`` in ``dirs``, searched in order."""
+    for d in map(Path, dirs):
+        if not d.is_dir():
+            continue
+        for pattern in _lib_patterns(stem):
+            hits = sorted(d.glob(pattern))
+            if hits:
+                return hits[0]
+    return None
+
+
+def _rpath(*dirs) -> list[str]:
+    """Linker flags recording ``dirs`` for the dynamic loader (none on Windows)."""
+    if _WINDOWS:
+        return []
+    return [f"-Wl,-rpath,{d}" for d in dict.fromkeys(map(str, dirs))]
+
+
+def _link_files(*files: Path, rpath: bool = False) -> dict:
+    """Extension arguments that link exactly these library files.
+
+    By path, on every platform. A path cannot be shadowed by another copy
+    of the same library earlier on the search path: macOS sysconfig puts
+    -L/opt/homebrew/lib (and the SDK's stub libz) ahead of library_dirs,
+    and a name like libturbojpeg is both MozJPEG's and libjpeg-turbo's.
+    MSVC takes an import library's path like any other input; the MozJPEG
+    extension has linked that way on Windows since it shipped. ``rpath``
+    also records each directory for the loader.
+    """
+    return {"libraries": [],
+            "extra_link_args": [str(f) for f in files]
+            + (_rpath(*(f.parent for f in files)) if rpath else [])}
+
+
+def _cache_build(stems, *subdirs: str) -> dict:
+    """Link a per-user cache build of these libraries when there is one.
+
+    bench/build_codec_libs.sh builds some libraries tuned (-O3, LTO) into
+    the per-user cache, and those should win over a distribution's copy:
+    when every one of ``stems`` is in one of the cache ``subdirs``, link
+    those files (see _link_files) and record the directory. Otherwise the
+    names, for the linker to find on the usual search path.
+    """
+    for sub in subdirs:
+        libdir = _user_cache() / sub / "lib"
+        files = [_find_lib(stem, [libdir]) for stem in stems]
+        if all(files):
+            return _link_files(*files, rpath=True)
+    return {"libraries": list(stems), "extra_link_args": []}
+
+
+def _cache_rpath(subdir: str) -> list[str]:
+    """Rpath to a per-user cache library directory, if it exists."""
+    libdir = _user_cache() / subdir / "lib"
+    return _rpath(libdir) if libdir.is_dir() else []
 
 
 def _find_imagecodecs_libs() -> Path | None:
@@ -83,18 +210,8 @@ def _imagecodecs_jxl_filenames(libs_dir: Path) -> dict[str, str] | None:
 
 
 def _user_cache_libjxl() -> Path:
-    """Per-user cache install location matching bench/build_libjxl.sh's
-    default. Off the source tree so a NAS-mounted repo doesn't trip
-    macOS Gatekeeper at runtime when our .so dlopens libjxl."""
-    if sys.platform == "darwin":
-        return Path.home() / "Library/Caches/opencodecs/libjxl"
-    if sys.platform.startswith("linux"):
-        xdg = os.environ.get("XDG_CACHE_HOME")
-        base = Path(xdg) if xdg else Path.home() / ".cache"
-        return base / "opencodecs" / "libjxl"
-    if sys.platform == "win32":
-        return Path.home() / "AppData/Local/opencodecs/libjxl"
-    return Path.home() / ".opencodecs" / "libjxl"
+    """Where bench/build_libjxl.sh installs libjxl by default."""
+    return _user_cache() / "libjxl"
 
 
 def _candidate_prefixes() -> list[Path]:
@@ -111,23 +228,13 @@ def _candidate_prefixes() -> list[Path]:
     # 3. in-tree vendored — only sensible when the repo is on local disk
     #    (e.g., for wheel builds that bundle the libs in vendor/).
     prefixes.append(HERE / "vendor" / "libjxl")
-    # 4. conda env. On Windows, conda-forge installs headers at
-    # <env>/Library/include and libs at <env>/Library/lib (the "Library"
-    # subdir mirrors a Unix prefix layout). On Mac/Linux the env IS the
-    # prefix. Probe both forms so this branch works on every platform.
+    # 4. conda env (see _with_library).
     conda = os.environ.get("CONDA_PREFIX")
     if conda:
-        if sys.platform == "win32":
-            prefixes.append(Path(conda) / "Library")
-        prefixes.append(Path(conda))
-    # 5. system
-    if sys.platform == "darwin":
-        prefixes += [Path("/opt/homebrew"), Path("/usr/local")]
-    elif sys.platform.startswith("linux"):
-        prefixes += [Path("/usr"), Path("/usr/local")]
-    elif sys.platform == "win32":
-        # On Windows we expect the user to set OPENCODECS_JXL_PREFIX explicitly.
-        pass
+        prefixes += _with_library(Path(conda))
+    # 5. system: Homebrew, then local installs over the distribution's.
+    #    Windows has none of these; set OPENCODECS_JXL_PREFIX there.
+    prefixes += [Path("/opt/homebrew"), Path("/usr/local"), Path("/usr")]
     # de-dup while preserving order
     seen: set[Path] = set()
     out: list[Path] = []
@@ -148,17 +255,8 @@ def _find_libjxl() -> tuple[Path | None, list[str], list[str]]:
         if not (inc / "jxl" / "types.h").is_file():
             continue
         include_dirs = [str(inc)]
-        library_dirs: list[str] = []
-        lib = prefix / "lib"
-        if lib.is_dir():
-            library_dirs.append(str(lib))
-        lib64 = prefix / "lib64"
-        if lib64.is_dir():
-            library_dirs.append(str(lib64))
-        # Linux multilib dir (Debian/Ubuntu)
-        multi = prefix / "lib" / "x86_64-linux-gnu"
-        if multi.is_dir():
-            library_dirs.append(str(multi))
+        library_dirs = [str(prefix / sub) for sub in _LIB_SUBDIRS
+                        if (prefix / sub).is_dir()]
         return prefix, include_dirs, library_dirs
     return None, [], []
 
@@ -203,7 +301,7 @@ def _ensure_patched_libjxl() -> None:
         "1", "true", "yes", "on"
     ):
         return
-    if sys.platform == "win32":
+    if _WINDOWS:
         # bash-only build script; the libjxl patches don't apply to
         # whatever vendored Windows lib the user is linking against
         # anyway. Let the regular detection path run.
@@ -265,9 +363,6 @@ include_dirs.append(str(PKG_CODECS))
 extra_link_args: list[str] = []
 libraries: list[str] = ["jxl", "jxl_threads"]
 
-is_linux = sys.platform.startswith("linux")
-is_darwin = sys.platform == "darwin"
-
 # "Vendored" here means: we built libjxl ourselves, so we know its layout
 # and need to set RPATH/install_name accordingly. The libs may live in
 # the in-tree vendor/ dir OR in the per-user cache (which is the default
@@ -286,7 +381,7 @@ chosen_lib_dir = (
 # this branch exists for users who already have imagecodecs installed and
 # don't want to build libjxl themselves.
 USE_IMAGECODECS_LIBJXL = (
-    is_linux
+    _GNU_LD
     and not using_vendored
     and os.environ.get("OPENCODECS_USE_IMAGECODECS_LIBJXL", "").strip()
     in ("1", "true", "yes", "on")
@@ -294,24 +389,19 @@ USE_IMAGECODECS_LIBJXL = (
 
 if using_vendored:
     print(f"opencodecs: linking against vendored libjxl at {chosen_prefix}")
-    if is_linux:
+    if _GNU_LD:
         # Use --disable-new-dtags so DT_RPATH (not DT_RUNPATH) is emitted —
         # required for libjxl's transitive deps (libjxl_cms, etc.) to be
         # found via our rpath. RUNPATH does not propagate to children.
         extra_link_args.append("-Wl,--disable-new-dtags")
-    if is_darwin and chosen_lib_dir is not None:
-        # On macOS, setuptools/sysconfig prepends -L/opt/homebrew/lib BEFORE
-        # our library_dirs in the link line, so a plain -ljxl resolves to
-        # Homebrew's libjxl instead of our vendored one. Pass the vendored
-        # dylibs by absolute path via extra_link_args (which appears at the
-        # END of the link line) so they take precedence and -ljxl is dropped.
-        libraries = []
-        for soname in ("libjxl.0.11.dylib", "libjxl_threads.0.11.dylib"):
-            dylib = chosen_lib_dir / soname
-            if dylib.exists():
-                extra_link_args.append(str(dylib))
-    for ldir in library_dirs:
-        extra_link_args.append(f"-Wl,-rpath,{ldir}")
+    # The vendored files themselves, not whatever -ljxl finds first
+    # (Homebrew's, on macOS; see _link_files).
+    _jxl_files = [_find_lib(stem, library_dirs) for stem in ("jxl", "jxl_threads")]
+    if all(_jxl_files):
+        _linked = _link_files(*_jxl_files)
+        libraries = _linked["libraries"]
+        extra_link_args += _linked["extra_link_args"]
+    extra_link_args += _rpath(*library_dirs)
 elif USE_IMAGECODECS_LIBJXL:
     ic_libs = _find_imagecodecs_libs()
     if ic_libs is None:
@@ -336,18 +426,14 @@ elif USE_IMAGECODECS_LIBJXL:
     extra_link_args.append("-Wl,--disable-new-dtags")
     extra_link_args.append(f"-Wl,-rpath,{ic_libs}")
     print(f"opencodecs: linking against imagecodecs bundled libjxl from {ic_libs}")
-elif is_darwin and library_dirs:
-    for ldir in library_dirs:
-        extra_link_args.append(f"-Wl,-rpath,{ldir}")
-elif is_linux and library_dirs:
-    for ldir in library_dirs:
-        extra_link_args.append(f"-Wl,-rpath,{ldir}")
+elif library_dirs:
+    extra_link_args += _rpath(*library_dirs)
 
 define_macros: list[tuple[str, str | int]] = [
     ("NPY_NO_DEPRECATED_API", "NPY_1_7_API_VERSION"),
 ]
 
-if sys.platform == "win32":
+if _WINDOWS:
     define_macros.append(("WIN32", 1))
 
 
@@ -363,13 +449,7 @@ _PROBE_PREFIXES: list[Path] = [
 # (SZ3, pcodec) are not in Homebrew/apt, so we build them once into
 # ~/Library/Caches/opencodecs/<lib>/ via bench/build_codec_libs.sh.
 # Probe these so the generic header/lib search picks them up.
-_OC_USER_CACHE = Path.home() / (
-    "Library/Caches/opencodecs" if sys.platform == "darwin"
-    else (
-        os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache"))
-        + "/opencodecs"
-    )
-)
+_OC_USER_CACHE = _user_cache()
 for _libdir in (
     "sz3", "pcodec", "sperr", "brunsli", "lerc", "zstd", "brotli", "giflib",
     # zfp: brew's bottle is built without -march tuning and is ~17%
@@ -398,42 +478,33 @@ if chosen_prefix is not None and Path(chosen_prefix) not in _PROBE_PREFIXES:
     _PROBE_PREFIXES.insert(0, Path(chosen_prefix))
 
 # macOS keeps system headers (zlib.h, etc.) under the active Xcode SDK
-# instead of /usr/include/. Probe that too.
-if sys.platform == "darwin":
-    try:
-        _sdk = subprocess.check_output(
-            ["xcrun", "--show-sdk-path"], text=True,
-            stderr=subprocess.DEVNULL,
-        ).strip()
-        if _sdk:
-            _PROBE_PREFIXES.append(Path(_sdk) / "usr")
-    except (FileNotFoundError, subprocess.CalledProcessError):
-        pass
+# instead of /usr/include/. Probe that too; xcrun exists only there.
+try:
+    _sdk = subprocess.check_output(
+        ["xcrun", "--show-sdk-path"], text=True,
+        stderr=subprocess.DEVNULL,
+    ).strip()
+    if _sdk:
+        _PROBE_PREFIXES.append(Path(_sdk) / "usr")
+except (FileNotFoundError, subprocess.CalledProcessError):
+    pass
 
-# conda env: add CONDA_PREFIX to the probe list. On POSIX the env IS
-# the prefix (headers at $CONDA_PREFIX/include, libs at $CONDA_PREFIX/lib);
-# on Windows conda-forge installs under <prefix>/Library/ to mimic that
-# layout. Probe both forms so the same setup.py works in any conda env.
+# conda env, checked FIRST so conda wins (see _with_library).
 _conda = os.environ.get("CONDA_PREFIX")
 if _conda:
-    _PROBE_PREFIXES.insert(0, Path(_conda))  # check FIRST so conda wins
-    if sys.platform == "win32":
-        _PROBE_PREFIXES.insert(0, Path(_conda) / "Library")
+    _PROBE_PREFIXES[:0] = _with_library(Path(_conda))
 # CI build-env sometimes calls setup.py with CONDA_PREFIX scrubbed (e.g.
 # pip's PEP 517 isolated-build subprocess on Windows). Accept a fallback
 # OPENCODECS_CODEC_LIBS_PREFIX env var that the workflow can set
 # explicitly without relying on cibuildwheel propagating CONDA_PREFIX.
 _libs_prefix = os.environ.get("OPENCODECS_CODEC_LIBS_PREFIX")
 if _libs_prefix:
-    _PROBE_PREFIXES.insert(0, Path(_libs_prefix))
-    if sys.platform == "win32" and (Path(_libs_prefix) / "Library").is_dir():
-        _PROBE_PREFIXES.insert(0, Path(_libs_prefix) / "Library")
+    _PROBE_PREFIXES[:0] = _with_library(Path(_libs_prefix))
 
-# Windows: vcpkg installs to <root>/installed/x64-windows/. Add it too.
-if sys.platform == "win32":
-    _vcpkg_root = os.environ.get("VCPKG_ROOT")
-    if _vcpkg_root:
-        _PROBE_PREFIXES.append(Path(_vcpkg_root) / "installed" / "x64-windows")
+# vcpkg installs to <root>/installed/<triplet>/ (see INSTALL.md).
+_vcpkg_root = os.environ.get("VCPKG_ROOT")
+if _vcpkg_root:
+    _PROBE_PREFIXES.append(Path(_vcpkg_root) / "installed" / "x64-windows")
 
 
 def _multilib_dirs() -> list[Path]:
@@ -517,25 +588,24 @@ def _lib_dirs_for_probes() -> list[str]:
     return out
 
 
-def _lib_link_name(*stems: str) -> str | None:
-    """Return the first of ``stems`` that has a real library file under
-    one of the probe lib dirs, i.e. the name to hand ``libraries=``.
+def _lib_name(*stems: str) -> str:
+    """The first of ``stems`` with a library file in the probe lib dirs,
+    else the first: the name to hand ``libraries=``.
 
     Upstreams do not agree on a name across platforms, and conda-forge
-    follows each upstream. ISA-L is the case that bit us: the package
-    installs ``libisal.so`` / ``libisal.dylib`` on POSIX but
-    ``isa-l.lib`` on Windows, so the hardcoded ``["isal"]`` could never
-    link on a Windows wheel build no matter which prefix it searched.
+    follows each upstream: ISA-L installs ``libisal.so`` on POSIX but
+    ``isa-l.lib`` on Windows, libwebp ``libwebp.so`` but ``libwebp.lib``,
+    zlib ``libz`` but ``zlib.lib``. So the candidates are listed and the
+    one that exists wins, rather than one spelling per platform.
     """
     for d in map(Path, _lib_dirs_for_probes()):
         for stem in stems:
-            if sys.platform == "win32":
-                names = (f"{stem}.lib",)
-            else:
-                names = (f"lib{stem}.dylib", f"lib{stem}.so", f"lib{stem}.a")
+            # Exactly the file the linker looks for: NAME.lib, or libNAME.*.
+            names = ((f"{stem}.lib",) if _WINDOWS else
+                     (f"lib{stem}.dylib", f"lib{stem}.so", f"lib{stem}.a"))
             if any((d / n).exists() for n in names):
                 return stem
-    return None
+    return stems[0]
 
 
 def _user_cache_rpath_args() -> list[str]:
@@ -558,30 +628,11 @@ def _user_cache_rpath_args() -> list[str]:
     codec entries — but appending these flags is harmless when no
     cache dirs exist, so we always emit them on POSIX.
     """
-    if sys.platform == "win32":
-        return []
     # Only emit rpaths for dirs UNDER the per-user cache. Adding a
     # rpath to ``/usr/lib`` etc. is redundant (already on the
     # loader's default search path) and would clutter the .so.
     cache_root = str(_OC_USER_CACHE)
-    return [
-        f"-Wl,-rpath,{d}"
-        for d in _lib_dirs_for_probes()
-        if d.startswith(cache_root)
-    ]
-
-
-def _libname(posix: str, windows: str | None = None) -> str:
-    """Pick the right library base name for the current platform.
-
-    conda-forge (Windows) typically prefixes shared library .lib import
-    files with ``lib`` (e.g. ``libwebp.lib``) whereas POSIX systems use
-    bare names (``libwebp.so`` → ``-lwebp``). Provide both forms so the
-    same setup.py works on every host.
-    """
-    if sys.platform == "win32" and windows is not None:
-        return windows
-    return posix
+    return _rpath(*(d for d in _lib_dirs_for_probes() if d.startswith(cache_root)))
 
 
 def _maybe_build_ext_simple(
@@ -601,48 +652,11 @@ def _maybe_build_ext_simple(
         hdr = prefix / "include" / probe_header
         if not hdr.exists():
             continue
-        # Find the matching library. Search every layout a prefix can
-        # use, not just <prefix>/lib: AlmaLinux CMake installs to lib64,
-        # conda-on-Windows to Library/lib, Debian to lib/<multiarch>.
-        # Windows has no lib-prefix convention and conda-forge sometimes
-        # carries the soversion in the import-lib name (charls.lib vs
-        # charls-2.lib), so match by pattern and link whatever stem is
-        # actually there.
-        if sys.platform == "win32":
-            patterns = (f"{libname}.lib", f"lib{libname}.lib",
-                        f"{libname}-*.lib")
-        else:
-            patterns = tuple(f"lib{libname}.{ext}"
-                             for ext in ("dylib", "so", "so.0"))
-        libdir = None
-        dlib = None
-        for sub in ("lib", "lib64", "Library/lib",
-                    "lib/x86_64-linux-gnu", "lib/aarch64-linux-gnu"):
-            d = prefix / sub
-            if not d.is_dir():
-                continue
-            for pat in patterns:
-                hits = sorted(d.glob(pat))
-                if hits:
-                    libdir, dlib = d, hits[0]
-                    break
-            if dlib is not None:
-                break
+        # Every layout a prefix can use (see _LIB_SUBDIRS), and every
+        # name the library may have there (see _lib_patterns).
+        dlib = _find_lib(libname, _lib_dirs(prefix))
         if dlib is None:
             continue
-        # Match the zlib-ng-compat pattern: pass dylib by abs path on
-        # macOS so the SDK stub doesn't win the linker lookup.
-        extra_link_args = (
-            [str(dlib)] if sys.platform == "darwin" else []
-        )
-        if sys.platform == "darwin":
-            libs = []
-        elif sys.platform == "win32":
-            # MSVC links the import lib by stem, which may carry a
-            # soversion the header name does not (charls-2.lib).
-            libs = [dlib.stem]
-        else:
-            libs = [libname]
         # rpath for the per-user cache dir is baked by the post-build
         # loop at the end of the file (``_user_cache_rpath_args``).
         # When ``prefix`` is a non-cache location (homebrew /opt,
@@ -656,9 +670,8 @@ def _maybe_build_ext_simple(
                 numpy.get_include(),
                 str(prefix / "include"),
             ],
-            library_dirs=[str(libdir)],
-            libraries=libs,
-            extra_link_args=extra_link_args,
+            library_dirs=[str(dlib.parent)],
+            **_link_files(dlib),
             define_macros=(define_macros or []) + [
                 ("NPY_NO_DEPRECATED_API", "NPY_1_7_API_VERSION"),
             ],
@@ -698,53 +711,19 @@ def _maybe_build_uhdr_ext() -> list[Extension]:
     # 4. Generic system prefixes.
     candidates.extend([Path("/usr/local"), Path("/usr")])
 
-    prefix = None
-    lib_subdir = None  # "lib" or "lib64" or "Library/lib"
-    lib_filename = None
-    lib_candidates = [
-        ("lib", "libuhdr.dylib"),
-        ("lib", "libuhdr.so"),
-        ("lib", "libuhdr.so.1"),
-        ("lib64", "libuhdr.so"),
-        ("lib64", "libuhdr.so.1"),
-        ("lib", "libuhdr.1.dylib"),
-        # Windows (conda-forge / build_codec_libs.sh layout): the
-        # CMake build emits uhdr.lib alongside uhdr.dll under bin/.
-        ("lib", "uhdr.lib"),
-        ("Library/lib", "uhdr.lib"),
-    ]
+    prefix = lib = None
     for c in candidates:
-        if not (c / "include" / "ultrahdr_api.h").is_file() \
-                and not (c / "Library" / "include" / "ultrahdr_api.h").is_file():
-            continue
         # If Library/ subdir holds the headers, that's the real prefix.
         if (c / "Library" / "include" / "ultrahdr_api.h").is_file():
             c = c / "Library"
-        for subdir, name in lib_candidates:
-            if (c / subdir / name).is_file():
-                prefix = c
-                lib_subdir = subdir
-                lib_filename = name
-                break
-        if prefix is not None:
+        if not (c / "include" / "ultrahdr_api.h").is_file():
+            continue
+        lib = _find_lib("uhdr", _lib_dirs(c))
+        if lib is not None:
+            prefix = c
             break
     if prefix is None:
         return []
-
-    extra_link_args: list[str] = []
-    if sys.platform == "darwin":
-        # Absolute-path link + rpath fallback. libuhdr's
-        # install_name is @rpath/libuhdr.X.dylib, so delocate needs
-        # the rpath to be present to resolve LC_LOAD_DYLIB.
-        extra_link_args = [
-            str(prefix / lib_subdir / lib_filename),
-            f"-Wl,-rpath,{prefix / lib_subdir}",
-        ]
-        libraries = []
-    else:
-        libraries = ["uhdr"]
-        if sys.platform == "linux":
-            extra_link_args = [f"-Wl,-rpath,{prefix / lib_subdir}"]
 
     return [Extension(
         name="opencodecs.codecs._uhdr",
@@ -754,33 +733,12 @@ def _maybe_build_uhdr_ext() -> list[Extension]:
             numpy.get_include(),
             str(prefix / "include"),
         ],
-        library_dirs=[str(prefix / lib_subdir)],
-        libraries=libraries,
-        extra_link_args=extra_link_args,
+        library_dirs=[str(lib.parent)],
+        # With an rpath: libuhdr's install name is @rpath/libuhdr.X.dylib,
+        # which delocate cannot resolve without one.
+        **_link_files(lib, rpath=True),
         define_macros=[("NPY_NO_DEPRECATED_API", "NPY_1_7_API_VERSION")],
-        # Aggressive optimisation for the gain-map / SDR-base kernels
-        # to auto-vectorise (NEON on Apple Silicon, AVX2 on x86). The
-        # polynomial log2 in _gain_map_kernel only beats numpy's
-        # vectorised log2 when the compiler turns it into SIMD.
-        #
-        # The fno-finite-math-only / fno-unsafe-math-optimizations pair
-        # subtracts back the two sub-flags of -ffast-math that bite us:
-        # ``-funsafe-math-optimizations`` is what tells GCC to replace
-        # libm calls with libmvec's vectorised ``_ZGV*`` variants, which
-        # link-fail on Ubuntu and aren't present at all on aarch64.
-        # ``-ffinite-math-only`` breaks our clip-to-[0,1] paths by
-        # assuming no NaN/Inf can appear. Same flag set that the edt
-        # extension uses for the same reason — keeps FMA + reordering
-        # speed without the libmvec dependency.
-        extra_compile_args=(
-            [
-                "-O3", "-ffast-math",
-                "-fno-finite-math-only",
-                "-fno-unsafe-math-optimizations",
-                "-fno-math-errno", "-fno-trapping-math",
-            ]
-            if sys.platform != "win32" else ["/O2"]
-        ),
+        # Compiled with _EXTRA_OPTIMIZATION's fast-math set.
         language="c",
     )]
 
@@ -821,37 +779,17 @@ def _maybe_build_mozjpeg_ext() -> list[Extension]:
         (Path("/usr"), True),
         (Path("/usr/local"), True),
     ])
-    prefix = None
-    lib_subdir = None  # "lib" or "lib/x86_64-linux-gnu" etc.
-    lib_filename = None
+    lib = None
     for c, require_mozjpeg_subdir in candidates:
         if require_mozjpeg_subdir and not (c / "include" / "mozjpeg").is_dir():
             continue
         if not (c / "include" / "turbojpeg.h").exists():
             continue
-        # Find the actual lib file. Linux multiarch ships under
-        # lib/<triple>/, plain /usr/local installs use lib/, and
-        # AlmaLinux/RHEL (manylinux_2_28) puts 64-bit libs under lib64/
-        # by default — that's the GNU autoconf convention on those
-        # distros, and mozjpeg's CMake picks it up.
-        lib_candidates = [
-            ("lib", "libturbojpeg.dylib"),
-            ("lib", "libturbojpeg.so"),
-            ("lib", "libturbojpeg.so.0"),
-            ("lib64", "libturbojpeg.so"),
-            ("lib64", "libturbojpeg.so.0"),
-            ("lib/x86_64-linux-gnu", "libturbojpeg.so"),
-            ("lib/x86_64-linux-gnu", "libturbojpeg.so.0"),
-            ("lib/aarch64-linux-gnu", "libturbojpeg.so"),
-            ("lib/aarch64-linux-gnu", "libturbojpeg.so.0"),
-            # Windows MSVC build (mozjpeg's CMake produces turbojpeg.lib
-            # import library next to turbojpeg.dll in bin/).
-            ("lib", "turbojpeg.lib"),
-        ]
-        for subdir, name in lib_candidates:
-            libpath = c / subdir / name
-            if not libpath.exists():
-                continue
+        # The library file, in any of a prefix's layouts (see
+        # _LIB_SUBDIRS; mozjpeg's CMake follows lib64 on AlmaLinux and
+        # emits turbojpeg.lib next to turbojpeg.dll on Windows).
+        libpath = _find_lib("turbojpeg", _lib_dirs(c))
+        if libpath is not None:
             # MozJPEG branches off libjpeg-turbo 1.x — it lacks the v3
             # tj3* API. Three cases for accepting a candidate:
             #   (a) require_mozjpeg_subdir=True (generic /usr or /usr/local
@@ -865,26 +803,19 @@ def _maybe_build_mozjpeg_ext() -> list[Extension]:
             #   (c) otherwise: probe libturbojpeg's symbol table with nm
             #       to confirm it's a MozJPEG build (lacks tj3Compress8).
             if require_mozjpeg_subdir or c.name == "mozjpeg":
-                prefix = c
-                lib_subdir = subdir
-                lib_filename = name
+                lib, prefix = libpath, c
                 break
             try:
-                import subprocess
                 out = subprocess.run(
                     ["nm", "-gU", str(libpath)],
                     capture_output=True, text=True, timeout=10,
                 ).stdout
                 if "_tj3Compress8" not in out and "tj3Compress8" not in out:
-                    prefix = c
-                    lib_subdir = subdir
-                    lib_filename = name
+                    lib, prefix = libpath, c
                     break
             except (FileNotFoundError, subprocess.SubprocessError):
                 continue
-        if prefix is not None:
-            break
-    if prefix is None:
+    if lib is None:
         return []
     return [Extension(
         name="opencodecs.codecs._mozjpeg",
@@ -894,20 +825,13 @@ def _maybe_build_mozjpeg_ext() -> list[Extension]:
             numpy.get_include(),
             str(prefix / "include"),
         ],
-        library_dirs=[str(prefix / lib_subdir)],
-        # Use absolute path on macOS to dodge the SDK-stub issue we
-        # hit with zlib-ng-compat. On macOS we ALSO add the lib dir
-        # to LC_RPATH because mozjpeg's libturbojpeg has
-        # install_name=@rpath/libturbojpeg.0.dylib; without an rpath
-        # to a keg-only prefix like /opt/homebrew/opt/mozjpeg/lib,
-        # delocate can't resolve the LC_LOAD_DYLIB and the wheel
-        # repair fails with "@rpath/libturbojpeg.0.dylib not found".
-        libraries=[],
-        extra_link_args=(
-            [str(prefix / lib_subdir / lib_filename)]
-            + ([f"-Wl,-rpath,{prefix / lib_subdir}"]
-                if sys.platform == "darwin" else [])
-        ),
+        library_dirs=[str(lib.parent)],
+        # By path: libjpeg-turbo's library has the same name (see
+        # _link_files). With an rpath: MozJPEG's install name is
+        # @rpath/libturbojpeg.0.dylib, which delocate cannot resolve
+        # without one, and on Linux the loader would otherwise take the
+        # system libturbojpeg.so.0 for it.
+        **_link_files(lib, rpath=True),
         define_macros=[("NPY_NO_DEPRECATED_API", "NPY_1_7_API_VERSION")],
         language="c",
     )]
@@ -933,9 +857,7 @@ def _maybe_build_openjph_ext() -> list[Extension]:
         Path("/usr/local"),
         Path("/usr"),
     ]
-    prefix = None
-    lib_subdir = None
-    lib_stem = None                       # basename without extension
+    prefix = lib = None
     for c in candidates:
         if not str(c) or not c.is_dir():
             continue
@@ -944,46 +866,15 @@ def _maybe_build_openjph_ext() -> list[Extension]:
             c = c / "Library"
         if not (c / "include" / "openjph" / "ojph_codestream.h").is_file():
             continue
-        for subdir in ("lib", "lib64", "lib/x86_64-linux-gnu"):
-            d = c / subdir
-            if not d.is_dir():
-                continue
-            # Windows names the import library openjph.<major>.<minor>.lib,
-            # so the version is in the filename and a fixed candidate list
-            # would go stale on every bump. Glob instead. Everything else
-            # uses the usual libopenjph.{dylib,so,so.N}.
-            if sys.platform == "win32":
-                hits = sorted(d.glob("openjph*.lib"))
-            else:
-                hits = sorted(
-                    p for p in d.iterdir()
-                    if p.name.startswith("libopenjph.")
-                    and (".dylib" in p.name or ".so" in p.name)
-                )
-            if hits:
-                prefix, lib_subdir, lib_stem = c, subdir, hits[0].stem
-                break
-        if prefix is not None:
+        # Windows names the import library openjph.<major>.<minor>.lib,
+        # so it is matched by pattern (see _lib_patterns); the DLL lives
+        # in bin/ and delvewheel bundles it.
+        lib = _find_lib("openjph", _lib_dirs(c))
+        if lib is not None:
+            prefix = c
             break
     if prefix is None:
         return []
-
-    # Match the absolute-dylib pattern used for MozJPEG / CharLS on
-    # macOS so the linker doesn't bind to an SDK stub.
-    libdir = prefix / lib_subdir
-    if sys.platform == "darwin":
-        extra_link_args = [str(libdir / "libopenjph.dylib"),
-                           f"-Wl,-rpath,{libdir}"]
-        libs: list[str] = []
-    elif sys.platform == "win32":
-        # Link against the versioned import library by its stem; MSVC
-        # appends the .lib itself. The matching DLL lives in bin/ and is
-        # bundled into the wheel by delvewheel.
-        extra_link_args = []
-        libs = [lib_stem]
-    else:
-        extra_link_args = [f"-Wl,-rpath,{libdir}"]
-        libs = ["openjph"]
 
     return [Extension(
         name="opencodecs.codecs._openjph",
@@ -996,12 +887,62 @@ def _maybe_build_openjph_ext() -> list[Extension]:
             numpy.get_include(),
             str(prefix / "include"),
         ],
-        library_dirs=[str(libdir)],
-        libraries=libs,
-        extra_link_args=extra_link_args,
+        library_dirs=[str(lib.parent)],
+        **_link_files(lib, rpath=True),
         define_macros=[("NPY_NO_DEPRECATED_API", "NPY_1_7_API_VERSION")],
         language="c++",
     )]
+
+
+def _find_zlib_ng_compat() -> Path | None:
+    """Prefix of a zlib-ng-compat install (a faster drop-in libz), if any.
+
+    A Homebrew keg with its own libz, or a prefix whose pkg-config
+    directory lists zlib-ng-compat (conda-forge, a source install).
+    """
+    for cand in (Path("/opt/homebrew/opt/zlib-ng-compat"),
+                 Path("/usr/local/opt/zlib-ng-compat")):
+        if (cand / "include" / "zlib.h").exists() and _find_lib("z", [cand / "lib"]):
+            return cand
+    for cand in (Path(os.environ.get("CONDA_PREFIX", "")),
+                 Path("/usr/local"), Path("/usr")):
+        if str(cand) and (cand / "lib" / "pkgconfig" / "zlib-ng-compat.pc").exists():
+            return cand
+    return None
+
+
+def _link_zlib(zng: Path | None, include_dirs, library_dirs, extra_link_args) -> list[str]:
+    """Add zlib to an extension's lists; return its ``libraries``.
+
+    zlib-ng-compat's libz by path when it is installed (a plain -lz would
+    bind the macOS SDK's stub, which sysconfig puts first), else the
+    system zlib by name.
+    """
+    if zng is not None:
+        include_dirs.insert(0, str(zng / "include"))
+        libz = _find_lib("z", [zng / "lib"])
+        if libz is not None:
+            extra_link_args.extend(_link_files(libz)["extra_link_args"])
+            return []
+        library_dirs.insert(0, str(zng / "lib"))
+    else:
+        include_dirs.extend(_resolve_include_dirs("zlib.h"))
+    return [_lib_name("z", "zlib")]
+
+
+def _link_libdeflate(prefix: Path, library_dirs, extra_link_args) -> list[str]:
+    """Add libdeflate at ``prefix`` to an extension's lists; return names.
+
+    By path where the library file is found (Windows ships an import
+    library, libdeflate.lib, or a static one, libdeflatestatic.lib).
+    """
+    lib = (_find_lib("deflate", [prefix / "lib"])
+           or _find_lib("deflatestatic", [prefix / "lib"]))
+    if lib is None:
+        library_dirs.insert(0, str(prefix / "lib"))
+        return ["deflate"]
+    extra_link_args.extend(_link_files(lib)["extra_link_args"])
+    return []
 
 
 def _build_deflate_extension() -> Extension:
@@ -1019,47 +960,12 @@ def _build_deflate_extension() -> Extension:
     No code changes on the .pyx side — both the compat layer and
     system zlib expose the same ``z*`` symbols.
     """
-    zng_compat_prefix = None
-    # Homebrew (macOS)
-    for cand in (Path("/opt/homebrew/opt/zlib-ng-compat"),
-                 Path("/usr/local/opt/zlib-ng-compat")):
-        if (cand / "include" / "zlib.h").exists() and (
-            cand / "lib" / "libz.dylib"
-        ).exists():
-            zng_compat_prefix = cand
-            break
-    # Linux: probe common conda + system paths
-    if zng_compat_prefix is None:
-        for cand in (Path(os.environ.get("CONDA_PREFIX", "")),
-                     Path("/usr/local"), Path("/usr")):
-            if str(cand) and (cand / "lib" / "pkgconfig"
-                              / "zlib-ng-compat.pc").exists():
-                zng_compat_prefix = cand
-                break
-
     include_dirs = [str(PKG_CODECS)]
     library_dirs = list(_lib_dirs_for_probes())
-    libraries = [_libname("z", "zlib")]
     extra_link_args: list[str] = []
     define_macros: list[tuple[str, str]] = []
-    if zng_compat_prefix is not None:
-        include_dirs.insert(0, str(zng_compat_prefix / "include"))
-        # macOS distutils prepends -L<SDK>/usr/lib before our paths,
-        # which makes a plain ``-lz`` resolve to the system zlib .tbd
-        # stub instead of our zlib-ng-compat replacement. Bypass by
-        # naming the dylib directly via extra_link_args (always
-        # absolute first match) and dropping the "-lz" flag.
-        compat_dylib = zng_compat_prefix / "lib" / (
-            "libz.dylib" if sys.platform == "darwin"
-            else "libz.so"
-        )
-        if compat_dylib.exists():
-            extra_link_args.append(str(compat_dylib))
-            libraries = []
-        else:
-            library_dirs.insert(0, str(zng_compat_prefix / "lib"))
-    else:
-        include_dirs.extend(_resolve_include_dirs("zlib.h"))
+    libraries = _link_zlib(_find_zlib_ng_compat(), include_dirs, library_dirs,
+                           extra_link_args)
 
     # libdeflate detection — preferred over zlib (any flavour) for
     # one-shot encode/decode. Probe Homebrew + system paths.
@@ -1067,32 +973,7 @@ def _build_deflate_extension() -> Extension:
     if ld_prefix is not None:
         include_dirs.insert(0, str(ld_prefix / "include"))
         define_macros.append(("OPENCODECS_HAVE_LIBDEFLATE", "1"))
-        # Same SDK-stub-dodging dance: pass the dylib by absolute path
-        # so distutils' implicit -L<SDK>/usr/lib doesn't beat us to
-        # it. On Linux just add -ldeflate and let the rpath handle it.
-        # On Windows the import-library file is libdeflate.lib (DLL
-        # build) or libdeflatestatic.lib (static). Prefer the import
-        # lib so we don't bloat the .pyd; the matching DLL must be
-        # alongside the .pyd at runtime (or on PATH).
-        if sys.platform == "darwin":
-            ld_dylib = ld_prefix / "lib" / "libdeflate.dylib"
-            if ld_dylib.exists():
-                extra_link_args.append(str(ld_dylib))
-            else:
-                library_dirs.insert(0, str(ld_prefix / "lib"))
-                libraries.append("deflate")
-        elif sys.platform == "win32":
-            library_dirs.insert(0, str(ld_prefix / "lib"))
-            # Prefer the import library (.lib paired with .dll).
-            if (ld_prefix / "lib" / "libdeflate.lib").exists():
-                libraries.append("libdeflate")
-            elif (ld_prefix / "lib" / "libdeflatestatic.lib").exists():
-                libraries.append("libdeflatestatic")
-            else:
-                libraries.append("deflate")
-        else:
-            library_dirs.insert(0, str(ld_prefix / "lib"))
-            libraries.append("deflate")
+        libraries += _link_libdeflate(ld_prefix, library_dirs, extra_link_args)
 
     return Extension(
         name="opencodecs.codecs._deflate",
@@ -1136,37 +1017,17 @@ def _find_libdeflate_prefix() -> Path | None:
         Path("/usr/local"),
         Path("/usr"),
     ])
-    # Linux multiarch layout: lib/<triple>/. Probe a few common triples.
-    posix_lib_subdirs = (
-        "lib",
-        "lib/x86_64-linux-gnu",
-        "lib/aarch64-linux-gnu",
-        "lib64",
-    )
     for c in candidates:
         if not str(c) or str(c) == ".":
             continue
-        # POSIX layout: <prefix>/include/libdeflate.h
-        if (c / "include" / "libdeflate.h").is_file() and any(
-            (c / s / name).exists()
-            for s in posix_lib_subdirs
-            for name in ("libdeflate.dylib", "libdeflate.so", "libdeflate.so.0")
-        ):
-            return c
-        # conda-Windows layout: <prefix>/Library/include/libdeflate.h
-        # + <prefix>/Library/lib/libdeflate.lib
-        if (c / "Library" / "include" / "libdeflate.h").is_file() and (
-            (c / "Library" / "lib" / "libdeflate.lib").exists()
-            or (c / "Library" / "lib" / "libdeflatestatic.lib").exists()
-        ):
-            return c / "Library"
-        # Upstream Windows release layout (extracted .zip):
-        # <prefix>/include/libdeflate.h + <prefix>/lib/libdeflate.lib.
-        if (c / "include" / "libdeflate.h").is_file() and (
-            (c / "lib" / "libdeflate.lib").exists()
-            or (c / "lib" / "libdeflatestatic.lib").exists()
-        ):
-            return c
+        # <prefix>/include/libdeflate.h with the library beside it, in any
+        # layout (see _LIB_SUBDIRS); conda-Windows nests it under Library/.
+        for base in _with_library(c):
+            if (base / "include" / "libdeflate.h").is_file() and (
+                _find_lib("deflate", _lib_dirs(base))
+                or _find_lib("deflatestatic", _lib_dirs(base))
+            ):
+                return base
     return None
 
 
@@ -1196,18 +1057,8 @@ def _build_png_ext() -> Extension:
                 or (Path(p) / "Library" / "lib" / "spng.lib").exists()
                 for p in (str(x) for x in _PROBE_PREFIXES))
     )
-    # Detect zlib-ng-compat the same way _build_deflate_extension does.
-    _zng_brew = (Path("/opt/homebrew/opt/zlib-ng-compat").is_dir()
-                 or Path("/usr/local/opt/zlib-ng-compat").is_dir())
-    _zng_linux = False
-    if not _zng_brew:
-        for cand in (Path(os.environ.get("CONDA_PREFIX", "")),
-                     Path("/usr/local"), Path("/usr")):
-            if str(cand) and (cand / "lib" / "pkgconfig"
-                              / "zlib-ng-compat.pc").exists():
-                _zng_linux = True
-                break
-    have_zlib_ng_compat = _zng_brew or _zng_linux
+    zng = _find_zlib_ng_compat()
+    have_zlib_ng_compat = zng is not None
     # libdeflate detection — if found, we'll patch the vendored
     # libspng to route its inner deflate calls through libdeflate's
     # one-shot API (~2x faster than zlib-ng for PNG encode).
@@ -1244,24 +1095,8 @@ def _build_png_ext() -> Extension:
     include_dirs = [str(PKG_CODECS), numpy.get_include(),
                     str(HERE / "3rdparty" / "libspng")]
     library_dirs = list(_lib_dirs_for_probes())
-    libraries: list[str] = []
     extra_link_args: list[str] = []
-    zng_compat_prefix = None
-    for cand in (Path("/opt/homebrew/opt/zlib-ng-compat"),
-                 Path("/usr/local/opt/zlib-ng-compat")):
-        if (cand / "include" / "zlib.h").exists() and (
-            cand / "lib" / "libz.dylib"
-        ).exists():
-            zng_compat_prefix = cand
-            break
-    if zng_compat_prefix is not None and sys.platform == "darwin":
-        include_dirs.insert(0, str(zng_compat_prefix / "include"))
-        extra_link_args.append(
-            str(zng_compat_prefix / "lib" / "libz.dylib")
-        )
-    else:
-        include_dirs.extend(_resolve_include_dirs("zlib.h"))
-        libraries = ["z" if not sys.platform == "win32" else "zlib"]
+    libraries = _link_zlib(zng, include_dirs, library_dirs, extra_link_args)
     # libdeflate fast path: patch the vendored libspng to route its
     # IDAT-compress call through libdeflate's one-shot API. ~2x faster
     # PNG encode end-to-end vs zlib-ng. Decode stays on zlib (still
@@ -1273,24 +1108,7 @@ def _build_png_ext() -> Extension:
     if have_libdeflate:
         include_dirs.insert(0, str(ld_prefix / "include"))
         define_macros.append(("SPNG_USE_LIBDEFLATE", "1"))
-        if sys.platform == "darwin":
-            ld_dylib = ld_prefix / "lib" / "libdeflate.dylib"
-            if ld_dylib.exists():
-                extra_link_args.append(str(ld_dylib))
-            else:
-                library_dirs.insert(0, str(ld_prefix / "lib"))
-                libraries.append("deflate")
-        elif sys.platform == "win32":
-            library_dirs.insert(0, str(ld_prefix / "lib"))
-            if (ld_prefix / "lib" / "libdeflate.lib").exists():
-                libraries.append("libdeflate")
-            elif (ld_prefix / "lib" / "libdeflatestatic.lib").exists():
-                libraries.append("libdeflatestatic")
-            else:
-                libraries.append("deflate")
-        else:
-            library_dirs.insert(0, str(ld_prefix / "lib"))
-            libraries.append("deflate")
+        libraries += _link_libdeflate(ld_prefix, library_dirs, extra_link_args)
     return Extension(
         name="opencodecs.codecs._png",
         sources=["src/opencodecs/codecs/_png.pyx", "3rdparty/libspng/spng.c"],
@@ -1362,31 +1180,13 @@ extensions = [
     Extension(
         name="opencodecs.codecs._zstd",
         sources=["src/opencodecs/codecs/_zstd.pyx"],
-        # The fused decode calls run the byte-plane loop in byteplanes.h,
-        # whose restrict pointers let clang vectorize it; gcc also needs
-        # -O3, as conda's default -O2 leaves it scalar (see _bytetools).
-        extra_compile_args=["-O3"] if sys.platform != "win32" else ["/O2"],
+        # -O3: see _EXTRA_OPTIMIZATION.
         include_dirs=[
             str(PKG_CODECS),
             *_resolve_include_dirs("zstd.h"),
         ],
         library_dirs=_lib_dirs_for_probes(),
-        libraries=(
-            []
-            if (_OC_USER_CACHE / "zstd" / "lib" / "libzstd.1.5.7.dylib").exists()
-               or (_OC_USER_CACHE / "zstd" / "lib" / "libzstd.so").exists()
-            else ["zstd"]
-        ),
-        extra_link_args=(
-            [
-                str(_OC_USER_CACHE / "zstd" / "lib" / (
-                    "libzstd.1.5.7.dylib" if sys.platform == "darwin"
-                    else "libzstd.so"
-                )),
-                f"-Wl,-rpath,{_OC_USER_CACHE / 'zstd' / 'lib'}",
-            ]
-            if (_OC_USER_CACHE / "zstd" / "lib").is_dir() else []
-        ),
+        **_cache_build(["zstd"], "zstd"),
         language="c",
     ),
     # lz4: links against system liblz4 (Homebrew on Mac, liblz4-dev on
@@ -1414,30 +1214,7 @@ extensions = [
             *_resolve_include_dirs("brotli/encode.h"),
         ],
         library_dirs=_lib_dirs_for_probes(),
-        libraries=(
-            []
-            if (_OC_USER_CACHE / "brotli" / "lib" / "libbrotlienc.1.1.0.dylib").exists()
-               or (_OC_USER_CACHE / "brotli" / "lib" / "libbrotlienc.so").exists()
-            else ["brotlienc", "brotlidec", "brotlicommon"]
-        ),
-        extra_link_args=(
-            [
-                str(_OC_USER_CACHE / "brotli" / "lib" / (
-                    "libbrotlienc.1.1.0.dylib" if sys.platform == "darwin"
-                    else "libbrotlienc.so"
-                )),
-                str(_OC_USER_CACHE / "brotli" / "lib" / (
-                    "libbrotlidec.1.1.0.dylib" if sys.platform == "darwin"
-                    else "libbrotlidec.so"
-                )),
-                str(_OC_USER_CACHE / "brotli" / "lib" / (
-                    "libbrotlicommon.1.1.0.dylib" if sys.platform == "darwin"
-                    else "libbrotlicommon.so"
-                )),
-                f"-Wl,-rpath,{_OC_USER_CACHE / 'brotli' / 'lib'}",
-            ]
-            if (_OC_USER_CACHE / "brotli" / "lib").is_dir() else []
-        ),
+        **_cache_build(["brotlienc", "brotlidec", "brotlicommon"], "brotli"),
         language="c",
     ),
     # blosc2: prefer the per-user cache build (c-blosc2 2.x — see
@@ -1454,25 +1231,7 @@ extensions = [
             *_resolve_include_dirs("blosc2.h"),
         ],
         library_dirs=_lib_dirs_for_probes(),
-        libraries=(
-            []
-            if any(
-                (_OC_USER_CACHE / "libs" / "lib" / fname).exists()
-                for fname in ("libblosc2.7.dylib", "libblosc2.so.7",
-                              "libblosc2.dylib", "libblosc2.so")
-            )
-            else ["blosc2"]
-        ),
-        extra_link_args=(
-            (lambda candidates: next(
-                ([str(p)] for p in candidates if p.exists()),
-                [],
-            ))([
-                _OC_USER_CACHE / "libs" / "lib" / fname
-                for fname in ("libblosc2.7.dylib", "libblosc2.so.7",
-                              "libblosc2.dylib", "libblosc2.so")
-            ])
-        ),
+        **_cache_build(["blosc2"], "libs"),
         language="c",
     ),
     # blosc2 NDim (b2nd): exposes c-blosc2's multidimensional layer via a
@@ -1491,26 +1250,8 @@ extensions = [
             *_resolve_include_dirs("b2nd.h"),
         ],
         library_dirs=_lib_dirs_for_probes(),
-        libraries=(
-            []
-            if any(
-                (_OC_USER_CACHE / "libs" / "lib" / fname).exists()
-                for fname in ("libblosc2.7.dylib", "libblosc2.so.7",
-                              "libblosc2.dylib", "libblosc2.so")
-            )
-            else ["blosc2"]
-        ),
+        **_cache_build(["blosc2"], "libs"),
         define_macros=[("NPY_NO_DEPRECATED_API", "NPY_1_7_API_VERSION")],
-        extra_link_args=(
-            (lambda candidates: next(
-                ([str(p)] for p in candidates if p.exists()),
-                [],
-            ))([
-                _OC_USER_CACHE / "libs" / "lib" / fname
-                for fname in ("libblosc2.7.dylib", "libblosc2.so.7",
-                              "libblosc2.dylib", "libblosc2.so")
-            ])
-        ),
         language="c",
     ),
     # JPEG via libjpeg-turbo (TurboJPEG v3 API).
@@ -1588,7 +1329,7 @@ extensions = [
             ],
             library_dirs=_lib_dirs_for_probes(),
             # conda-forge ships isa-l.lib on Windows, libisal.* on POSIX.
-            libraries=[_lib_link_name("isal", "isa-l") or "isal"],
+            libraries=[_lib_name("isal", "isa-l")],
             define_macros=[("NPY_NO_DEPRECATED_API", "NPY_1_7_API_VERSION")],
             language="c",
         )]
@@ -1660,8 +1401,8 @@ extensions = [
         # so the -DWEBP_BUILD_WEBPMUX=OFF that bench/build_codec_libs.sh
         # passes does not affect it (that flag gates the webpmux tool
         # and libwebpmux, which we do not link).
-        libraries=[_libname("webp", "libwebp"),
-                   _libname("webpdemux", "libwebpdemux")],
+        libraries=[_lib_name("webp", "libwebp"),
+                   _lib_name("webpdemux", "libwebpdemux")],
         define_macros=[("NPY_NO_DEPRECATED_API", "NPY_1_7_API_VERSION")],
         language="c",
     ),
@@ -1683,10 +1424,10 @@ extensions = [
         ],
         library_dirs=_lib_dirs_for_probes(),
         # conda-forge on Windows ships static libjxrglue.lib / libjpegxr.lib.
-        libraries=[_libname("jxrglue", "libjxrglue"), _libname("jpegxr", "libjpegxr")],
+        libraries=[_lib_name("jxrglue", "libjxrglue"), _lib_name("jpegxr", "libjpegxr")],
         define_macros=[
             ("NPY_NO_DEPRECATED_API", "NPY_1_7_API_VERSION"),
-            *([] if sys.platform == "win32" else [("__ANSI__", "1")]),
+            *([] if _WINDOWS else [("__ANSI__", "1")]),
             ("DISABLE_PERF_MEASUREMENT", "1"),
         ],
         language="c",
@@ -1751,13 +1492,7 @@ extensions = [
         name="opencodecs.codecs._bytetools",
         sources=["src/opencodecs/codecs/_bytetools.pyx"],
         include_dirs=[str(PKG_CODECS)],
-        # Byte-plane shuffles are strided byte loops that only pay when the
-        # compiler vectorizes them. conda's default CFLAGS build at -O2,
-        # where gcc's cheap-cost vectorizer leaves them scalar: measured on
-        # x86-64 Linux, the native encode was 1.4-1.7x SLOWER than a
-        # NumPy transpose at -O2. clang vectorizes at -O2 (arm64 macOS
-        # measured 6-10x faster than NumPy), so this only moves gcc.
-        extra_compile_args=["-O3"] if sys.platform != "win32" else ["/O2"],
+        # -O3: see _EXTRA_OPTIMIZATION.
         language="c",
     ),
     # Native TIFF IFD walker — pure-Python parsing logic in Cython for
@@ -1797,10 +1532,7 @@ extensions = [
         library_dirs=_lib_dirs_for_probes(),
         libraries=["cpcodec"],
         define_macros=[("NPY_NO_DEPRECATED_API", "NPY_1_7_API_VERSION")],
-        extra_link_args=(
-            [f"-Wl,-rpath,{_OC_USER_CACHE / 'pcodec' / 'lib'}"]
-            if (_OC_USER_CACHE / "pcodec" / "lib").is_dir() else []
-        ),
+        extra_link_args=_cache_rpath("pcodec"),
         language="c",
     ),
     # SZ3 (error-bounded lossy compressor): system SZ3c, or per-user
@@ -1820,10 +1552,7 @@ extensions = [
         # runtime even though the lib lives outside of standard search
         # paths. On Linux + cibuildwheel this becomes a no-op (the lib
         # is built to /cibw-jxl-prefix and bundled via auditwheel).
-        extra_link_args=(
-            [f"-Wl,-rpath,{_OC_USER_CACHE / 'sz3' / 'lib'}"]
-            if (_OC_USER_CACHE / "sz3" / "lib").is_dir() else []
-        ),
+        extra_link_args=_cache_rpath("sz3"),
         language="c",
     ),
     # GIF via giflib. Per-user cache build preferred (Homebrew's
@@ -1847,22 +1576,7 @@ extensions = [
             *_resolve_include_dirs("gif_lib.h"),
         ],
         library_dirs=_lib_dirs_for_probes(),
-        libraries=(
-            []
-            if (_OC_USER_CACHE / "giflib" / "lib" / "libgif.7.2.0.dylib").exists()
-               or (_OC_USER_CACHE / "giflib" / "lib" / "libgif.so").exists()
-            else ["gif"]
-        ),
-        extra_link_args=(
-            [
-                str(_OC_USER_CACHE / "giflib" / "lib" / (
-                    "libgif.7.2.0.dylib" if sys.platform == "darwin"
-                    else "libgif.so"
-                )),
-                f"-Wl,-rpath,{_OC_USER_CACHE / 'giflib' / 'lib'}",
-            ]
-            if (_OC_USER_CACHE / "giflib" / "lib").is_dir() else []
-        ),
+        **_cache_build(["gif"], "giflib"),
         define_macros=[("NPY_NO_DEPRECATED_API", "NPY_1_7_API_VERSION")],
         language="c",
     ),
@@ -1885,10 +1599,7 @@ extensions = [
         ],
         library_dirs=_lib_dirs_for_probes(),
         libraries=["brunslienc-c", "brunslidec-c"],
-        extra_link_args=(
-            [f"-Wl,-rpath,{_OC_USER_CACHE / 'brunsli' / 'lib'}"]
-            if (_OC_USER_CACHE / "brunsli" / "lib").is_dir() else []
-        ),
+        extra_link_args=_cache_rpath("brunsli"),
         language="c",
     ),
     # SPERR (wavelet-based error-bounded lossy compressor): system
@@ -1904,10 +1615,7 @@ extensions = [
         library_dirs=_lib_dirs_for_probes(),
         libraries=["SPERR"],
         define_macros=[("NPY_NO_DEPRECATED_API", "NPY_1_7_API_VERSION")],
-        extra_link_args=(
-            [f"-Wl,-rpath,{_OC_USER_CACHE / 'sperr' / 'lib'}"]
-            if (_OC_USER_CACHE / "sperr" / "lib").is_dir() else []
-        ),
+        extra_link_args=_cache_rpath("sperr"),
         language="c",
     ),
     # ZFP (lossy floating-point compression): system libzfp. The
@@ -1931,27 +1639,8 @@ extensions = [
         # bottle even when a per-user cached build exists. Pass the
         # absolute dylib path via extra_link_args when the cached lib
         # is present (same trick _lerc / _libjxl use).
-        libraries=(
-            []
-            if any(
-                (_OC_USER_CACHE / sub / "lib" / fname).exists()
-                for sub in ("libs", "zfp")
-                for fname in ("libzfp.1.dylib", "libzfp.so.1", "libzfp.so")
-            )
-            else ["zfp"]
-        ),
+        **_cache_build(["zfp"], "libs", "zfp"),
         define_macros=[("NPY_NO_DEPRECATED_API", "NPY_1_7_API_VERSION")],
-        extra_link_args=(
-            (lambda candidates: next(
-                ([str(p), f"-Wl,-rpath,{p.parent}"]
-                 for p in candidates if p.exists()),
-                [],
-            ))([
-                _OC_USER_CACHE / sub / "lib" / fname
-                for sub in ("libs", "zfp")
-                for fname in ("libzfp.1.dylib", "libzfp.so.1", "libzfp.so")
-            ])
-        ),
         language="c",
     ),
     # LERC (Esri Limited Error Raster Compression): per-user cache
@@ -1973,23 +1662,8 @@ extensions = [
             *_resolve_include_dirs("Lerc_c_api.h"),
         ],
         library_dirs=_lib_dirs_for_probes(),
-        libraries=(
-            []
-            if (_OC_USER_CACHE / "lerc" / "lib" / "libLerc.4.dylib").exists()
-               or (_OC_USER_CACHE / "lerc" / "lib" / "libLerc.so").exists()
-            else ["Lerc"]
-        ),
+        **_cache_build(["Lerc"], "lerc"),
         define_macros=[("NPY_NO_DEPRECATED_API", "NPY_1_7_API_VERSION")],
-        extra_link_args=(
-            [
-                str(_OC_USER_CACHE / "lerc" / "lib" / (
-                    "libLerc.4.dylib" if sys.platform == "darwin"
-                    else "libLerc.so"
-                )),
-                f"-Wl,-rpath,{_OC_USER_CACHE / 'lerc' / 'lib'}",
-            ]
-            if (_OC_USER_CACHE / "lerc" / "lib").is_dir() else []
-        ),
         language="c",
     ),
     # AEC (CCSDS 121.0-B-2 adaptive entropy coding): system libaec.
@@ -2192,6 +1866,41 @@ if _cache_rpath_args:
                 existing.append(flag)
         ext.extra_link_args = existing
 
+#: Optimization beyond the build's defaults, by compiler family, which
+#: build_ext applies once the compiler is known. setuptools calls MSVC
+#: (and clang-cl) "msvc", and every other compiler takes GCC-style flags:
+#: the choice is the compiler's, not the operating system's (MinGW on
+#: Windows takes -O3, clang-cl takes /O2).
+_O3 = {"unix": ["-O3"], "msvc": ["/O2"]}
+_EXTRA_OPTIMIZATION = {
+    # Byte-plane shuffles are strided byte loops that only pay when the
+    # compiler vectorizes them. conda's default CFLAGS build at -O2,
+    # where gcc's cheap-cost vectorizer leaves them scalar: measured on
+    # x86-64 Linux, the native encode was 1.4-1.7x SLOWER than a NumPy
+    # transpose at -O2. clang vectorizes at -O2 (arm64 macOS measured
+    # 6-10x faster than NumPy), so this only moves gcc.
+    "opencodecs.codecs._bytetools": _O3,
+    # The fused decode calls run the byte-plane loop in byteplanes.h,
+    # whose restrict pointers let clang vectorize it; gcc also needs -O3
+    # for the reason above.
+    "opencodecs.codecs._zstd": _O3,
+    # The gain-map and SDR-base kernels must auto-vectorize (NEON on
+    # Apple Silicon, AVX2 on x86): the polynomial log2 in
+    # _gain_map_kernel only beats numpy's vectorized log2 as SIMD. The
+    # two -fno- flags subtract the parts of -ffast-math that bite:
+    # -funsafe-math-optimizations lets GCC call libmvec's vectorized
+    # _ZGV* variants, which fail to link on Ubuntu and do not exist on
+    # aarch64, and -ffinite-math-only breaks the clip-to-[0,1] paths by
+    # assuming no NaN or Inf. FMA and reordering speed remain.
+    "opencodecs.codecs._uhdr": {
+        "unix": ["-O3", "-ffast-math", "-fno-finite-math-only",
+                 "-fno-unsafe-math-optimizations",
+                 "-fno-math-errno", "-fno-trapping-math"],
+        "msvc": ["/O2"],
+    },
+}
+
+
 class build_ext(_build_ext):
     """Custom build_ext that strips conflicting RPATHs on macOS so the
     vendored libjxl wins over Homebrew at runtime.
@@ -2204,9 +1913,17 @@ class build_ext(_build_ext):
     Strip the Homebrew RPATH from the built .so as a post-build step.
     """
 
+    def build_extensions(self):
+        family = "msvc" if self.compiler.compiler_type == "msvc" else "unix"
+        for ext in self.extensions:
+            extra = _EXTRA_OPTIMIZATION.get(ext.name, {}).get(family, [])
+            ext.extra_compile_args = list(ext.extra_compile_args or []) + extra
+        super().build_extensions()
+
     def run(self):
         super().run()
-        if not (sys.platform == "darwin" and using_vendored):
+        # install_name_tool edits Mach-O files; it exists only on macOS.
+        if not using_vendored or shutil.which("install_name_tool") is None:
             return
         for ext in self.extensions:
             so_path = self.get_ext_fullpath(ext.name)
