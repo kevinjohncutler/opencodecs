@@ -82,7 +82,14 @@ def http_server(sharded_zarr):
             self.end_headers()
             self.wfile.write(data)
 
-    httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    class Server(http.server.ThreadingHTTPServer):
+        # The default listen backlog is 5. A sharded read issues its range
+        # requests in parallel, and macOS resets a connection past the
+        # backlog where Linux queues it: about half the runs on a Mac
+        # failed with ConnectionResetError.
+        request_queue_size = 64
+
+    httpd = Server(("127.0.0.1", 0), Handler)
     port = httpd.server_address[1]
     thr = threading.Thread(target=httpd.serve_forever, daemon=True)
     thr.start()
