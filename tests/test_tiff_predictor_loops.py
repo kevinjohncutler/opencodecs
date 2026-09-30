@@ -1,11 +1,11 @@
 """The predictor loops against NumPy, for every layout they branch on.
 
-_undo_rows carries its running sums in 32-bit registers whatever the
-sample width, and keeps separate fast paths for 1, 3 and 4 samples per
-pixel; predictor 3's byte differencing goes through the same loop. Each
-branch is checked here against a reference written in NumPy, with values
-chosen so the sums wrap, which is where a wide accumulator could differ
-from a narrow one.
+_undo_rows carries one sample's running sum in a 32-bit register whatever
+the sample width, keeps separate fast paths for 1, 2, 3 and 4 samples per
+pixel, and walks one chain per sample for more; predictor 3's byte
+differencing goes through the same loop. Each branch is checked here
+against a reference written in NumPy, with values chosen so the sums
+wrap, which is where a wide accumulator could differ from a narrow one.
 """
 from __future__ import annotations
 

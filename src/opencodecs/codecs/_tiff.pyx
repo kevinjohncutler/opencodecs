@@ -826,13 +826,18 @@ cdef void _undo_rows(_uint_t* p0, Py_ssize_t rows, Py_ssize_t cols,
     uint16_t is truncated on every step of a loop that cannot run in
     parallel, which MSVC compiled 4x slower. That loop is unrolled by
     hand, because Apple Clang unrolls the 16-bit form but not the 32-bit
-    one. Three and four samples keep sums of the sample's own width:
-    GCC then adds a whole pixel at once (one paddb for four uint8
-    samples) and stores it once, where 32-bit sums cost a store per
-    sample and made a uint8 RGB read 2% slower. And the obvious
-    ``p[c] += p[c - samples]`` rereads the value it just stored, 3 to 6x
-    slower than a register on every compiler measured, so other sample
-    counts walk one sample's chain at a time.
+    one. Two to four samples keep sums of the sample's own width: GCC
+    then adds a whole pixel at once (one paddb for four uint8 samples)
+    and stores it once, where 32-bit sums cost a store per sample and
+    made uint8 RGB and RGBA reads 0.98x and 0.87x as fast. Each pixel is
+    loaded whole before any of it is stored. Loading, adding and storing
+    one sample at a time let MSVC fuse the three into an add to memory
+    and read the sum back from there for the next pixel, a trip through
+    the store buffer on every step. GCC compiles both orders to the same
+    instructions, and Clang only moves the loads earlier. And the
+    obvious ``p[c] += p[c - samples]`` rereads the value it just stored,
+    3 to 6x slower than a register on every compiler measured, so five
+    or more samples walk one sample's chain at a time, as two did.
 
     One-sample uint16 predictor 2 over a 4096 x 4096 image as 256 x 256
     tiles, ms (lower is better):
@@ -844,10 +849,25 @@ cdef void _undo_rows(_uint_t* p0, Py_ssize_t rows, Py_ssize_t cols,
       32-bit sum                  8.1   7.8        9.3  6.56
       32-bit sum, unrolled x4     6.96  6.79      10.1  5.41
       =========================  =====  ========  ====  ===========
+
+    Two to four samples over the same pixels as 256 x 256 tiles held in
+    cache, ms before and after loading each pixel first (two samples
+    were one chain per sample before), lower is better:
+
+      ===========  ===========  ===========  ===========  ===========
+      samples      MSVC 14.51   clang-cl     GCC          Apple Clang
+      ===========  ===========  ===========  ===========  ===========
+      uint8 x 2    20.1 / 11.4  12.1 / 11.3  18.7 / 10.5  15.1 / 6.44
+      uint8 x 3    27.6 / 17.0  14.3 / 14.2  12.1 / 12.2  8.97 / 8.59
+      uint8 x 4    30.0 / 20.6  4.55 / 4.59  4.39 / 4.43  9.77 / 9.72
+      uint16 x 2   18.1 / 11.4  12.1 / 4.56  15.4 / 4.44  12.2 / 6.01
+      uint16 x 3   26.8 / 17.1  10.9 / 11.0  9.96 / 9.96  9.40 / 9.04
+      uint16 x 4   30.1 / 21.2  6.06 / 5.94  4.88 / 4.75  7.71 / 7.71
+      ===========  ===========  ===========  ===========  ===========
     """
     cdef Py_ssize_t r, c, k
     cdef uint32_t s0
-    cdef _uint_t t0, t1, t2, t3
+    cdef _uint_t t0, t1, t2, t3, a0, a1, a2, a3
     cdef _uint_t* p
     for r in range(rows):
         p = p0 + r * row_elems
@@ -863,19 +883,28 @@ cdef void _undo_rows(_uint_t* p0, Py_ssize_t rows, Py_ssize_t cols,
             while c < cols:
                 s0 = s0 + p[c]; p[c] = <_uint_t> s0
                 c += 1
+        elif samples == 2:
+            t0 = p[0]; t1 = p[1]
+            for c in range(1, cols):
+                a0 = p[c * 2]; a1 = p[c * 2 + 1]
+                t0 = <_uint_t> (t0 + a0); t1 = <_uint_t> (t1 + a1)
+                p[c * 2] = t0; p[c * 2 + 1] = t1
         elif samples == 3:
             t0 = p[0]; t1 = p[1]; t2 = p[2]
             for c in range(1, cols):
-                t0 = <_uint_t> (t0 + p[c * 3]); p[c * 3] = t0
-                t1 = <_uint_t> (t1 + p[c * 3 + 1]); p[c * 3 + 1] = t1
-                t2 = <_uint_t> (t2 + p[c * 3 + 2]); p[c * 3 + 2] = t2
+                a0 = p[c * 3]; a1 = p[c * 3 + 1]; a2 = p[c * 3 + 2]
+                t0 = <_uint_t> (t0 + a0); t1 = <_uint_t> (t1 + a1)
+                t2 = <_uint_t> (t2 + a2)
+                p[c * 3] = t0; p[c * 3 + 1] = t1; p[c * 3 + 2] = t2
         elif samples == 4:
             t0 = p[0]; t1 = p[1]; t2 = p[2]; t3 = p[3]
             for c in range(1, cols):
-                t0 = <_uint_t> (t0 + p[c * 4]); p[c * 4] = t0
-                t1 = <_uint_t> (t1 + p[c * 4 + 1]); p[c * 4 + 1] = t1
-                t2 = <_uint_t> (t2 + p[c * 4 + 2]); p[c * 4 + 2] = t2
-                t3 = <_uint_t> (t3 + p[c * 4 + 3]); p[c * 4 + 3] = t3
+                a0 = p[c * 4]; a1 = p[c * 4 + 1]
+                a2 = p[c * 4 + 2]; a3 = p[c * 4 + 3]
+                t0 = <_uint_t> (t0 + a0); t1 = <_uint_t> (t1 + a1)
+                t2 = <_uint_t> (t2 + a2); t3 = <_uint_t> (t3 + a3)
+                p[c * 4] = t0; p[c * 4 + 1] = t1
+                p[c * 4 + 2] = t2; p[c * 4 + 3] = t3
         else:
             # One chain per sample, each walked with its sum in a register.
             for k in range(samples):
