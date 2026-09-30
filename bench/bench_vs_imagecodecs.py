@@ -190,9 +190,10 @@ def codec_pairs(lib: str) -> dict:
 LOSSLESS = {"zstd", "deflate", "lz4", "brotli", "blosc2", "lzma", "bz2", "snappy", "lzw",
             "packbits", "bitshuffle", "png", "qoi", "jpeg2k", "jpegls", "jxl_lossless",
             "lerc", "zfp"}
-# Lossy decodes where the two packages bundle different library versions
-# that round differently; the table marks them instead of failing them.
-ROUNDING = {"jxl_lossy:decode": "libjxl versions differ; no pixel differs by more than 1"}
+# Lossy decodes whose two builds round some values differently (by at most
+# one, measured); the table marks them instead of failing them.
+ROUNDING = {"jxl_lossy:decode": "both use libjxl 0.12.0; on Linux about a third of the lossy "
+                                "output values differ by 1, never more"}
 # Whose decode input is not an encoding of the input array itself.
 RAW_INPUT = {"bc1", "bc7"}
 

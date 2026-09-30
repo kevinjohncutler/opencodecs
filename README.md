@@ -376,8 +376,10 @@ threads where imagecodecs' ran on one.
 | BC1 | 2048 x 2048, decode to RGBA | decode | 4.49x (opencodecs threaded) | 1.69x (opencodecs threaded) | 2.30x (opencodecs threaded) |
 | BC7 | 2048 x 2048, decode to RGBA | decode | 11x (opencodecs threaded) | 15x (opencodecs threaded) | 4.16x (opencodecs threaded) |
 
-\* The two packages bundle different libjxl versions (0.12 and 0.11),
-which round a few pixels differently; none differs by more than 1.
+\* Both packages use libjxl 0.12.0, but on Linux their lossy decodes of
+the same file differ by 1 in about a third of the output values (never
+more); on macOS and Windows they are identical. Lossless decodes match
+everywhere.
 
 opencodecs is ahead where it runs its own kernels (LZW, PackBits, BC1 and
 BC7, and bitshuffle on Windows), builds PNG and deflate on libdeflate, and
