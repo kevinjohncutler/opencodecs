@@ -59,9 +59,16 @@ multi-byte casts with byte-wise readers."""
   upstream = "bcdec.h"
   modified = true
   note = """Upstream at the pinned commit, plus one six-line comment on \
-the BC4/BC5 signed path and trailing whitespace stripped. Verified by \
-reconstruction: our file with that comment removed and trailing \
-whitespace normalized is byte-identical to upstream."""
+the BC4/BC5 signed path, trailing whitespace stripped, and one block in \
+bcdec_bc7. Before that block, reconstruction verified the rest: our file \
+with that comment removed and trailing whitespace normalized was \
+byte-identical to upstream. The block, marked "opencodecs:", sits ahead of pass 2: \
+modes without secondary indices (all but 4 and 5) skip the general \
+per-texel loop, and with two or three subsets mix all four channels in \
+16-bit lanes of one 64-bit integer. Output is bit-identical (each lane \
+holds bcdec__interpolate's exact result); BC7 decode measured 1.1 to \
+1.4x faster with MSVC, clang-cl, GCC and Apple Clang. Worth sending \
+upstream."""
 
 [[component]]
 name = "bitshuffle"

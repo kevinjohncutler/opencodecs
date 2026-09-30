@@ -82,6 +82,25 @@ def test_decoder_matches_imagecodecs(fmt_id, fn, block_size, channels):
         np.testing.assert_array_equal(ours, ic)
 
 
+@pytest.mark.parametrize("mode", range(9))
+def test_bc7_every_mode_matches_imagecodecs(mode):
+    """A BC7 block's mode is its lowest set bit, so random bytes are mode 0
+    half the time and mode 7 once in 256 blocks: the test above rarely
+    reaches the later modes. Here every block has the mode's bit set and
+    the bits below it clear; 8 is the reserved all-zero byte. Modes
+    without secondary indices (all but 4 and 5) take our own interpolation
+    path, which imagecodecs' copy of bcdec does not have."""
+    rng = np.random.default_rng(20 + mode)
+    blocks = rng.integers(0, 256, size=(16 * 16, 16), dtype=np.uint8)
+    above = (0xFF << (mode + 1)) & 0xFF
+    blocks[:, 0] = (blocks[:, 0] & above) | ((1 << mode) & 0xFF)
+    data = blocks.tobytes()
+    ours = decode_bc7(data, width=64, height=64)
+    ic = imagecodecs.bcn_decode(
+        data, format=imagecodecs.BCN.FORMAT.BC7, shape=(64, 64, 4))
+    np.testing.assert_array_equal(ours, ic)
+
+
 def test_bc4_round_trip_random():
     """BC4 (single-channel) decoder produces a valid (H, W) array."""
     rng = np.random.default_rng(1)

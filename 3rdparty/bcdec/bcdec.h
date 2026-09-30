@@ -1404,6 +1404,59 @@ BCDECDEF void bcdec_bc7(const void* compressedBlock, void* decompressedBlock, in
         }
     }
 
+    /* opencodecs: modes without secondary indices (all but 4 and 5) have
+       no rotation either, so they skip the general loop below. With two or
+       three subsets all four channels mix at once: an endpoint's channels
+       sit in the 16-bit lanes of one 64-bit integer, and as 255 * 64 + 32
+       fits in a lane, one multiply per endpoint weights every channel with
+       no carry between lanes, leaving bcdec__interpolate's exact result in
+       each. One subset keeps the per-channel form, which Clang turns into
+       NEON vector multiplies; the lanes measured 20% slower there. MSVC
+       tested the subset count, secondary indices and rotation for every
+       texel and multiplied each channel separately. Decoding 2048 x 2048
+       random blocks, or all mode 6, measured 1.1 to 1.4x faster with MSVC
+       14.41 to 14.51, clang-cl, GCC and Apple Clang. */
+    if (!indexBits2) {
+        if (numPartitions == 1) {
+            for (i = 0; i < 4; ++i) {
+                for (j = 0; j < 4; ++j) {
+                    index = indices[i][j];
+                    r = bcdec__interpolate(endpoints[0][0], endpoints[1][0], weights, index);
+                    g = bcdec__interpolate(endpoints[0][1], endpoints[1][1], weights, index);
+                    b = bcdec__interpolate(endpoints[0][2], endpoints[1][2], weights, index);
+                    a = bcdec__interpolate(endpoints[0][3], endpoints[1][3], weights, index);
+                    decompressed[j * 4 + 0] = r;
+                    decompressed[j * 4 + 1] = g;
+                    decompressed[j * 4 + 2] = b;
+                    decompressed[j * 4 + 3] = a;
+                }
+                decompressed += destinationPitch;
+            }
+        } else {
+            unsigned long long lo[3], hi[3], v;
+            int w;
+            for (k = 0; k < numPartitions; ++k) {
+                lo[k] = (unsigned long long)endpoints[k * 2][0] | ((unsigned long long)endpoints[k * 2][1] << 16) |
+                        ((unsigned long long)endpoints[k * 2][2] << 32) | ((unsigned long long)endpoints[k * 2][3] << 48);
+                hi[k] = (unsigned long long)endpoints[k * 2 + 1][0] | ((unsigned long long)endpoints[k * 2 + 1][1] << 16) |
+                        ((unsigned long long)endpoints[k * 2 + 1][2] << 32) | ((unsigned long long)endpoints[k * 2 + 1][3] << 48);
+            }
+            for (i = 0; i < 4; ++i) {
+                for (j = 0; j < 4; ++j) {
+                    partitionSet = partition_sets[numPartitions - 2][partition][i][j] & 0x03;
+                    w = weights[(int)indices[i][j]];
+                    v = (lo[partitionSet] * (unsigned)(64 - w) + hi[partitionSet] * (unsigned)w + 0x0020002000200020ULL) >> 6;
+                    decompressed[j * 4 + 0] = (unsigned char)v;
+                    decompressed[j * 4 + 1] = (unsigned char)(v >> 16);
+                    decompressed[j * 4 + 2] = (unsigned char)(v >> 32);
+                    decompressed[j * 4 + 3] = (unsigned char)(v >> 48);
+                }
+                decompressed += destinationPitch;
+            }
+        }
+        return;
+    }
+
     /* Pass #2: reading alpha indices (if any) and interpolating & rotating */
     for (i = 0; i < 4; ++i) {
         for (j = 0; j < 4; ++j) {

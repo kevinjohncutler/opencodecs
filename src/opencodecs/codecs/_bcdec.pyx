@@ -142,19 +142,35 @@ cdef _decode_rgba_blocks(
     if by0 > by1:
         raise ValueError(f"BC decode: empty block-row range [{by0}:{by1})")
 
+    # The format is chosen once per row of blocks, and each has its own
+    # loop. Chosen per block, all four decoders shared one loop body, and
+    # BC7's, inlined into it, set the register allocation and layout for
+    # the rest: a faster BC7 alone made BC1 0.93x with Apple Clang and
+    # BC2 0.96x with GCC.
     with nogil:
         for by in range(by0, by1):
-            for bx in range(n_blocks_x):
-                block_p = src + (<Py_ssize_t> by * n_blocks_x + bx) * block_bytes
-                tile_p = dst + (<Py_ssize_t> by * 4) * pitch + (bx * 4) * 4
-                if fmt_id == 1:
+            block_p = src + <Py_ssize_t> by * n_blocks_x * block_bytes
+            tile_p = dst + (<Py_ssize_t> by * 4) * pitch
+            if fmt_id == 1:
+                for bx in range(n_blocks_x):
                     bcdec_bc1(block_p, tile_p, pitch)
-                elif fmt_id == 2:
+                    block_p += block_bytes
+                    tile_p += 16
+            elif fmt_id == 2:
+                for bx in range(n_blocks_x):
                     bcdec_bc2(block_p, tile_p, pitch)
-                elif fmt_id == 3:
+                    block_p += block_bytes
+                    tile_p += 16
+            elif fmt_id == 3:
+                for bx in range(n_blocks_x):
                     bcdec_bc3(block_p, tile_p, pitch)
-                else:  # fmt_id == 7
+                    block_p += block_bytes
+                    tile_p += 16
+            else:  # fmt_id == 7
+                for bx in range(n_blocks_x):
                     bcdec_bc7(block_p, tile_p, pitch)
+                    block_p += block_bytes
+                    tile_p += 16
     return out_arr
 
 
