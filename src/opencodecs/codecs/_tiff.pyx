@@ -820,13 +820,16 @@ cdef void _undo_rows(_uint_t* p0, Py_ssize_t rows, Py_ssize_t cols,
     exactly this, and predictor 3's first step is this on the row's bytes.
 
     Written so that no compiler has to guess. With one sample the running
-    sum lives in a 32-bit register whatever the sample width; only its
-    low bits are stored, and a sum modulo 2**32 agrees with one modulo
-    2**8 or 2**16 there, so the output is the same. A sum kept as
-    uint16_t is truncated on every step of a loop that cannot run in
-    parallel, which MSVC compiled 4x slower. That loop is unrolled by
-    hand, because Apple Clang unrolls the 16-bit form but not the 32-bit
-    one. Two to four samples keep sums of the sample's own width: GCC
+    sum lives in a register wider than the sample, 32 bits for uint8 and
+    uint16 and 64 for uint32; only its low bits are stored, and the wide
+    sum agrees with the sample's own wraparound there, so the output is
+    the same. A sum no wider than the sample is truncated on every step
+    of a loop that cannot run in parallel, and MSVC compiled it as an add
+    to memory and a read back: 4x slower for uint16, and for uint32 with
+    a 32-bit sum 14.9 against 5.4 ms over 256 x 256 tiles held in cache.
+    A 64-bit sum for uint8 made GCC's reads 2% slower, so each width
+    keeps the narrowest sum wider than itself. That loop is unrolled by
+    hand, because Apple Clang unrolls the 16-bit form but not a wider one. Two to four samples keep sums of the sample's own width: GCC
     then adds a whole pixel at once (one paddb for four uint8 samples)
     and stores it once, where 32-bit sums cost a store per sample and
     made uint8 RGB and RGBA reads 0.98x and 0.87x as fast. Each pixel is
@@ -867,11 +870,24 @@ cdef void _undo_rows(_uint_t* p0, Py_ssize_t rows, Py_ssize_t cols,
     """
     cdef Py_ssize_t r, c, k
     cdef uint32_t s0
+    cdef uint64_t w0
     cdef _uint_t t0, t1, t2, t3, a0, a1, a2, a3
     cdef _uint_t* p
     for r in range(rows):
         p = p0 + r * row_elems
-        if samples == 1:
+        if samples == 1 and _uint_t is uint32_t:
+            w0 = p[0]
+            c = 1
+            while c + 4 <= cols:
+                w0 = w0 + p[c]; p[c] = <_uint_t> w0
+                w0 = w0 + p[c + 1]; p[c + 1] = <_uint_t> w0
+                w0 = w0 + p[c + 2]; p[c + 2] = <_uint_t> w0
+                w0 = w0 + p[c + 3]; p[c + 3] = <_uint_t> w0
+                c += 4
+            while c < cols:
+                w0 = w0 + p[c]; p[c] = <_uint_t> w0
+                c += 1
+        elif samples == 1:
             s0 = p[0]
             c = 1
             while c + 4 <= cols:
@@ -906,12 +922,19 @@ cdef void _undo_rows(_uint_t* p0, Py_ssize_t rows, Py_ssize_t cols,
                 p[c * 4] = t0; p[c * 4 + 1] = t1
                 p[c * 4 + 2] = t2; p[c * 4 + 3] = t3
         else:
-            # One chain per sample, each walked with its sum in a register.
+            # One chain per sample, each walked with its sum in a register
+            # wider than the sample, as for one sample.
             for k in range(samples):
-                s0 = p[k]
-                for c in range(1, cols):
-                    s0 = s0 + p[c * samples + k]
-                    p[c * samples + k] = <_uint_t> s0
+                if _uint_t is uint32_t:
+                    w0 = p[k]
+                    for c in range(1, cols):
+                        w0 = w0 + p[c * samples + k]
+                        p[c * samples + k] = <_uint_t> w0
+                else:
+                    s0 = p[k]
+                    for c in range(1, cols):
+                        s0 = s0 + p[c * samples + k]
+                        p[c * samples + k] = <_uint_t> s0
 
 
 def undo_horizontal_u8(uint8_t[:, :, ::1] arr not None):
