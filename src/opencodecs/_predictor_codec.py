@@ -237,8 +237,10 @@ class DeltaCodec(Codec):
         # the same specialization argument as libspng's filter_scanline,
         # applied to a numpy call.
         kern = _delta_decode_kernel()
+        # A zero-length axis has nothing to sum, and reshape(-1, 0) cannot
+        # resolve its -1, so it takes the NumPy path like _predictor_into.
         if kern is not None and arr.dtype.kind in "iu" and \
-                arr.dtype.itemsize in (1, 2, 4, 8):
+                arr.dtype.itemsize in (1, 2, 4, 8) and arr.shape[axis]:
             # A writable, C-contiguous copy with the target axis last.
             # np.frombuffer hands back a read-only array, and the kernel
             # takes a writable memoryview, so this copy is required
@@ -348,7 +350,7 @@ class XorCodec(Codec):
         # same ~5x gap against a specialized loop.
         kern = _xor_decode_kernel()
         if kern is not None and arr.dtype.kind in "iu" and \
-                arr.dtype.itemsize in (1, 2, 4, 8):
+                arr.dtype.itemsize in (1, 2, 4, 8) and arr.shape[axis]:
             moved = np.moveaxis(arr, axis, -1)
             work = np.array(moved, dtype=arr.dtype, order="C", copy=True)
             kern(work.reshape(-1, work.shape[-1]), dist)

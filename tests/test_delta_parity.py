@@ -13,6 +13,8 @@ format means rather than an accident to be avoided.
 
 from __future__ import annotations
 
+import sys
+
 import numpy as np
 import pytest
 
@@ -191,20 +193,21 @@ def test_packints_rejects_a_short_buffer():
 
 
 @pytest.mark.parametrize("dtype", DTYPES)
-@pytest.mark.parametrize("dist", [1, 2, 5, 80])
+@pytest.mark.parametrize("dist", [1, 2, 5, 80, sys.maxsize])
 @pytest.mark.parametrize("width", [2, 3, 61, 62])
 def test_kernels_match_numpy_for_every_chain_layout(dtype, dist, width):
     """Both kernels keep the running value in a 64-bit register and store
     its low bits: dist=1 two elements per step, so odd and even widths
     take different tails, and dist > 1 one chain at a time. NumPy's
     wrapping accumulate is the reference, for signed types, XOR included,
-    and a stride longer than the row."""
+    and strides longer than the row, up to one where start + dist would
+    overflow a signed index."""
     from opencodecs.codecs._bytetools import delta_decode_inplace, xor_decode_inplace
     info = np.iinfo(dtype)
     rng = np.random.default_rng(dist)
     a = rng.integers(info.min, info.max, (4, width), dtype=dtype, endpoint=True)
     want_sum, want_xor = a.copy(), a.copy()
-    for k in range(dist):
+    for k in range(min(dist, width)):
         want_sum[:, k::dist] = np.cumsum(a[:, k::dist], axis=1, dtype=dtype)
         want_xor[:, k::dist] = np.bitwise_xor.accumulate(a[:, k::dist], axis=1)
     got = a.copy()
@@ -213,3 +216,15 @@ def test_kernels_match_numpy_for_every_chain_layout(dtype, dist, width):
     got = a.copy()
     xor_decode_inplace(got, dist)
     np.testing.assert_array_equal(got, want_xor)
+
+
+@pytest.mark.parametrize("name", ["delta", "xor"])
+@pytest.mark.parametrize("shape,axis", [((0,), -1), ((3, 0), -1), ((0, 3), 0), ((2, 0, 4), 1)])
+def test_a_zero_length_predictor_axis_round_trips(name, shape, axis):
+    """Encode of an empty axis succeeded; decode raised in the compiled
+    path, which reshaped to (-1, 0)."""
+    codec = oc.get_codec(name)
+    a = np.zeros(shape, np.uint16)
+    enc = codec.encode(a, axis=axis)
+    back = codec.decode(enc, dtype=np.uint16, shape=shape, axis=axis)
+    assert np.asarray(back).shape == shape

@@ -18,11 +18,26 @@ from cpython.bytes cimport PyBytes_FromStringAndSize, PyBytes_AsString
 from libc.stdint cimport uint8_t, uint32_t, uint64_t
 cimport cython
 
+cdef extern from "Python.h":
+    const Py_ssize_t PY_SSIZE_T_MAX
+
 cdef extern from "byteplanes.h" nogil:
     void oc_shuffle(uint8_t* dst, const uint8_t* src, size_t plane,
                     size_t count, size_t k)
     void oc_unshuffle(uint8_t* dst, const uint8_t* src, size_t plane,
                       size_t count, size_t k)
+
+
+cdef Py_ssize_t _plane_bytes(Py_ssize_t itemsize, Py_ssize_t n_elements) except -1:
+    """itemsize * n_elements, refusing arguments whose product would not
+    fit. A product that wrapped could equal len(data) and let the length
+    check pass while the kernels walked n_elements far past the buffers."""
+    if itemsize < 1:
+        raise ValueError(f"itemsize must be >= 1, got {itemsize}")
+    if n_elements < 0 or n_elements > PY_SSIZE_T_MAX // itemsize:
+        raise ValueError(f"n_elements must be in [0, {PY_SSIZE_T_MAX // itemsize}] "
+                         f"for itemsize {itemsize}, got {n_elements}")
+    return itemsize * n_elements
 
 
 def byteshuffle_encode(data, int itemsize, Py_ssize_t n_elements, *, out=None):
@@ -50,11 +65,10 @@ def byteshuffle_encode(data, int itemsize, Py_ssize_t n_elements, *, out=None):
         uint8_t* dp
         Py_ssize_t n = n_elements
         Py_ssize_t k = itemsize
-        Py_ssize_t total = k * n
+        Py_ssize_t total
         bytes out_bytes
 
-    if itemsize < 1:
-        raise ValueError(f"itemsize must be >= 1, got {itemsize}")
+    total = _plane_bytes(itemsize, n_elements)
     try:
         src = data
     except (TypeError, ValueError, BufferError):
@@ -132,11 +146,10 @@ def byteshuffle_decode(data, int itemsize, Py_ssize_t n_elements, *, out=None):
         uint8_t* dp
         Py_ssize_t n = n_elements
         Py_ssize_t k = itemsize
-        Py_ssize_t total = k * n
+        Py_ssize_t total
         bytes out_bytes
 
-    if itemsize < 1:
-        raise ValueError(f"itemsize must be >= 1, got {itemsize}")
+    total = _plane_bytes(itemsize, n_elements)
 
     try:
         src = data
@@ -290,7 +303,9 @@ def delta_decode_inplace(delta_t[:, ::1] arr, Py_ssize_t dist=1):
     """
     cdef Py_ssize_t rows = arr.shape[0]
     cdef Py_ssize_t n = arr.shape[1]
-    if n < 2 or dist < 1:
+    if n < 2 or dist < 1 or dist >= n:
+        # dist >= n: no element has one dist before it, and start + dist
+        # would overflow for a dist near PY_SSIZE_T_MAX.
         return
     with nogil:
         if dist == 1:
@@ -309,7 +324,9 @@ def xor_decode_inplace(delta_t[:, ::1] arr, Py_ssize_t dist=1):
     """
     cdef Py_ssize_t rows = arr.shape[0]
     cdef Py_ssize_t n = arr.shape[1]
-    if n < 2 or dist < 1:
+    if n < 2 or dist < 1 or dist >= n:
+        # dist >= n: no element has one dist before it, and start + dist
+        # would overflow for a dist near PY_SSIZE_T_MAX.
         return
     with nogil:
         if dist == 1:
