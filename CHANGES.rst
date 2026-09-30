@@ -23,7 +23,7 @@ published 0.4.0 wheels with 0.4.1's, each version's CI build: fresh
 processes, both versions alternating in shuffled order with 0.4.0 run a
 second time as a control, identical output required, on a 20-core
 Apple silicon Mac, a 64-core x86-64 Linux workstation (pinned to one
-core) and a 4-core x86-64 Windows laptop. The README has the full table.
+core) and a 4-core x86-64 Windows laptop.
 
 - **Delta and XOR decode keep their running values in registers**, and
   distances 2, 3 and 4 (gray and alpha, RGB, RGBA) walk every chain in

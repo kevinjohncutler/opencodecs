@@ -4,6 +4,23 @@ Performance setpoints + regression harness for the codec wrappers we
 ship. Locks in the perf wins we've measured against `imagecodecs` so
 future commits can't silently regress them.
 
+## The README's imagecodecs table
+
+`bench_vs_imagecodecs.py` produces the "Codecs against imagecodecs" table
+in the top-level README: every codec operation at matching settings, one
+library per fresh process, both alternating, identical decoded output
+required. Run it on each platform with the package under test installed,
+then render:
+
+```bash
+python bench/bench_vs_imagecodecs.py run --rounds 5 --data /tmp/ocic \
+    --out bench/results/vs_imagecodecs/mac.json
+python bench/bench_vs_imagecodecs.py table Mac=bench/results/vs_imagecodecs/mac.json \
+    Linux=bench/results/vs_imagecodecs/linux.json Windows=bench/results/vs_imagecodecs/windows.json
+```
+
+Rerun it for each release against the latest imagecodecs.
+
 ## Quick start
 
 ```bash

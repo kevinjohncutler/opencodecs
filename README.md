@@ -307,170 +307,89 @@ with the 0.4.0 wheel (0.4.1 against 0.4.0 under the same conditions: 0.98x
 and 1.01x); 0.4.0's table, measured on a local build, showed 1.1x and 1.0x
 for them.
 
-### 0.4.1 against 0.4.0
+### Codecs against imagecodecs
 
-0.4.1 brings Windows up to the speed 0.4.0 reached on macOS and Linux, and
-speeds up several codecs everywhere. Each column compares the published
-0.4.0 wheel with 0.4.1's, both built by CI for that platform. Every
-sample is a fresh process, the two versions alternate in shuffled order
-with 0.4.0 run a second time as a control, and both must return identical
-output. Medians in milliseconds, lower is better; the speedup is the 0.4.0
-time over the 0.4.1 time. Hosts: a 20-core Apple silicon Mac, a 64-core
-x86-64 Linux workstation pinned to one core (so it has no default-threads
-figures), and a 4-core x86-64 Windows laptop.
+Each row is one codec operation at the same settings in both packages:
+opencodecs 0.4.1 against imagecodecs 2026.8.16, each otherwise called with
+its defaults, on a 20-core Apple silicon Mac, a 64-core x86-64 Linux
+workstation and a 4-core x86-64 Windows laptop. Each cell is how many times
+faster opencodecs is (imagecodecs' time over opencodecs'), the median over
+fresh processes that alternate the two packages; below 1.00x, imagecodecs
+is faster. Both decoders read the same bitstream and must return identical
+output, and each encoder's output must decode back to its input where the
+setting is lossless. The input is a 4096 x 4096 uint16 image with smooth
+structure and noise (32 MB as bytes, 8 MB for lzma and bz2, 16 MB as uint8
+for LZW and PackBits) and 2048 x 2048 crops of it as RGB uint8, uint16 and
+float32. "(opencodecs threaded)" marks a default call that ran on several
+threads where imagecodecs' ran on one.
 
-| Workload | Mac 0.4.0 to 0.4.1 (ms) | Mac | Linux 0.4.0 to 0.4.1 (ms) | Linux | Windows 0.4.0 to 0.4.1 (ms) | Windows |
-|---|---:|---:|---:|---:|---:|---:|
-| **TIFF reads, 4096 x 4096, one thread (`numthreads=1`); tiles 256 x 256, strips 64 rows** | | | | | | |
-| uint16, LZW with predictor | 114 to 64.5 | 1.77x | 165 to 86.9 | 1.90x | 279 to 136 | 2.06x |
-| uint16, deflate with predictor | 71.7 to 69.8 | 1.03x | 89.6 to 88.8 | 1.01x | 128 to 106 | 1.21x |
-| uint8, deflate with predictor | 18.1 to 17.0 | 1.06x | 23.0 to 22.2 | 1.04x | 47.6 to 27.4 | 1.74x |
-| uint32, deflate with predictor | 99.2 to 95.5 | 1.04x | 121 to 118 | 1.02x | 169 to 170 | 0.99x |
-| gray + alpha uint8, deflate with predictor | 128 to 75.7 | 1.69x | 113 to 94.4 | 1.19x | 134 to 118 | 1.13x |
-| RGB uint8, deflate with predictor | 112 to 111 | 1.00x | 159 to 142 | 1.12x | 189 to 179 | 1.06x |
-| RGBA uint8, deflate with predictor | 125 to 127 | 0.99x | 151 to 151 | 1.00x | 209 to 211 | 0.99x |
-| RGB uint16, deflate with predictor | 209 to 206 | 1.02x | 252 to 252 | 1.00x | 323 to 313 | 1.03x |
-| float32, deflate with floating-point predictor | 255 to 132 | 1.93x | 238 to 149 | 1.60x | 286 to 201 | 1.42x |
-| uint16 strips, deflate with predictor | 67.6 to 67.0 | 1.01x | 86.0 to 85.3 | 1.01x | 117 to 96.7 | 1.21x |
-| uint16 strips, uncompressed | 1.66 to 1.67 | 1.00x | 9.25 to 9.20 | 1.01x | 13.7 to 14.2 | 0.97x |
-| **TIFF reads, default threads** | | | | | | |
-| uint16 tiles, LZW with predictor | 8.61 to 5.62 | 1.53x |  |  | 73.6 to 41.6 | 1.77x |
-| uint16 tiles, deflate with predictor | 6.06 to 5.95 | 1.02x |  |  | 35.7 to 31.3 | 1.14x (control 1.05x) |
-| uint16 strips, uncompressed | 1.28 to 1.22 | 1.04x |  |  | 9.65 to 9.61 | 1.00x |
-| **Codecs, one call on one thread** | | | | | | |
-| LZW decode, 16 MB uint8 | 56.9 to 19.3 | 2.96x | 78.9 to 25.8 | 3.06x | 106 to 38.5 | 2.77x |
-| LZW encode, 16 MB uint8 | 104 to 103 | 1.01x | 108 to 108 | 1.00x | 128 to 134 | 0.96x |
-| PackBits decode, 16 MB | 12.7 to 12.7 | 1.00x | 9.18 to 9.07 | 1.01x | 17.0 to 16.8 | 1.01x |
-| BC7 decode, 2048 x 2048, random blocks | 15.4 to 13.4 | 1.15x | 37.0 to 28.4 | 1.30x | 64.9 to 50.3 | 1.29x |
-| BC7 decode, 2048 x 2048, mode 6 | 10.7 to 6.75 | 1.59x | 25.3 to 20.1 | 1.26x | 52.5 to 39.8 | 1.32x |
-| BC1 decode, 2048 x 2048 | 2.85 to 2.97 | 0.96x | 3.54 to 3.29 | 1.08x | 10.2 to 9.60 | 1.06x |
-| BC3 decode, 2048 x 2048 | 4.07 to 4.18 | 0.97x | 6.54 to 6.47 | 1.01x | 15.2 to 13.8 | 1.10x |
-| Unpack 16 M 4-bit samples | 38.5 to 13.1 | 2.95x | 38.6 to 16.8 | 2.30x | 88.2 to 27.9 | 3.16x |
-| Unpack 16 M 12-bit samples | 77.2 to 33.9 | 2.28x | 70.6 to 28.6 | 2.47x | 146 to 30.9 | 4.73x |
-| Unpack 16 M 24-bit samples | 117 to 67.8 | 1.72x | 107 to 59.7 | 1.80x | 226 to 112 | 2.01x |
-| Delta decode, uint8, distance 1 | 16.8 to 15.8 | 1.06x | 15.9 to 14.8 | 1.07x | 79.2 to 15.5 | 5.10x |
-| Delta decode, uint16, distance 1 | 5.59 to 5.41 | 1.03x | 5.46 to 5.05 | 1.08x | 26.4 to 5.76 | 4.58x |
-| XOR decode, uint16, distance 1 | 5.66 to 5.32 | 1.06x | 5.45 to 5.04 | 1.08x | 26.6 to 6.64 | 4.01x |
-| Delta decode, uint8, distance 2 (gray + alpha) | 15.2 to 6.68 | 2.28x | 55.6 to 9.16 | 6.07x | 52.4 to 10.4 | 5.05x |
-| Delta decode, uint8, distance 3 (RGB) | 22.9 to 10.6 | 2.16x | 83.4 to 12.4 | 6.71x | 78.0 to 17.8 | 4.40x (control 0.95x) |
-| XOR decode, uint8, distance 3 (RGB) | 22.9 to 9.94 | 2.30x | 83.3 to 12.5 | 6.69x | 79.2 to 17.9 | 4.42x |
-| Delta decode, uint16, distance 3 (RGB) | 23.0 to 10.2 | 2.25x | 83.8 to 12.8 | 6.54x | 79.5 to 19.1 | 4.17x |
-| Delta decode, uint8, distance 4 (RGBA) | 30.8 to 12.2 | 2.53x | 111 to 16.8 | 6.60x | 105 to 21.3 | 4.95x |
-| Byte unshuffle, 2-byte items, 32 MB | 1.06 to 1.06 | 1.00x | 19.8 to 19.9 | 0.99x | 16.4 to 8.62 | 1.90x |
-| Byte shuffle, 4-byte items, 32 MB | 10.4 to 1.09 | 9.56x | 35.2 to 22.9 | 1.54x | 23.4 to 11.7 | 2.01x |
-| Byte unshuffle, 8-byte items, 32 MB | 10.5 to 1.90 | 5.55x | 38.2 to 20.9 | 1.83x | 26.2 to 15.6 | 1.68x |
-| Bitshuffle encode, 2-byte items, 32 MB | 7.84 to 7.85 | 1.00x | 29.0 to 29.1 | 1.00x | 38.3 to 16.7 | 2.29x |
-| Bitshuffle decode, 2-byte items, 32 MB | 7.97 to 7.97 | 1.00x | 33.9 to 33.6 | 1.01x | 36.9 to 21.4 | 1.73x |
-| CRC-32C, 32 MB | 83.6 to 83.5 | 1.00x | 64.9 to 64.9 | 1.00x | 66.7 to 65.7 | 1.01x |
+| Codec | Settings | Operation | Mac | Linux | Windows |
+|---|---|---|---:|---:|---:|
+| **Compression** | | | | | |
+| zstd | level 3 | encode | 0.95x | 1.11x | 1.08x |
+| zstd | level 3 | decode | 0.97x | 0.86x | 0.78x |
+| deflate | zlib stream, level 6 | encode | 2.69x | 2.59x | 2.65x |
+| deflate | zlib stream, level 6 | decode | 1.89x | 1.25x | 1.71x |
+| lz4 | frame format, default level | encode | 1.00x | 0.98x | 1.01x |
+| lz4 | frame format, default level | decode | 1.25x | 1.10x | 1.01x |
+| brotli | level 4 | encode | 0.93x | 0.96x | 1.00x |
+| brotli | level 4 | decode | 1.02x | 0.92x | 0.93x |
+| blosc2 | zstd, level 5, byte shuffle | encode | 0.90x | 0.97x | 0.91x |
+| blosc2 | zstd, level 5, byte shuffle | decode | 0.87x | 0.99x | 0.86x |
+| lzma | level 6 | encode | 0.91x | 0.97x | 1.02x |
+| lzma | level 6 | decode | 0.98x | 0.99x | 0.85x |
+| bz2 | level 9 | encode | 1.00x | 1.01x | 1.00x |
+| bz2 | level 9 | decode | 1.00x | 1.00x | 0.99x |
+| snappy |  | encode | 1.00x | 0.92x | 0.99x |
+| snappy |  | decode | 1.25x | 0.97x | 0.99x |
+| **TIFF compression** | | | | | |
+| LZW | TIFF flavor | encode | 1.33x | 1.35x | 1.45x |
+| LZW | TIFF flavor | decode | 3.34x | 2.97x | 2.91x |
+| PackBits |  | decode | 3.27x | 2.69x | 1.54x |
+| **Filters** | | | | | |
+| delta | uint16, distance 1 | decode | 1.10x | 1.15x | 1.07x |
+| XOR | uint16, distance 1 | decode | 1.09x | 1.05x | 0.92x |
+| bitshuffle | 2-byte items | encode | 1.00x | 1.14x | 1.86x |
+| bitshuffle | 2-byte items | decode | 1.00x | 1.13x | 1.76x |
+| packed integers | 12-bit into uint16 | decode | 1.17x | 0.82x | 2.64x |
+| **Image formats** | | | | | |
+| PNG | RGB uint8, level 6 | encode | 3.46x | 3.54x | 1.15x |
+| PNG | RGB uint8, level 6 | decode | 1.70x | 1.19x | 0.79x |
+| JPEG | RGB uint8, quality 90 | encode | 2.68x | 4.16x | 0.97x |
+| JPEG | RGB uint8, quality 90 | decode | 1.59x | 1.49x | 0.99x |
+| WebP | RGB uint8, lossy quality 75, method 4 | encode | 0.92x | 0.89x | 0.99x |
+| WebP | RGB uint8, lossy quality 75, method 4 | decode | 0.95x | 0.81x | 0.98x |
+| QOI | RGB uint8 | encode | 1.00x | 0.97x | 1.02x |
+| QOI | RGB uint8 | decode | 1.01x | 0.94x | 0.97x |
+| JPEG 2000 | uint16, lossless | encode | 8.06x (opencodecs threaded) | 19x (opencodecs threaded) | 2.71x (opencodecs threaded) |
+| JPEG 2000 | uint16, lossless | decode | 7.60x (opencodecs threaded) | 16x (opencodecs threaded) | 2.65x (opencodecs threaded) |
+| JPEG-LS | uint16, lossless | encode | 0.95x | 1.01x | 1.10x |
+| JPEG-LS | uint16, lossless | decode | 0.97x | 0.83x | 0.99x |
+| JPEG XL | RGB uint8, distance 1, effort 5 | encode | 5.52x (opencodecs threaded) | 3.46x (opencodecs threaded) | 3.38x (opencodecs threaded) |
+| JPEG XL | RGB uint8, distance 1, effort 5 | decode | 5.03x (opencodecs threaded) | 3.59x (opencodecs threaded) * | 3.82x (opencodecs threaded) |
+| JPEG XL | uint16, lossless, effort 3 | encode | 8.68x (opencodecs threaded) | 3.61x (opencodecs threaded) | 3.00x (opencodecs threaded) |
+| JPEG XL | uint16, lossless, effort 3 | decode | 6.51x (opencodecs threaded) | 12x (opencodecs threaded) | 3.81x (opencodecs threaded) |
+| LERC | uint16, lossless | encode | 1.27x | 1.20x | 1.00x |
+| LERC | uint16, lossless | decode | 0.91x | 0.79x | 0.97x |
+| ZFP | float32, reversible | encode | 0.73x | 0.97x | 0.70x |
+| ZFP | float32, reversible | decode | 0.95x | 0.83x | 1.04x |
+| BC1 | 2048 x 2048, decode to RGBA | decode | 4.49x (opencodecs threaded) | 1.69x (opencodecs threaded) | 2.30x (opencodecs threaded) |
+| BC7 | 2048 x 2048, decode to RGBA | decode | 11x (opencodecs threaded) | 15x (opencodecs threaded) | 4.16x (opencodecs threaded) |
 
-The speed changes are the same code on every operating system and
-compiler, written in a form each of them compiles well, with two
-exceptions. Bitshuffle's build guard now also recognizes MSVC, which
-never defines `__SSE2__`, so MSVC takes the SSE2 path GCC and Clang
-already took. And uncompressed strips read while other reads are in
-flight are copied from the file mapping on Windows, as on macOS, because
-many threads reading one file contend in Windows' file cache; Linux still
-reads. That choice is one named constant in `core/io.py`. Windows gains most where MSVC had compiled the old
-forms worst: delta decode at distance 1, where it re-read running sums from
-memory; bitshuffle, which it never took down the SSE2 path; 2-byte
-shuffling, whose byte loops it does not vectorize; and the uint8 and uint16
-predictor reads. The [changelog](CHANGES.rst) says what changed in each
-row. The rows below 1.00x, all within 4% of 0.4.0, are code this release
-rewrote (LZW encode, the BC1 and BC3 loops, the RGBA and uint32
-predictors, 2-byte unshuffle, and Windows' one-thread uncompressed strip
-read, which now checks that each part it reopens is still the file being
-read); the same changes measured level or faster on the builds used
-during development. Two Windows cells show their control, 0.4.0 against
-itself, where it differed from 1.00x by 5%.
+\* The two packages bundle different libjxl versions (0.12 and 0.11),
+which round a few pixels differently; none differs by more than 1.
 
-### 0.3.0 against 0.2.0
+opencodecs is ahead where it runs its own kernels (LZW, PackBits, BC1 and
+BC7, and bitshuffle on Windows), builds PNG and deflate on libdeflate, and
+decodes JPEG 2000 and JPEG XL on several threads by default. Where both
+packages wrap the same library, some rows trail: zstd decode, blosc2,
+brotli, WebP, LERC decode and ZFP on most platforms, JPEG-LS and
+packed-integer decode on Linux, and PNG, lzma and XOR decode on Windows.
+No other row is more than 9% behind. Regenerate the table with
+`bench/bench_vs_imagecodecs.py`; the per-run medians are in
+`bench/results/vs_imagecodecs/`.
 
-0.3.0 is mostly a speed release. Each row below ran both versions in fresh
-processes on the same inputs, alternating which went first, and counts only
-where both returned identical pixels. Medians in milliseconds, on a 20-core
-Apple silicon Mac and a 64-core x86-64 Linux workstation.
-
-| Workload | Mac 0.2.0 | Mac 0.3.0 | Mac speedup | Linux 0.2.0 | Linux 0.3.0 | Linux speedup |
-|---|---:|---:|---:|---:|---:|---:|
-| CZI | | | | | | |
-| Open a whole-slide file | 77.6 | 27.9 | 2.8x | 88.4 | 48.7 | 1.8x |
-| Open it and read the first crop | 255 | 39.1 | 6.5x | 267 | 58.7 | 4.6x |
-| Build the pyramid reader | 174 | 3.4 | 51.1x | 164 | 4.7 | 35.0x |
-| Read a 20 x 20 tile mosaic | 23.9 | 10.1 | 2.4x | 55.8 | 18.4 | 3.0x |
-| Small crops of the mosaic | 69.5 | 26.6 | 2.6x | 121 | 54.7 | 2.2x |
-| 50 disjoint crops, one call each | 17.2 | 6.7 | 2.6x | 29.8 | 11.3 | 2.6x |
-| 50 disjoint crops, `read_regions` | 17.2 | 3.1 | 5.5x | 29.8 | 5.1 | 5.9x |
-| Stack read, 8 workers | 2.5 | 1.7 | 1.5x | 12.0 | 3.9 | 3.1x |
-| Write 8 frames, zstd | 82.1 | 53.9 | 1.5x | 189 | 89.3 | 2.1x |
-| Write 8 frames, zstd, `write_many` | 82.1 | 19.9 | 4.1x | 189 | 40.9 | 4.6x |
-| Write 8 frames, uncompressed | 28.9 | 10.1 | 2.8x | 226 | 38.3 | 5.9x |
-| Zarr, 4096 x 4096 uint16 in 256 x 256 chunks, whole array | | | | | | |
-| v2 zstd, default | 50.1 | 45.6 | 1.1x | 72.9 | 62.2 | 1.2x |
-| v2 zstd, `num_workers=8` | 50.1 | 14.9 | 3.4x | 72.9 | 19.6 | 3.7x |
-| v2 zlib, `num_workers=8` | 80.5 | 25.9 | 3.1x | 184 | 38.8 | 4.7x |
-| v2 blosc, default | 37.5 | 20.0 | 1.9x | 35.1 | 29.4 | 1.2x |
-| v3 zstd, `num_workers=8` | 51.3 | 14.6 | 3.5x | 62.1 | 19.4 | 3.2x |
-| blosc2 from 8 threads, 64 chunks of 1 MiB | | | | | | |
-| Decode | 25.4 | 3.9 | 6.5x | 38.0 | 6.1 | 6.2x |
-| Encode | 32.9 | 5.0 | 6.6x | 47.9 | 6.8 | 7.1x |
-| TIFF | | | | | | |
-| Tiled, deflate with horizontal predictor, 4096 x 4096 | 20.5 | 17.5 | 1.2x | 25.4 | 23.4 | 1.1x |
-
-Rows that name `num_workers=8`, `read_regions` or `write_many` use options
-new in 0.3.0; they are compared with the only way 0.2.0 could do the same
-work. Zarr regional reads stay serial unless you pass `num_workers`
-(to `read_region` or `OmeZarrArray`).
-
-Where it comes from:
-
-- **CZI**: the directory parses with precompiled structs, pyramid levels
-  are grouped once instead of per level, and each tile is decompressed,
-  unshuffled and written into the output in one native call that releases
-  the GIL once. Separate calls made threads queue for the GIL between
-  steps. Regional reads use a spatial index and decode only the tiles a
-  box touches; `read_regions` decodes a tile shared by several boxes once.
-- **Zarr**: parallel regional reads are new, with consecutive chunks
-  batched into tasks of about 2 MiB, plain zstd chunks decompressed
-  straight into the output, and v2 blosc chunks decoded through the native
-  blosc2 extension rather than numcodecs, whose binding serializes calls
-  across threads.
-- **blosc2**: each call now has its own compression context. The old path
-  selected the compressor through process-global state behind a global
-  mutex, which serialized every thread and could hand one thread another's
-  compressor (a correctness bug, also fixed).
-
-### Across releases
-
-Headline numbers from the latest bench run (`bench/run_benchmarks.py
---fast`, Apple silicon Mac, vs `imagecodecs` / `tifffile` / `ndstorage`):
-
-| Workload | opencodecs | reference | ratio |
-|---|---:|---:|---:|
-| `tiff_random_tile_read` | 0.70 ms | 7.71 ms (tifffile) | **11×** |
-| `tiff_pyramid_crop_from_fullres` | 0.47 ms | 8.60 ms | **18×** |
-| `ndtiff_index_parse_synthetic_10k` | 4.61 ms | 28.0 ms (ndstorage) | **6.1×** |
-| `h2h_jxl_4mp_rgb` (encode) | 130 ms | 3153 ms (imagecodecs) | **24×** |
-| `h2h_blosc2_10mb` | 4.63 ms | 54.8 ms | **12×** |
-| `h2h_deflate_10mb` (encode) | 109 ms | 296 ms | **2.7×** |
-| `h2h_png_4mp_rgb` (encode) | 142 ms | 281 ms | **2.0×** |
-| `h2h_png_kodak_photo` (encode) | 19 ms | 58 ms | **3.1×** |
-| `h2h_png_filterbound_u16` (encode) | 2.0 ms | 3.7 ms | **1.8×** |
-| `tiff_write_1gb` | 89 ms | 91 ms | parity, +14% on Windows |
-| `ndtiff_write_1gb` (raw 800 MB) | 159 ms | 154 ms | parity (1.04× on macOS, 2.4× on Windows after NTFS-friendly pre-alloc) |
-
-The PNG encode wins above stack two independent improvements:
-the `libdeflate` IDAT accumulator (already shipped) collapses
-zlib's per-scanline `deflate()` loop into a single one-shot call,
-and a per-filter split of libspng's `filter_sum` hot path lets
-the compiler autovectorize each branch into NEON/SSE — together
-they make every PNG-encode workload 1.5–3.1× faster than
-imagecodecs.
-
-Remote-fetch workloads benefit from `read_many` (one batched HTTP
-fan-out + Range coalescing) — on a loopback Range-supporting server,
-1024-chunk HDF5 slices land in 7 HTTP requests instead of 1010 (a
-~50× request-count reduction; on real-network RTT this translates
-to 8× wall-clock).
+### CZI against czifile and aicspylibczi
 
 Scientific microscopy CZI (66 MB, 14 sub-blocks of 2000×2000 uint16,
 ZSTDHDR), single-file warm cache:
