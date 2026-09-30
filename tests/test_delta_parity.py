@@ -188,3 +188,28 @@ def test_packints_rejects_a_short_buffer():
     with pytest.raises(ValueError, match="bits"):
         oc.get_codec("packints").decode(
             packed, dtype="u1", bitspersample=4, n_elements=10_000)
+
+
+@pytest.mark.parametrize("dtype", DTYPES)
+@pytest.mark.parametrize("dist", [1, 2, 5, 80])
+@pytest.mark.parametrize("width", [2, 3, 61, 62])
+def test_kernels_match_numpy_for_every_chain_layout(dtype, dist, width):
+    """Both kernels keep the running value in a 64-bit register and store
+    its low bits: dist=1 two elements per step, so odd and even widths
+    take different tails, and dist > 1 one chain at a time. NumPy's
+    wrapping accumulate is the reference, for signed types, XOR included,
+    and a stride longer than the row."""
+    from opencodecs.codecs._bytetools import delta_decode_inplace, xor_decode_inplace
+    info = np.iinfo(dtype)
+    rng = np.random.default_rng(dist)
+    a = rng.integers(info.min, info.max, (4, width), dtype=dtype, endpoint=True)
+    want_sum, want_xor = a.copy(), a.copy()
+    for k in range(dist):
+        want_sum[:, k::dist] = np.cumsum(a[:, k::dist], axis=1, dtype=dtype)
+        want_xor[:, k::dist] = np.bitwise_xor.accumulate(a[:, k::dist], axis=1)
+    got = a.copy()
+    delta_decode_inplace(got, dist)
+    np.testing.assert_array_equal(got, want_sum)
+    got = a.copy()
+    xor_decode_inplace(got, dist)
+    np.testing.assert_array_equal(got, want_xor)

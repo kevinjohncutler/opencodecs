@@ -238,6 +238,75 @@ ctypedef fused delta_t:
     cython.longlong
 
 
+cdef void _chains(delta_t* p0, Py_ssize_t rows, Py_ssize_t n, Py_ssize_t dist,
+                  bint use_xor) noexcept nogil:
+    """Running sum (or XOR) along each of ``rows`` rows of ``n`` over
+    ``dist`` > 1 interleaved chains, each walked with its running value in
+    a register.
+
+    Only the value's low bits are stored, which agrees with the dtype's
+    wrapping arithmetic for every width and signedness. Rereading
+    ``p[i - dist]`` instead makes every step wait on the store before it:
+    4096 rows of 12288 uint8 with dist=3 measured 83.4 against 14.5 ms on
+    GCC, 80.8 against 25.7 ms on MSVC, and level on Apple Clang.
+    """
+    cdef Py_ssize_t r, i, start
+    cdef uint64_t acc
+    cdef delta_t* p
+    for r in range(rows):
+        p = p0 + r * n
+        for start in range(dist if dist < n else n):
+            acc = <uint64_t> p[start]
+            i = start + dist
+            if use_xor:
+                while i < n:
+                    acc = acc ^ <uint64_t> p[i]
+                    p[i] = <delta_t> acc
+                    i += dist
+            else:
+                while i < n:
+                    acc = acc + <uint64_t> p[i]
+                    p[i] = <delta_t> acc
+                    i += dist
+
+
+cdef void _pairs(delta_t* p0, Py_ssize_t rows, Py_ssize_t n,
+                 bint use_xor) noexcept nogil:
+    """Running sum (or XOR) along each of ``rows`` rows of ``n``, the
+    running value in a register and two elements per counted step.
+
+    The obvious ``p[i] += p[i - 1]`` leaves the register to the compiler,
+    and they disagree: MSVC rereads the element it just stored, and GCC's
+    code for it moved between 5.5 and 7.1 ms with unrelated edits
+    elsewhere in this file. On 4096 x 4096 uint16 this form measured 5.9
+    against 26.5 ms on MSVC and 5.1 against 7.1 on GCC. Stepping by four
+    lets GCC merge the four stores into one built from shifts, which
+    loses on x86. Apple Clang unrolls the obvious loop itself and was up
+    to 3% slower here on 2-D input, level on 1-D.
+    """
+    cdef Py_ssize_t r, k
+    cdef uint64_t acc
+    cdef delta_t* q
+    for r in range(rows):
+        q = p0 + r * n
+        acc = <uint64_t> q[0]
+        q += 1
+        if use_xor:
+            for k in range((n - 1) // 2):
+                acc = acc ^ <uint64_t> q[0]; q[0] = <delta_t> acc
+                acc = acc ^ <uint64_t> q[1]; q[1] = <delta_t> acc
+                q += 2
+            if (n - 1) % 2:
+                q[0] = <delta_t>(acc ^ <uint64_t> q[0])
+        else:
+            for k in range((n - 1) // 2):
+                acc = acc + <uint64_t> q[0]; q[0] = <delta_t> acc
+                acc = acc + <uint64_t> q[1]; q[1] = <delta_t> acc
+                q += 2
+            if (n - 1) % 2:
+                q[0] = <delta_t>(acc + <uint64_t> q[0])
+
+
 def delta_decode_inplace(delta_t[:, ::1] arr, Py_ssize_t dist=1):
     """In-place prefix sum along the last axis, wrapping like the dtype.
 
@@ -248,23 +317,13 @@ def delta_decode_inplace(delta_t[:, ::1] arr, Py_ssize_t dist=1):
     """
     cdef Py_ssize_t rows = arr.shape[0]
     cdef Py_ssize_t n = arr.shape[1]
-    cdef Py_ssize_t r, i, start
-    if n < 2:
+    if n < 2 or dist < 1:
         return
     with nogil:
         if dist == 1:
-            for r in range(rows):
-                for i in range(1, n):
-                    arr[r, i] = <delta_t>(arr[r, i] + arr[r, i - 1])
+            _pairs(&arr[0, 0], rows, n, False)
         else:
-            # dist > 1 is `dist` independent chains interleaved; walking
-            # each in its own pass keeps the inner loop a simple stride.
-            for r in range(rows):
-                for start in range(dist):
-                    i = start + dist
-                    while i < n:
-                        arr[r, i] = <delta_t>(arr[r, i] + arr[r, i - dist])
-                        i += dist
+            _chains(&arr[0, 0], rows, n, dist, False)
 
 
 def xor_decode_inplace(delta_t[:, ::1] arr, Py_ssize_t dist=1):
@@ -277,21 +336,13 @@ def xor_decode_inplace(delta_t[:, ::1] arr, Py_ssize_t dist=1):
     """
     cdef Py_ssize_t rows = arr.shape[0]
     cdef Py_ssize_t n = arr.shape[1]
-    cdef Py_ssize_t r, i, start
-    if n < 2:
+    if n < 2 or dist < 1:
         return
     with nogil:
         if dist == 1:
-            for r in range(rows):
-                for i in range(1, n):
-                    arr[r, i] = <delta_t>(arr[r, i] ^ arr[r, i - 1])
+            _pairs(&arr[0, 0], rows, n, True)
         else:
-            for r in range(rows):
-                for start in range(dist):
-                    i = start + dist
-                    while i < n:
-                        arr[r, i] = <delta_t>(arr[r, i] ^ arr[r, i - dist])
-                        i += dist
+            _chains(&arr[0, 0], rows, n, dist, True)
 
 
 cdef uint32_t _crc32c_table[256]
