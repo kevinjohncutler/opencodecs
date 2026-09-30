@@ -78,7 +78,7 @@ def _which_path(monkeypatch):
     monkeypatch.setattr(core_io, "_copy_parts_from_mapping",
                         lambda *a: (used.append("parts"), real_parts(*a))[1])
     monkeypatch.setattr(core_io, "_positioned_reads",
-                        lambda *a: (used.append("reads"), real_reads(*a))[1])
+                        lambda *a, **k: (used.append("reads"), real_reads(*a, **k))[1])
     return used
 
 
@@ -132,3 +132,80 @@ def test_a_read_among_others_follows_the_kernel(blob, monkeypatch, among_others,
         assert used == ["mapping"]
     else:
         assert used == ["parts"] + ["mapping"] * numthreads
+
+
+def _replace_after_open(tmp_path, original):
+    """A file opened and mapped, then replaced at its name by other bytes
+    (an atomic save). Skips where an open file cannot be replaced."""
+    import mmap
+    path = tmp_path / "held.bin"
+    path.write_bytes(original.tobytes())
+    fh = open(path, "rb")
+    mm = mmap.mmap(fh.fileno(), 0, access=mmap.ACCESS_READ)
+    other = tmp_path / "other.bin"
+    other.write_bytes(original[::-1].tobytes())
+    try:
+        os.replace(other, path)
+    except PermissionError:
+        mm.close()
+        fh.close()
+        pytest.skip("this platform cannot replace a file that is open")
+    return path, fh, mm
+
+
+@pytest.mark.parametrize("positioned", [True, False])
+def test_reads_the_file_it_was_given_after_the_name_is_replaced(tmp_path, monkeypatch, positioned):
+    """With fd, the bytes come from the file the caller opened, not from
+    whatever the name points to now. Without os.preadv each part opens the
+    name, sees a different file and copies from the mapping instead."""
+    if positioned and not hasattr(os, "preadv"):
+        pytest.skip("this platform has no os.preadv")
+    if not positioned:
+        monkeypatch.delattr(os, "preadv", raising=False)
+    _set_kernel(monkeypatch, False, False)  # reads, never a copy by choice
+    original = np.random.default_rng(9).integers(0, 256, 9 << 20, dtype=np.uint8)
+    path, fh, mm = _replace_after_open(tmp_path, original)
+    try:
+        for numthreads in (1, 3):
+            out = np.zeros(8 << 20, np.uint8)
+            read_file_into(str(path), 5, out, numthreads=numthreads, mapping=mm,
+                           fd=fh.fileno())
+            np.testing.assert_array_equal(out, original[5:5 + out.size])
+    finally:
+        mm.close()
+        fh.close()
+
+
+def test_a_replaced_name_without_a_mapping_is_refused(tmp_path, monkeypatch):
+    monkeypatch.delattr(os, "preadv", raising=False)
+    _set_kernel(monkeypatch, False, False)
+    original = np.random.default_rng(10).integers(0, 256, 1 << 20, dtype=np.uint8)
+    path, fh, mm = _replace_after_open(tmp_path, original)
+    try:
+        with pytest.raises(OSError, match="no longer the one"):
+            read_file_into(str(path), 0, np.zeros(1 << 19, np.uint8), numthreads=1,
+                           fd=fh.fileno())
+    finally:
+        mm.close()
+        fh.close()
+
+
+def test_a_tiff_replaced_after_open_reads_as_opened(tmp_path):
+    """The strip fast path used to reopen the file by name: after an atomic
+    save it returned the new file's pixels under the old file's tags."""
+    tifffile = pytest.importorskip("tifffile")
+    import opencodecs as oc
+    rng = np.random.default_rng(11)
+    a = rng.integers(0, 65535, (512, 512), dtype=np.uint16)
+    b = rng.integers(0, 65535, (512, 512), dtype=np.uint16)
+    path = tmp_path / "strips.tif"
+    other = tmp_path / "other.tif"
+    for numthreads in (1, None):
+        tifffile.imwrite(path, a, rowsperstrip=64)
+        tifffile.imwrite(other, b, rowsperstrip=64)
+        with oc.open(str(path), numthreads=numthreads) as reader:
+            try:
+                os.replace(other, path)
+            except PermissionError:
+                pytest.skip("this platform cannot replace a file that is open")
+            np.testing.assert_array_equal(np.asarray(reader.read()), a)

@@ -479,7 +479,7 @@ _COPY_BEATS_READ_AMONG_OTHERS = sys.platform in ("darwin", "win32")
 
 
 def read_file_into(path, offset: int, view, *, numthreads: int | None = None,
-                   mapping=None) -> None:
+                   mapping=None, fd: int | None = None) -> None:
     """Fill ``view`` with the bytes of ``path`` starting at ``offset``.
 
     As positioned reads on one descriptor, split into parts of about 4 MB
@@ -527,6 +527,14 @@ def read_file_into(path, offset: int, view, *, numthreads: int | None = None,
     os.preadv on Windows, where each part opens its own handle and seeks,
     and no mmap.madvise there either.
 
+    ``fd`` is a descriptor of the file the caller parsed, the one
+    ``mapping`` maps. Positioned reads go through it rather than opening
+    ``path`` again, so a file replaced or removed at that name since the
+    caller opened it is still read as the caller saw it. Where each part
+    must open its own handle (no os.preadv), a part whose handle is not
+    the same file as ``fd`` copies from ``mapping`` instead, and without
+    a mapping the read raises OSError.
+
     Raises OSError if the file ends before ``view`` is full.
     """
     from .parallel import auto_threads, others_in_flight, parallel_call
@@ -551,7 +559,7 @@ def read_file_into(path, offset: int, view, *, numthreads: int | None = None,
             else:
                 _copy_parts_from_mapping(mapping, offset, view, parts)
             return
-        _positioned_reads(path, offset, view, parts)
+        _positioned_reads(path, offset, view, parts, fd=fd, mapping=mapping)
 
 
 def _spans(total: int, parts: int) -> list:
@@ -584,12 +592,23 @@ def _copy_from_mapping(mapping, offset: int, view, advise: bool = False) -> None
                                         offset=offset)
 
 
-def _positioned_reads(path, offset: int, view, parts: int) -> None:
-    """Read ``view`` from ``path`` at ``offset`` in ``parts`` parallel spans."""
+def _same_file(a, b) -> bool:
+    """Whether two os.stat results describe the same file."""
+    return a.st_dev == b.st_dev and a.st_ino == b.st_ino
+
+
+def _positioned_reads(path, offset: int, view, parts: int, *, fd: int | None = None,
+                      mapping=None) -> None:
+    """Read ``view`` from ``path`` at ``offset`` in ``parts`` parallel spans,
+    through ``fd`` where one is given (see read_file_into)."""
     from .parallel import run_batched
     spans = _spans(view.nbytes, parts)
     positioned = hasattr(os, "preadv")
-    handle = os.open(path, os.O_RDONLY | O_BINARY) if positioned else -1
+    if positioned:
+        handle = fd if fd is not None else os.open(path, os.O_RDONLY | O_BINARY)
+    else:
+        handle = -1
+    held = os.fstat(fd) if (fd is not None and not positioned) else None
 
     def fill(span):
         lo, hi = span
@@ -601,7 +620,22 @@ def _positioned_reads(path, offset: int, view, parts: int) -> None:
                     raise OSError(f"{path}: file ends {hi - done} bytes early")
                 done += n
             return
-        with open(path, "rb", buffering=0) as fh:
+        fh = None
+        try:
+            fh = open(path, "rb", buffering=0)
+            same = held is None or _same_file(os.fstat(fh.fileno()), held)
+        except OSError:
+            if held is None:
+                raise
+            same = False
+        if not same:
+            if fh is not None:
+                fh.close()
+            if mapping is None:
+                raise OSError(f"{path}: the file at this name is no longer the one being read")
+            _copy_from_mapping(mapping, offset + lo, view[lo:hi])
+            return
+        with fh:
             fh.seek(offset + lo)
             done = lo
             while done < hi:
@@ -613,7 +647,7 @@ def _positioned_reads(path, offset: int, view, parts: int) -> None:
     try:
         run_batched(fill, spans, len(spans), name="read")
     finally:
-        if handle >= 0:
+        if positioned and fd is None:
             os.close(handle)
 
 

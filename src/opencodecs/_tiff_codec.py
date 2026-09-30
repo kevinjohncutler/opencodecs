@@ -727,8 +727,13 @@ class TiffPage:
         # produces) is read straight into the output; core.io.read_file_into
         # chooses how (parallel positioned reads, or a copy from this
         # stream's mapping for a lone serial read) and records why.
+        # The reads go through the stream's own descriptor, never the name
+        # again: a file replaced at that path since open (an atomic save)
+        # would otherwise be read at offsets parsed from the old one.
         path = self._stream._src
-        if isinstance(path, (str, os.PathLike)) and len(self.offsets) > 0:
+        held = getattr(self._stream, "_fd", None)
+        if (isinstance(path, (str, os.PathLike)) and isinstance(held, io.IOBase)
+                and len(self.offsets) > 0):
             offsets = np.asarray(self.offsets, dtype=np.int64)
             counts = np.asarray(self.byte_counts, dtype=np.int64)
             total = int(counts.sum())
@@ -736,7 +741,8 @@ class TiffPage:
                     and np.array_equal(offsets[1:], offsets[:-1] + counts[:-1])):
                 from .core.io import read_file_into
                 read_file_into(path, int(offsets[0]), view[:total],
-                               numthreads=numthreads, mapping=self._stream._mmap)
+                               numthreads=numthreads, mapping=self._stream._mmap,
+                               fd=held.fileno())
                 return
         # In-memory bytes/memoryview source (or a mapping). The whole TIFF
         # buffer is reachable via the read_at callable's `_buf`
