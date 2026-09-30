@@ -18,6 +18,12 @@ from cpython.bytes cimport PyBytes_FromStringAndSize, PyBytes_AsString
 from libc.stdint cimport uint8_t, uint32_t, uint64_t
 cimport cython
 
+cdef extern from "byteplanes.h" nogil:
+    void oc_shuffle(uint8_t* dst, const uint8_t* src, size_t plane,
+                    size_t count, size_t k)
+    void oc_unshuffle(uint8_t* dst, const uint8_t* src, size_t plane,
+                      size_t count, size_t k)
+
 
 def byteshuffle_encode(data, int itemsize, Py_ssize_t n_elements, *, out=None):
     """Byte-plane shuffle (inverse of :func:`byteshuffle_decode`).
@@ -42,7 +48,6 @@ def byteshuffle_encode(data, int itemsize, Py_ssize_t n_elements, *, out=None):
         uint8_t[::1] out_view
         const uint8_t* sp
         uint8_t* dp
-        Py_ssize_t i, b
         Py_ssize_t n = n_elements
         Py_ssize_t k = itemsize
         Py_ssize_t total = k * n
@@ -85,22 +90,8 @@ def byteshuffle_encode(data, int itemsize, Py_ssize_t n_elements, *, out=None):
         out_bytes = PyBytes_FromStringAndSize(NULL, total)
         dp = <uint8_t*> PyBytes_AsString(out_bytes)
     sp = &src[0]
-
-    if k == 1:
-        with nogil:
-            for i in range(n):
-                dp[i] = sp[i]
-    elif k == 2:
-        with nogil:
-            for i in range(n):
-                dp[i] = sp[2 * i]
-                dp[n + i] = sp[2 * i + 1]
-    else:
-        # General case: split into k byte-planes.
-        with nogil:
-            for b in range(k):
-                for i in range(n):
-                    dp[b * n + i] = sp[i * k + b]
+    with nogil:
+        oc_shuffle(dp, sp, <size_t> n, <size_t> n, <size_t> k)
 
     if out is not None and not isinstance(out, int):
         del out_view
@@ -139,7 +130,6 @@ def byteshuffle_decode(data, int itemsize, Py_ssize_t n_elements, *, out=None):
         uint8_t[::1] out_view             # writable view of caller buffer
         const uint8_t* sp
         uint8_t* dp
-        Py_ssize_t i, b
         Py_ssize_t n = n_elements
         Py_ssize_t k = itemsize
         Py_ssize_t total = k * n
@@ -186,25 +176,8 @@ def byteshuffle_decode(data, int itemsize, Py_ssize_t n_elements, *, out=None):
         out_bytes = PyBytes_FromStringAndSize(NULL, total)
         dp = <uint8_t*> PyBytes_AsString(out_bytes)
     sp = &src[0]
-
-    if k == 1:
-        # No-op shuffle.
-        with nogil:
-            for i in range(n):
-                dp[i] = sp[i]
-    elif k == 2:
-        # Hot path for uint16 / int16. Two tight passes over memory in
-        # the natural read order; the writes touch alternating positions.
-        with nogil:
-            for i in range(n):
-                dp[2 * i] = sp[i]
-                dp[2 * i + 1] = sp[n + i]
-    else:
-        # General case: k byte-planes.
-        with nogil:
-            for b in range(k):
-                for i in range(n):
-                    dp[i * k + b] = sp[b * n + i]
+    with nogil:
+        oc_unshuffle(dp, sp, <size_t> n, <size_t> n, <size_t> k)
 
     if out is not None and not isinstance(out, int):
         del out_view
