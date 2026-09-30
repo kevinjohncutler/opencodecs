@@ -66,6 +66,14 @@ core) and a 4-core x86-64 Windows laptop.
   0.97x on the Mac, uncompressed strips 0.97x with one thread on Windows,
   and RGBA and uint32 predictor reads and 2-byte unshuffle 0.99x on some
   of the three.
+- Fix: the ``floatpred`` codec (``get_codec("floatpred")``) did not
+  implement TIFF predictor 3, though it said it did: it put each float's
+  least significant byte plane first and restarted the difference at every
+  plane, so neither it nor imagecodecs could read the other's output. It
+  now writes and reads predictor 3 as TIFF Technical Note 3 defines it,
+  byte-identical to imagecodecs' ``floatpred`` and to this package's TIFF
+  reader and writer, for any axis and distance. Data encoded with the old
+  codec does not decode with the new one. TIFF files were never affected.
 - Fix: TIFF strip reads on the fast path reopened the file by name.
   After an atomic save replaced the file, a read returned the new file's
   pixels under the old file's tags, silently. They now read through the

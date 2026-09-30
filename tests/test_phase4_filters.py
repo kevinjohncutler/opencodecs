@@ -151,6 +151,48 @@ def test_floatpred_roundtrip_float64():
     np.testing.assert_array_equal(back, arr)
 
 
+FLOATPRED_CASES = [(dt, shape, axis, dist)
+                   for dt in (np.float16, np.float32, np.float64)
+                   for shape in [(9,), (4, 8), (3, 5, 7), (2, 3, 4, 5)]
+                   for axis in range(-len(shape), 0)
+                   for dist in (1, 2, 3) if dist < shape[axis]]
+
+
+@pytest.mark.parametrize("dt,shape,axis,dist", FLOATPRED_CASES)
+def test_floatpred_is_tiff_predictor_3(dt, shape, axis, dist):
+    """The codec used to put the least significant byte plane first and
+    restart the difference at each plane, so neither it nor imagecodecs
+    could read the other's output. TIFF predictor 3 puts the most
+    significant plane first and differences the whole line at one step;
+    imagecodecs writes the expected bytes wherever it takes the case (the
+    last two axes, dist 1 or 2), and every case must round-trip."""
+    c = oc.get_codec("floatpred")
+    rng = np.random.default_rng(len(shape) * 10 + dist)
+    arr = (rng.standard_normal(shape) * 100).astype(dt)
+    enc = bytes(c.encode(arr, axis=axis, dist=dist))
+    back = c.decode(enc, dtype=dt, shape=shape, axis=axis, dist=dist)
+    np.testing.assert_array_equal(back, arr)
+    imagecodecs = pytest.importorskip("imagecodecs")
+    try:
+        want = np.asarray(imagecodecs.floatpred_encode(arr, axis=axis, dist=dist)).tobytes()
+    except (NotImplementedError, ValueError, RuntimeError):
+        return                                  # a case imagecodecs does not take
+    assert enc == want
+    ours = c.decode(want, dtype=dt, shape=shape, axis=axis, dist=dist)
+    np.testing.assert_array_equal(ours, arr)
+
+
+def test_floatpred_decodes_into_out_and_scratch():
+    c = oc.get_codec("floatpred")
+    arr = np.linspace(-3.0, 3.0, 5 * 6 * 2, dtype=np.float32).reshape(5, 6, 2)
+    enc = c.encode(arr, axis=-2)
+    out = np.empty_like(arr)
+    scratch = bytearray(arr.nbytes)
+    got = c.decode(enc, dtype=np.float32, shape=arr.shape, axis=-2, out=out, scratch=scratch)
+    assert got is out
+    np.testing.assert_array_equal(out, arr)
+
+
 # ---------------------------------------------------------------------------
 # quantize
 # ---------------------------------------------------------------------------

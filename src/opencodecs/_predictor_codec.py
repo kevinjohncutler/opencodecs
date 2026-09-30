@@ -373,14 +373,19 @@ class XorCodec(Codec):
 
 
 class FloatpredCodec(Codec):
-    """IEEE-754 byte-plane delta predictor (TIFF predictor 3).
+    """IEEE-754 floating-point predictor: TIFF predictor 3 (TIFF Technical
+    Note 3), the same bytes as imagecodecs' ``floatpred`` and as this
+    package's TIFF reader and writer.
 
-    For an array of floats, splits each element into its constituent
-    bytes, concatenates the byte planes (all high bytes first, then
-    next, etc.) per row, then delta-encodes. The float bytes within
-    one row become two redundant streams (sign+exponent bytes change
-    slowly; mantissa low bytes look random); delta on the slow stream
-    is what does the compression heavy lifting.
+    Along ``axis``, a step is the block of all trailing elements (the
+    samples of a pixel when ``axis`` is the column axis of a (rows,
+    columns, samples) array). Each line's bytes are reordered into byte
+    planes, most significant first whatever the machine's byte order, and
+    the reordered line is differenced as bytes at ``dist`` steps, across
+    plane boundaries. Sign and exponent bytes change slowly, so their
+    differences are small, which is what a compressor then exploits.
+    imagecodecs takes only the last two axes and ``dist`` of 1 or 2; the
+    same rule applies to every axis and distance here.
     """
 
     name = "floatpred"
@@ -436,86 +441,101 @@ class FloatpredCodec(Codec):
             buf, np.dtype(dtype), shape, axis, dist, out=out, scratch=scratch)
 
     @staticmethod
+    def _geometry(shape, axis):
+        """(lines, steps per line, elements per step) for ``axis``."""
+        ndim = len(shape)
+        if ndim == 0:
+            raise ValueError("floatpred needs at least one dimension")
+        ax = axis + ndim if axis < 0 else axis
+        if not 0 <= ax < ndim:
+            raise ValueError(f"floatpred axis {axis} out of range for {ndim} dimensions")
+        lines = int(np.prod(shape[:ax], dtype=np.int64))
+        inner = int(np.prod(shape[ax + 1:], dtype=np.int64))
+        return lines, shape[ax], inner
+
+    @staticmethod
     def _shuffle_then_delta(arr, axis, dist, encode):
-        # arr.shape = (..., n) along ``axis``; itemsize = arr.dtype.itemsize.
-        # 1) Reinterpret as uint8 of shape (..., n * itemsize).
-        # 2) Reorder columns into byte-plane order (all 1st bytes, then 2nd, ...).
-        # 3) Delta-encode along the last axis as uint8.
-        # 4) Return the byte stream.
+        if dist < 1:
+            raise ValueError("predictor distance must be positive")
+        native = arr.dtype.newbyteorder("=")
+        arr = np.ascontiguousarray(arr, dtype=native)
+        lines, n, inner = FloatpredCodec._geometry(arr.shape, axis)
         itemsize = arr.dtype.itemsize
-        axis = axis if axis >= 0 else arr.ndim + axis
-        if axis != arr.ndim - 1:
-            arr = np.moveaxis(arr, axis, -1).copy()
-        u8 = arr.view(np.uint8)
-        n = arr.shape[-1]
-        # u8.shape = (..., n * itemsize); we want (..., itemsize, n) by plane
-        u8 = u8.reshape(arr.shape[:-1] + (n, itemsize))
-        # Transpose so plane comes first: (..., itemsize, n)
-        u8 = np.moveaxis(u8, -1, -2)
-        u8 = np.ascontiguousarray(u8)
-        # Now apply delta on the trailing axis (per-plane).
-        if encode:
-            if dist < 1:
-                raise ValueError("predictor distance must be positive")
-            out = np.empty_like(u8)
-            out[..., :dist] = u8[..., :dist]
-            np.subtract(u8[..., dist:], u8[..., :-dist], out=out[..., dist:])
-        else:
-            out = np.cumsum(u8, axis=-1, dtype=np.uint8)
+        raw = arr.view(np.uint8).reshape(lines, n * inner, itemsize)
+        if _LITTLE_ENDIAN:
+            raw = raw[:, :, ::-1]                 # most significant byte first
+        row = np.ascontiguousarray(raw.transpose(0, 2, 1)).reshape(lines, -1)
+        step = inner * dist
+        out = row.copy()
+        np.subtract(row[:, step:], row[:, :-step], out=out[:, step:])
         return out.tobytes()
 
     @staticmethod
     def _undelta_then_unshuffle(buf, dtype, shape, axis, dist, *, out=None, scratch=None):
         if shape is None:
             raise ValueError("floatpred decode: shape= is required")
-        itemsize = dtype.itemsize
-        # Reshape into byte-plane form and reverse the encode pipeline.
-        axis_pos = axis if axis >= 0 else len(shape) + axis
-        # Move axis to end for processing
-        target_shape = tuple(shape)
-        if axis_pos != len(target_shape) - 1:
-            permuted = list(target_shape)
-            inner = permuted.pop(axis_pos)
-            permuted.append(inner)
-            internal_shape = tuple(permuted)
-        else:
-            internal_shape = target_shape
-        n = internal_shape[-1]
-        outer = int(np.prod(internal_shape[:-1])) if len(internal_shape) > 1 else 1
         if dist < 1:
             raise ValueError("predictor distance must be positive")
+        target_shape = tuple(shape)
+        native = dtype.newbyteorder("=")
+        itemsize = dtype.itemsize
+        lines, n, inner = FloatpredCodec._geometry(target_shape, axis)
         if out is not None:
             from .core.buffers import array_output
             array_output(out)
             if out.shape != target_shape or out.dtype != dtype:
                 raise ValueError("floatpred out shape/dtype mismatch")
-        required = outer * itemsize * n
-        source = np.frombuffer(buf, dtype=np.uint8).reshape(outer, itemsize, n)
+        required = lines * n * inner * itemsize
+        source = np.frombuffer(buf, dtype=np.uint8)
+        if source.size < required:
+            raise ValueError(
+                f"floatpred decode: {source.size} bytes, shape {target_shape} needs {required}")
+        source = source[:required]
         if scratch is None:
-            u8 = source.copy()
+            work = source.copy()
         else:
             from .core.scratch import ScratchBuffer
             from .core.buffers import byte_output
             storage = scratch.bytes(required) if isinstance(scratch, ScratchBuffer) else byte_output(scratch)
             if isinstance(storage, int) or len(storage) < required:
                 raise ValueError("floatpred scratch buffer is too small")
-            u8 = np.frombuffer(storage, dtype=np.uint8, count=required).reshape(source.shape)
-            if out is not None and np.shares_memory(u8, out):
+            work = np.frombuffer(storage, dtype=np.uint8, count=required)
+            if out is not None and np.shares_memory(work, out):
                 raise ValueError("floatpred scratch must not overlap output")
-            np.copyto(u8, source)
-        kernel = _delta_decode_kernel()
-        if kernel is not None and n:
-            kernel(u8.reshape(outer * itemsize, n), dist)
-        else:
-            for start in range(min(dist, n)):
-                lane = u8[..., start::dist]
-                np.add.accumulate(lane, axis=-1, dtype=np.uint8, out=lane)
+            np.copyto(work, source)
+        if required:
+            kernel = _undo_floating_point_kernel() if dist == 1 and itemsize in (2, 4, 8) else None
+            if kernel is not None:
+                # The TIFF reader's kernel: undoes the differences at one
+                # step (``inner`` bytes) and restores native byte order.
+                kernel(work.reshape(lines, n, inner * itemsize), itemsize)
+            else:
+                rows = work.reshape(lines, -1)
+                step = inner * dist
+                for start in range(min(step, rows.shape[1])):
+                    lane = rows[:, start::step]
+                    np.add.accumulate(lane, axis=-1, dtype=np.uint8, out=lane)
+                planes = rows.reshape(lines, itemsize, n * inner).transpose(0, 2, 1)
+                if _LITTLE_ENDIAN:
+                    planes = planes[:, :, ::-1]
+                work[...] = np.ascontiguousarray(planes).reshape(-1)
+        values = work.view(native).reshape(target_shape)
         if out is None:
-            out = np.empty(target_shape, dtype=dtype)
-        target_bytes = out.view(np.uint8).reshape(target_shape + (itemsize,))
-        target_bytes = np.moveaxis(target_bytes, axis_pos, -2)
-        target_bytes[...] = np.moveaxis(u8, -2, -1).reshape(internal_shape + (itemsize,))
+            return values.astype(dtype, copy=False) if native != dtype else values
+        out[...] = values
         return out
+
+
+_LITTLE_ENDIAN = np.little_endian
+
+
+def _undo_floating_point_kernel():
+    """The TIFF reader's compiled predictor 3 undo, or None without it."""
+    try:
+        from .codecs._tiff import undo_floating_point
+    except ImportError:
+        return None
+    return undo_floating_point
 
 
 __all__ = ["DeltaCodec", "XorCodec", "FloatpredCodec"]
