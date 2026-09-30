@@ -282,19 +282,19 @@ readers" is eight threads each reading at once, both on defaults. Each
 number is how many times faster opencodecs is, the median over fresh
 processes alternating the two libraries, on a 20-core Apple silicon Mac
 (tifffile 2026.3.3) and a 64-core x86-64 Linux workstation (tifffile
-2026.5.2).
+2026.5.2), with opencodecs 0.4.1 as its CI wheels ship it.
 
 | 4096 x 4096 uint16 | Mac, 1 reader | Mac, 1 thread | Mac, 8 readers | Linux, 1 reader | Linux, 1 thread | Linux, 8 readers |
 |---|---:|---:|---:|---:|---:|---:|
-| Tiled, deflate + predictor | 3.2x | 1.0x | 4.0x | 5.7x | 1.3x | 9.9x |
-| Tiled, zstd | 4.3x | 1.1x | 5.1x | 7.7x | 1.7x | 10.0x |
-| Tiled, LZW + predictor | 2.7x | 1.3x | 2.8x | 4.0x | 1.3x | 6.5x |
-| Strips, deflate + predictor | 2.0x | 1.0x | 2.0x | 5.2x | 1.3x | 5.1x |
-| Strips, uncompressed | 3.2x | 2.3x | 1.6x | 3.7x | 1.0x | 1.0x |
-| 3072 x 3072 uint8, 144 tiles, deflate | 2.1x | 1.0x | 4.7x | 4.5x | 1.1x | 13.4x |
+| Tiled, deflate + predictor | 3.4x | 1.1x | 3.9x | 5.0x | 1.1x | 9.0x |
+| Tiled, zstd | 4.4x | 1.1x | 5.3x | 7.0x | 1.4x | 8.8x |
+| Tiled, LZW + predictor | 4.1x | 2.2x | 4.5x | 5.8x | 2.2x | 8.9x |
+| Strips, deflate + predictor | 2.2x | 1.0x | 1.9x | 4.6x | 1.1x | 4.6x |
+| Strips, uncompressed | 3.3x | 2.4x | 1.6x | 3.1x | 1.0x | 0.93x (slower) |
+| 3072 x 3072 uint8, 144 tiles, deflate | 2.2x | 1.0x | 4.5x | 3.8x | 0.90x (slower) | 12.6x |
 
-A tiled deflate image with the predictor takes 6.3 ms against 20.4 ms on
-the Mac and 10.1 ms against 57.6 ms on Linux. Most of the gap is how the
+A tiled deflate image with the predictor takes 6.1 ms against 20.7 ms on
+the Mac and 11.3 ms against 56.5 ms on Linux. Most of the gap is how the
 work is spread: a batch of tiles decompresses, has its predictor undone
 and lands in the output in one native call that releases the GIL once,
 so threads spend their time decoding rather than queuing for it, and
@@ -302,7 +302,86 @@ concurrent readers share the machine instead of each taking all of it.
 Uncompressed strips are a copy for both libraries; opencodecs splits it
 into positioned reads on several threads, and for one thread's worth
 does whichever its kernel does faster: macOS copies out of the file
-mapping, Linux reads.
+mapping, Linux reads. The two cells below 1x, both on Linux, read the same
+with the 0.4.0 wheel (0.4.1 against 0.4.0 under the same conditions: 0.98x
+and 1.01x); 0.4.0's table, measured on a local build, showed 1.1x and 1.0x
+for them.
+
+### 0.4.1 against 0.4.0
+
+0.4.1 brings Windows up to the speed 0.4.0 reached on macOS and Linux, and
+speeds up several codecs everywhere. Each column compares the published
+0.4.0 wheel with 0.4.1's, both built by CI for that platform. Every
+sample is a fresh process, the two versions alternate in shuffled order
+with 0.4.0 run a second time as a control, and both must return identical
+output. Medians in milliseconds, lower is better; the speedup is the 0.4.0
+time over the 0.4.1 time. Hosts: a 20-core Apple silicon Mac, a 64-core
+x86-64 Linux workstation pinned to one core (so it has no default-threads
+figures), and a 4-core x86-64 Windows laptop.
+
+| Workload | Mac 0.4.0 to 0.4.1 (ms) | Mac | Linux 0.4.0 to 0.4.1 (ms) | Linux | Windows 0.4.0 to 0.4.1 (ms) | Windows |
+|---|---:|---:|---:|---:|---:|---:|
+| **TIFF reads, 4096 x 4096, one thread (`numthreads=1`); tiles 256 x 256, strips 64 rows** | | | | | | |
+| uint16, LZW with predictor | 114 to 64.5 | 1.77x | 165 to 86.9 | 1.90x | 279 to 136 | 2.06x |
+| uint16, deflate with predictor | 71.7 to 69.8 | 1.03x | 89.6 to 88.8 | 1.01x | 128 to 106 | 1.21x |
+| uint8, deflate with predictor | 18.1 to 17.0 | 1.06x | 23.0 to 22.2 | 1.04x | 47.6 to 27.4 | 1.74x |
+| uint32, deflate with predictor | 99.2 to 95.5 | 1.04x | 121 to 118 | 1.02x | 169 to 170 | 0.99x |
+| gray + alpha uint8, deflate with predictor | 128 to 75.7 | 1.69x | 113 to 94.4 | 1.19x | 134 to 118 | 1.13x |
+| RGB uint8, deflate with predictor | 112 to 111 | 1.00x | 159 to 142 | 1.12x | 189 to 179 | 1.06x |
+| RGBA uint8, deflate with predictor | 125 to 127 | 0.99x | 151 to 151 | 1.00x | 209 to 211 | 0.99x |
+| RGB uint16, deflate with predictor | 209 to 206 | 1.02x | 252 to 252 | 1.00x | 323 to 313 | 1.03x |
+| float32, deflate with floating-point predictor | 255 to 132 | 1.93x | 238 to 149 | 1.60x | 286 to 201 | 1.42x |
+| uint16 strips, deflate with predictor | 67.6 to 67.0 | 1.01x | 86.0 to 85.3 | 1.01x | 117 to 96.7 | 1.21x |
+| uint16 strips, uncompressed | 1.66 to 1.67 | 1.00x | 9.25 to 9.20 | 1.01x | 13.7 to 14.2 | 0.97x |
+| **TIFF reads, default threads** | | | | | | |
+| uint16 tiles, LZW with predictor | 8.61 to 5.62 | 1.53x |  |  | 73.6 to 41.6 | 1.77x |
+| uint16 tiles, deflate with predictor | 6.06 to 5.95 | 1.02x |  |  | 35.7 to 31.3 | 1.14x (control 1.05x) |
+| uint16 strips, uncompressed | 1.28 to 1.22 | 1.04x |  |  | 9.65 to 9.61 | 1.00x |
+| **Codecs, one call on one thread** | | | | | | |
+| LZW decode, 16 MB uint8 | 56.9 to 19.3 | 2.96x | 78.9 to 25.8 | 3.06x | 106 to 38.5 | 2.77x |
+| LZW encode, 16 MB uint8 | 104 to 103 | 1.01x | 108 to 108 | 1.00x | 128 to 134 | 0.96x |
+| PackBits decode, 16 MB | 12.7 to 12.7 | 1.00x | 9.18 to 9.07 | 1.01x | 17.0 to 16.8 | 1.01x |
+| BC7 decode, 2048 x 2048, random blocks | 15.4 to 13.4 | 1.15x | 37.0 to 28.4 | 1.30x | 64.9 to 50.3 | 1.29x |
+| BC7 decode, 2048 x 2048, mode 6 | 10.7 to 6.75 | 1.59x | 25.3 to 20.1 | 1.26x | 52.5 to 39.8 | 1.32x |
+| BC1 decode, 2048 x 2048 | 2.85 to 2.97 | 0.96x | 3.54 to 3.29 | 1.08x | 10.2 to 9.60 | 1.06x |
+| BC3 decode, 2048 x 2048 | 4.07 to 4.18 | 0.97x | 6.54 to 6.47 | 1.01x | 15.2 to 13.8 | 1.10x |
+| Unpack 16 M 4-bit samples | 38.5 to 13.1 | 2.95x | 38.6 to 16.8 | 2.30x | 88.2 to 27.9 | 3.16x |
+| Unpack 16 M 12-bit samples | 77.2 to 33.9 | 2.28x | 70.6 to 28.6 | 2.47x | 146 to 30.9 | 4.73x |
+| Unpack 16 M 24-bit samples | 117 to 67.8 | 1.72x | 107 to 59.7 | 1.80x | 226 to 112 | 2.01x |
+| Delta decode, uint8, distance 1 | 16.8 to 15.8 | 1.06x | 15.9 to 14.8 | 1.07x | 79.2 to 15.5 | 5.10x |
+| Delta decode, uint16, distance 1 | 5.59 to 5.41 | 1.03x | 5.46 to 5.05 | 1.08x | 26.4 to 5.76 | 4.58x |
+| XOR decode, uint16, distance 1 | 5.66 to 5.32 | 1.06x | 5.45 to 5.04 | 1.08x | 26.6 to 6.64 | 4.01x |
+| Delta decode, uint8, distance 2 (gray + alpha) | 15.2 to 6.68 | 2.28x | 55.6 to 9.16 | 6.07x | 52.4 to 10.4 | 5.05x |
+| Delta decode, uint8, distance 3 (RGB) | 22.9 to 10.6 | 2.16x | 83.4 to 12.4 | 6.71x | 78.0 to 17.8 | 4.40x (control 0.95x) |
+| XOR decode, uint8, distance 3 (RGB) | 22.9 to 9.94 | 2.30x | 83.3 to 12.5 | 6.69x | 79.2 to 17.9 | 4.42x |
+| Delta decode, uint16, distance 3 (RGB) | 23.0 to 10.2 | 2.25x | 83.8 to 12.8 | 6.54x | 79.5 to 19.1 | 4.17x |
+| Delta decode, uint8, distance 4 (RGBA) | 30.8 to 12.2 | 2.53x | 111 to 16.8 | 6.60x | 105 to 21.3 | 4.95x |
+| Byte unshuffle, 2-byte items, 32 MB | 1.06 to 1.06 | 1.00x | 19.8 to 19.9 | 0.99x | 16.4 to 8.62 | 1.90x |
+| Byte shuffle, 4-byte items, 32 MB | 10.4 to 1.09 | 9.56x | 35.2 to 22.9 | 1.54x | 23.4 to 11.7 | 2.01x |
+| Byte unshuffle, 8-byte items, 32 MB | 10.5 to 1.90 | 5.55x | 38.2 to 20.9 | 1.83x | 26.2 to 15.6 | 1.68x |
+| Bitshuffle encode, 2-byte items, 32 MB | 7.84 to 7.85 | 1.00x | 29.0 to 29.1 | 1.00x | 38.3 to 16.7 | 2.29x |
+| Bitshuffle decode, 2-byte items, 32 MB | 7.97 to 7.97 | 1.00x | 33.9 to 33.6 | 1.01x | 36.9 to 21.4 | 1.73x |
+| CRC-32C, 32 MB | 83.6 to 83.5 | 1.00x | 64.9 to 64.9 | 1.00x | 66.7 to 65.7 | 1.01x |
+
+The speed changes are the same code on every operating system and
+compiler, written in a form each of them compiles well, with two
+exceptions. Bitshuffle's build guard now also recognizes MSVC, which
+never defines `__SSE2__`, so MSVC takes the SSE2 path GCC and Clang
+already took. And uncompressed strips read while other reads are in
+flight are copied from the file mapping on Windows, as on macOS, because
+many threads reading one file contend in Windows' file cache; Linux still
+reads. That choice is one named constant in `core/io.py`. Windows gains most where MSVC had compiled the old
+forms worst: delta decode at distance 1, where it re-read running sums from
+memory; bitshuffle, which it never took down the SSE2 path; 2-byte
+shuffling, whose byte loops it does not vectorize; and the uint8 and uint16
+predictor reads. The [changelog](CHANGES.rst) says what changed in each
+row. The rows below 1.00x, all within 4% of 0.4.0, are code this release
+rewrote (LZW encode, the BC1 and BC3 loops, the RGBA and uint32
+predictors, 2-byte unshuffle, and Windows' one-thread uncompressed strip
+read, which now checks that each part it reopens is still the file being
+read); the same changes measured level or faster on the builds used
+during development. Two Windows cells show their control, 0.4.0 against
+itself, where it differed from 1.00x by 5%.
 
 ### 0.3.0 against 0.2.0
 
@@ -616,7 +695,7 @@ build).
 
 ## Status
 
-- **v0.4.0** on PyPI (September 2026). Every wheel carries the same 40
+- **v0.4.1** on PyPI (September 2026). Every wheel carries the same 40
   compiled extensions, and `ci/check_wheel_contents.py` fails the
   release build if one goes missing.
 - About 4,000 tests locally, including a 40-dataset conformance corpus;

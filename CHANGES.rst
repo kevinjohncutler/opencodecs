@@ -10,6 +10,75 @@ Versions follow the same ``YYYY.M.D`` cadence as upstream when we
 publish; the entries below cluster work by date rather than by
 release because most of it has shipped continuously to ``main``.
 
+0.4.1 (2026-09-30)
+------------------
+
+Speed on Windows, where much of 0.4.0's work had arrived only in part,
+and in several codecs on every platform. There is no new API. The speed
+changes are the same code on every operating system and compiler, in a
+form each compiler measured builds well, except two below: bitshuffle's
+build guard, which now lets MSVC take the SSE2 path, and how uncompressed
+strips are read among other reads. Figures compare the
+published 0.4.0 wheels with 0.4.1's, each version's CI build: fresh
+processes, both versions alternating in shuffled order with 0.4.0 run a
+second time as a control, identical output required, on a 20-core
+Apple silicon Mac, a 64-core x86-64 Linux workstation (pinned to one
+core) and a 4-core x86-64 Windows laptop. The README has the full table.
+
+- **Delta and XOR decode keep their running values in registers**, and
+  distances 2, 3 and 4 (gray and alpha, RGB, RGBA) walk every chain in
+  one pass. The old loops reread the value just stored, or walked one
+  chain at a time. Distance 1: 4.0 to 5.1x on Windows, 1.03 to 1.08x
+  elsewhere; distances 2 to 4: 4.2 to 5.1x on Windows, 6.1 to 6.7x on
+  Linux, 2.2 to 2.5x on the Mac.
+- **LZW decodes each code as a copy of output already written**,
+  instead of walking the code's prefix chain onto a stack: 2.8 to 3.1x
+  on all three, and serial reads of an LZW TIFF 1.8 to 2.1x. A code past
+  the next free table entry, which no encoder can emit, is now an error;
+  it used to decode stack memory left over from earlier codes.
+- **TIFF predictors keep their running sums in registers** and load a
+  whole pixel before adding it. MSVC compiled the old one-sample loop to
+  add to memory and read the sum back. Serial reads with the horizontal
+  predictor: uint8 1.74x and uint16 1.21x on Windows; floating point 1.4
+  to 1.9x and gray with alpha 1.1 to 1.7x on all three.
+- **Byte shuffling moves whole elements** in registers rather than byte
+  loops only GCC and Clang vectorized, and only for 2-byte elements: 1.7
+  to 2.0x on Windows for 2, 4 and 8-byte elements, and for 4 and 8-byte
+  elements 1.5 to 1.8x on Linux and 5.6 to 9.6x on the Mac.
+- **Bitshuffle takes its SSE2 path under MSVC**, which never defines
+  ``__SSE2__``: 2.3x encode and 1.7x decode on Windows.
+- **Bit-packed samples of up to 56 bits unpack through a 64-bit
+  accumulator**: 1.7 to 4.7x for 4, 12 and 24-bit samples.
+- **BC7 modes without secondary indices skip the general texel loop**
+  and, with two or three subsets, interpolate all four channels at once
+  in one 64-bit integer: 1.15 to 1.30x, and 1.26 to 1.59x for mode 6.
+  The vendored bcdec carries this change, recorded in ``VENDOR.toml``.
+- **Uncompressed TIFF strips copy from the file mapping on Windows while
+  other reads are in flight**, as on macOS: contiguous positioned reads
+  of one file from many threads contend in Windows' file cache. 0.4.0
+  read eight concurrent 32 MB reads at 0.71x of 0.3.1; they are now level
+  with it. On both, such a copy is now split into parts on several
+  threads, as reads are: two concurrent readers on the Mac took 1.45
+  against 1.87 ms per read.
+- Level or within noise: RGB uint16 everywhere, deflate strips on the
+  Mac and Linux (1.21x on Windows), PackBits and CRC-32C. Slower, in code
+  this release rewrote: LZW encode 0.96x on Windows, BC1 0.96x and BC3
+  0.97x on the Mac, uncompressed strips 0.97x with one thread on Windows,
+  and RGBA and uint32 predictor reads and 2-byte unshuffle 0.99x on some
+  of the three.
+- Fix: TIFF strip reads on the fast path reopened the file by name.
+  After an atomic save replaced the file, a read returned the new file's
+  pixels under the old file's tags, silently. They now read through the
+  descriptor the reader already holds; on Windows, which has no
+  ``os.preadv``, each part still opens the file, checks that it is the
+  same file as that descriptor, and otherwise copies from the reader's
+  mapping.
+- Fix: byte shuffle with a size whose product overflows (for example
+  ``itemsize=4`` with ``2**62 + 1`` elements) passed the length check and
+  crashed the interpreter; it now raises ``ValueError``. Delta and XOR
+  decode with a distance near ``sys.maxsize`` wrote at a negative index,
+  and an empty predictor axis raised on decode; both now work.
+
 0.4.0 (2026-09-29)
 ------------------
 
