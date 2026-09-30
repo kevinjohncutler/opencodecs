@@ -210,6 +210,40 @@ def test_lzw_output_is_readable_by_imagecodecs(name):
     assert bytes(imagecodecs.lzw_decode(_tiff.lzw_encode(data))) == data
 
 
+@pytest.mark.parametrize("name", [k for k in _lzw_cases() if k != "empty"])
+def test_lzw_decodes_what_imagecodecs_writes(name):
+    """An independent encoder's streams are what pin the decoder."""
+    imagecodecs = pytest.importorskip("imagecodecs")
+    data = _lzw_cases()[name]
+    assert bytes(_tiff.lzw_decode(imagecodecs.lzw_encode(data), len(data))) == data
+
+
+def _msb_codes(codes, width=9):
+    """Pack codes MSB-first at one width, as a TIFF LZW stream starts."""
+    acc = nbits = 0
+    out = bytearray()
+    for code in codes:
+        acc = (acc << width) | code
+        nbits += width
+        while nbits >= 8:
+            nbits -= 8
+            out.append((acc >> nbits) & 255)
+    if nbits:
+        out.append((acc << (8 - nbits)) & 255)
+    return bytes(out)
+
+
+def test_lzw_decode_kwk_and_a_code_past_the_next_entry():
+    """K-w-K, the code of the entry about to be added, is legal. A code
+    past it cannot come from any encoder: the decoder used to take it as
+    K-w-K too and then read table entries that were never written, so its
+    output depended on stale stack memory. It is now an error."""
+    kwk = _msb_codes([256, 65, 258, 257])      # "A", then "AA" by K-w-K
+    assert bytes(_tiff.lzw_decode(kwk, 3)) == b"AAA"
+    with pytest.raises(_tiff.TiffError, match="rc=-2"):
+        _tiff.lzw_decode(_msb_codes([256, 65, 259, 257]), 3)
+
+
 def test_lzw_empty_input_is_a_valid_stream():
     """Must still emit CLEAR + EOI rather than nothing at all."""
     encoded = _tiff.lzw_encode(b"")

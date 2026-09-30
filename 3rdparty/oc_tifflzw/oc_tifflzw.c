@@ -5,9 +5,9 @@
  * Performance vs. the previous _tiff.pyx pure-Cython implementation,
  * which built one PyMem_Malloc'd string per dictionary entry and
  * memcpy'd the whole previous string on each new entry — O(N^2) cost
- * for any frame with long string entries. This decoder uses flat
- * prefix/suffix/first_byte tables (matching oc_giflzw) so each new
- * entry is O(1) to add and string emit is O(string_length).
+ * for any frame with long string entries. Here each new entry is O(1)
+ * to add and string emit is O(string_length); the decoder section
+ * below says how.
  */
 
 #include "oc_tifflzw.h"
@@ -16,7 +16,6 @@
 #include <string.h>
 
 #define OC_LZW_MAX_CODES   4096
-#define OC_LZW_STACK_SIZE  4096
 
 #ifndef __has_builtin
 #define __has_builtin(x) 0
@@ -34,44 +33,81 @@
 #define TIFF_EOI_CODE   257
 #define TIFF_INIT_WIDTH 9
 
+/* ------------------------------------------------------------------ *
+ * Decoder
+ *
+ * Every string the dictionary can name is already in the output. A
+ * new entry is the previous code's string plus the first byte of the
+ * string decoded after it, and the two sit next to each other in the
+ * output. So an entry is just where its string can be read and how
+ * long it is, and emitting a code is a copy from earlier output.
+ * Literals point into a constant table of the 256 byte values, which
+ * makes a literal and an entry the same copy, and strings of up to 16
+ * bytes, most of them, move as one or two 8-byte chunks.
+ *
+ * The previous form walked each code's prefix chain onto a stack and
+ * then copied the stack out in reverse: two loops per code whose trip
+ * counts follow the data, so their exits mispredict, and whose speed
+ * moved with where each compiler happened to place them (MSVC 14.51
+ * ran the same source 14% slower than 14.41). Decoding 9.1 MB of LZW
+ * from a 4096 x 4096 uint8 image measured 72 against 26 ms with GCC
+ * (Zen 2), 57 against 20 with Apple Clang, and 106 against 38 with
+ * MSVC 14.51, 92 against 49 with 14.41 and 110 against 49 with
+ * clang-cl (Kaby Lake).
+ *
+ * A chunk can read past the end of its string. A literal's reads stay
+ * in the table's padding; an entry's string always ends at or before
+ * the current output position, so reading on only reaches bytes this
+ * copy then overwrites. A chunk also writes up to 7 bytes past its
+ * string, which the following strings overwrite before a full count
+ * is returned; after a short or failed decode, bytes past the count
+ * returned are unspecified.
+ *
+ * A code past the next free entry is corrupt: no encoder can emit it.
+ * The previous decoder took it as K-w-K and then read entries that
+ * were never written, so its output depended on stale stack memory.
+ * It is now error -2.
+ * ------------------------------------------------------------------ */
 
-ptrdiff_t oc_tifflzw_decode(
+/* Byte i is i, then 8 more so an 8-byte read from any literal stays inside. */
+static const uint8_t oc_lzw_literals[256 + 8] = {
+#define OC_LZW_ROW(b) b, b + 1, b + 2, b + 3, b + 4, b + 5, b + 6, b + 7, \
+    b + 8, b + 9, b + 10, b + 11, b + 12, b + 13, b + 14, b + 15
+    OC_LZW_ROW(0), OC_LZW_ROW(16), OC_LZW_ROW(32), OC_LZW_ROW(48),
+    OC_LZW_ROW(64), OC_LZW_ROW(80), OC_LZW_ROW(96), OC_LZW_ROW(112),
+    OC_LZW_ROW(128), OC_LZW_ROW(144), OC_LZW_ROW(160), OC_LZW_ROW(176),
+    OC_LZW_ROW(192), OC_LZW_ROW(208), OC_LZW_ROW(224), OC_LZW_ROW(240),
+#undef OC_LZW_ROW
+};
+
+/* One bit order per call site, so the loop never tests it at run time
+ * when the compiler inlines or clones this for each constant. */
+static ptrdiff_t oc_tifflzw_decode_order(
     const uint8_t *input, size_t input_len,
-    uint8_t *output, size_t output_len)
+    uint8_t *output, size_t output_len, const int lsb_first)
 {
-    /* Dictionary — flat arrays so each new entry is O(1) to add. */
-    uint16_t prefix[OC_LZW_MAX_CODES];
-    uint8_t  suffix[OC_LZW_MAX_CODES];
-    uint8_t  first_byte[OC_LZW_MAX_CODES];
+    /* Where each code's string can be read, and its length. */
+    const uint8_t *string[OC_LZW_MAX_CODES];
+    uint16_t length[OC_LZW_MAX_CODES];
 
-    /* Initialise literals 0..255. */
     for (int i = 0; i < 256; i++) {
-        prefix[i] = 0xFFFF;
-        suffix[i] = (uint8_t) i;
-        first_byte[i] = (uint8_t) i;
+        string[i] = oc_lzw_literals + i;
+        length[i] = 1;
     }
 
     int code_size = TIFF_INIT_WIDTH;
     int next_code = TIFF_EOI_CODE + 1;   /* = 258 */
     int prev_code = -1;
-
-    /* Auto-detect bit ordering from the first byte. In an MSB-first
-     * 9-bit stream the first code (typically CLEAR=256 = 0x100)
-     * encodes as a byte whose high bit is set (0x80-0xFF). In the
-     * old-style LSB-first variant the first byte's high bit is 0. */
-    int lsb_first = 0;
-    if (input_len > 0 && (input[0] & 0x80) == 0) {
-        lsb_first = 1;
-    }
+    uint8_t *prev_out = output;          /* the previous code's string */
+    size_t prev_len = 0;
 
     /* Bit accumulator. Layout depends on lsb_first. */
     uint64_t accum = 0;
     int accum_bits = 0;
-    size_t in_pos = 0;
+    const uint8_t *in_p = input;
+    const uint8_t *const in_end = input + input_len;
     uint8_t *out_p = output;
-    uint8_t *out_end = output + output_len;
-
-    uint8_t stack[OC_LZW_STACK_SIZE];
+    uint8_t *const out_end = output + output_len;
 
     for (;;) {
         /* TIFF LZW has two encoder dialects, both legal:
@@ -95,18 +131,20 @@ ptrdiff_t oc_tifflzw_decode(
 
         /* Refill the bit accumulator. MSB-first appends new bytes
          * into the LOW bits and shifts the old contents UP; we then
-         * extract from the TOP. LSB-first appends new bytes into the
-         * HIGH bits (positioned by accum_bits) and shifts down; we
-         * extract from the BOTTOM. */
+         * extract from the TOP, and the mask on extraction drops what
+         * was shifted past it, so the accumulator needs no masking of
+         * its own. LSB-first appends new bytes into the HIGH bits
+         * (positioned by accum_bits) and shifts down; we extract from
+         * the BOTTOM. */
         while (accum_bits < code_size) {
-            if (OC_UNLIKELY(in_pos >= input_len)) {
+            if (OC_UNLIKELY(in_p == in_end)) {
                 if (out_p == out_end) return (ptrdiff_t)(out_p - output);
                 return -1;
             }
             if (lsb_first) {
-                accum |= (uint64_t) input[in_pos++] << accum_bits;
+                accum |= (uint64_t) *in_p++ << accum_bits;
             } else {
-                accum = (accum << 8) | (uint64_t) input[in_pos++];
+                accum = (accum << 8) | (uint64_t) *in_p++;
             }
             accum_bits += 8;
         }
@@ -120,7 +158,6 @@ ptrdiff_t oc_tifflzw_decode(
             code = (int)((accum >> (accum_bits - code_size))
                          & ((1u << code_size) - 1));
             accum_bits -= code_size;
-            accum &= (1ULL << accum_bits) - 1;
         }
 
         if (OC_UNLIKELY(code == TIFF_EOI_CODE)) {
@@ -133,50 +170,70 @@ ptrdiff_t oc_tifflzw_decode(
             continue;
         }
 
-        /* Emit the string for `code` onto our local stack (reversed),
-         * then drain into output (forward). */
-        int sp = 0;
-        int c = code;
-
-        if (OC_UNLIKELY(c >= next_code)) {
-            /* K-w-K special case: code refers to a dict entry we're
-             * about to add. Synthesize: prev string + first byte of
-             * prev string. */
-            if (OC_UNLIKELY(prev_code < 0)) return -2;
-            stack[sp++] = first_byte[prev_code];
-            c = prev_code;
+        size_t avail = (size_t)(out_end - out_p);
+        size_t len;
+        if (OC_LIKELY(code < next_code)) {
+            const uint8_t *src = string[code];
+            len = length[code];
+            if (OC_UNLIKELY(len > avail)) return -3;
+            if (len <= 8 && avail >= 8) {
+                uint64_t t;
+                memcpy(&t, src, 8);
+                memcpy(out_p, &t, 8);
+            } else if (len <= 16 && avail >= 16) {
+                uint64_t t0, t1;
+                memcpy(&t0, src, 8);
+                memcpy(&t1, src + 8, 8);
+                memcpy(out_p, &t0, 8);
+                memcpy(out_p + 8, &t1, 8);
+            } else {
+                memcpy(out_p, src, len);   /* src + len <= out_p */
+            }
+        } else {
+            /* K-w-K: the code names the entry about to be added, the
+             * previous string plus its own first byte. That string
+             * starts where the previous one did and runs one byte into
+             * itself, so it copies forward a byte at a time. */
+            if (OC_UNLIKELY(code > next_code || prev_code < 0)) return -2;
+            const uint8_t *src = prev_out;
+            len = prev_len + 1;
+            if (OC_UNLIKELY(len > avail)) return -3;
+            for (size_t i = 0; i < len; i++) {
+                out_p[i] = src[i];
+            }
         }
 
-        while (c >= 256) {
-            if (OC_UNLIKELY(sp >= OC_LZW_STACK_SIZE)) return -2;
-            /* Guard against a corrupt chain (prefix table entry past
-             * OC_LZW_MAX_CODES) before the suffix/prefix reads OOB. */
-            if (OC_UNLIKELY(c >= OC_LZW_MAX_CODES)) return -2;
-            stack[sp++] = suffix[c];
-            c = prefix[c];
-        }
-        stack[sp++] = (uint8_t) c;
-        uint8_t first = (uint8_t) c;
-
-        if (OC_UNLIKELY(out_p + sp > out_end)) return -3;
-        for (int i = sp - 1; i >= 0; i--) {
-            *out_p++ = stack[i];
-        }
-
-        /* Add new dict entry: prev_code → first byte of new string. */
+        /* New entry: the previous string and the first byte of this
+         * one, which follows it in the output. */
         if (prev_code >= 0 && next_code < OC_LZW_MAX_CODES) {
-            prefix[next_code] = (uint16_t) prev_code;
-            suffix[next_code] = first;
-            first_byte[next_code] = first_byte[prev_code];
+            string[next_code] = prev_out;
+            length[next_code] = (uint16_t)(prev_len + 1);
             next_code++;
         }
 
         prev_code = code;
+        prev_out = out_p;
+        prev_len = len;
+        out_p += len;
 
         if (OC_UNLIKELY(out_p == out_end)) {
             return (ptrdiff_t)(out_p - output);
         }
     }
+}
+
+ptrdiff_t oc_tifflzw_decode(
+    const uint8_t *input, size_t input_len,
+    uint8_t *output, size_t output_len)
+{
+    /* Auto-detect bit ordering from the first byte. In an MSB-first
+     * 9-bit stream the first code (typically CLEAR=256 = 0x100)
+     * encodes as a byte whose high bit is set (0x80-0xFF). In the
+     * old-style LSB-first variant the first byte's high bit is 0. */
+    if (input_len > 0 && (input[0] & 0x80) == 0) {
+        return oc_tifflzw_decode_order(input, input_len, output, output_len, 1);
+    }
+    return oc_tifflzw_decode_order(input, input_len, output, output_len, 0);
 }
 
 /* ------------------------------------------------------------------ *
@@ -267,9 +324,14 @@ ptrdiff_t oc_tifflzw_encode(
     if (input_len > 0) {
         uint32_t prefix = input[0];
 
-        for (size_t i = 1; i < input_len; i++) {
-            const uint32_t k = input[i];
-            const uint32_t key = (prefix << 8) | k;
+        /* A pointer and an end rather than input, i and input_len: with
+           one register fewer, MSVC 14.51 kept i on the stack and loaded,
+           incremented and stored it for every input byte. The byte is
+           read again on a miss for the same reason, rather than kept. */
+        const uint8_t *ip = input + 1;
+        const uint8_t *const iend = input + input_len;
+        for (; ip < iend; ip++) {
+            const uint32_t key = (prefix << 8) | *ip;
             const uint32_t tag = (epoch << OC_LZW_KEY_BITS) | key;
 
             uint32_t slot = (key * 2654435761u) >> 19;
@@ -311,7 +373,7 @@ ptrdiff_t oc_tifflzw_encode(
                 width = 9;
                 next_code = OC_LZW_FIRST;
             }
-            prefix = k;
+            prefix = *ip;
         }
         OC_PUT(prefix);
     }

@@ -693,8 +693,8 @@ def packbits_decode(data, expected_size: int = -1) -> bytes:
 #   * Width grows when next-code-to-add equals 2^width - 1 (off-by-one
 #     vs canonical LZW — TIFF historical quirk).
 #
-# Decoder is in 3rdparty/oc_tifflzw/oc_tifflzw.c (flat-tables, stack
-# emit; see oc_giflzw for the design rationale).
+# Decoder is in 3rdparty/oc_tifflzw/oc_tifflzw.c (each entry points at
+# its string in the output, so a code decodes as a copy).
 
 
 def lzw_encode(data) -> bytes:
@@ -746,10 +746,10 @@ def lzw_decode(data, expected_size: int = -1) -> bytes:
     """Decode a TIFF-flavor LZW strip / tile.
 
     Backed by the vendored ``oc_tifflzw`` C decoder
-    (``3rdparty/oc_tifflzw/``) — flat prefix/suffix/first_byte tables,
-    stack-based string emit. Measured ~2x faster than the previous
-    pure-Cython per-string-malloc implementation and faster than
-    imagecodecs.lzw_decode.
+    (``3rdparty/oc_tifflzw/``), where every entry points at its string
+    in the output, so each code decodes as one copy. Measured ~2x faster
+    than the previous pure-Cython per-string-malloc implementation and
+    faster than imagecodecs.lzw_decode.
 
     ``expected_size`` is the exact uncompressed byte count (from the
     TIFF strip / tile size). Must be > 0 — pass it from the calling

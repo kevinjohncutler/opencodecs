@@ -9,8 +9,9 @@
  *      ``next_code == (1 << width) - 1`` — a historical off-by-one
  *      quirk vs canonical LZW.
  *
- * Otherwise the dictionary management is identical to GIF's, so the
- * same flat prefix/suffix/first_byte tables + stack-based emit apply.
+ * Otherwise the dictionary management is identical to GIF's. Each
+ * entry records where its string already sits in the output, so a code
+ * decodes as a copy; oc_tifflzw.c says why.
  *
  * MIT license: see LICENSE in this directory.
  */
