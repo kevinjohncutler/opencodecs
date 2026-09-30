@@ -804,143 +804,109 @@ def lzw_decode(data, expected_size: int = -1) -> bytes:
 # Predictor 3 = floating-point predictor (TIFF Tech Note 3): the float
 #   bytes are byte-rearranged + horizontal-differenced. Reverse that.
 
-def undo_horizontal_u8(uint8_t[:, :, ::1] arr not None):
-    """In-place undo of horizontal predictor for a (rows, cols, samples)
-    uint8 array.
+ctypedef fused _uint_t:
+    uint8_t
+    uint16_t
+    uint32_t
 
-    Hot loop uses a raw pointer + register accumulators per channel so
-    the compiler keeps the running sums in registers and can auto-
-    vectorize the row scan (matches imagecodecs imcd_delta's pattern,
-    ~5 GB/s on Apple Silicon vs ~900 MB/s for the old memoryview-
-    indexed nested loop)."""
-    cdef Py_ssize_t r, c, s
-    cdef Py_ssize_t rows = arr.shape[0]
-    cdef Py_ssize_t cols = arr.shape[1]
-    cdef Py_ssize_t spp = arr.shape[2]
-    cdef uint8_t* row_p
-    cdef uint8_t s0, s1, s2, s3
-    if cols < 2:
-        return
-    with nogil:
-        if spp == 1:
-            for r in range(rows):
-                row_p = &arr[r, 0, 0]
-                s0 = row_p[0]
-                for c in range(1, cols):
-                    s0 = <uint8_t>(s0 + row_p[c])
-                    row_p[c] = s0
-        elif spp == 3:
-            for r in range(rows):
-                row_p = &arr[r, 0, 0]
-                s0 = row_p[0]; s1 = row_p[1]; s2 = row_p[2]
-                for c in range(1, cols):
-                    s0 = <uint8_t>(s0 + row_p[c*3])    ; row_p[c*3]   = s0
-                    s1 = <uint8_t>(s1 + row_p[c*3 + 1]); row_p[c*3+1] = s1
-                    s2 = <uint8_t>(s2 + row_p[c*3 + 2]); row_p[c*3+2] = s2
-        elif spp == 4:
-            for r in range(rows):
-                row_p = &arr[r, 0, 0]
-                s0 = row_p[0]; s1 = row_p[1]; s2 = row_p[2]; s3 = row_p[3]
-                for c in range(1, cols):
-                    s0 = <uint8_t>(s0 + row_p[c*4])    ; row_p[c*4]   = s0
-                    s1 = <uint8_t>(s1 + row_p[c*4 + 1]); row_p[c*4+1] = s1
-                    s2 = <uint8_t>(s2 + row_p[c*4 + 2]); row_p[c*4+2] = s2
-                    s3 = <uint8_t>(s3 + row_p[c*4 + 3]); row_p[c*4+3] = s3
+
+cdef void _undo_rows(_uint_t* p0, Py_ssize_t rows, Py_ssize_t cols,
+                     Py_ssize_t samples, Py_ssize_t row_elems) noexcept nogil:
+    """Undo horizontal differencing: a running sum along each row, per sample.
+
+    ``p0`` points at ``rows`` rows ``row_elems`` elements apart, each of
+    ``cols`` pixels of ``samples`` interleaved samples; every sample after
+    the first pixel gets the one to its left added. TIFF predictor 2 is
+    exactly this, and predictor 3's first step is this on the row's bytes.
+
+    Written so that no compiler has to guess. With one sample the running
+    sum lives in a 32-bit register whatever the sample width; only its
+    low bits are stored, and a sum modulo 2**32 agrees with one modulo
+    2**8 or 2**16 there, so the output is the same. A sum kept as
+    uint16_t is truncated on every step of a loop that cannot run in
+    parallel, which MSVC compiled 4x slower. That loop is unrolled by
+    hand, because Apple Clang unrolls the 16-bit form but not the 32-bit
+    one. Three and four samples keep sums of the sample's own width:
+    GCC then adds a whole pixel at once (one paddb for four uint8
+    samples) and stores it once, where 32-bit sums cost a store per
+    sample and made a uint8 RGB read 2% slower. And the obvious
+    ``p[c] += p[c - samples]`` rereads the value it just stored, 3 to 6x
+    slower than a register on every compiler measured, so other sample
+    counts walk one sample's chain at a time.
+
+    One-sample uint16 predictor 2 over a 4096 x 4096 image as 256 x 256
+    tiles, ms (lower is better):
+
+      =========================  =====  ========  ====  ===========
+      form                       MSVC   clang-cl  GCC   Apple Clang
+      =========================  =====  ========  ====  ===========
+      16-bit sum (0.4.0)         34.0   7.7       11.1  5.41
+      32-bit sum                  8.1   7.8        9.3  6.56
+      32-bit sum, unrolled x4     6.96  6.79      10.1  5.41
+      =========================  =====  ========  ====  ===========
+    """
+    cdef Py_ssize_t r, c, k
+    cdef uint32_t s0
+    cdef _uint_t t0, t1, t2, t3
+    cdef _uint_t* p
+    for r in range(rows):
+        p = p0 + r * row_elems
+        if samples == 1:
+            s0 = p[0]
+            c = 1
+            while c + 4 <= cols:
+                s0 = s0 + p[c]; p[c] = <_uint_t> s0
+                s0 = s0 + p[c + 1]; p[c + 1] = <_uint_t> s0
+                s0 = s0 + p[c + 2]; p[c + 2] = <_uint_t> s0
+                s0 = s0 + p[c + 3]; p[c + 3] = <_uint_t> s0
+                c += 4
+            while c < cols:
+                s0 = s0 + p[c]; p[c] = <_uint_t> s0
+                c += 1
+        elif samples == 3:
+            t0 = p[0]; t1 = p[1]; t2 = p[2]
+            for c in range(1, cols):
+                t0 = <_uint_t> (t0 + p[c * 3]); p[c * 3] = t0
+                t1 = <_uint_t> (t1 + p[c * 3 + 1]); p[c * 3 + 1] = t1
+                t2 = <_uint_t> (t2 + p[c * 3 + 2]); p[c * 3 + 2] = t2
+        elif samples == 4:
+            t0 = p[0]; t1 = p[1]; t2 = p[2]; t3 = p[3]
+            for c in range(1, cols):
+                t0 = <_uint_t> (t0 + p[c * 4]); p[c * 4] = t0
+                t1 = <_uint_t> (t1 + p[c * 4 + 1]); p[c * 4 + 1] = t1
+                t2 = <_uint_t> (t2 + p[c * 4 + 2]); p[c * 4 + 2] = t2
+                t3 = <_uint_t> (t3 + p[c * 4 + 3]); p[c * 4 + 3] = t3
         else:
-            # General path: still uses raw row pointer but loops over spp.
-            # Slower than the unrolled cases, but rare (spp not in 1/3/4).
-            for r in range(rows):
-                row_p = &arr[r, 0, 0]
+            # One chain per sample, each walked with its sum in a register.
+            for k in range(samples):
+                s0 = p[k]
                 for c in range(1, cols):
-                    for s in range(spp):
-                        row_p[c*spp + s] = <uint8_t>(
-                            row_p[c*spp + s] + row_p[(c-1)*spp + s])
+                    s0 = s0 + p[c * samples + k]
+                    p[c * samples + k] = <_uint_t> s0
+
+
+def undo_horizontal_u8(uint8_t[:, :, ::1] arr not None):
+    """In-place undo of predictor 2 on a (rows, cols, samples) uint8 array."""
+    if arr.shape[0] and arr.shape[1] > 1:
+        with nogil:
+            _undo_rows(&arr[0, 0, 0], arr.shape[0], arr.shape[1], arr.shape[2],
+                       arr.shape[1] * arr.shape[2])
 
 
 def undo_horizontal_u16(uint16_t[:, :, ::1] arr not None):
-    cdef Py_ssize_t r, c, s
-    cdef Py_ssize_t rows = arr.shape[0]
-    cdef Py_ssize_t cols = arr.shape[1]
-    cdef Py_ssize_t spp = arr.shape[2]
-    cdef uint16_t* row_p
-    cdef uint16_t s0, s1, s2, s3
-    if cols < 2:
-        return
-    with nogil:
-        if spp == 1:
-            for r in range(rows):
-                row_p = &arr[r, 0, 0]
-                s0 = row_p[0]
-                for c in range(1, cols):
-                    s0 = <uint16_t>(s0 + row_p[c])
-                    row_p[c] = s0
-        elif spp == 3:
-            for r in range(rows):
-                row_p = &arr[r, 0, 0]
-                s0 = row_p[0]; s1 = row_p[1]; s2 = row_p[2]
-                for c in range(1, cols):
-                    s0 = <uint16_t>(s0 + row_p[c*3])    ; row_p[c*3]   = s0
-                    s1 = <uint16_t>(s1 + row_p[c*3 + 1]); row_p[c*3+1] = s1
-                    s2 = <uint16_t>(s2 + row_p[c*3 + 2]); row_p[c*3+2] = s2
-        elif spp == 4:
-            for r in range(rows):
-                row_p = &arr[r, 0, 0]
-                s0 = row_p[0]; s1 = row_p[1]; s2 = row_p[2]; s3 = row_p[3]
-                for c in range(1, cols):
-                    s0 = <uint16_t>(s0 + row_p[c*4])    ; row_p[c*4]   = s0
-                    s1 = <uint16_t>(s1 + row_p[c*4 + 1]); row_p[c*4+1] = s1
-                    s2 = <uint16_t>(s2 + row_p[c*4 + 2]); row_p[c*4+2] = s2
-                    s3 = <uint16_t>(s3 + row_p[c*4 + 3]); row_p[c*4+3] = s3
-        else:
-            for r in range(rows):
-                row_p = &arr[r, 0, 0]
-                for c in range(1, cols):
-                    for s in range(spp):
-                        row_p[c*spp + s] = <uint16_t>(
-                            row_p[c*spp + s] + row_p[(c-1)*spp + s])
+    """In-place undo of predictor 2 on a (rows, cols, samples) uint16 array."""
+    if arr.shape[0] and arr.shape[1] > 1:
+        with nogil:
+            _undo_rows(&arr[0, 0, 0], arr.shape[0], arr.shape[1], arr.shape[2],
+                       arr.shape[1] * arr.shape[2])
 
 
 def undo_horizontal_u32(uint32_t[:, :, ::1] arr not None):
-    cdef Py_ssize_t r, c, s
-    cdef Py_ssize_t rows = arr.shape[0]
-    cdef Py_ssize_t cols = arr.shape[1]
-    cdef Py_ssize_t spp = arr.shape[2]
-    cdef uint32_t* row_p
-    cdef uint32_t s0, s1, s2, s3
-    if cols < 2:
-        return
-    with nogil:
-        if spp == 1:
-            for r in range(rows):
-                row_p = &arr[r, 0, 0]
-                s0 = row_p[0]
-                for c in range(1, cols):
-                    s0 = s0 + row_p[c]
-                    row_p[c] = s0
-        elif spp == 3:
-            for r in range(rows):
-                row_p = &arr[r, 0, 0]
-                s0 = row_p[0]; s1 = row_p[1]; s2 = row_p[2]
-                for c in range(1, cols):
-                    s0 = s0 + row_p[c*3]    ; row_p[c*3]   = s0
-                    s1 = s1 + row_p[c*3 + 1]; row_p[c*3+1] = s1
-                    s2 = s2 + row_p[c*3 + 2]; row_p[c*3+2] = s2
-        elif spp == 4:
-            for r in range(rows):
-                row_p = &arr[r, 0, 0]
-                s0 = row_p[0]; s1 = row_p[1]; s2 = row_p[2]; s3 = row_p[3]
-                for c in range(1, cols):
-                    s0 = s0 + row_p[c*4]    ; row_p[c*4]   = s0
-                    s1 = s1 + row_p[c*4 + 1]; row_p[c*4+1] = s1
-                    s2 = s2 + row_p[c*4 + 2]; row_p[c*4+2] = s2
-                    s3 = s3 + row_p[c*4 + 3]; row_p[c*4+3] = s3
-        else:
-            for r in range(rows):
-                row_p = &arr[r, 0, 0]
-                for c in range(1, cols):
-                    for s in range(spp):
-                        row_p[c*spp + s] = (
-                            row_p[c*spp + s] + row_p[(c-1)*spp + s])
+    """In-place undo of predictor 2 on a (rows, cols, samples) uint32 array."""
+    if arr.shape[0] and arr.shape[1] > 1:
+        with nogil:
+            _undo_rows(&arr[0, 0, 0], arr.shape[0], arr.shape[1], arr.shape[2],
+                       arr.shape[1] * arr.shape[2])
 
 
 def undo_floating_point(uint8_t[:, :, ::1] arr not None, int bytes_per_sample):
@@ -950,7 +916,7 @@ def undo_floating_point(uint8_t[:, :, ::1] arr not None, int bytes_per_sample):
     Shuffled byte planes are most-significant first regardless of file
     byte order. Reconstruct native-endian sample bytes in place.
     """
-    cdef Py_ssize_t r, c
+    cdef Py_ssize_t r
     cdef Py_ssize_t rows = arr.shape[0]
     cdef Py_ssize_t cols = arr.shape[1]
     cdef Py_ssize_t pixel_bytes = arr.shape[2]
@@ -983,8 +949,7 @@ def undo_floating_point(uint8_t[:, :, ::1] arr not None, int bytes_per_sample):
             for r in range(rows):
                 row_p = &arr[r, 0, 0]
                 # Each channel has its own recurrence across the byte planes.
-                for c in range(spp, total_bytes):
-                    row_p[c] = <uint8_t>(row_p[c] + row_p[c - spp])
+                _undo_rows(row_p, 1, total_bytes // spp, spp, total_bytes)
                 for samp_i in range(n_samples):
                     for lane in range(bps):
                         src_idx = lane * n_samples + samp_i
@@ -1074,48 +1039,6 @@ cdef Py_ssize_t _packbits_into(const uint8_t* src, Py_ssize_t n,
     return o
 
 
-ctypedef fused _uint_t:
-    uint8_t
-    uint16_t
-    uint32_t
-
-
-cdef void _undo_rows(_uint_t* p0, Py_ssize_t rows, Py_ssize_t cols,
-                     Py_ssize_t samples, Py_ssize_t row_elems) noexcept nogil:
-    """Predictor 2, with the running sum in registers for 1, 3 and 4 samples.
-
-    The obvious ``p[i] += p[i - samples]`` makes every sample wait for the
-    one just stored, and over a 4096 x 4096 image that made a serial read
-    0.71x on arm64 and 0.83x on x86-64 against these per-layout loops.
-    """
-    cdef Py_ssize_t r, c
-    cdef _uint_t s0, s1, s2, s3
-    cdef _uint_t* p
-    for r in range(rows):
-        p = p0 + r * row_elems
-        if samples == 1:
-            s0 = p[0]
-            for c in range(1, cols):
-                s0 = <_uint_t> (s0 + p[c])
-                p[c] = s0
-        elif samples == 3:
-            s0 = p[0]; s1 = p[1]; s2 = p[2]
-            for c in range(1, cols):
-                s0 = <_uint_t> (s0 + p[c * 3]); p[c * 3] = s0
-                s1 = <_uint_t> (s1 + p[c * 3 + 1]); p[c * 3 + 1] = s1
-                s2 = <_uint_t> (s2 + p[c * 3 + 2]); p[c * 3 + 2] = s2
-        elif samples == 4:
-            s0 = p[0]; s1 = p[1]; s2 = p[2]; s3 = p[3]
-            for c in range(1, cols):
-                s0 = <_uint_t> (s0 + p[c * 4]); p[c * 4] = s0
-                s1 = <_uint_t> (s1 + p[c * 4 + 1]); p[c * 4 + 1] = s1
-                s2 = <_uint_t> (s2 + p[c * 4 + 2]); p[c * 4 + 2] = s2
-                s3 = <_uint_t> (s3 + p[c * 4 + 3]); p[c * 4 + 3] = s3
-        else:
-            for c in range(samples, cols * samples):
-                p[c] = <_uint_t> (p[c] + p[c - samples])
-
-
 cdef void _undo_horizontal(uint8_t* buf, Py_ssize_t rows, Py_ssize_t cols,
                            Py_ssize_t samples, Py_ssize_t itemsize,
                            Py_ssize_t row_bytes) noexcept nogil:
@@ -1132,15 +1055,14 @@ cdef void _undo_float(uint8_t* buf, Py_ssize_t rows, Py_ssize_t cols,
                       Py_ssize_t samples, Py_ssize_t itemsize,
                       Py_ssize_t row_bytes, uint8_t* tmp) noexcept nogil:
     """Predictor 3 on ``rows`` whole rows; see undo_floating_point."""
-    cdef Py_ssize_t r, c, lane, samp_i, n_samples = cols * samples
+    cdef Py_ssize_t r, lane, samp_i, n_samples = cols * samples
     cdef Py_ssize_t total = cols * samples * itemsize
     cdef uint8_t* row_p
     cdef uint16_t endian_probe = 1
     cdef bint little_endian = (<uint8_t*> &endian_probe)[0] == 1
+    _undo_rows(buf, rows, cols * itemsize, samples, row_bytes)
     for r in range(rows):
         row_p = buf + r * row_bytes
-        for c in range(samples, total):
-            row_p[c] = <uint8_t> (row_p[c] + row_p[c - samples])
         for samp_i in range(n_samples):
             for lane in range(itemsize):
                 tmp[samp_i * itemsize
