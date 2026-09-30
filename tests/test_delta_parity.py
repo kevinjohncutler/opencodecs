@@ -228,3 +228,27 @@ def test_a_zero_length_predictor_axis_round_trips(name, shape, axis):
     enc = codec.encode(a, axis=axis)
     back = codec.decode(enc, dtype=np.uint16, shape=shape, axis=axis)
     assert np.asarray(back).shape == shape
+
+
+@pytest.mark.parametrize("bits", [1, 3, 7, 9, 12, 15, 17, 24, 31, 33, 56, 57, 63, 64])
+@pytest.mark.parametrize("itemsize", [1, 2, 4, 8])
+@pytest.mark.parametrize("little", [True, False])
+def test_unpackints_matches_a_bit_matrix(bits, itemsize, little):
+    """unpackints_into against samples rebuilt from np.unpackbits, for the
+    accumulator reader (up to 56 bits) and the general one, both byte
+    orders, items narrower than the sample (the low bytes are kept) and a
+    count whose last sample ends mid-byte."""
+    from opencodecs.codecs._bytetools import unpackints_into
+    rng = np.random.default_rng(bits * 10 + itemsize)
+    n = 1001
+    packed = rng.integers(0, 256, (n * bits + 7) // 8, dtype=np.uint8)
+    bitmat = np.unpackbits(packed)[: n * bits].reshape(n, bits).astype(np.uint64)
+    weights = np.uint64(1) << np.arange(bits - 1, -1, -1, dtype=np.uint64)
+    values = (bitmat * weights).sum(axis=1, dtype=np.uint64)
+    want = np.zeros((n, itemsize), np.uint8)
+    for j in range(itemsize):
+        byte = ((values >> np.uint64(8 * j)) & np.uint64(255)).astype(np.uint8)
+        want[:, j if little else itemsize - 1 - j] = byte
+    got = np.full(n * itemsize, 0xA5, np.uint8)
+    unpackints_into(packed.tobytes(), got, bits, n, itemsize, little)
+    np.testing.assert_array_equal(got.reshape(n, itemsize), want)
