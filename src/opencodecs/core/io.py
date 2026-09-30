@@ -464,14 +464,18 @@ _READ_PART = 4 << 20
 _READ_MAX_PARTS = 8
 _READ_SHARED_WIDTH = 16
 
-#: Whether one thread copies a file's bytes out of the caller's mapping of
-#: it faster than it reads them. A property of the kernel that nothing can
-#: probe, so it is named, and it holds alone and under load alike: macOS
-#: copies faster (and its reads of a mapped file slow down when several
-#: threads read that file), Linux reads faster (and copies from mappings
-#: contend, each set up and torn down under a lock every thread of the
-#: process shares). See read_file_into for the measurements.
-_COPY_FROM_MAPPING_BEATS_READ = sys.platform == "darwin"
+#: Whether copying a file's bytes out of the caller's mapping of it beats
+#: reading them: for one thread's worth read alone, and for a read made
+#: while other calls read. Properties of the kernel that nothing can probe,
+#: so they are named. macOS copies faster in both (and its reads of a
+#: mapped file slow down when several threads read that file). Linux reads
+#: faster in both (copies from mappings contend, each set up and torn down
+#: under a lock every thread of the process shares). Windows reads faster
+#: alone and copies faster among other readers, whose reads of one file
+#: contend in the kernel's file cache. See read_file_into for the
+#: measurements.
+_COPY_BEATS_READ_ALONE = sys.platform == "darwin"
+_COPY_BEATS_READ_AMONG_OTHERS = sys.platform in ("darwin", "win32")
 
 
 def read_file_into(path, offset: int, view, *, numthreads: int | None = None,
@@ -485,31 +489,41 @@ def read_file_into(path, offset: int, view, *, numthreads: int | None = None,
     of 16 while other calls are in flight, 1 reads on this thread only.
 
     ``mapping`` is a memory map of the same file that the caller already
-    holds. Where the kernel copies from a mapping faster than it reads
-    (``_COPY_FROM_MAPPING_BEATS_READ``), one thread's worth of bytes (a
-    single part, or any read while other calls are in flight) is copied
-    from it instead: after advising the kernel the range will be needed
-    when the read is alone, without the advice, which costs more than it
-    saves when threads compete, when it is not.
+    holds. Where the kernel copies from a mapping faster than it reads,
+    the bytes are copied from it instead, in the same parts a read would
+    use: alone, one thread's worth (a single part) where
+    ``_COPY_BEATS_READ_ALONE``, after advising the kernel the range will
+    be needed; and any read while other calls are in flight where
+    ``_COPY_BEATS_READ_AMONG_OTHERS``, without the advice, which costs
+    more than it saves when threads compete.
 
     32 MB of contiguous strips from one file, with the caller's mapping
-    held as the TIFF reader holds one, on a 20-core arm64 Mac and a
-    64-core x86-64 Linux host. Wall milliseconds per read, lower is
-    better, for a lone reader and for eight reading the file at once; "*"
-    marks what this function does:
+    held as the TIFF reader holds one, on a 20-core arm64 Mac, a 64-core
+    x86-64 Linux host and a 4-core x86-64 Windows laptop. Wall
+    milliseconds per read, lower is better, for a lone reader and for
+    eight reading the file at once; "*" marks what this function does:
 
-      ================================  ============  ============
-      strategy                          macOS 1 / 8   Linux 1 / 8
-      ================================  ============  ============
-      copy from the mapping (0.3.1)     3.01 / 1.07*  11.1 / 3.65
-      advise, then copy                 1.87*/ 1.33   11.3 / 3.75
-      read, 1 part                      3.4  / 1.22   10.8*/ 2.25*
-      positioned reads, 2 parts            - / 1.11      - / 2.02*
-      positioned reads, 8 parts         1.10*/ -      2.59*/ -
-      ================================  ============  ============
+      ================================  ===========  ===========  =============
+      strategy                          macOS 1 / 8  Linux 1 / 8  Windows 1 / 8
+      ================================  ===========  ===========  =============
+      copy from the mapping (0.3.1)     3.01 / 1.07* 11.1 / 3.65  24.9 / 5.73
+      advise, then copy                 1.87*/ 1.33  11.3 / 3.75     -
+      read, 1 part                      3.4  / 1.22  10.8*/ 2.25* 15.6*/ 8.00
+      positioned reads, 2 parts            - / 1.11     - / 2.02*    - / 8.03
+      positioned reads, 8 parts         1.10*/ -     2.59*/ -     11.2*/ -
+      copy from the mapping, 2 parts       -            -            - / 5.77*
+      ================================  ===========  ===========  =============
+
+    Copies made while others read are split like reads. In paired runs
+    of split against unsplit copies, two readers at once took 1.45
+    against 1.87 ms per read on macOS and 8.97 against 13.4 on Windows,
+    and eight were level on both. On Windows the reads of eight readers
+    at once were 0.71x of 0.3.1's copies, in parts or not: reads of one
+    file from many threads contend in its file cache there, as copies
+    from a mapping held by the process do not.
 
     A single thread is capped by first-touching the fresh output pages,
-    so splitting pays even for one reader, on both kernels. Python has no
+    so splitting pays even for one reader, on every kernel. Python has no
     os.preadv on Windows, where each part opens its own handle and seeks,
     and no mmap.madvise there either.
 
@@ -526,12 +540,32 @@ def read_file_into(path, offset: int, view, *, numthreads: int | None = None,
                              share_of=_READ_SHARED_WIDTH)
         parts = max(1, min(parts, -(-total // _READ_PART)))
         others = others_in_flight()
-        if (mapping is not None and _COPY_FROM_MAPPING_BEATS_READ
-                and (parts == 1 or others)):
-            _copy_from_mapping(mapping, offset, view,
-                               advise=not others and hasattr(mapping, "madvise"))
+        if others:
+            copy = _COPY_BEATS_READ_AMONG_OTHERS
+        else:
+            copy = _COPY_BEATS_READ_ALONE and parts == 1
+        if mapping is not None and copy:
+            if parts == 1:
+                _copy_from_mapping(mapping, offset, view,
+                                   advise=not others and hasattr(mapping, "madvise"))
+            else:
+                _copy_parts_from_mapping(mapping, offset, view, parts)
             return
         _positioned_reads(path, offset, view, parts)
+
+
+def _spans(total: int, parts: int) -> list:
+    """``parts`` contiguous (lo, hi) ranges covering ``range(total)``."""
+    step = -(-total // parts)
+    return [(lo, min(total, lo + step)) for lo in range(0, total, step)]
+
+
+def _copy_parts_from_mapping(mapping, offset: int, view, parts: int) -> None:
+    """Copy ``view`` out of ``mapping`` in ``parts`` parallel spans."""
+    from .parallel import run_batched
+    spans = _spans(view.nbytes, parts)
+    run_batched(lambda s: _copy_from_mapping(mapping, offset + s[0], view[s[0]:s[1]]),
+                spans, len(spans), name="read")
 
 
 def _copy_from_mapping(mapping, offset: int, view, advise: bool = False) -> None:
@@ -553,9 +587,7 @@ def _copy_from_mapping(mapping, offset: int, view, advise: bool = False) -> None
 def _positioned_reads(path, offset: int, view, parts: int) -> None:
     """Read ``view`` from ``path`` at ``offset`` in ``parts`` parallel spans."""
     from .parallel import run_batched
-    total = view.nbytes
-    step = -(-total // parts)
-    spans = [(lo, min(total, lo + step)) for lo in range(0, total, step)]
+    spans = _spans(view.nbytes, parts)
     positioned = hasattr(os, "preadv")
     handle = os.open(path, os.O_RDONLY | O_BINARY) if positioned else -1
 

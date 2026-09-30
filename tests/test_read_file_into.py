@@ -68,21 +68,32 @@ def test_empty_view_reads_nothing(blob):
 
 
 def _which_path(monkeypatch):
+    """Record the strategy each call takes: "reads", "mapping" (one copy)
+    or "parts" (a copy split across threads, which then logs its pieces)."""
     used = []
-    real_copy, real_reads = core_io._copy_from_mapping, core_io._positioned_reads
+    real_copy, real_parts = core_io._copy_from_mapping, core_io._copy_parts_from_mapping
+    real_reads = core_io._positioned_reads
     monkeypatch.setattr(core_io, "_copy_from_mapping",
                         lambda *a, **k: (used.append("mapping"), real_copy(*a, **k))[1])
+    monkeypatch.setattr(core_io, "_copy_parts_from_mapping",
+                        lambda *a: (used.append("parts"), real_parts(*a))[1])
     monkeypatch.setattr(core_io, "_positioned_reads",
                         lambda *a: (used.append("reads"), real_reads(*a))[1])
     return used
 
 
-@pytest.mark.parametrize("copy_wins", [True, False])
-def test_a_lone_read_copies_one_threads_worth_where_copying_wins(blob, monkeypatch, copy_wins):
-    """Both settings of the kernel property run here whatever the platform."""
+def _set_kernel(monkeypatch, alone, among_others):
+    monkeypatch.setattr(core_io, "_COPY_BEATS_READ_ALONE", alone)
+    monkeypatch.setattr(core_io, "_COPY_BEATS_READ_AMONG_OTHERS", among_others)
+
+
+@pytest.mark.parametrize("alone", [True, False])
+def test_a_lone_read_copies_one_threads_worth_where_copying_wins(blob, monkeypatch, alone):
+    """Every setting of the kernel properties runs here whatever the platform,
+    and a lone read ignores the one for reads among others."""
     import mmap
     path, data = blob
-    monkeypatch.setattr(core_io, "_COPY_FROM_MAPPING_BEATS_READ", copy_wins)
+    _set_kernel(monkeypatch, alone, not alone)
     used = _which_path(monkeypatch)
     with open(path, "rb") as fh:
         mm = mmap.mmap(fh.fileno(), 0, access=mmap.ACCESS_READ)
@@ -93,18 +104,19 @@ def test_a_lone_read_copies_one_threads_worth_where_copying_wins(blob, monkeypat
                 np.testing.assert_array_equal(out, data[12345:12345 + out.size])
         finally:
             mm.close()
-    # One thread's worth copies where copying wins; a split read never does.
-    assert used == ["mapping" if copy_wins else "reads", "reads"]
+    # One thread's worth copies where copying wins alone; a split read never does.
+    assert used == ["mapping" if alone else "reads", "reads"]
 
 
-@pytest.mark.parametrize("copy_wins", [True, False])
-@pytest.mark.parametrize("numthreads", [1, None])
-def test_a_read_among_others_follows_the_kernel(blob, monkeypatch, copy_wins, numthreads):
-    """Both settings run here whatever the platform, so both stay tested."""
+@pytest.mark.parametrize("among_others", [True, False])
+@pytest.mark.parametrize("numthreads", [1, 3])
+def test_a_read_among_others_follows_the_kernel(blob, monkeypatch, among_others, numthreads):
+    """Both settings run here whatever the platform, so both stay tested; a
+    copy is split into the parts the budget gives, as a read would be."""
     import mmap
     from opencodecs.core import parallel
     path, data = blob
-    monkeypatch.setattr(core_io, "_COPY_FROM_MAPPING_BEATS_READ", copy_wins)
+    _set_kernel(monkeypatch, not among_others, among_others)
     used = _which_path(monkeypatch)
     with open(path, "rb") as fh, parallel._in_flight():  # another call running
         mm = mmap.mmap(fh.fileno(), 0, access=mmap.ACCESS_READ)
@@ -114,4 +126,9 @@ def test_a_read_among_others_follows_the_kernel(blob, monkeypatch, copy_wins, nu
         finally:
             mm.close()
     np.testing.assert_array_equal(out, data[7:7 + out.size])
-    assert used == ["mapping" if copy_wins else "reads"]
+    if not among_others:
+        assert used == ["reads"]
+    elif numthreads == 1:
+        assert used == ["mapping"]
+    else:
+        assert used == ["parts"] + ["mapping"] * numthreads

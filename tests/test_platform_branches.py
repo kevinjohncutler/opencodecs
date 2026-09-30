@@ -31,10 +31,14 @@ CATALOG = {
             "GNU ld's -Wl,--disable-new-dtags and -l:FILE for the libjxl link",
     },
     "src/opencodecs/core/io.py": {
-        '_COPY_FROM_MAPPING_BEATS_READ = sys.platform == "darwin"':
-            "measured, alone and with eight readers: one thread copies a file's "
-            "bytes from a mapping faster than it reads them on macOS, and reads "
-            "them faster on Linux",
+        '_COPY_BEATS_READ_ALONE = sys.platform == "darwin"':
+            "measured with one reader: one thread copies a file's bytes from a "
+            "mapping faster than it reads them on macOS, and reads them faster "
+            "on Linux and Windows",
+        '_COPY_BEATS_READ_AMONG_OTHERS = sys.platform in ("darwin", "win32")':
+            "measured with two to eight readers of one file: copying from a "
+            "mapping wins on macOS and Windows, where reads of one file contend "
+            "in the kernel, and reading wins on Linux",
     },
     "src/opencodecs/_ndtiff_writer.py": {
         'if sys.platform != "win32":':
