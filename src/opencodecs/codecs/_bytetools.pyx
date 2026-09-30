@@ -256,6 +256,142 @@ cdef void _chains(delta_t* p0, Py_ssize_t rows, Py_ssize_t n, Py_ssize_t dist,
                     i += dist
 
 
+cdef void _triples(delta_t* p0, Py_ssize_t rows, Py_ssize_t n,
+                   bint use_xor) noexcept nogil:
+    """``_chains`` for ``dist`` == 3 (three interleaved channels): all three
+    chains in one pass over the row, a register each.
+
+    Three independent sums per step instead of one, and one loop test per
+    three elements. On 4096 rows of 12288 uint8 this measured 12.6 against
+    15.2 ms with GCC (Zen 2), 9.9 against 22.9 with Apple Clang, and 17.8
+    against 24.9 with MSVC 14.51 (Kaby Lake). Two and four channels have
+    their own kernels below.
+    """
+    cdef Py_ssize_t r, i
+    cdef uint64_t a0, a1, a2
+    cdef delta_t* p
+    if n <= 3:
+        return   # every chain is a single element
+    for r in range(rows):
+        p = p0 + r * n
+        a0 = <uint64_t> p[0]
+        a1 = <uint64_t> p[1]
+        a2 = <uint64_t> p[2]
+        i = 3
+        if use_xor:
+            while i + 3 <= n:
+                a0 = a0 ^ <uint64_t> p[i]; p[i] = <delta_t> a0
+                a1 = a1 ^ <uint64_t> p[i + 1]; p[i + 1] = <delta_t> a1
+                a2 = a2 ^ <uint64_t> p[i + 2]; p[i + 2] = <delta_t> a2
+                i += 3
+            if i < n:
+                p[i] = <delta_t> (a0 ^ <uint64_t> p[i])
+            if i + 1 < n:
+                p[i + 1] = <delta_t> (a1 ^ <uint64_t> p[i + 1])
+        else:
+            while i + 3 <= n:
+                a0 = a0 + <uint64_t> p[i]; p[i] = <delta_t> a0
+                a1 = a1 + <uint64_t> p[i + 1]; p[i + 1] = <delta_t> a1
+                a2 = a2 + <uint64_t> p[i + 2]; p[i + 2] = <delta_t> a2
+                i += 3
+            if i < n:
+                p[i] = <delta_t> (a0 + <uint64_t> p[i])
+            if i + 1 < n:
+                p[i + 1] = <delta_t> (a1 + <uint64_t> p[i + 1])
+
+
+cdef void _twos(delta_t* p0, Py_ssize_t rows, Py_ssize_t n,
+                bint use_xor) noexcept nogil:
+    """``_chains`` for ``dist`` == 2: both chains in one pass, a register
+    each, over a counted loop.
+
+    ``_chains``' loop is one element per step, 20 bytes of code under
+    MSVC, and whether its branch straddles a 32-byte line moved with
+    unrelated edits to this file: MSVC 14.51 builds of the same kernel ran
+    16.6 or 19.2 ms on Kaby Lake. Two elements per step leave the loop
+    bound by its stores instead. On 4096 rows of 8192 uint8 this measured
+    9.2 against 10.5 ms with GCC (Zen 2), 6.6 against 15.3 with Apple Clang
+    and 10.4 against 19.6 with MSVC 14.51 (Kaby Lake). A test of ``i + 2
+    <= n`` on each step instead of a count cost MSVC two instructions.
+    """
+    cdef Py_ssize_t r, k, steps = (n - 2) // 2
+    cdef uint64_t a0, a1
+    cdef delta_t* q
+    for r in range(rows):
+        q = p0 + r * n
+        a0 = <uint64_t> q[0]
+        a1 = <uint64_t> q[1]
+        q += 2
+        if use_xor:
+            for k in range(steps):
+                a0 = a0 ^ <uint64_t> q[0]; q[0] = <delta_t> a0
+                a1 = a1 ^ <uint64_t> q[1]; q[1] = <delta_t> a1
+                q += 2
+            if n % 2:
+                q[0] = <delta_t> (a0 ^ <uint64_t> q[0])
+        else:
+            for k in range(steps):
+                a0 = a0 + <uint64_t> q[0]; q[0] = <delta_t> a0
+                a1 = a1 + <uint64_t> q[1]; q[1] = <delta_t> a1
+                q += 2
+            if n % 2:
+                q[0] = <delta_t> (a0 + <uint64_t> q[0])
+
+
+cdef void _quads(delta_t* p0, Py_ssize_t rows, Py_ssize_t n,
+                 bint use_xor) noexcept nogil:
+    """``_chains`` for ``dist`` == 4 (RGBA): all four chains in one pass,
+    each with its own register and its own pointer.
+
+    Through one pointer, GCC merges the four narrow stores of a step into
+    one word built from shifts and ORs, which ran 10% slower than
+    ``_chains``; with a pointer each it cannot see that they touch. On 4096
+    rows of 16384 uint8 this measured 16.7 against 19.8 ms with GCC (Zen
+    2), 12.3 against 30.8 with Apple Clang and 21.3 against 39.2 with MSVC
+    14.51 (Kaby Lake).
+    """
+    cdef Py_ssize_t r, k, steps = (n - 4) // 4, rest = (n - 4) % 4
+    cdef uint64_t a0, a1, a2, a3
+    cdef delta_t* q0
+    cdef delta_t* q1
+    cdef delta_t* q2
+    cdef delta_t* q3
+    for r in range(rows):
+        q0 = p0 + r * n
+        a0 = <uint64_t> q0[0]
+        a1 = <uint64_t> q0[1]
+        a2 = <uint64_t> q0[2]
+        a3 = <uint64_t> q0[3]
+        q0 += 4
+        q1 = q0 + 1
+        q2 = q0 + 2
+        q3 = q0 + 3
+        if use_xor:
+            for k in range(steps):
+                a0 = a0 ^ <uint64_t> q0[0]; q0[0] = <delta_t> a0; q0 += 4
+                a1 = a1 ^ <uint64_t> q1[0]; q1[0] = <delta_t> a1; q1 += 4
+                a2 = a2 ^ <uint64_t> q2[0]; q2[0] = <delta_t> a2; q2 += 4
+                a3 = a3 ^ <uint64_t> q3[0]; q3[0] = <delta_t> a3; q3 += 4
+            if rest > 0:
+                q0[0] = <delta_t> (a0 ^ <uint64_t> q0[0])
+            if rest > 1:
+                q1[0] = <delta_t> (a1 ^ <uint64_t> q1[0])
+            if rest > 2:
+                q2[0] = <delta_t> (a2 ^ <uint64_t> q2[0])
+        else:
+            for k in range(steps):
+                a0 = a0 + <uint64_t> q0[0]; q0[0] = <delta_t> a0; q0 += 4
+                a1 = a1 + <uint64_t> q1[0]; q1[0] = <delta_t> a1; q1 += 4
+                a2 = a2 + <uint64_t> q2[0]; q2[0] = <delta_t> a2; q2 += 4
+                a3 = a3 + <uint64_t> q3[0]; q3[0] = <delta_t> a3; q3 += 4
+            if rest > 0:
+                q0[0] = <delta_t> (a0 + <uint64_t> q0[0])
+            if rest > 1:
+                q1[0] = <delta_t> (a1 + <uint64_t> q1[0])
+            if rest > 2:
+                q2[0] = <delta_t> (a2 + <uint64_t> q2[0])
+
+
 cdef void _pairs(delta_t* p0, Py_ssize_t rows, Py_ssize_t n,
                  bint use_xor) noexcept nogil:
     """Running sum (or XOR) along each of ``rows`` rows of ``n``, the
@@ -310,6 +446,12 @@ def delta_decode_inplace(delta_t[:, ::1] arr, Py_ssize_t dist=1):
     with nogil:
         if dist == 1:
             _pairs(&arr[0, 0], rows, n, False)
+        elif dist == 2:
+            _twos(&arr[0, 0], rows, n, False)
+        elif dist == 3:
+            _triples(&arr[0, 0], rows, n, False)
+        elif dist == 4:
+            _quads(&arr[0, 0], rows, n, False)
         else:
             _chains(&arr[0, 0], rows, n, dist, False)
 
@@ -331,6 +473,12 @@ def xor_decode_inplace(delta_t[:, ::1] arr, Py_ssize_t dist=1):
     with nogil:
         if dist == 1:
             _pairs(&arr[0, 0], rows, n, True)
+        elif dist == 2:
+            _twos(&arr[0, 0], rows, n, True)
+        elif dist == 3:
+            _triples(&arr[0, 0], rows, n, True)
+        elif dist == 4:
+            _quads(&arr[0, 0], rows, n, True)
         else:
             _chains(&arr[0, 0], rows, n, dist, True)
 

@@ -193,15 +193,16 @@ def test_packints_rejects_a_short_buffer():
 
 
 @pytest.mark.parametrize("dtype", DTYPES)
-@pytest.mark.parametrize("dist", [1, 2, 5, 80, sys.maxsize])
-@pytest.mark.parametrize("width", [2, 3, 61, 62])
+@pytest.mark.parametrize("dist", [1, 2, 3, 4, 5, 80, sys.maxsize])
+@pytest.mark.parametrize("width", [2, 3, 5, 61, 62, 63, 64])
 def test_kernels_match_numpy_for_every_chain_layout(dtype, dist, width):
     """Both kernels keep the running value in a 64-bit register and store
     its low bits: dist=1 two elements per step, so odd and even widths
-    take different tails, and dist > 1 one chain at a time. NumPy's
-    wrapping accumulate is the reference, for signed types, XOR included,
-    and strides longer than the row, up to one where start + dist would
-    overflow a signed index."""
+    take different tails, dist=2, 3 and 4 all their chains in one pass,
+    with every tail from none to dist - 1 elements, and other distances
+    one chain at a time. NumPy's wrapping accumulate is the reference, for
+    signed types, XOR included, and strides longer than the row, up to one
+    where start + dist would overflow a signed index."""
     from opencodecs.codecs._bytetools import delta_decode_inplace, xor_decode_inplace
     info = np.iinfo(dtype)
     rng = np.random.default_rng(dist)
