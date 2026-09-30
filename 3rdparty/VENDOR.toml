@@ -84,7 +84,10 @@ uint64 branch of bshuf_write_uint64_BE. They silence MSVC C4244; the \
 truncation is intended in all three, the value is masked to a byte \
 already. Re-derived from upstream in 2026-09 so this delta is three \
 lines that can be read, rather than a file nobody could account for. \
-Worth sending upstream."""
+And the USESSE2 guard also accepts _M_X64: MSVC never defines \
+__SSE2__, though SSE2 is part of x86-64, so MSVC builds ran the scalar \
+fallback, measured at half the speed of the SSE2 path. Both are worth \
+sending upstream."""
   [[component.file]]
   local = "3rdparty/bitshuffle/bitshuffle_core.h"
   upstream = "src/bitshuffle_core.h"
@@ -92,7 +95,8 @@ Worth sending upstream."""
   modified = true
   note = """Upstream master, except the BSHUF_VERSION macros, which \
 upstream left at 0.4.0 on master; ours say 0.5.2 to match the released \
-version the rest of this directory tracks."""
+version the rest of this directory tracks. And stdint.h is included for \
+MSVC too, as in bitshuffle_internals.h."""
   [[component.file]]
   local = "3rdparty/bitshuffle/iochain.c"
   upstream = "src/iochain.c"
@@ -108,6 +112,11 @@ version the rest of this directory tracks."""
   [[component.file]]
   local = "3rdparty/bitshuffle/bitshuffle_internals.h"
   upstream = "src/bitshuffle_internals.h"
+  modified = true
+  note = """Pristine 0.5.2 except that stdint.h is included for MSVC, \
+which has shipped it since 2010 but sets no __STDC_VERSION__ in its \
+default C mode. The hand-written fallback typedefs have no int16_t, so \
+the SSE2 path, once enabled for MSVC, did not compile."""
 
 [[component]]
 name = "cfitsio"

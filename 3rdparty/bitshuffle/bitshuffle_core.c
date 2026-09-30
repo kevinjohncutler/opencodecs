@@ -24,7 +24,9 @@
 #define USEAVX2
 #endif
 
-#if defined(__SSE2__) || defined(NO_WARN_X86_INTRINSICS)
+/* opencodecs: or _M_X64. MSVC never defines __SSE2__, though every x86-64
+   CPU has SSE2, so MSVC builds ran the scalar fallback at half the speed. */
+#if defined(__SSE2__) || defined(_M_X64) || defined(NO_WARN_X86_INTRINSICS)
 #define USESSE2
 #endif
 

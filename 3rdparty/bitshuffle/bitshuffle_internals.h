@@ -14,7 +14,10 @@
 #define BITSHUFFLE_INTERNALS_H
 
 // We assume GNU g++ defining `__cplusplus` has stdint.h
-#if (defined (__STDC_VERSION__) && __STDC_VERSION__ >= 199900L) || defined(__cplusplus)
+/* opencodecs: and MSVC, which has shipped stdint.h since 2010 but sets no
+   __STDC_VERSION__ in its default C mode. The fallback below has no
+   int16_t, which the SSE2 byte transpose needs. */
+#if (defined (__STDC_VERSION__) && __STDC_VERSION__ >= 199900L) || defined(__cplusplus) || defined(_MSC_VER)
 #include <stdint.h>
 #else
   typedef unsigned char       uint8_t;
