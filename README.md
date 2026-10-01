@@ -76,11 +76,12 @@ library is missing — see [INSTALL.md](INSTALL.md).
 | `brotli` | ✓ | ✓ | system libbrotli | `.br` |
 | `blosc2` | ✓ | ✓ | source-built c-blosc2 2.23 | `.b2` |
 | `deflate` | ✓ | ✓ | libdeflate / zlib-ng / zlib (auto-selected at build time) | `.zlib` |
-| `gzip` | ✓ | ✓ | stdlib gzip | `.gz` |
+| `gzip` | ✓ | ✓ | the deflate engine above (encode), stdlib zlib (decode) | `.gz` |
 | `none` | ✓ | ✓ | identity (filter-chain placeholder) | — |
 | `bz2` | ✓ | ✓ | stdlib bz2 | `.bz2` |
 | `lzma` | ✓ | ✓ | stdlib lzma | `.xz` |
-| `snappy` | ✓ | ✓ | system snappy | `.sz` |
+| `snappy` | ✓ | ✓ | system snappy (raw block) | (none) |
+| `snappy_framed` | ✓ | ✓ | system snappy (framing format) | `.sz` |
 | `bitshuffle` | ✓ | ✓ | vendored bitshuffle (filter) | — |
 
 `bitshuffle` is a *filter*, not a stand-alone compressor: bit-level

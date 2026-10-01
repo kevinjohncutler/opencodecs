@@ -98,3 +98,10 @@ cdef extern from 'lz4frame.h' nogil:
     size_t LZ4F_compressUpdate(LZ4F_cctx* cctx, void* dst, size_t capacity,
                                const void* src, size_t srcSize, const void* opts)
     size_t LZ4F_compressEnd(LZ4F_cctx* cctx, void* dst, size_t capacity, const void* opts)
+
+
+# The bare LZ4 block format (lz4.h), with no frame around it. Used to read
+# lz4-java's LZ4Block stream, whose blocks are bare LZ4 blocks.
+cdef extern from 'lz4.h' nogil:
+    int LZ4_decompress_safe(const char* src, char* dst,
+                            int compressedSize, int dstCapacity)

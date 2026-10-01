@@ -16,6 +16,7 @@ from libc.string cimport memcpy, memset
 from zstd cimport (
     ZSTD_compress, ZSTD_decompress,
     ZSTD_compressBound, ZSTD_getFrameContentSize,
+    ZSTD_findFrameCompressedSize,
     ZSTD_CLEVEL_DEFAULT, ZSTD_isError, ZSTD_getErrorName,
     ZSTD_CONTENTSIZE_UNKNOWN, ZSTD_CONTENTSIZE_ERROR,
     ZSTD_VERSION_MAJOR, ZSTD_VERSION_MINOR, ZSTD_VERSION_RELEASE,
@@ -44,7 +45,13 @@ def encode(data, *, level: int | None = None,
     Parameters
     ----------
     level : int, optional
-        Compression level. Defaults to libzstd's default (3).
+        Compression level. Defaults to libzstd's default (3). The full
+        libzstd range is accepted, including the negative "fast" levels
+        (``ZSTD_minCLevel()`` up to -1, the CLI's ``--fast=N``), which
+        trade ratio for speed. imagecodecs clamps negative levels to 0,
+        which libzstd reads as the default, so ``level=-5`` gives
+        different, larger output here than there; both are valid
+        frames and each package decodes the other's.
     numthreads : int, optional
         Worker threads for parallel compression. ``None`` or ``<=0``
         means single-threaded (one frame, smallest output). ``1`` adds
@@ -160,8 +167,54 @@ cdef object _owned_encoded_result(bytes output, size_t size):
     return memoryview(output)[:size]
 
 
+cdef unsigned long long _content_size(const uint8_t* p, size_t n,
+                                      size_t* bad_offset) noexcept nogil:
+    """Total decompressed size of every frame in ``p[:n]``.
+
+    RFC 8878 section 3: Zstandard data is "one or more frames", and
+    skippable frames (section 3.1.2) carry no content. libzstd's own
+    ZSTD_decompress decodes all of them, so the output has to be sized
+    for all of them, not for the first frame's header alone: sizing from
+    the first frame made two concatenated frames, or a skippable frame
+    followed by a frame, fail with "Destination buffer is too small".
+
+    Returns the sum; ZSTD_CONTENTSIZE_UNKNOWN if any frame omits its size;
+    ZSTD_CONTENTSIZE_ERROR if a frame is malformed or truncated, with its
+    offset in ``bad_offset``. Only the stable API is used
+    (ZSTD_getFrameContentSize, which reports 0 for a skippable frame, and
+    ZSTD_findFrameCompressedSize, which spans one frame of either kind).
+    """
+    cdef unsigned long long total = 0
+    cdef unsigned long long size
+    cdef size_t frame
+    cdef size_t pos = 0
+    cdef bint unknown = False
+    while pos < n:
+        size = ZSTD_getFrameContentSize(<const void*> (p + pos), n - pos)
+        frame = ZSTD_findFrameCompressedSize(<const void*> (p + pos), n - pos)
+        if (size == <unsigned long long> ZSTD_CONTENTSIZE_ERROR
+                or ZSTD_isError(frame) or frame == 0):
+            bad_offset[0] = pos
+            return <unsigned long long> ZSTD_CONTENTSIZE_ERROR
+        if size == <unsigned long long> ZSTD_CONTENTSIZE_UNKNOWN:
+            unknown = True
+        else:
+            if total + size < total:
+                bad_offset[0] = pos
+                return <unsigned long long> ZSTD_CONTENTSIZE_ERROR
+            total += size
+        pos += frame
+    if unknown:
+        return <unsigned long long> ZSTD_CONTENTSIZE_UNKNOWN
+    return total
+
+
 def decode(data, *, out=None):
-    """Decode a zstd frame.
+    """Decode zstd data: one frame, or several.
+
+    Concatenated frames decode to the concatenation of their contents and
+    skippable frames are skipped, as RFC 8878 section 3 defines and the
+    zstd CLI does.
 
     Accepts any buffer-protocol object (bytes, bytearray, memoryview,
     mmap, numpy uint8). For mmap-backed memoryviews this is a true
@@ -173,8 +226,9 @@ def decode(data, *, out=None):
         Preallocated output buffer. Matches imagecodecs's ``out=`` API.
 
         * ``None`` (default): allocate fresh ``bytes`` sized from the
-          zstd frame header (or grown from a 4× starting guess for
-          streaming-encoded frames). Return type is ``bytes``.
+          frame headers (or grown from a 4x starting guess when a
+          streaming-encoded frame omits its size). Return type is
+          ``bytes``.
         * ``int``: allocate fresh ``bytes`` of exactly this size. The
           decoder must produce at most this many bytes; raises if the
           frame would expand to more.
@@ -193,6 +247,7 @@ def decode(data, *, out=None):
         unsigned long long content_size
         size_t dstcap
         size_t ret
+        size_t bad_offset = 0
         bytes out_bytes
 
     try:
@@ -206,9 +261,13 @@ def decode(data, *, out=None):
         # Empty frame into a caller buffer — return a zero-length slice.
         return out[:0]
 
-    content_size = ZSTD_getFrameContentSize(<const void*> &src[0], srcsize)
+    content_size = _content_size(&src[0], srcsize, &bad_offset)
     if content_size == <unsigned long long> ZSTD_CONTENTSIZE_ERROR:
-        raise ZstdError('ZSTD_getFrameContentSize: not a zstd frame')
+        if bad_offset == 0:
+            raise ZstdError('ZSTD_getFrameContentSize: not a zstd frame')
+        raise ZstdError(
+            f'zstd: data at offset {bad_offset} is not a complete zstd '
+            f'or skippable frame')
 
     cdef const void* src_ptr = <const void*> &src[0]
 
@@ -245,6 +304,16 @@ def decode(data, *, out=None):
     else:
         dstcap = <size_t> content_size
 
+    if dstcap == 0:
+        # Empty frames, or skippable frames only: nothing to allocate,
+        # but still let libzstd validate the input.
+        with nogil:
+            ret = ZSTD_decompress(NULL, 0, src_ptr, srcsize)
+        if ZSTD_isError(ret):
+            raise ZstdError(
+                f'ZSTD_decompress: {ZSTD_getErrorName(ret).decode()}')
+        return b''
+
     while True:
         out_bytes = PyBytes_FromStringAndSize(NULL, <Py_ssize_t> dstcap)
         # See encode() for why we cast to memoryview rather than using
@@ -258,7 +327,8 @@ def decode(data, *, out=None):
         del dst_view
         # When the user pinned the size via out=int(N), don't grow —
         # they explicitly asked for that capacity.
-        # Likewise content_size known: the frame won't be bigger.
+        # Likewise content_size known: it is the sum over every frame,
+        # so the output cannot be bigger.
         if isinstance(out, int):
             raise ZstdError(
                 f'ZSTD_decompress (out= int hint too small): '

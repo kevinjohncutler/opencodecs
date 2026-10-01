@@ -613,15 +613,18 @@ def copy_strips_from_buffer(
 #   n in 0..127      → copy next n+1 input bytes literally
 #   n == -128 (0x80) → no-op
 #   n in -127..-1    → replicate next byte (1 - n) times
-# All TIFF writers fit into < 256 KB output per strip in practice, but
-# we still bound-check on every emit.
+# The format has no length field (TIFF 6.0 section 9): a stream decodes
+# until its input is used up. We still bound-check on every emit.
 
 def packbits_decode(data, expected_size: int = -1) -> bytes:
     """Decode a PackBits-compressed strip / tile to bytes.
 
-    `expected_size` (when known from tile_h * tile_w * itemsize) is used
-    as the output capacity. Pass -1 to size at 2x source (works for
-    typical TIFF strip RLE; raises if the encoded data overruns).
+    `expected_size` (when known from tile_h * tile_w * itemsize) is the
+    output capacity, and a stream that would decode to more raises. Pass
+    -1 (or 0) when the size is not known: the run headers are then summed
+    first and the output is sized exactly, however well the data
+    compressed, as imagecodecs.packbits_decode(data) does. (This used to
+    cap the output at 2x the input and raise past it.)
     """
     cdef:
         const uint8_t[::1] src
@@ -641,7 +644,23 @@ def packbits_decode(data, expected_size: int = -1) -> bytes:
     except (TypeError, ValueError, BufferError):
         src = bytes(data)
     srcsize = src.shape[0]
-    out_cap = expected_size if expected_size > 0 else max(srcsize * 2, 64)
+    if expected_size > 0:
+        out_cap = expected_size
+    else:
+        # Sizing pass over the run headers only: the format carries no
+        # length, but every header states how many bytes it yields.
+        out_cap = 0
+        with nogil:
+            while i < srcsize:
+                n = <int8_t> src[i]
+                i += 1
+                if n >= 0:
+                    out_cap += n + 1
+                    i += n + 1
+                elif n != -128:
+                    out_cap += 1 - n
+                    i += 1
+        i = 0
     out = PyBytes_FromStringAndSize(NULL, out_cap)
     dst = <uint8_t*> PyBytes_AsString(out)
 
@@ -751,18 +770,21 @@ def lzw_decode(data, expected_size: int = -1) -> bytes:
     than the previous pure-Cython per-string-malloc implementation and
     faster than imagecodecs.lzw_decode.
 
-    ``expected_size`` is the exact uncompressed byte count (from the
-    TIFF strip / tile size). Must be > 0 — pass it from the calling
-    side; we don't have a sensible default because LZW doesn't carry
-    the uncompressed size in-band.
+    ``expected_size`` is the uncompressed byte count (from the TIFF
+    strip / tile size) and caps the output. Pass -1 (or 0) when it is
+    not known: a TIFF LZW stream ends itself with the EndOfInformation
+    code (TIFF 6.0 section 13), so the output buffer is grown until the
+    whole stream fits, as imagecodecs.lzw_decode(data) does. (This used
+    to guess 8x the input and fail on anything that compressed better.)
     """
     cdef:
         const uint8_t[::1] src
         Py_ssize_t srcsize
         bytes out
         uint8_t* dst
-        Py_ssize_t out_cap
+        Py_ssize_t out_cap, limit
         Py_ssize_t n_written
+        bint grow
 
     try:
         src = data
@@ -770,21 +792,36 @@ def lzw_decode(data, expected_size: int = -1) -> bytes:
         src = bytes(data)
     srcsize = src.shape[0]
 
-    if expected_size <= 0:
-        # Best-effort: most TIFF strips compress 2-6x; 8x covers most
-        # cases. Callers should pass expected_size for correctness.
-        out_cap = max(srcsize * 8, 256)
+    if srcsize == 0:
+        return b""      # as imagecodecs.lzw_decode(b"") does
+    # The most one code can emit is a full dictionary string, 4096
+    # bytes, and every code takes at least 9 bits, so no stream decodes
+    # to more than this; growing past it cannot help.
+    limit = (srcsize * 8 // 9 + 1) * 4096
+    grow = expected_size <= 0
+    if grow:
+        # Most TIFF strips compress 2-6x; start at 8x and double.
+        out_cap = min(max(srcsize * 8, 256), limit)
     else:
         out_cap = expected_size
 
-    out = PyBytes_FromStringAndSize(NULL, out_cap)
-    dst = <uint8_t*> PyBytes_AsString(out)
-
-    with nogil:
-        n_written = oc_tifflzw_decode(
-            &src[0], <size_t> srcsize,
-            dst, <size_t> out_cap,
-        )
+    while True:
+        out = PyBytes_FromStringAndSize(NULL, out_cap)
+        dst = <uint8_t*> PyBytes_AsString(out)
+        with nogil:
+            n_written = oc_tifflzw_decode(
+                &src[0], <size_t> srcsize,
+                dst, <size_t> out_cap,
+            )
+        # The decoder also stops, successfully, when the buffer is
+        # exactly full, so with a guessed size a full buffer may hold
+        # only part of the stream: grow and decode again in that case
+        # too, rather than return a silently truncated result.
+        if grow and (n_written == -3 or n_written == out_cap) \
+                and out_cap < limit:
+            out_cap = min(out_cap * 2, limit)
+            continue
+        break
     if n_written < 0:
         raise TiffError(
             f"oc_tifflzw_decode failed: rc={n_written} "

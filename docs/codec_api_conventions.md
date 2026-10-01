@@ -236,11 +236,13 @@ formats, the upstream library's CLI for byte compressors.)
 
 **Documenting deliberate non-defaults.** A codec's docstring
 should record any case where its default *would* be slower than
-the reference and explain the win that buys (e.g. "level 6 instead
-of level 1 because it's the brotli CLI's own default and produces
-output that is unambiguously smaller-AND-faster than ic's default
-once measured end-to-end against natural-image data"). If you
-can't make that case, change the default.
+the reference and explain the win that buys, with the measurement
+behind it (input, sizes, times). If you can't make that case on
+every input class measured, use the reference's default. brotli is
+the cautionary example: its default was once set to level 3 as
+"Pareto-better than imagecodecs's level 1", but imagecodecs defaults
+to level 4, and level 3 wrote 11% larger output on a small image, so
+the default is now 4, byte-identical to imagecodecs.
 
 **Bench setpoints lock this in.** ``bench/perf_baseline.<arch>.json``
 records the current oc/ic ratio for every codec. ``bench --check``

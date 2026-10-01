@@ -124,7 +124,10 @@ def test_codec_adapter_registered():
     codec = opc.get_codec("snappy")
     assert codec is not None
     assert codec.name == "snappy"
-    assert ".sz" in codec.file_extensions
+    # .sz is the framing format's extension (framing_format.txt), not the
+    # raw block's; it belongs to snappy_framed.
+    assert ".sz" not in codec.file_extensions
+    assert ".sz" in opc.get_codec("snappy_framed").file_extensions
 
 
 def test_codec_adapter_roundtrip():

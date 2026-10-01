@@ -12,6 +12,12 @@ cdef extern from 'blosc2.h' nogil:
     int BLOSC_NOSHUFFLE
     int BLOSC_SHUFFLE
     int BLOSC_BITSHUFFLE
+    int BLOSC_DELTA
+    int BLOSC_TRUNC_PREC
+    int BLOSC_ALWAYS_SPLIT
+    int BLOSC_NEVER_SPLIT
+    int BLOSC_AUTO_SPLIT
+    int BLOSC_FORWARD_COMPAT_SPLIT
 
     void blosc2_init()
     void blosc2_destroy()
@@ -45,6 +51,8 @@ cdef extern from 'blosc2.h' nogil:
         uint8_t clevel
         int32_t typesize
         int16_t nthreads
+        int32_t blocksize
+        int splitmode
         uint8_t filters[6]
     const blosc2_cparams BLOSC2_CPARAMS_DEFAULTS
 

@@ -15,6 +15,8 @@ BYTE_CASES = [
     ("snappy", {}), ("blosc2", {}), ("aec", {"bits_per_sample": 8}),
     ("bitshuffle", {"itemsize": 1}), ("byteshuffle", {"itemsize": 1}), ("none", {}),
 ]
+# Decoders that return imagecodecs' ndarray prefix for an ndarray out=.
+NDARRAY_PREFIX = {"deflate", "zstd", "lz4", "brotli", "snappy", "blosc2"}
 ARRAY_CASES = [
     ("jpeg", np.uint8), ("png", np.uint16), ("jpegls", np.uint16),
     ("jpeg2k", np.uint16), ("mozjpeg", np.uint8), ("webp", np.uint8),
@@ -43,13 +45,19 @@ def test_public_byte_destinations(name, options, kind):
     elif kind == "array":
         destination = np.frombuffer(storage, dtype=np.uint8)
     result = oc.read(encoded, format=name, out=destination, **options)
-    assert isinstance(result, memoryview)
+    if kind == "array" and name in NDARRAY_PREFIX:
+        # imagecodecs returns an ndarray slice of an ndarray out=.
+        assert isinstance(result, np.ndarray) and result.dtype == np.uint8
+        assert np.shares_memory(result, destination)
+    else:
+        assert isinstance(result, memoryview)
     assert bytes(result) == data
     assert storage[:len(data)] == data
     assert storage[len(data):] == b"\xa5" * 13
     result[0] = 37
     assert storage[0] == 37
-    result.release()
+    if isinstance(result, memoryview):
+        result.release()
     if kind == "memoryview":
         assert destination[0] == 37
 

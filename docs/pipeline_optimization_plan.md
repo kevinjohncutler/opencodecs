@@ -2,7 +2,7 @@
 
 Reviewed September 22, 2026. This replaces the initial implementation plan with
 an account of shared mechanisms, acceptance gates and remaining native feature
-boundaries. [pipeline_catalog.toml](../pipeline_catalog.toml) covers 60 registered
+boundaries. [pipeline_catalog.toml](../pipeline_catalog.toml) covers 61 registered
 codecs, six direct adapters and 17 work packages. Runtime capability flags remain
 in [capabilities.toml](../capabilities.toml).
 

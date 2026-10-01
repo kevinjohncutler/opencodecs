@@ -188,11 +188,25 @@ class N5Array:
         if kind == "xz":
             import lzma
             return lzma.decompress(raw)
-        if kind in ("blosc", "lz4", "zstd"):
+        if kind == "lz4":
+            # The N5 reference implementation (saalfeldlab/n5,
+            # Lz4Compression) writes lz4-java's LZ4BlockOutputStream
+            # format, magic "LZ4Block": not an LZ4 frame and not a bare
+            # block. Read that; an LZ4 frame (magic 04 22 4D 18) is still
+            # accepted, since that is what this reader used to expect.
+            try:
+                from .codecs import _lz4
+                if _lz4.lz4block_check_signature(raw):
+                    return _lz4.lz4block_decode(raw)
+                return bytes(_lz4.decode(raw))
+            except Exception as exc:                     # noqa: BLE001
+                raise N5Error(
+                    f"N5: {kind} block failed to decompress: {exc}") from None
+        if kind in ("blosc", "zstd"):
             # Route through the codecs we already ship rather than
             # duplicating a decompressor here.
             from . import get_codec
-            name = {"blosc": "blosc2", "lz4": "lz4", "zstd": "zstd"}[kind]
+            name = {"blosc": "blosc2", "zstd": "zstd"}[kind]
             try:
                 return bytes(get_codec(name).decode(raw))
             except Exception as exc:                     # noqa: BLE001

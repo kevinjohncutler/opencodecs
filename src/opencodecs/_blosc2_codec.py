@@ -8,7 +8,7 @@ from typing import Any
 import numpy as np
 
 from .core.codec import Codec
-from .core.buffers import byte_output
+from .core.buffers import encoded_output, native_decoded
 from .core._io_helpers import read_src as _read_src, write_dest as _write_dest
 from .core._optional_backend import import_or_stubs
 from .core.pipeline import native_workers
@@ -50,24 +50,43 @@ class Blosc2Codec(Codec):
     def encode(self, data: Any, *, dest=None, level: int | None = None,
                compressor: str | None = None,
                typesize: int | None = None,
-               shuffle: bool | None = None,
-               **opts) -> bytes | None:
-        if isinstance(data, np.ndarray):  # pragma: no cover - blosc2 is byte-oriented; ndarray-aware encode unused in tests
-            if typesize is None:
-                typesize = data.dtype.itemsize
-            data = data.tobytes()
+               shuffle=None,
+               splitmode=None,
+               blocksize: int | None = None,
+               numthreads: int | None = None,
+               out=None) -> bytes | None:
+        """Encode as a blosc2 chunk; see ``opencodecs.codecs._blosc2.encode``.
+
+        The keywords and defaults are imagecodecs.blosc2_encode's:
+        ``shuffle`` takes c-blosc2's filter codes 0-4 or their names
+        ('noshuffle', 'shuffle', 'bitshuffle', 'delta', 'trunc_prec',
+        plus 'none' / 'byte' / 'bit' and True / False), and
+        ``splitmode`` takes 1-4 or 'always' / 'never' / 'auto' /
+        'forward'.
+        """
+        if isinstance(data, np.ndarray):
+            # The native encoder picks imagecodecs' default typesize from
+            # the buffer itself (8 for a contiguous 1-D uint8 array, the
+            # item size otherwise), so arrays go to it as they are. Only
+            # an array that exports no buffer (datetime64, object) is
+            # flattened here, at its dtype's item size.
+            try:
+                memoryview(data).release()
+            except (TypeError, ValueError, BufferError):
+                if typesize is None:
+                    typesize = data.dtype.itemsize
+                data = data.tobytes()
         compressed = _blosc2_encode(
             data, level=level, compressor=compressor,
-            typesize=typesize, shuffle=shuffle,
+            typesize=typesize, shuffle=shuffle, splitmode=splitmode,
+            blocksize=blocksize, numthreads=native_workers(numthreads),
         )
-        return _write_dest(compressed, dest)
+        return encoded_output(compressed, out, self.name, dest)
 
     def decode(self, src: Any, *, numthreads: int | None = None,
-               out=None, **opts) -> bytes | memoryview:
-        if out is None:
-            return _blosc2_decode(_read_src(src), numthreads=native_workers(numthreads))
-        return _blosc2_decode(_read_src(src), numthreads=native_workers(numthreads),
-                              out=byte_output(out))
+               out=None) -> bytes | memoryview:
+        return native_decoded(_blosc2_decode, _read_src(src), out,
+                              numthreads=native_workers(numthreads))
 
     def decode_partial(self, src: Any, start: int, nitems: int, *,
                        typesize: int | None = None,

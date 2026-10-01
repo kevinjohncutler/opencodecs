@@ -889,6 +889,22 @@ feasible = "no"
 note = "the framing format is a sequence of self-contained chunks and decodes incrementally; the raw format we read and write is one-shot and has no index to seek with. streaming_decode is not a gap here and has been dropped from the list: the flag means iter_frames yields without materializing the whole thing, and this format has no frame axis to yield along. Every codec that sets it is multi_frame, 17 of 17, and the checker now enforces that. The incremental API described above is real and is a different capability from the one this column measures."
 
 [[codec]]
+name = "snappy_framed"
+multi_frame = false
+chunked = false
+streaming_decode = false
+parallel_decode = false
+range_reads = false
+pyramid = false
+http = false
+streaming_encode = false
+streaming_output = false
+decode_overlap = false
+writer_buffering = "all"
+feasible = "no"
+note = "Snappy's framing format, the .sz stream: checksummed chunks of at most 64 KB behind a stream identifier, decoded one-shot here with every chunk's CRC-32C checked. Chunks are independent, so they could decode incrementally or in parallel, but the stream carries no index, so reaching chunk N means walking the N chunk headers before it, and there is no frame axis for iter_frames to yield along."
+
+[[codec]]
 name = "sperr"
 multi_frame = false
 chunked = false

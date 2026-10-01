@@ -8,7 +8,7 @@ from typing import Any
 import numpy as np
 
 from .core.codec import Codec
-from .core.buffers import byte_output
+from .core.buffers import encoded_output, native_decoded
 from .core._io_helpers import read_src as _read_src, write_dest as _write_dest
 from .core._optional_backend import import_or_stubs
 
@@ -35,7 +35,12 @@ _isal_encode, _isal_decode, _isal_check_signature, _HAVE_ISAL = import_or_stubs(
 
 
 class DeflateCodec(Codec):
-    """Native zlib / deflate codec (matches imagecodecs.zlib_encode/decode)."""
+    """Native zlib / deflate codec (matches imagecodecs.deflate_encode/decode).
+
+    The default stream is zlib (RFC 1950). ``raw=True`` on encode and
+    decode selects a bare DEFLATE stream (RFC 1951), exactly as
+    imagecodecs's ``raw=`` does.
+    """
 
     name = "deflate"
     file_extensions = (".zlib",)
@@ -60,10 +65,15 @@ class DeflateCodec(Codec):
         return _zlib_check_signature(head)
 
     def encode(self, data: Any, *, dest=None, level: int | None = None,
-               backend: str | None = None, **opts) -> bytes | None:
+               raw: bool = False,
+               backend: str | None = None, out=None) -> bytes | None:
         if isinstance(data, np.ndarray):
             data = data.tobytes()
         use_isal = backend is not None and backend.lower() in ("isal", "igzip")
+        if use_isal and raw:
+            raise ValueError(
+                "deflate encode: raw=True is not available with "
+                "backend='isal', which writes zlib streams only")
         if use_isal:
             if not _HAVE_ISAL:
                 raise RuntimeError(
@@ -77,21 +87,26 @@ class DeflateCodec(Codec):
             isal_level = None if level is None else min(3, max(0, int(level)))
             compressed = _isal_encode(data, level=isal_level)
         else:
-            compressed = _zlib_encode(data, level=level)
-        return _write_dest(compressed, dest)
+            compressed = _zlib_encode(data, level=level, raw=bool(raw))
+        return encoded_output(compressed, out, self.name, dest)
 
-    def decode(self, src: Any, *, backend: str | None = None,
-               out=None, **opts) -> bytes | memoryview:
+    def decode(self, src: Any, *, raw: bool = False,
+               backend: str | None = None,
+               out=None) -> bytes | memoryview:
         use_isal = backend is not None and backend.lower() in ("isal", "igzip")
+        if use_isal and raw:
+            raise ValueError(
+                "deflate decode: raw=True is not available with "
+                "backend='isal', which reads zlib streams only")
         if use_isal and not _HAVE_ISAL:
             raise RuntimeError(
                 "deflate decode: backend='isal' requested but the "
                 "ISA-L extension was not built (Linux x86_64 only)"
             )
-        raw = _read_src(src)
+        data = _read_src(src)
         if use_isal:
-            return _isal_decode(raw) if out is None else _isal_decode(raw, out=byte_output(out))
-        return _zlib_decode(raw) if out is None else _zlib_decode(raw, out=byte_output(out))
+            return native_decoded(_isal_decode, data, out)
+        return native_decoded(_zlib_decode, data, out, raw=bool(raw))
 
 
 

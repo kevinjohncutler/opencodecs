@@ -260,6 +260,105 @@ core) and a 4-core x86-64 Windows laptop.
   raises ``NotImplementedError``; libtiff has no predictor 2 for 128-bit
   samples either.
 
+- Fix: zstd decode sized its output from the first frame alone, so two
+  concatenated frames, or a skippable frame followed by a frame, failed
+  with "Destination buffer is too small". RFC 8878 defines zstd data as
+  one or more frames, and the zstd CLI writes and reads concatenations;
+  every frame now decodes and skippable frames are skipped. The LZ4
+  codec decoded only the first of several concatenated frames and
+  silently dropped the rest; it now decodes them all, as the LZ4 frame
+  specification and the lz4 CLI do, and bytes after the last frame that
+  are not a frame raise instead of being ignored.
+- Fix: the N5 reader sent ``"lz4"`` blocks to the LZ4 frame decoder, but
+  the N5 reference implementation writes lz4-java's ``LZ4Block`` stream,
+  so no N5 lz4 dataset could be read. That format is now decoded, with
+  its checksums verified; LZ4 frames are still accepted.
+- Fix: the deflate codec ignored ``raw=``. ``encode(raw=True)`` returned
+  a zlib stream and ``decode(raw=True)`` rejected bare DEFLATE. ``raw``
+  now selects a bare DEFLATE stream (RFC 1951) on both sides, as in
+  imagecodecs; the default stays zlib (RFC 1950).
+- Fix: gzip output depended on the platform and Python version, because
+  the stdlib let zlib write its own OS byte (19 on macOS or 3 on Linux
+  under Python 3.11 and 3.12, 255 under 3.13). gzip now encodes through
+  the same libdeflate engine as the deflate codec with a fixed header
+  (MTIME 0, OS 255), and accepts levels up to 12 as imagecodecs does.
+  Builds linked to libdeflate, as imagecodecs is, write bytes identical
+  to imagecodecs; a build that falls back to zlib, because libdeflate
+  was not found, writes the same header around zlib's DEFLATE data, and
+  so does a build without the deflate extension at all, through the
+  stdlib ``zlib`` module. The OME-Zarr writer's gzip chunks, which also
+  carried the time they were written, use the same encoder. This changes
+  the bytes written; decoding, including multi-member files, is
+  unchanged.
+- Fix: LZW and PackBits decode without ``expected_size`` capped the
+  output at 8 and 2 times the input and failed on anything that
+  compressed better, which broke ``decode_segment`` and
+  ``verify_segment`` (used by the NDTiff reader) for those codecs. Both
+  formats end themselves (TIFF 6.0 sections 9 and 13), so the output is
+  now sized from the stream. An LZW decode that exactly filled the
+  guessed buffer could also return a truncated result; it now grows and
+  decodes again.
+- Fix: ``.sz`` files were routed to the raw Snappy block codec, but
+  ``.sz`` is the extension of Snappy's framing format, so real ``.sz``
+  files failed to read. A new ``snappy_framed`` codec reads and writes
+  the framing format, checking each chunk's CRC-32C, and owns ``.sz``;
+  ``snappy`` stays the raw block, byte-identical to imagecodecs. This is
+  a format change: ``write("x.sz", ...)`` now writes the framing format,
+  where 0.4.0 wrote a raw Snappy block. ``.sz`` files 0.4.0 wrote still
+  read, because ``snappy_framed`` decodes data without the stream
+  identifier as a raw block (and raises if it is not a valid one).
+- Fix: blosc2 encode took ``shuffle`` only as a bool and silently
+  ignored ``splitmode``, ``blocksize`` and ``numthreads``. It now takes
+  c-blosc2's filter codes 0 to 4 and their names (``"bitshuffle"`` can
+  be written at last), split modes by code or name, a block size and a
+  thread count, as imagecodecs does. The split default now matches
+  imagecodecs, always split, where blosc2's own default skipped the
+  split for some compressors and levels (zstd at level 9, for one), so
+  equal settings write equal chunks. This is a format change at those
+  settings; every blosc2 decoder reads both forms. The default
+  ``typesize`` now also follows imagecodecs, in the codec and in the
+  native encoder, ``opencodecs.codecs._blosc2.encode``: 8 for a flat run
+  of unsigned bytes (``bytes``, ``bytearray``, a contiguous 1-D uint8
+  array) and the buffer's own item size otherwise. A ``uint16`` array
+  passed straight to the native encoder is shuffled as 2-byte items,
+  where it used to be written with a type size of 8, and a 1-D uint8
+  array given to the codec is written with a type size of 8, where it
+  used to get 1. That is a format change too: the bytes written change,
+  and the decoded data is the same.
+- Fix: brotli encode ignored ``mode`` and ``lgwin``; both are now
+  honored. Its default level is now 4, imagecodecs' default, instead of
+  3, which was chosen on the mistaken belief that imagecodecs used level
+  1 and was not smaller on every input. Default output changes and is
+  byte-identical to imagecodecs.
+- Fix: the deflate, gzip, zstd, LZ4, brotli, blosc2 and Snappy codecs
+  ignored ``out=`` on encode, and gzip ignored it on decode: the call
+  returned new bytes and left the caller's buffer untouched. ``out=``
+  now follows imagecodecs, here and in the new ``snappy_framed`` codec:
+  an int is a capacity, a writable buffer receives the result, and
+  ``out=bytearray`` returns a bytearray; a result that does not fit
+  raises. A buffer the result fills exactly is returned as is; a larger
+  numpy array returns a uint8 array view of the written prefix, as
+  imagecodecs does, where these codecs' decoders used to return a
+  memoryview, and any other buffer returns a memoryview. The decoders
+  other than gzip already wrote into a given buffer, but raised
+  ``TypeError`` for ``out=bytearray`` and returned a memoryview of a
+  buffer they filled exactly; both now follow imagecodecs. These codecs
+  also accepted any keyword and dropped the ones they did not know, so a
+  misspelled or unsupported option was silently ignored; an unknown
+  keyword now raises ``TypeError``. LZ4 encode takes imagecodecs'
+  ``blocksizeid``, ``contentchecksum`` and ``blockchecksum``; a block
+  size code the LZ4 frame format reserves (0 to 3 in the header) raises
+  instead of being written. Default output is unchanged. LZ4 encode now
+  clamps ``level`` to -1 through 12, as imagecodecs does, where a level
+  below -1 went to liblz4 as is and selected a faster, larger mode. This
+  is a format change at those levels: the bytes written change, and the
+  decoded data is the same.
+- zstd keeps passing negative levels (libzstd's fast modes) through to
+  libzstd; imagecodecs clamps them to its default, so ``level=-5``
+  differs between the two. DICOM RLE decode returns interleaved
+  ``(H, W, C)`` samples, Planar Configuration 0, where imagecodecs
+  returns planar bytes. Both are now documented.
+
 0.4.0 (2026-09-29)
 ------------------
 
