@@ -21,6 +21,7 @@ cdef extern from 'webp/encode.h' nogil:
         uint8_t** output,
     )
     void WebPFree(void* ptr)
+    int WebPGetEncoderVersion()
 
 cdef extern from 'webp/decode.h' nogil:
     int WebPGetInfo(

@@ -102,6 +102,41 @@ def test_pngsuite_decodes(path):
 
 
 @pytest.mark.skipif(not _pngsuite_valid_files(), reason=_HINT)
+@pytest.mark.parametrize("path", _pngsuite_valid_files(), ids=lambda p: p.name)
+def test_pngsuite_pixels_match_libpng(path):
+    """Every PngSuite file decodes to libpng's (imagecodecs') array.
+
+    Shape, dtype and values, so the color-type rules are pinned: gray
+    stays gray at every bit depth, a palette is RGB, and tRNS adds the
+    alpha channel it defines (the t* files). The row decoder must give
+    the same image.
+
+    An interlaced file is also compared with its non-interlaced
+    PngSuite twin, which holds the same pixels, so Adam7 is checked
+    against a second reference that does not go through any
+    deinterlacer. PngSuite marks interlacing with the fourth letter of
+    the name (basi0g01 / basn0g01, s05i3p02 / s05n3p02).
+    """
+    ic = pytest.importorskip("imagecodecs")
+    from opencodecs._png_codec import PngCodec
+    data = path.read_bytes()
+    image = oc.read(data, format="png")
+    rebuilt = np.zeros_like(image)
+    for update in PngCodec().decode_rows(data):
+        rebuilt[update.row, update.x_start::update.x_step] = update.pixels
+    np.testing.assert_array_equal(rebuilt, image)
+    reference = ic.png_decode(data)
+    assert image.shape == reference.shape
+    assert image.dtype == reference.dtype
+    np.testing.assert_array_equal(image, reference)
+    name = path.name
+    if data[28] == 1 and name[3] == "i":
+        twin = path.with_name(name[:3] + "n" + name[4:])
+        if twin.exists():
+            np.testing.assert_array_equal(image, ic.png_decode(twin.read_bytes()))
+
+
+@pytest.mark.skipif(not _pngsuite_valid_files(), reason=_HINT)
 def test_pngsuite_corruption_detection_files_rejected():
     """PngSuite includes ``x*`` files that are deliberately malformed.
     Our decoder should refuse to decode them — at minimum not

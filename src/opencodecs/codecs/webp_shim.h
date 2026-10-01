@@ -20,10 +20,11 @@ extern "C" {
  * Encode (rgb_buf, w, h, stride) → newly-allocated bitstream.
  *
  *  has_alpha: 0 = RGB, 1 = RGBA
- *  lossless:  0 = lossy, 1 = near-lossless
- *  quality:   0..100 (lossy only)
+ *  lossless:  0 = lossy, 1 = lossless (exact, RGB under alpha 0 kept)
+ *  quality:   0..100, quality factor when lossy, compression effort
+ *             when lossless (WebPConfig.quality)
  *  thread_level: 0 = single-thread (libwebp default), 1 = enable workers
- *  method:    0..6 (lossy) speed/quality tradeoff. -1 = libwebp default (4)
+ *  method:    0..6 speed/size tradeoff. -1 = libwebp default (4)
  *
  * On success returns 0 and writes ``*out_ptr`` / ``*out_size``.
  * Caller MUST free ``*out_ptr`` via ``oc_webp_free``.

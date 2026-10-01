@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import operator
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +13,7 @@ from .core.buffers import array_output
 from .core._io_helpers import read_src as _read_src, write_dest as _write_dest
 from .core._optional_backend import import_or_stubs
 from .core.pipeline import native_workers
+from ._png_codec import _no_encode_out
 
 (
     _webp_encode, _webp_decode, _webp_check_signature,
@@ -21,6 +23,60 @@ from .core.pipeline import native_workers
     "encode", "decode", "check_signature",
     "frame_count", "decode_animation",
 )
+
+
+def decode_webp(data, *, out=None, index=None, hasalpha=None,
+                numthreads=None):
+    """Decode WebP ``data`` (bytes-like) with imagecodecs' parameters.
+
+    Shared by ``WebpCodec.decode`` and the tifffile adapter; see
+    ``WebpCodec.decode`` for what each parameter means.
+    """
+    if index is not None:
+        index = operator.index(index)
+    out = array_output(out)
+    if index in (None, 0, -1):
+        # A still decodes directly; libwebp refuses an animation here,
+        # so the frame count is only read when that happens.
+        try:
+            return _webp_decode(data, hasalpha=hasalpha, out=out)
+        except Exception:
+            if _webp_frame_count(data) <= 1:
+                raise
+    n = _webp_frame_count(data)
+    if index is None:
+        frame = None
+    else:
+        frame = index + n if index < 0 else index
+        if not 0 <= frame < n:
+            raise IndexError(f"webp decode: index={index} out of range "
+                             f"[0, {n - 1}]")
+    if frame is None and out is not None:
+        raise ValueError(
+            "webp decode: out= cannot take a whole animation; pass index= "
+            "or use open()")
+    frames, _, _ = _webp_decode_animation(
+        data, numthreads=native_workers(numthreads))
+    arr = np.stack(frames) if frame is None else frames[frame]
+    # libwebp composes every canvas as RGBA. With hasalpha=None,
+    # imagecodecs keeps alpha only when a canvas it returns has a pixel
+    # that is not fully opaque: any frame of the stack, or the one frame
+    # index= picks. The VP8X alpha flag is not that rule: libwebp's
+    # animation encoder sets it for opaque lossless frames too, since
+    # the sub-frames it stores rely on blending.
+    if hasalpha is None:
+        hasalpha = int(arr[..., 3].min()) != 255
+    if not hasalpha:
+        arr = np.ascontiguousarray(arr[..., :3])
+    if out is None:
+        return arr
+    if out.shape != arr.shape \
+            or out.dtype != arr.dtype:
+        raise ValueError(
+            f"webp decode: out= must be a {arr.dtype} array of shape "
+            f"{arr.shape}")
+    out[...] = arr
+    return out
 
 
 class WebpCodec(Codec):
@@ -54,14 +110,33 @@ class WebpCodec(Codec):
         return _webp_check_signature(head)
 
     def encode(self, data: Any, *, dest=None, level: int | None = None,
-               lossless: bool = True,
+               lossless: bool | None = True,
                numthreads: int | None = None,
-               method: int = -1,
+               method: int | None = None,
+               out: Any = None,
                **opts) -> bytes | None:
-        # ``lossless=True`` by default to match ``imagecodecs.webp_encode``
-        # — see docs/codec_api_conventions.md "Default settings:
-        # Pareto-better than the reference, no cheating." Callers who
-        # want a small lossy blob should pass ``lossless=False, level=N``.
+        """Encode a uint8 image as WebP.
+
+        ``lossless=True`` by default to match ``imagecodecs.webp_encode``
+        (see docs/codec_api_conventions.md "Default settings:
+        Pareto-better than the reference, no cheating"). Lossless output
+        is exact, including RGB values under fully transparent pixels.
+        ``level`` is libwebp's ``WebPConfig.quality``: the quality factor
+        when lossy, the compression effort (0 fastest, 100 smallest) when
+        lossless; default 75. ``method`` is libwebp's 0-6 speed/size
+        tradeoff (default 4), clamped to that range as in imagecodecs.
+        For an RGB or RGBA array the bytes equal
+        ``imagecodecs.webp_encode``'s for the same arguments when both
+        link the same libwebp release. Callers who want a small lossy blob should
+        pass ``lossless=False, level=N``. ``out``, imagecodecs' output
+        buffer, may be ``None``; anything else raises ``TypeError``, since
+        the encoded bytes are returned or written to ``dest``. Unknown
+        options raise ``TypeError`` rather than being dropped.
+        """
+        if opts:
+            raise TypeError(
+                f"webp encode: unexpected option(s) {sorted(opts)}")
+        _no_encode_out("webp", out)
         if not isinstance(data, np.ndarray):
             data = np.asarray(data)
         encoded = _webp_encode(
@@ -70,34 +145,41 @@ class WebpCodec(Codec):
         )
         return _write_dest(encoded, dest)
 
-    def decode(self, src: Any, *, out=None, **opts) -> np.ndarray:
+    def decode(self, src: Any, *, out=None, index: int | None = None,
+               hasalpha: bool | None = None,
+               numthreads: int | None = None) -> np.ndarray:
         """Decode a still WebP, or every frame of an animation.
 
         The plain decoder cannot read an animation container at all: it
         failed with the bare message "WebP decode failed", which told a
         caller nothing about why.
 
-        An animation decodes to a ``(frames, H, W, 4)`` stack, not to
-        its first frame. That is this package's existing convention for
-        a time sequence -- ``gif`` has always returned the stack -- and
-        it is what imagecodecs returns for the same file. Returning
-        frame 0 would silently discard the rest, which is the exact
-        complaint that motivated reading animations in the first place.
+        With ``index=None`` (default) an animation decodes to a
+        ``(frames, H, W, C)`` stack, not to its first frame, as
+        ``imagecodecs.webp_decode`` does; ``gif`` returns a time
+        sequence the same way. Returning frame 0 would silently discard
+        the rest. Pass ``index=`` for one frame; negative values count
+        from the end, a still has the single frame 0, and anything out
+        of range raises ``IndexError``. Every frame is the canvas the
+        WebP container specification composes (sub-rectangle, blending
+        and disposal applied), as in imagecodecs.
 
-        A still is unchanged and still returns ``(H, W, C)``.
+        ``hasalpha`` is imagecodecs' parameter: a true value returns
+        RGBA and a false value RGB. With ``None`` the result has the
+        same channels as imagecodecs: for a still, RGBA when its
+        bitstream has alpha; for an animation, RGBA when a returned
+        canvas has a pixel that is not fully opaque (any frame of the
+        stack, or the frame ``index`` picks), RGB otherwise. ``open()``
+        differs for an animation: its frames are always the RGBA canvas
+        libwebp composes.
+
+        ``numthreads`` caps the animation decoder's threads.
+
+        A still is unchanged and still returns ``(H, W, C)``. Options
+        imagecodecs does not define raise ``TypeError``.
         """
-        data = _read_src(src)
-        if out is not None:
-            if _webp_frame_count(data) > 1:
-                raise ValueError("webp decode: out= cannot take an animation; use open()")
-            return _webp_decode(data, out=array_output(out))
-        try:
-            return _webp_decode(data)
-        except Exception:
-            if _webp_frame_count(data) <= 1:
-                raise
-            frames, _, _ = _webp_decode_animation(data)
-            return np.stack(frames)
+        return decode_webp(data=_read_src(src), out=out, index=index,
+                           hasalpha=hasalpha, numthreads=numthreads)
 
     def frame_count(self, src: Any) -> int:
         """Frames in an animated WebP; 1 for a still.
@@ -181,4 +263,4 @@ class WebpReader(Reader):
         self.close()
 
 
-__all__ = ["WebpCodec", "WebpReader"]
+__all__ = ["WebpCodec", "WebpReader", "decode_webp"]

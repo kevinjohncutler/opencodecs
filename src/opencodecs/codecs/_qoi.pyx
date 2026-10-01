@@ -42,7 +42,17 @@ class QoiError(RuntimeError):
 
 
 def encode(data, *, srgb: bool = True) -> bytes:
-    """Encode a (H, W, 3) or (H, W, 4) uint8 array as QOI bytes."""
+    """Encode a (H, W, 3) or (H, W, 4) uint8 array as QOI bytes.
+
+    ``srgb`` sets the header colorspace byte (byte 13): True writes 0,
+    "sRGB with linear alpha", False writes 1, "all channels linear".
+    The QOI specification defines the byte as informative only; it does
+    not change how pixels are coded. The default is 0 for RGB and RGBA
+    alike, as the specification and the reference encoder (qoiconv)
+    write it. imagecodecs writes 1 for RGBA, so RGBA output differs from
+    imagecodecs in that one byte while the pixel data is identical; pass
+    ``srgb=False`` for byte parity.
+    """
     cdef:
         cnp.ndarray src
         qoi_desc desc

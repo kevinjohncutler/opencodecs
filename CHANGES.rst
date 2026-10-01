@@ -14,7 +14,8 @@ release because most of it has shipped continuously to ``main``.
 ------------------
 
 Speed on Windows, where much of 0.4.0's work had arrived only in part,
-and in several codecs on every platform. There is no new API. The speed
+and in several codecs on every platform. The speed work adds no API;
+the "Fix" bullets below name the API their fixes add. The speed
 changes are the same code on every operating system and compiler, in a
 form each compiler measured builds well, except two below: bitshuffle's
 build guard, which now lets MSVC take the SSE2 path, and how uncompressed
@@ -358,6 +359,103 @@ core) and a 4-core x86-64 Windows laptop.
   differs between the two. DICOM RLE decode returns interleaved
   ``(H, W, C)`` samples, Planar Configuration 0, where imagecodecs
   returns planar bytes. Both are now documented.
+
+- Fix: PNG decode kept the color type only for some images. 1, 2 and
+  4-bit grayscale came back as RGBA, an indexed image as RGBA whose alpha
+  was always 255 because the tRNS chunk was never applied, and tRNS on
+  gray or RGB images was ignored. Decode now follows the PNG specification
+  and libpng, matching imagecodecs: gray stays ``(H, W)`` with sub-byte
+  samples scaled to 8 bits, a palette gives RGB, and tRNS adds the alpha
+  channel it defines (gray becomes ``(H, W, 2)``, RGB and indexed
+  ``(H, W, 4)`` with the palette alpha). The row reader follows the same
+  rule. Arrays for these images change shape; nothing written changes.
+- Fix: ``PngCodec.encode`` dropped ``filter_choice`` and every other
+  option except ``level`` and the ICC profile, and accepted unknown
+  options silently. It now forwards ``filter_choice``, ``strategy`` and
+  imagecodecs' ``filter=`` (its ``PNG.FILTER`` values), and raises
+  ``TypeError`` on an unknown option. ``strategy`` did nothing even in
+  the native encoder, because builds with libdeflate compress the image
+  data through it and libdeflate has no strategy; an explicit strategy
+  now compresses through zlib with that strategy, as in imagecodecs. A
+  big-endian ``uint16`` array was refused; it is now stored by value, as
+  PNG's most significant byte first rule requires (imagecodecs writes
+  such an array byte-swapped). ``filter`` also takes imagecodecs'
+  ``PNG.FILTER`` names, including ``"no"``, and ``strategy`` its
+  ``PNG.STRATEGY`` names; a strategy outside 0 to 4 raises, as in
+  imagecodecs, instead of reaching zlib. An invalid filter or strategy
+  raises ``PngOptionError``, which is both the ``PngError`` the encoder
+  raised before and the ``ValueError`` the row encoder raised.
+  ``PngCodec.decode`` and ``QoiCodec.decode`` dropped unknown options;
+  they now raise ``TypeError``, keeping ``out`` (the only option
+  imagecodecs defines) and ``numthreads``, which the PNG and QOI
+  encoders (and ``PngCodec.encode_rows``) also accept and which does
+  nothing in either. The PNG, WebP and QOI codec encoders take
+  imagecodecs' ``out=None``; any other ``out`` raises ``TypeError``
+  instead of being dropped, since the encoded bytes are returned or
+  written to ``dest``. Default PNG output is unchanged. This is a
+  format change for PNG written through the codec with
+  ``filter_choice`` or ``strategy``, since those settings now take
+  effect.
+- Fix: lossless WebP was not exact for RGBA. libwebp's default
+  ``exact=0`` rewrote the RGB values under fully transparent pixels, so
+  they did not round-trip; lossless encoding now sets ``exact=1``, as
+  imagecodecs does. In lossless mode ``level`` was ignored; it is now
+  libwebp's compression effort (0 fastest, 100 smallest), its meaning in
+  libwebp and imagecodecs. Lossless bytes also depended on ``numthreads``
+  and ``method``, because some argument combinations took libwebp's
+  simple API (effort 70) and others the advanced one (effort 75); every
+  encode now takes the advanced API. ``_webp.encode`` defaulted to lossy
+  while ``WebpCodec`` and ``imagecodecs.webp_encode`` default to
+  lossless; it now defaults to lossless, and with it TIFF
+  ``compression="webp"``, which used to write lossy tiles unless told
+  otherwise, the same default as tifffile. A negative ``level`` means
+  lossless, ``level`` is clamped to 100 and keeps its fraction, and
+  ``method`` is clamped to 0 to 6, with ``None`` meaning 4, as in
+  imagecodecs; ``method=-1`` therefore now means 0, where it meant
+  libwebp's default 4 before. ``lossless`` is read as imagecodecs reads
+  it, ``int(lossless)``, so ``0``, ``1`` and NumPy bools work and a
+  string such as ``"no"`` raises ``ValueError`` instead of meaning
+  lossless. This is a format change for
+  WebP: the bytes change for RGBA images with transparent pixels, every
+  lossless encode at a level other than 75, lossless encodes that took
+  the simple API, encodes with
+  ``method=-1`` or a fractional ``level``, and WebP TIFF tiles written
+  without an explicit setting. For an RGB or RGBA array, with the same
+  libwebp release, the bytes now equal ``imagecodecs.webp_encode``'s for
+  the same arguments.
+- Fix: ``WebpCodec.decode`` dropped imagecodecs' ``hasalpha`` and
+  ``index`` and any other option. ``hasalpha`` now forces RGBA or RGB as
+  in imagecodecs, ``index`` selects one frame of an animation (negative
+  values count from the end, out of range raises ``IndexError``), and an
+  unknown option raises ``TypeError``. An animation always decoded to
+  RGBA; with ``hasalpha=None`` it now keeps alpha only when a returned
+  canvas has a pixel that is not fully opaque (any frame of the stack, or
+  the frame ``index`` picks) and is RGB otherwise, as in imagecodecs, so
+  the array of an opaque animation changes shape. ``open()`` still
+  returns the RGBA canvas libwebp composes for every frame of an
+  animation. New API: the native ``opencodecs.codecs._webp`` module's
+  ``decode`` takes ``hasalpha``, it gains ``version()``, the linked
+  libwebp in ``imagecodecs.webp_version()``'s format, and
+  ``opencodecs._webp_codec.decode_webp`` is the decoder ``WebpCodec`` and
+  the tifffile adapter share.
+- Fix: the ``opencodecs.tifffile_patch`` WebP encoder defaulted to
+  ``lossless=False``, so ``tifffile.imwrite(compression="webp")`` inside
+  ``patched()`` wrote lossy tiles where plain tifffile writes exact ones.
+  It now defaults to lossless like imagecodecs and forwards ``method``
+  and ``numthreads``; the WebP decoder honors ``hasalpha``, which
+  tifffile passes for four-sample images whose opaque tiles libwebp
+  stores without alpha, and ``index``; the PNG encoder forwards
+  ``strategy`` and ``filter``. Options the adapters do not implement
+  raise ``TypeError`` instead of being dropped. This is a format change
+  for WebP tiles written through the patch without an explicit setting,
+  which are now lossless instead of lossy.
+- Fix: ``QoiCodec.encode`` dropped unknown options; it now raises
+  ``TypeError``. QOI output is unchanged, and how its RGBA output differs
+  from imagecodecs is now documented: header byte 13 only. The QOI
+  specification defines that byte as informative; opencodecs writes 0,
+  "sRGB with linear alpha", for RGB and RGBA alike, as the specification
+  and its reference encoder do, and imagecodecs writes 1 for RGBA.
+  ``srgb=False`` gives byte parity.
 
 0.4.0 (2026-09-29)
 ------------------

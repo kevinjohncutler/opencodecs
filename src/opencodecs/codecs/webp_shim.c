@@ -1,4 +1,8 @@
-/* webp_shim.c — advanced-API WebP encode with thread_level exposed. */
+/* webp_shim.c: advanced-API WebP encode with thread_level exposed.
+ *
+ * Every opencodecs WebP encode goes through here, lossy and lossless, so
+ * the bytes depend only on the arguments and never on which libwebp entry
+ * point was taken. */
 #include "webp_shim.h"
 #include <stdlib.h>
 #include <string.h>
@@ -18,12 +22,17 @@ int oc_webp_encode(
     if (!WebPConfigInit(&config)) {
         return 1;  /* version mismatch */
     }
+    /* For lossy encoding quality is the 0-100 quality factor. For lossless
+     * encoding libwebp defines it as the compression effort (0 fastest,
+     * 100 smallest), which is how imagecodecs passes its level too. */
+    config.quality = quality;
     if (lossless) {
-        if (!WebPConfigLosslessPreset(&config, 6)) {
-            return 1;
-        }
-    } else {
-        config.quality = quality;
+        config.lossless = 1;
+        /* Keep the RGB values under fully transparent pixels. With the
+         * default exact=0 libwebp rewrites them, so a lossless RGBA image
+         * would not round-trip. The WebP lossless bitstream stores them
+         * exactly (RFC 9649), and imagecodecs sets this flag too. */
+        config.exact = 1;
     }
     if (method >= 0 && method <= 6) {
         config.method = method;

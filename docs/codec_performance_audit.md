@@ -79,11 +79,13 @@ fast path already skips. There is no second rgbe waiting to be found.
 
 ## An API trap worth knowing
 
-`webp` encode defaults to **lossless** and silently ignores `level=`
-unless `lossless=False` is also passed. `encode(img, level=10)` returns
-a 332 KB lossless file, not a small lossy one. imagecodecs behaves the
-same way, so this is compatibility rather than a bug, but it surprises
-people and it is why webp encode measures ~190 ms here rather than ~5 ms.
+`webp` encode defaults to **lossless**, and in lossless mode `level=`
+is libwebp's compression effort (0 fastest, 100 smallest), not a
+quality. `encode(img, level=10)` therefore returns a lossless
+file, not a small lossy one; pass `lossless=False` for that.
+imagecodecs behaves the same way, so this is compatibility rather than
+a bug, but it surprises people and it is why webp encode measures
+~190 ms here rather than ~5 ms.
 
 
 ## Container-format readers vs their reference libraries (2026-09-03)

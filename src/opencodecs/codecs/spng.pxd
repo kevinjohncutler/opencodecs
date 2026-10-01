@@ -1,6 +1,6 @@
 # Minimal Cython declarations for libspng.
 
-from libc.stdint cimport uint8_t, uint32_t
+from libc.stdint cimport uint8_t, uint16_t, uint32_t
 
 cdef extern from 'spng.h' nogil:
     ctypedef struct spng_ctx:
@@ -97,9 +97,23 @@ cdef extern from 'spng.h' nogil:
     const char* spng_strerror(int err)
 
     cdef enum spng_decode_flags:
+        SPNG_DECODE_TRNS
         SPNG_DECODE_PROGRESSIVE
     cdef enum spng_errno:
         SPNG_EOI
+        SPNG_ECHUNKAVAIL
+
+    # Transparency chunk (tRNS). Only its presence is used: libspng
+    # applies it itself when SPNG_DECODE_TRNS is passed to decode.
+    ctypedef struct spng_trns "struct spng_trns":
+        uint16_t gray
+        uint16_t red
+        uint16_t green
+        uint16_t blue
+        uint32_t n_type3_entries
+        uint8_t type3_alpha[256]
+
+    int spng_get_trns(spng_ctx* ctx, spng_trns* trns)
     ctypedef struct spng_row_info "struct spng_row_info":
         uint32_t scanline_idx
         uint32_t row_num

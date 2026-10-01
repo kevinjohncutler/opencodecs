@@ -104,24 +104,51 @@ def lz4_encode(data, level=None, out=None, **kw):
     return _encode(data, level=level)
 
 
-def png_decode(data, out=None, **kw):
+def _no_encode_out(name, out):
+    """Encoders here return new bytes; refuse an output buffer loudly."""
+    if out is not None:
+        raise TypeError(f"{name}: out= is not supported, the encoded "
+                        f"bytes are returned")
+
+
+def png_decode(data, out=None):
+    """``imagecodecs.png_decode(data, *, out=None)``."""
     from .codecs._png import decode as _decode
-    return _decode(bytes(data) if not isinstance(data, (bytes, bytearray)) else data)
+    data = bytes(data) if not isinstance(data, (bytes, bytearray)) else data
+    if out is None or isinstance(out, int):
+        return _decode(data)        # an int is only a size hint
+    return _decode(data, out=out)
 
 
-def png_encode(data, level=None, out=None, **kw):
+def png_encode(data, level=None, strategy=None, filter=None, out=None, **kw):
+    """``imagecodecs.png_encode``: ``level``, ``strategy`` and ``filter``
+    are forwarded with imagecodecs' meanings. Options opencodecs does
+    not implement raise ``TypeError`` rather than being dropped."""
     from .codecs._png import encode as _encode
-    return _encode(data, level=level)
+    _no_encode_out("png_encode", out)
+    return _encode(data, level=level, strategy=strategy, filter=filter, **kw)
 
 
-def webp_decode(data, hasalpha=None, out=None, **kw):
-    from .codecs._webp import decode as _decode
-    return _decode(bytes(data) if not isinstance(data, (bytes, bytearray)) else data)
+def webp_decode(data, index=None, hasalpha=None, out=None):
+    """``imagecodecs.webp_decode(data, index=None, *, hasalpha=None,
+    out=None)``. tifffile passes ``hasalpha=True`` for four-sample
+    images, whose all-opaque tiles libwebp stores without alpha."""
+    from ._webp_codec import decode_webp
+    data = bytes(data) if not isinstance(data, (bytes, bytearray)) else data
+    if isinstance(out, int):
+        out = None                  # an int is only a size hint
+    return decode_webp(data, index=index, hasalpha=hasalpha, out=out)
 
 
-def webp_encode(data, level=None, lossless=False, out=None, **kw):
+def webp_encode(data, level=None, lossless=None, method=None,
+                numthreads=None, out=None):
+    """``imagecodecs.webp_encode``: lossless by default, as imagecodecs
+    and therefore plain tifffile are; ``level``, ``lossless``, ``method``
+    and ``numthreads`` keep imagecodecs' meanings."""
     from .codecs._webp import encode as _encode
-    return _encode(data, level=level, lossless=lossless)
+    _no_encode_out("webp_encode", out)
+    return _encode(data, level=level, lossless=lossless, method=method,
+                   numthreads=numthreads)
 
 
 def jpeg_decode(data, out=None, **kw):
