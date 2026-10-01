@@ -239,6 +239,11 @@ def encode_segment(data, codec: str | int, *, level: int | None = None,
     extras can be passed via ``codec_kwargs``. ``owned_output=True`` may return
     a read-only view retaining its encoded allocation, avoiding a final copy.
     The caller must retain that view until the destination consumes it.
+
+    A TIFF segment is always ``(rows, width[, samples])``, so JPEG 2000
+    is called with ``planar=False`` unless the caller says otherwise:
+    the codec's ``planar=None`` rule (imagecodecs') would read a strip
+    of 4 or fewer rows with more than 4 samples as ``(C, H, W)``.
     """
     code = codec_name_to_code(codec)
     if code == NONE:
@@ -247,6 +252,8 @@ def encode_segment(data, codec: str | int, *, level: int | None = None,
     kw: dict[str, Any] = dict(codec_kwargs)
     if level is not None and "level" not in kw:
         kw["level"] = level
+    if code == JPEG2000:
+        kw.setdefault("planar", False)
     if code in (ZSTD, JPEG2000, JXL):
         from .pipeline import native_workers, in_worker
         # Zstandard counts background workers: zero means inline serial.
@@ -283,6 +290,8 @@ def bind_segment_encoder(codec: str | int, *, level=None, owned_output=False,
     options = dict(codec_kwargs)
     if level is not None:
         options.setdefault("level", level)
+    if code == JPEG2000:
+        options.setdefault("planar", False)
     eager = partial(fn, **options)
     if code not in (ZSTD, JPEG2000, JXL):
         return eager

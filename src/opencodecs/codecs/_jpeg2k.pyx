@@ -10,8 +10,10 @@
 
 from cpython.bytes cimport PyBytes_FromStringAndSize, PyBytes_AsString
 from libc.stdlib cimport malloc, free, realloc
-from libc.string cimport memcpy
-from libc.stdint cimport int32_t, uint8_t
+from libc.string cimport memcpy, strlen
+from libc.math cimport log
+from libc.stdint cimport (int8_t, int16_t, int32_t, uint8_t, uint16_t,
+                          uint32_t)
 
 import numpy as np
 cimport numpy as cnp
@@ -23,6 +25,7 @@ from openjpeg cimport (
     CODEC_FORMAT, COLOR_SPACE,
     OPJ_CODEC_J2K, OPJ_CODEC_JP2,
     OPJ_CLRSPC_GRAY, OPJ_CLRSPC_SRGB, OPJ_CLRSPC_UNSPECIFIED,
+    OPJ_CLRSPC_SYCC, OPJ_CLRSPC_EYCC, OPJ_CLRSPC_CMYK, OPJ_RPCL,
     opj_image_t, opj_image_create, opj_image_destroy, opj_image_cmptparm,
     opj_codec_t, opj_create_decompress, opj_create_compress,
     opj_destroy_codec, opj_set_default_decoder_parameters,
@@ -36,6 +39,7 @@ from openjpeg cimport (
     opj_read_header, opj_decode, opj_end_decompress,
     opj_start_compress, opj_encode, opj_end_compress,
     opj_has_thread_support, opj_get_num_cpus, opj_codec_set_threads,
+    opj_set_info_handler, opj_set_warning_handler, opj_set_error_handler,
 )
 
 cnp.import_array()
@@ -173,15 +177,116 @@ cdef OPJ_BOOL _seek_write_cb(OPJ_OFF_T p_nb_bytes, void* p_user_data) noexcept n
     return 1
 
 
+# ----- OpenJPEG messages (verbose=) -----
+#
+# imagecodecs' verbose: above 0 OpenJPEG's errors are logged, above 1
+# its warnings too, above 2 its info messages too. OpenJPEG can emit
+# from its worker threads while the calling thread waits inside a
+# native call, so the handlers only append to a C buffer (OpenJPEG
+# serializes worker messages under its own mutex); the messages are
+# logged, in order, once the call returns.
+
+import logging as _logging
+
+_logger = _logging.getLogger('opencodecs')
+
+
+cdef struct msg_log:
+    char* buf
+    size_t size
+    size_t cap
+
+
+cdef void _msg_append(msg_log* log, char kind, const char* msg) noexcept nogil:
+    cdef size_t n = strlen(msg)
+    cdef size_t need = log.size + n + 2
+    cdef size_t cap
+    cdef char* grown
+    if need > log.cap:
+        cap = log.cap * 2 if log.cap * 2 > need else need + 256
+        grown = <char*> realloc(log.buf, cap)
+        if grown == NULL:
+            return
+        log.buf = grown
+        log.cap = cap
+    log.buf[log.size] = kind
+    memcpy(log.buf + log.size + 1, msg, n)
+    log.buf[log.size + 1 + n] = 0
+    log.size += n + 2
+
+
+cdef void _msg_error(const char* msg, void* client_data) noexcept nogil:
+    _msg_append(<msg_log*> client_data, b'E', msg)
+
+
+cdef void _msg_warning(const char* msg, void* client_data) noexcept nogil:
+    _msg_append(<msg_log*> client_data, b'W', msg)
+
+
+cdef void _msg_info(const char* msg, void* client_data) noexcept nogil:
+    _msg_append(<msg_log*> client_data, b'I', msg)
+
+
+def _verbosity(verbose):
+    """imagecodecs' verbose as an int; None and False are 0."""
+    return int(verbose) if verbose else 0
+
+
+cdef void _msg_handlers(opj_codec_t* codec, msg_log* log, int v) noexcept:
+    """Route OpenJPEG's messages for ``codec`` into ``log`` per verbose."""
+    if v > 0:
+        opj_set_error_handler(codec, _msg_error, <void*> log)
+    if v > 1:
+        opj_set_warning_handler(codec, _msg_warning, <void*> log)
+    if v > 2:
+        opj_set_info_handler(codec, _msg_info, <void*> log)
+
+
+cdef void _msg_flush(msg_log* log):
+    """Log the collected messages, as imagecodecs words them; free them."""
+    cdef size_t pos = 0
+    cdef size_t n
+    cdef char kind
+    try:
+        while pos < log.size:
+            kind = log.buf[pos]
+            n = strlen(log.buf + pos + 1)
+            text = (log.buf + pos + 1)[:n].decode('utf-8', 'replace')
+            _logger.warning(
+                'JPEG2K %s: %s',
+                'error' if kind == b'E' else
+                'warning' if kind == b'W' else 'info',
+                text.strip())
+            pos += n + 2
+    finally:
+        free(log.buf)
+        log.buf = NULL
+        log.size = 0
+        log.cap = 0
+
+
 # ----- Public API -----
 
 
 def decode(data, *, numthreads: int | None = None, reduce: int = 0,
-           out=None) -> np.ndarray:
+           out=None, planar=None, verbose=None) -> np.ndarray:
     """Decode JPEG-2000 (JP2 or J2K codestream) bytes to a numpy array.
+
+    The dtype follows each component's precision and sign (Ssiz,
+    ISO/IEC 15444-1 Annex A.5.1): uint8/uint16/uint32 for unsigned and
+    int8/int16/int32 for signed components, holding the true sample
+    values, as imagecodecs and tifffile return them.
 
     Parameters
     ----------
+    planar : bool, optional
+        ``True`` returns a multi-component image as ``(C, H, W)``;
+        ``None`` or ``False`` as ``(H, W, C)``.
+    verbose : int, optional
+        As in imagecodecs: above 0 OpenJPEG's error messages are logged
+        (``logging`` warnings on the ``"opencodecs"`` logger, worded
+        ``"JPEG2K error: ..."``), above 1 its warnings too, above 2 its
+        info messages too. ``None`` or 0 logs nothing.
     reduce : int, optional
         Skip this many of the finest wavelet resolutions, returning an
         image roughly ``2**reduce`` times smaller on each axis. This is
@@ -217,7 +322,12 @@ def decode(data, *, numthreads: int | None = None, reduce: int = 0,
         int codec_format
         int _opj_n
         cnp.ndarray result
+        msg_log mlog
 
+    mlog.buf = NULL
+    mlog.size = 0
+    mlog.cap = 0
+    cdef int vlevel = _verbosity(verbose)
     if reduce < 0:
         raise ValueError(f'reduce must be >= 0, got {reduce}')
 
@@ -263,6 +373,7 @@ def decode(data, *, numthreads: int | None = None, reduce: int = 0,
         codec = opj_create_decompress(<CODEC_FORMAT> codec_format)
         if codec == NULL:
             raise Jpeg2kError('opj_create_decompress failed')
+        _msg_handlers(codec, &mlog, vlevel)
         opj_set_default_decoder_parameters(&dparams)
         # cp_reduce has to be in place before setup_decoder: openjpeg
         # uses it while parsing the tile headers to decide which
@@ -308,7 +419,7 @@ def decode(data, *, numthreads: int | None = None, reduce: int = 0,
         with nogil:
             opj_end_decompress(codec, stream)
 
-        result = _image_to_ndarray(image, out)
+        result = _image_to_ndarray(image, out, bool(planar))
         return result
     finally:
         if image != NULL:
@@ -316,6 +427,7 @@ def decode(data, *, numthreads: int | None = None, reduce: int = 0,
         if codec != NULL:
             opj_destroy_codec(codec)
         opj_stream_destroy(stream)
+        _msg_flush(&mlog)
         if rdbuf.source != NULL:
             data.raise_error()
 
@@ -553,8 +665,8 @@ def decode_info(data, *, reduce: int = 0) -> dict:
     would produce. That makes enumerating a pyramid's levels cheap --
     no entropy decoding happens here.
 
-    Returns a dict with ``shape``, ``dtype``, ``numcomps`` and
-    ``precision``. Raises :class:`Jpeg2kError` when ``reduce`` exceeds
+    Returns a dict with ``shape``, ``dtype``, ``numcomps``,
+    ``precision`` and ``signed``. Raises :class:`Jpeg2kError` when ``reduce`` exceeds
     what the codestream carries.
     """
     cdef:
@@ -566,7 +678,7 @@ def decode_info(data, *, reduce: int = 0) -> dict:
         opj_dparameters_t dparams
         mem_buffer_read rdbuf
         int codec_format
-        OPJ_UINT32 w, h, prec, numcomps
+        OPJ_UINT32 w, h, prec, numcomps, sgnd
 
     if reduce < 0:
         raise ValueError(f'reduce must be >= 0, got {reduce}')
@@ -627,6 +739,7 @@ def decode_info(data, *, reduce: int = 0) -> dict:
         w = image.comps[0].w
         h = image.comps[0].h
         prec = image.comps[0].prec
+        sgnd = image.comps[0].sgnd
         if w == 0 or h == 0:
             raise Jpeg2kError(
                 f'reduce={reduce} leaves a zero-sized image')
@@ -634,7 +747,8 @@ def decode_info(data, *, reduce: int = 0) -> dict:
         return {
             'shape': (int(h), int(w)) if numcomps == 1
                      else (int(h), int(w), int(numcomps)),
-            'dtype': np.uint8 if prec <= 8 else np.uint16,
+            'dtype': _component_dtype(prec, sgnd).type,
+            'signed': bool(sgnd),
             'numcomps': int(numcomps),
             'precision': int(prec),
         }
@@ -648,25 +762,84 @@ def decode_info(data, *, reduce: int = 0) -> dict:
             data.raise_error()
 
 
-cdef cnp.ndarray _image_to_ndarray(opj_image_t* image, object out):
-    """Copy openjpeg image planes into an interleaved numpy array.
+ctypedef fused _sample_t:
+    uint8_t
+    int8_t
+    uint16_t
+    int16_t
+    uint32_t
+    int32_t
 
-    ``out`` is the caller's preallocated ndarray (or None); see the
-    public ``decode`` for the full out= contract.
+
+cdef void _copy_components(
+    _sample_t* dst, opj_image_t* image, size_t n_pixels, size_t numcomps,
+    bint planar, bint clamp, long long lo, long long hi,
+) noexcept nogil:
+    """Copy openjpeg's int32 component planes into dst, clamped to the
+    component's nominal range (ISO/IEC 15444-1 Annex G.1.2: clipping is
+    the usual treatment of quantization overshoot; OpenJPEG clips too).
+    """
+    cdef size_t c, i, base, step
+    cdef long long v
+    cdef OPJ_INT32* comp_data
+    for c in range(numcomps):
+        comp_data = image.comps[c].data
+        if planar:
+            base = c * n_pixels
+            step = 1
+        else:
+            base = c
+            step = numcomps
+        if clamp:
+            for i in range(n_pixels):
+                v = comp_data[i]
+                if v < lo:
+                    v = lo
+                elif v > hi:
+                    v = hi
+                dst[base + i * step] = <_sample_t> v
+        else:
+            for i in range(n_pixels):
+                dst[base + i * step] = <_sample_t> comp_data[i]
+
+
+cdef object _component_dtype(OPJ_UINT32 prec, OPJ_UINT32 sgnd):
+    """dtype for a component of `prec` bits, signed when Ssiz says so.
+
+    ISO/IEC 15444-1 Annex A.5.1: bit 7 of Ssiz marks a signed component,
+    and Annex G.1 applies the DC level shift only to unsigned ones, so a
+    signed component decodes to signed values. imagecodecs and tifffile
+    return int8/int16/int32 for these, and so does opencodecs' HTJ2K.
+    """
+    if prec < 1 or prec > 32:
+        raise Jpeg2kError(f'unsupported precision {prec} bits')
+    itemsize = 1 if prec <= 8 else (2 if prec <= 16 else 4)
+    return np.dtype(f"{'i' if sgnd else 'u'}{itemsize}")
+
+
+cdef cnp.ndarray _image_to_ndarray(opj_image_t* image, object out,
+                                    bint planar=False):
+    """Copy openjpeg image planes into a numpy array.
+
+    ``planar`` returns ``(C, H, W)`` instead of ``(H, W, C)``. ``out``
+    is the caller's preallocated ndarray (or None); see the public
+    ``decode`` for the full out= contract.
     """
     cdef:
         OPJ_UINT32 numcomps = image.numcomps
         OPJ_UINT32 width
         OPJ_UINT32 height
         OPJ_UINT32 prec
-        OPJ_UINT32 c, i, n_pixels
-        OPJ_INT32* comp_data
+        OPJ_UINT32 sgnd
+        OPJ_UINT32 c
+        size_t n_pixels
         cnp.ndarray out_arr
-        cnp.npy_intp shape[3]
-        int ndim
-        int dtype_num
-        tuple expected_shape
-        object expected_dtype
+        void* dst
+        bint clamp
+        long long lo, hi
+        bint as_planar
+        bint is_int
+        int size
 
     if numcomps == 0:
         raise Jpeg2kError('image has 0 components')
@@ -674,6 +847,7 @@ cdef cnp.ndarray _image_to_ndarray(opj_image_t* image, object out):
     width = image.comps[0].w
     height = image.comps[0].h
     prec = image.comps[0].prec
+    sgnd = image.comps[0].sgnd
 
     for c in range(numcomps):
         if image.comps[c].w != width or image.comps[c].h != height:
@@ -684,25 +858,19 @@ cdef cnp.ndarray _image_to_ndarray(opj_image_t* image, object out):
             raise Jpeg2kError(
                 'JPEG-2000: components have differing precision; '
                 'not supported')
+        if image.comps[c].sgnd != sgnd:
+            raise Jpeg2kError(
+                'JPEG-2000: components differ in signedness; not supported')
 
-    if prec <= 8:
-        dtype_num = cnp.NPY_UINT8
-    elif prec <= 16:
-        dtype_num = cnp.NPY_UINT16
-    else:
-        raise Jpeg2kError(f'unsupported precision {prec} bits')
-
+    dtype = _component_dtype(prec, sgnd)
+    as_planar = planar and numcomps > 1
     if numcomps == 1:
-        ndim = 2
         expected_shape = (int(height), int(width))
+    elif as_planar:
+        expected_shape = (int(numcomps), int(height), int(width))
     else:
-        ndim = 3
-        shape[2] = numcomps
         expected_shape = (int(height), int(width), int(numcomps))
-    shape[0] = height
-    shape[1] = width
 
-    expected_dtype = np.uint8 if dtype_num == cnp.NPY_UINT8 else np.uint16
     if out is not None:
         if not isinstance(out, np.ndarray):
             raise Jpeg2kError(
@@ -712,130 +880,325 @@ cdef cnp.ndarray _image_to_ndarray(opj_image_t* image, object out):
             raise Jpeg2kError(
                 f"jpeg2k decode: out= shape {out.shape} does not match "
                 f"expected {expected_shape}")
-        if out.dtype != expected_dtype:
+        if out.dtype != dtype:
             raise Jpeg2kError(
                 f"jpeg2k decode: out= dtype {out.dtype} does not match "
-                f"expected {np.dtype(expected_dtype)}")
+                f"expected {dtype}")
         if not out.flags['C_CONTIGUOUS']:
             raise Jpeg2kError("jpeg2k decode: out= must be C-contiguous")
         out_arr = out
     else:
-        out_arr = cnp.PyArray_EMPTY(ndim, shape, dtype_num, 0)
+        out_arr = np.empty(expected_shape, dtype=dtype)
 
-    n_pixels = width * height
-    cdef uint8_t* out8 = <uint8_t*> cnp.PyArray_DATA(out_arr)
-    cdef unsigned short* out16 = <unsigned short*> cnp.PyArray_DATA(out_arr)
-    cdef OPJ_INT32 v
-    cdef int sgnd
-    cdef OPJ_UINT32 max_val = (<OPJ_UINT32> 1 << prec) - 1 if prec < 32 else 0xFFFFFFFF
-    if dtype_num == cnp.NPY_UINT8:
-        for c in range(numcomps):
-            comp_data = image.comps[c].data
-            sgnd = image.comps[c].sgnd
-            for i in range(n_pixels):
-                v = comp_data[i]
-                if sgnd:
-                    v += <OPJ_INT32>(1 << (prec - 1))
-                if v < 0: v = 0
-                if v > 255: v = 255
-                out8[i * numcomps + c] = <uint8_t> v
+    n_pixels = <size_t> width * height
+    if sgnd:
+        lo = -((<long long> 1) << (prec - 1))
+        hi = ((<long long> 1) << (prec - 1)) - 1
     else:
-        for c in range(numcomps):
-            comp_data = image.comps[c].data
-            sgnd = image.comps[c].sgnd
-            for i in range(n_pixels):
-                v = comp_data[i]
-                if sgnd:
-                    v += <OPJ_INT32>(1 << (prec - 1))
-                if v < 0: v = 0
-                if v > <OPJ_INT32> max_val: v = <OPJ_INT32> max_val
-                out16[i * numcomps + c] = <unsigned short> v
+        lo = 0
+        hi = ((<long long> 1) << prec) - 1
+    # openjpeg holds samples as int32, so a full 32-bit unsigned
+    # component is only meaningful as a bit pattern.
+    clamp = prec < 32
+    dst = cnp.PyArray_DATA(out_arr)
+    is_int = dtype.kind == 'i'
+    size = dtype.itemsize
+    with nogil:
+        if size == 1:
+            if is_int:
+                _copy_components(<int8_t*> dst, image, n_pixels, numcomps,
+                                 as_planar, clamp, lo, hi)
+            else:
+                _copy_components(<uint8_t*> dst, image, n_pixels, numcomps,
+                                 as_planar, clamp, lo, hi)
+        elif size == 2:
+            if is_int:
+                _copy_components(<int16_t*> dst, image, n_pixels, numcomps,
+                                 as_planar, clamp, lo, hi)
+            else:
+                _copy_components(<uint16_t*> dst, image, n_pixels, numcomps,
+                                 as_planar, clamp, lo, hi)
+        else:
+            if is_int:
+                _copy_components(<int32_t*> dst, image, n_pixels, numcomps,
+                                 as_planar, clamp, lo, hi)
+            else:
+                _copy_components(<uint32_t*> dst, image, n_pixels, numcomps,
+                                 as_planar, clamp, lo, hi)
     return out_arr
 
 
-def encode(data, *, level: int | None = None,
-           lossless: bool = False, codec: str = 'jp2',
+_COLORSPACES = {
+    'UNSPECIFIED': OPJ_CLRSPC_UNSPECIFIED,
+    'UNKNOWN': OPJ_CLRSPC_UNSPECIFIED,
+    'SRGB': OPJ_CLRSPC_SRGB,
+    'RGB': OPJ_CLRSPC_SRGB,
+    'RGBA': OPJ_CLRSPC_SRGB,
+    'GRAY': OPJ_CLRSPC_GRAY,
+    'GRAYSCALE': OPJ_CLRSPC_GRAY,
+    'MINISBLACK': OPJ_CLRSPC_GRAY,
+    'MINISWHITE': OPJ_CLRSPC_GRAY,
+    'SYCC': OPJ_CLRSPC_SYCC,
+    'EYCC': OPJ_CLRSPC_EYCC,
+    'CMYK': OPJ_CLRSPC_CMYK,
+}
+
+
+def _colorspace(colorspace, samples):
+    """imagecodecs' colorspace rule: gray up to 2 samples, sRGB up to 4."""
+    if colorspace is None:
+        if samples <= 2:
+            return OPJ_CLRSPC_GRAY
+        if samples <= 4:
+            return OPJ_CLRSPC_SRGB
+        return OPJ_CLRSPC_UNSPECIFIED
+    if isinstance(colorspace, str):
+        try:
+            return _COLORSPACES[colorspace.upper()]
+        except KeyError:
+            raise ValueError(
+                f'unknown colorspace {colorspace!r}; expected one of '
+                f'{sorted(_COLORSPACES)}') from None
+    value = int(colorspace)
+    if value not in (OPJ_CLRSPC_UNSPECIFIED, OPJ_CLRSPC_SRGB, OPJ_CLRSPC_GRAY,
+                     OPJ_CLRSPC_SYCC, OPJ_CLRSPC_EYCC, OPJ_CLRSPC_CMYK):
+        raise ValueError(f'unknown colorspace {colorspace!r}')
+    return value
+
+
+def _codec_format(codec, codecformat):
+    """'jp2' or 'j2k' from opencodecs' codec= or imagecodecs' codecformat=."""
+    names = {'jp2': OPJ_CODEC_JP2, 'j2k': OPJ_CODEC_J2K}
+    chosen = []
+    for value in (codec, codecformat):
+        if value is None:
+            continue
+        if isinstance(value, str):
+            key = value.lower()
+            if key not in names:
+                raise Jpeg2kError(
+                    f"codec must be 'jp2' or 'j2k', got {value!r}")
+            chosen.append(names[key])
+        elif int(value) in (OPJ_CODEC_JP2, OPJ_CODEC_J2K):
+            chosen.append(int(value))
+        else:
+            raise Jpeg2kError(f"codec must be 'jp2' or 'j2k', got {value!r}")
+    if len(chosen) == 2 and chosen[0] != chosen[1]:
+        raise ValueError(
+            f'codec={codec!r} and codecformat={codecformat!r} disagree')
+    return chosen[0] if chosen else OPJ_CODEC_JP2
+
+
+def _numresolution(height, width, resolutions):
+    """imagecodecs' resolution count: log2 of the smaller side minus 2,
+    between 1 and `resolutions` (default 6).
+
+    OpenJPEG refuses a tile side shorter than 2**(numresolution - 1),
+    which is why a fixed 6 failed on every image under 32 pixels.
+    """
+    cdef int limit = 6 if resolutions is None else int(resolutions)
+    limit = min(max(limit, 1), 33)
+    cdef int n = <int> (log(<double> min(height, width)) / log(2.0) - 2)
+    return min(max(n, 1), limit)
+
+
+def encode(data, level=None, *, lossless=None, codec=None,
+           codecformat=None, colorspace=None, planar=None, tile=None,
+           bitspersample=None, resolutions=None, reversible=None,
+           mct=True, ratio=None, verbose=None,
            numthreads: int | None = None, destination=None) -> bytes:
-    """Encode a numpy array as JPEG-2000 (JP2 by default; ``codec='j2k'`` for
-    raw codestream).
+    """Encode a numpy array as JPEG-2000 (JP2 by default; ``codec='j2k'``
+    for the raw codestream).
+
+    The keywords and their meanings are ``imagecodecs.jpeg2k_encode``'s,
+    plus ``lossless`` and ``ratio``.
 
     Parameters
     ----------
-    level : int, optional
-        Compression: lower = more compressed (default ~10 ratio).
-        Ignored when ``lossless=True``.
-    lossless : bool
-        Use the lossless 5/3 integer wavelet.
-    codec : {"jp2", "j2k"}
-        Container format. ``jp2`` is the boxed format; ``j2k`` is the raw
+    data
+        ``(H, W)``, ``(H, W, C)``, or with ``planar=True`` ``(C, H, W)``;
+        uint8, int8, uint16 or int16. Signed arrays are written as
+        signed components (Ssiz bit 7).
+    level : float, optional
+        Target quality as a PSNR in dB, from 1 to 1000, on a single
+        quality layer (OpenJPEG's fixed-quality mode). ``None``, values
+        below 1 and values above 1000 mean lossless, as in imagecodecs.
+    lossless : bool, optional
+        ``None`` (default) follows ``level``, ``ratio`` and
+        ``reversible``: lossless unless one of them asks for loss.
+        ``True`` refuses any of them that would lose data. ``False``
+        with neither ``level`` nor ``ratio`` uses a 10:1 rate.
+    ratio : float, optional
+        Target compression ratio (OpenJPEG's ``tcp_rates``, what
+        ``opj_compress -r`` takes) instead of a PSNR target; lossy.
+        Before 0.4.1 opencodecs read ``level`` as ``100 / ratio``.
+    codec, codecformat : {"jp2", "j2k"}
+        Container. ``jp2`` is the boxed format; ``j2k`` is the raw
         codestream that DICOM transfer syntaxes use.
+    colorspace : str or int, optional
+        JP2 color space. ``None`` picks gray for 1-2 samples and sRGB
+        for 3-4.
+    planar : bool, optional
+        ``True`` reads ``data`` as ``(C, H, W)``. ``None`` does so only
+        when the last axis is longer than 4 and the first is 4 or
+        shorter, imagecodecs' rule.
+    bitspersample : int, optional
+        Component precision, e.g. 12 for 12-bit data in uint16: 1 to 8
+        for (u)int8 data and 9 to 16 for (u)int16 data, the bands in
+        which imagecodecs uses it. Other values raise ValueError (where
+        imagecodecs ignores them), as does a sample that does not fit.
+    resolutions : int, optional
+        Upper bound on the resolution count (default 6). The count is
+        also capped by the image size, so small images encode.
+    reversible : bool, optional
+        5/3 (reversible) or 9/7 (irreversible) wavelet. ``None`` picks
+        5/3 for lossless and 9/7 for lossy.
+    mct : bool
+        Component transform (RCT/ICT) for 3-sample sRGB images.
+    tile
+        Not implemented (as in imagecodecs); raises.
+    verbose : int, optional
+        As in :func:`decode`: OpenJPEG's errors (above 0), warnings
+        (above 1) and info messages (above 2) go to the
+        ``"opencodecs"`` logger.
     numthreads : int, optional
         Worker threads for OpenJPEG's parallel T1 encoder. ``None``
-        defaults to ``opj_get_num_cpus() / 2``. Typical 2-3× speedup on
-        tiled / large-precinct encodes.
+        defaults to ``opj_get_num_cpus() / 2``.
     """
     cdef:
         cnp.ndarray arr
-        opj_image_cmptparm cmptparms[4]
+        opj_image_cmptparm* cmptparms = NULL
         opj_image_t* image = NULL
         opj_codec_t* opj_codec = NULL
         opj_stream_t* stream = NULL
         opj_cparameters_t cparams
         mem_buffer_write wrbuf
-        OPJ_BOOL ok
-        OPJ_UINT32 width, height, numcomps, prec
-        OPJ_UINT32 c, i, n_pixels
+        OPJ_UINT32 width, height, numcomps, prec, sgnd
+        OPJ_UINT32 c
+        size_t i, n_pixels, step, base
         OPJ_INT32* comp_data
         bytes out
         int cf
         int _opj_n
+        int color_space
+        int numres
+        float quality = 0.0
+        bint is_planar
+        msg_log mlog
 
-    if not isinstance(data, np.ndarray):
-        arr = np.ascontiguousarray(data)
-    else:
-        arr = np.ascontiguousarray(data)
+    if tile:
+        raise NotImplementedError('jpeg2k encode: writing tiles is not '
+                                  'implemented')
+    cdef int vlevel = _verbosity(verbose)
 
-    if arr.dtype == np.uint8:
-        prec = 8
-    elif arr.dtype == np.uint16:
-        prec = 16
-    else:
+    arr = np.ascontiguousarray(data)
+    if arr.dtype.kind not in 'ui' or arr.dtype.itemsize not in (1, 2):
         raise Jpeg2kError(f'unsupported dtype {arr.dtype}')
+    sgnd = 1 if arr.dtype.kind == 'i' else 0
+    prec = 8 * arr.dtype.itemsize
 
     if arr.ndim == 2:
+        is_planar = True
         numcomps = 1
         height = <OPJ_UINT32> arr.shape[0]
         width = <OPJ_UINT32> arr.shape[1]
     elif arr.ndim == 3:
-        height = <OPJ_UINT32> arr.shape[0]
-        width = <OPJ_UINT32> arr.shape[1]
-        numcomps = <OPJ_UINT32> arr.shape[2]
-        if numcomps not in (1, 2, 3, 4):
-            raise Jpeg2kError(f'unsupported channel count {numcomps}')
+        if planar is None:
+            planar = arr.shape[2] > 4 and arr.shape[0] <= 4
+        is_planar = bool(planar)
+        if is_planar:
+            numcomps = <OPJ_UINT32> arr.shape[0]
+            height = <OPJ_UINT32> arr.shape[1]
+            width = <OPJ_UINT32> arr.shape[2]
+        else:
+            height = <OPJ_UINT32> arr.shape[0]
+            width = <OPJ_UINT32> arr.shape[1]
+            numcomps = <OPJ_UINT32> arr.shape[2]
     else:
         raise Jpeg2kError(f'unsupported ndim {arr.ndim}')
+    if numcomps < 1 or numcomps > 4095:
+        raise Jpeg2kError(f'unsupported channel count {numcomps}')
+    if height < 1 or width < 1:
+        raise Jpeg2kError(f'empty image {(<object> arr).shape}')
 
-    if codec == 'jp2':
-        cf = OPJ_CODEC_JP2
-    elif codec == 'j2k':
-        cf = OPJ_CODEC_J2K
+    if bitspersample is not None:
+        bps = int(bitspersample)
+        # imagecodecs' bands: 1 to 8 bits for 8-bit data, 9 to 16 for
+        # 16-bit data. imagecodecs silently writes the full width for a
+        # value outside the band; here it raises, since a uint16 array
+        # written as an 8-bit codestream would come back as uint8.
+        lo_bps = 1 if prec == 8 else 9
+        if bps < lo_bps or bps > prec:
+            raise ValueError(
+                f'bitspersample={bitspersample} is outside {lo_bps} to '
+                f'{prec}, the range for {arr.dtype} data')
+        if arr.size:
+            lo_ok = -(1 << (bps - 1)) if sgnd else 0
+            hi_ok = (1 << (bps - 1)) - 1 if sgnd else (1 << bps) - 1
+            if int(arr.min()) < lo_ok or int(arr.max()) > hi_ok:
+                raise ValueError(
+                    f'bitspersample={bitspersample}: samples outside '
+                    f'[{lo_ok}, {hi_ok}] would be lost')
+        prec = <OPJ_UINT32> bps
+
+    cf = _codec_format(codec, codecformat)
+    color_space = _colorspace(colorspace, numcomps)
+
+    # What `level`, `ratio`, `reversible` and `lossless` ask for.
+    if level is not None and float(level) > 0:
+        quality = <float> float(level)
+    lossy_level = 1.0 <= quality <= 1000.0
+    if not lossy_level:
+        quality = 0.0
+    if ratio is not None:
+        ratio = float(ratio)
+        if not ratio >= 1.0:
+            raise ValueError(f'ratio must be >= 1, got {ratio}')
+        if lossy_level:
+            raise ValueError(
+                'pass level= (a PSNR target in dB) or ratio= (a '
+                'compression ratio), not both')
+    if lossless is None:
+        lossless = not (lossy_level or ratio is not None
+                        or reversible is False)
+    elif lossless:
+        if lossy_level or ratio is not None:
+            raise ValueError(
+                f'lossless=True contradicts level={level!r} '
+                f'ratio={ratio!r}; level from 1 to 1000 is a lossy PSNR '
+                f'target in dB')
+        if reversible is False:
+            raise ValueError(
+                'lossless=True needs the reversible 5/3 wavelet; '
+                'drop reversible=False')
     else:
-        raise Jpeg2kError(f"codec must be 'jp2' or 'j2k', got {codec!r}")
+        if level is not None and not lossy_level:
+            raise ValueError(
+                f'lossless=False: level={level!r} is not a PSNR target '
+                f'between 1 and 1000 dB')
+        if not lossy_level and ratio is None:
+            ratio = 10.0
 
-    for c in range(numcomps):
-        cmptparms[c].dx = 1
-        cmptparms[c].dy = 1
-        cmptparms[c].w = width
-        cmptparms[c].h = height
-        cmptparms[c].x0 = 0
-        cmptparms[c].y0 = 0
-        cmptparms[c].prec = prec
-        cmptparms[c].bpp = prec
-        cmptparms[c].sgnd = 0
-
-    color_space = OPJ_CLRSPC_SRGB if numcomps >= 3 else (
-        OPJ_CLRSPC_GRAY if numcomps == 1 else OPJ_CLRSPC_UNSPECIFIED)
-    image = opj_image_create(numcomps, cmptparms, <COLOR_SPACE> color_space)
+    n_pixels = <size_t> width * height
+    cmptparms = <opj_image_cmptparm*> malloc(
+        numcomps * sizeof(opj_image_cmptparm))
+    if cmptparms == NULL:
+        raise MemoryError('failed to allocate cmptparms')
+    try:
+        for c in range(numcomps):
+            cmptparms[c].dx = 1
+            cmptparms[c].dy = 1
+            cmptparms[c].w = width
+            cmptparms[c].h = height
+            cmptparms[c].x0 = 0
+            cmptparms[c].y0 = 0
+            cmptparms[c].prec = prec
+            cmptparms[c].bpp = prec
+            cmptparms[c].sgnd = sgnd
+        image = opj_image_create(numcomps, cmptparms,
+                                 <COLOR_SPACE> color_space)
+    finally:
+        free(cmptparms)
     if image == NULL:
         raise Jpeg2kError('opj_image_create failed')
     image.x0 = 0
@@ -843,50 +1206,81 @@ def encode(data, *, level: int | None = None,
     image.x1 = width
     image.y1 = height
 
-    n_pixels = width * height
-    cdef uint8_t* in8 = <uint8_t*> cnp.PyArray_DATA(arr)
-    cdef unsigned short* in16 = <unsigned short*> cnp.PyArray_DATA(arr)
-    if prec == 8:
+    # Samples go in as their plain values; OpenJPEG applies the DC
+    # level shift itself from each component's sgnd.
+    cdef uint8_t* in_u8 = <uint8_t*> cnp.PyArray_DATA(arr)
+    cdef int8_t* in_i8 = <int8_t*> cnp.PyArray_DATA(arr)
+    cdef uint16_t* in_u16 = <uint16_t*> cnp.PyArray_DATA(arr)
+    cdef int16_t* in_i16 = <int16_t*> cnp.PyArray_DATA(arr)
+    cdef int kind_size = arr.dtype.itemsize * 2 + sgnd
+    step = 1 if is_planar else numcomps
+    with nogil:
         for c in range(numcomps):
             comp_data = image.comps[c].data
-            for i in range(n_pixels):
-                comp_data[i] = <OPJ_INT32> in8[i * numcomps + c]
-    else:
-        for c in range(numcomps):
-            comp_data = image.comps[c].data
-            for i in range(n_pixels):
-                comp_data[i] = <OPJ_INT32> in16[i * numcomps + c]
+            base = c * n_pixels if is_planar else c
+            if kind_size == 2:
+                for i in range(n_pixels):
+                    comp_data[i] = <OPJ_INT32> in_u8[base + i * step]
+            elif kind_size == 3:
+                for i in range(n_pixels):
+                    comp_data[i] = <OPJ_INT32> in_i8[base + i * step]
+            elif kind_size == 4:
+                for i in range(n_pixels):
+                    comp_data[i] = <OPJ_INT32> in_u16[base + i * step]
+            else:
+                for i in range(n_pixels):
+                    comp_data[i] = <OPJ_INT32> in_i16[base + i * step]
 
     opj_codec = opj_create_compress(<CODEC_FORMAT> cf)
     if opj_codec == NULL:
         opj_image_destroy(image)
         raise Jpeg2kError('opj_create_compress failed')
+    mlog.buf = NULL
+    mlog.size = 0
+    mlog.cap = 0
+    _msg_handlers(opj_codec, &mlog, vlevel)
     opj_set_default_encoder_parameters(&cparams)
-    # Enable inter-channel decorrelation for RGB. The default leaves
-    # tcp_mct=0 which encodes each channel independently — a ~40% size
-    # regression on natural-image lossless vs imagecodecs (which sets
-    # tcp_mct=1 on its color path). RCT for lossless, ICT for lossy;
-    # libopenjpeg picks the right one based on `irreversible`.
-    if numcomps == 3:
-        cparams.tcp_mct = 1
+    cparams.tcp_numlayers = 1
+    # imagecodecs' resolution count, which keeps OpenJPEG's rule that a
+    # tile side be at least 2**(numresolution - 1) and makes the
+    # codestream byte-identical to imagecodecs' at every size.
+    numres = _numresolution(height, width, resolutions)
+    cparams.numresolution = <OPJ_UINT32> numres
+    # Component transform (RCT reversible / ICT irreversible) for sRGB,
+    # as imagecodecs does; libopenjpeg picks which from `irreversible`.
+    if numcomps == 3 and color_space == OPJ_CLRSPC_SRGB:
+        cparams.tcp_mct = <char> (1 if mct else 0)
     if lossless:
-        cparams.tcp_numlayers = 1
-        cparams.tcp_rates[0] = 0  # 0 = lossless
-        cparams.cp_disto_alloc = 1
         cparams.irreversible = 0
-    else:
-        # Use a single quality layer; cp_fixed_quality + tcp_distoratio.
-        # Simpler: use tcp_rates with a compression ratio derived from level.
-        cparams.tcp_numlayers = 1
-        # level 1..100 -> ratio (lower level = more aggressive). Default ~10.
-        ratio = 10.0 if level is None else max(1.0, 100.0 / max(1, int(level)))
-        cparams.tcp_rates[0] = <float> ratio
         cparams.cp_disto_alloc = 1
-        cparams.irreversible = 1  # 9-7 wavelet
+        cparams.tcp_rates[0] = 0
+    elif lossy_level:
+        # imagecodecs' fixed-quality settings: PSNR target in dB, RPCL
+        # progression, 256 x 256 precincts.
+        cparams.irreversible = 0 if reversible else 1
+        cparams.prog_order = OPJ_RPCL
+        cparams.cp_fixed_quality = 1
+        cparams.tcp_distoratio[0] = quality
+        cparams.res_spec = numres
+        for i in range(<OPJ_UINT32> numres):
+            cparams.prcw_init[i] = 256
+            cparams.prch_init[i] = 256
+        cparams.csty = 1
+    elif ratio is not None:
+        cparams.irreversible = 0 if reversible else 1
+        cparams.cp_disto_alloc = 1
+        cparams.tcp_rates[0] = <float> ratio
+    else:
+        # lossless=None with reversible=False: the 9/7 wavelet with every
+        # bit kept, which is what imagecodecs writes for that request.
+        cparams.irreversible = 1
+        cparams.cp_disto_alloc = 1
+        cparams.tcp_rates[0] = 0
 
     if not opj_setup_encoder(opj_codec, &cparams, image):
         opj_destroy_codec(opj_codec)
         opj_image_destroy(image)
+        _msg_flush(&mlog)
         raise Jpeg2kError('opj_setup_encoder failed')
 
     # Enable multithreaded T1 encoding when libopenjp2 supports it.
@@ -909,6 +1303,7 @@ def encode(data, *, level: int | None = None,
     if stream == NULL:
         opj_destroy_codec(opj_codec)
         opj_image_destroy(image)
+        _msg_flush(&mlog)
         raise Jpeg2kError('opj_stream_default_create failed')
     opj_stream_set_user_data(stream, &wrbuf, NULL)
     opj_stream_set_write_function(stream, _write_cb)
@@ -932,6 +1327,7 @@ def encode(data, *, level: int | None = None,
         opj_stream_destroy(stream)
         opj_destroy_codec(opj_codec)
         opj_image_destroy(image)
+        _msg_flush(&mlog)
         if wrbuf.data != NULL:
             free(wrbuf.data)
         if destination is not None and destination.error is not None:

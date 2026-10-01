@@ -216,7 +216,8 @@ def decode_frame(
     ):
         from opencodecs.codecs import _openjph
         return _apply_pixel_representation(
-            _openjph.decode(part_bytes), pixel_representation, bits_allocated)
+            _openjph.decode(part_bytes, planar=False),
+            pixel_representation, bits_allocated)
 
     if transfer_syntax in (TS_IMPLICIT_VR_LE, TS_EXPLICIT_VR_LE):
         if rows is None or columns is None or bits_allocated is None:

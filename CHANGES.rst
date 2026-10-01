@@ -825,6 +825,99 @@ core) and a 4-core x86-64 Windows laptop.
   (H, W, 1). It is grayscale now, as in ``png`` and imagecodecs, and
   writes the same bytes as the (H, W) array.
 
+- Fix: HTJ2K decode ignored the component transform (RCT/ICT) that a
+  codestream signals in its COD marker, which imagecodecs, OpenJPH's
+  ``ojph_compress``, Kakadu and DICOM encoders all use for RGB and RGBA.
+  Such files decoded to wrong colors (uint8 off by up to 255) with no
+  error. They now decode as ISO/IEC 15444-1 Annex G requires, matching
+  imagecodecs and OpenJPEG, including the JPEG committee's conformance
+  codestreams.
+- Fix: HTJ2K encode now applies the component transform to 3- and
+  4-component input by default, as imagecodecs and ``ojph_compress`` do;
+  ``rgb=False`` turns it off. This is a format change: RGB and RGBA
+  output differs from 0.4.0 and is byte-identical to imagecodecs'.
+  Earlier files still decode.
+- Fix: HTJ2K decode clamped samples of more than 16 bits into uint16 or
+  int16, and decoded float32 codestreams (NLT type 3, ISO/IEC 15444-2)
+  to meaningless int16, both silently. It now returns uint32, int32 and
+  float32, and raises on codestreams whose components differ in
+  precision, sign or sampling instead of misreading them. Encode accepts
+  uint32, int32 and float32 and 1 to 16384 components, the range SIZ
+  allows; more raises, where imagecodecs writes an invalid codestream.
+- Fix: HTJ2K decode with ``planar=None`` (the default) returned every
+  multi-component image as (H, W, C). It now follows imagecodecs:
+  (H, W, C) when the codestream uses the component transform, as RGB
+  and RGBA encodes do, and (C, H, W) otherwise, for example for 2 or 5
+  components or ``rgb=False``. RGB files written by 0.4.0, which have
+  no transform, therefore decode as (C, H, W) with the same samples;
+  ``planar=False`` returns (H, W, C) for any codestream. The pyramid
+  reader and DICOMweb frames still return (H, W, C).
+- Fix: HTJ2K ``level`` now means what it means in imagecodecs: below 1 a
+  quantization step held as a float32 (under 1e-5, lossless, which
+  includes a level of exactly 1e-5), from 1 a quality factor up to 100.
+  A level of 1 or more used to be taken as a quantization step, a level
+  above 0 up to 1e-5 used to give a lossy file, and a level of 0 raised.
+  This is a format change: output for a level of 1 or more, or above 0
+  up to 1e-5, differs from 0.4.0. The other ``imagecodecs.htj2k_encode``
+  keywords (``rgb``, ``planar``, ``tile``, ``resolutions``,
+  ``reversible``, ``tlm``, ``tilepart``, ``block_size``, ``prog_order``,
+  ``profile``) are implemented, with encoded output byte-identical to
+  imagecodecs, and so are the ``htj2k_decode`` keywords ``planar``,
+  ``skipres``, ``resilient`` and ``out``. Encode does not implement
+  ``out=``; it raises ``TypeError``, as the codec does for any option it
+  does not know, instead of dropping it. The one exception to byte
+  identity is an explicit ``rgb=True``, which imagecodecs drops for
+  planar and float32 input: planar input gets the component transform,
+  and float32 input, or fewer than 3 components, raises ``ValueError``.
+- Fix: JPEG 2000 decode returned signed components (Ssiz bit 7) as
+  unsigned values offset by half their range, so a TIFF with signed
+  JPEG 2000 tiles read back with the sign bit flipped. Signed components
+  now decode to int8, int16 or int32, as ISO/IEC 15444-1 Annex A.5.1 and
+  G.1 define them, and components above 16 bits decode to (u)int32
+  instead of raising. Encode accepts int8 and int16.
+- Fix: JPEG 2000 encode failed on any image under 32 pixels on a side,
+  because it always asked OpenJPEG for 6 resolutions. It now uses
+  imagecodecs' resolution count, and lossless output is byte-identical
+  to imagecodecs' at every size. This is a format change for images
+  under 256 pixels on a side. Two-component JP2 files now declare the
+  gray color space, as imagecodecs writes them, instead of unspecified.
+- Fix: JPEG 2000 ``level`` is now imagecodecs' PSNR target in dB
+  (1 to 1000), and a level alone gives a lossy file, as in imagecodecs.
+  It used to be ignored unless ``lossless=False`` was passed, and was
+  then read as a compression ratio of 100/level; ``ratio=`` now asks for
+  a ratio. ``lossless=True`` with a lossy level raises. This is a format
+  change for lossy output. The lower-level encoder that the TIFF writer
+  and the tifffile patch call defaulted to a lossy 10:1 rate when given
+  no level; it is now lossless by default, like the codec. The NDTiff
+  writer with ``compression="jpeg2000"`` used to drop
+  ``compression_level`` and write lossless frames; a level from 1 to
+  1000 now gives lossy frames with that level as OpenJPEG's PSNR target,
+  as in the TIFF writer and imagecodecs, which
+  is a format change. Frames written with no level are still lossless.
+  The other ``imagecodecs.jpeg2k_encode`` keywords (``codecformat``,
+  ``colorspace``, ``planar``, ``bitspersample``, ``resolutions``,
+  ``reversible``, ``mct``, ``verbose``) are implemented, and the codec
+  raises on options it does not know. Encode does not implement
+  ``out=``: the codec and the tifffile patch raise ``TypeError`` for
+  it. Encode takes up to 4095 components, as imagecodecs does, so the
+  TIFF writer now writes JPEG 2000 with more than 4 samples per pixel,
+  which it used to refuse; it encodes each strip or tile as rows by
+  width by samples, whatever its height.
+  ``bitspersample`` takes 1 to 8 for 8-bit data and 9 to 16 for 16-bit
+  data, where imagecodecs uses it; other values raise, where
+  imagecodecs ignores them. ``verbose`` sends OpenJPEG's messages to
+  the ``opencodecs`` logger, at the same thresholds as imagecodecs.
+- Fix: the tifffile patch's ``jpeg2k_encode`` dropped the arguments
+  tifffile passes, including ``codecformat=0``, so tifffile's JPEG 2000
+  TIFFs got JP2-boxed tiles, lossy at a 10:1 rate. This is a format
+  change: tiles written through the patch are now raw J2K codestreams,
+  lossless unless a level asks otherwise, and in every case tested
+  (8- and 16-bit, signed and unsigned, gray and RGB, contiguous and
+  separate planes, lossless and with a level) the TIFF file is
+  byte-identical to the one tifffile writes with imagecodecs. TIFFs
+  with JP2-boxed tiles from 0.4.0 still read. The patch's
+  ``jpeg2k_decode`` now honors ``out=`` instead of dropping it.
+
 0.4.0 (2026-09-29)
 ------------------
 

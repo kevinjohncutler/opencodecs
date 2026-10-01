@@ -107,6 +107,17 @@ cdef extern from 'openjpeg.h' nogil:
         # struct, so the partial mirror above is fine — order doesn't
         # matter, presence does.
         char tcp_mct
+        # Precinct sizes per resolution, used when res_spec > 0 and
+        # csty bit 0 is set (OPJ_J2K_MAXRLVLS = 33 entries each).
+        int prcw_init[33]
+        int prch_init[33]
+
+    cdef enum PROG_ORDER:
+        OPJ_LRCP
+        OPJ_RLCP
+        OPJ_RPCL
+        OPJ_PCRL
+        OPJ_CPRL
 
     OPJ_BOOL opj_has_thread_support()
     int opj_get_num_cpus()
@@ -144,6 +155,15 @@ cdef extern from 'openjpeg.h' nogil:
         opj_stream_free_user_data_fn p_function)
     void opj_stream_set_user_data_length(
         opj_stream_t* p_stream, uint64_t data_length)
+
+    # Message handlers; OpenJPEG's default ones print nothing.
+    ctypedef void (*opj_msg_callback)(const char* msg, void* client_data)
+    OPJ_BOOL opj_set_info_handler(
+        opj_codec_t* p_codec, opj_msg_callback p_callback, void* p_user_data)
+    OPJ_BOOL opj_set_warning_handler(
+        opj_codec_t* p_codec, opj_msg_callback p_callback, void* p_user_data)
+    OPJ_BOOL opj_set_error_handler(
+        opj_codec_t* p_codec, opj_msg_callback p_callback, void* p_user_data)
 
     opj_codec_t* opj_create_decompress(CODEC_FORMAT format)
     opj_codec_t* opj_create_compress(CODEC_FORMAT format)

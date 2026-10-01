@@ -12,6 +12,7 @@
 #include <openjph/ojph_message.h>
 
 #include <cstdarg>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -95,40 +96,136 @@ void install_warning_collector() {
     }
 }
 
-// Encode: load one component row into line_buf->i32 as raw values.
-// OpenJPH does DC-shifting internally based on the is_signed flag in
-// the SIZ marker; we must NOT pre-shift. ppm_in::read in the OpenJPH
-// tree does exactly this for unsigned, and signed input is passed
-// through sign-extended.
+// Encode: read one row of one component into an OpenJPH line.
+//
+// OpenJPH does the DC level shift itself from the SIZ signedness, so
+// samples go in as their plain integer values: unsigned zero-extended,
+// signed sign-extended. `step` is 1 for a planar source and the
+// component count for an interleaved one. A float32 image arrives as
+// its int32 bit pattern; the NLT marker tells a decoder what it is.
 template <typename T>
-inline void copy_row_signed_unsigned(
-    const T* src_row, ojph::si32* dst, ojph::ui32 width,
-    bool is_signed_data
-) {
-    if (is_signed_data) {
-        const auto* s = reinterpret_cast<
-            const typename std::make_signed<T>::type*>(src_row);
+inline void load_row(const T* s, ojph::line_buf* line, ojph::ui32 width,
+                     size_t step) {
+    if (line->flags & ojph::line_buf::LFT_64BIT) {
+        ojph::si64* d = line->i64;
         for (ojph::ui32 i = 0; i < width; ++i)
-            dst[i] = static_cast<ojph::si32>(s[i]);
+            d[i] = static_cast<ojph::si64>(s[i * step]);
     } else {
+        ojph::si32* d = line->i32;
         for (ojph::ui32 i = 0; i < width; ++i)
-            dst[i] = static_cast<ojph::si32>(src_row[i]);
+            d[i] = static_cast<ojph::si32>(s[i * step]);
     }
 }
 
-// Decode: pull si32 values, clamp into the legal range, and cast.
-// Matches gen_cvrt_32b1c_to_{8ub,16ub} from OpenJPH's reference tools.
-template <typename T>
-inline void copy_row_to_planar(
-    const ojph::si32* src, T* dst_row, ojph::ui32 width,
-    ojph::si32 min_val, ojph::si32 max_val
-) {
-    for (ojph::ui32 i = 0; i < width; ++i) {
-        ojph::si32 v = src[i];
-        if (v < min_val) v = min_val;
-        if (v > max_val) v = max_val;
-        dst_row[i] = static_cast<T>(v);
+bool load_component_row(const void* src, int bytes_per_sample,
+                        bool is_signed, size_t offset, size_t step,
+                        ojph::line_buf* line, ojph::ui32 width) {
+    if (!(line->flags & ojph::line_buf::LFT_INTEGER)) return false;
+    switch (bytes_per_sample * 2 + (is_signed ? 1 : 0)) {
+    case 2: load_row(static_cast<const uint8_t*>(src) + offset, line, width, step); break;
+    case 3: load_row(static_cast<const int8_t*>(src) + offset, line, width, step); break;
+    case 4: load_row(static_cast<const uint16_t*>(src) + offset, line, width, step); break;
+    case 5: load_row(static_cast<const int16_t*>(src) + offset, line, width, step); break;
+    case 8: load_row(static_cast<const uint32_t*>(src) + offset, line, width, step); break;
+    case 9: load_row(static_cast<const int32_t*>(src) + offset, line, width, step); break;
+    default: return false;
     }
+    return true;
+}
+
+// Decode: store one pulled line, clamped into the component's nominal
+// range (ISO/IEC 15444-1 Annex G.1.2 names clipping as the usual
+// treatment of quantization overshoot; OpenJPH's ojph_expand and
+// OpenJPEG both clip). The arithmetic is 64-bit so a 31-bit range does
+// not overflow. A 32-bit component is copied bit for bit: an unsigned
+// 32-bit sample does not fit a signed 32-bit line, so OpenJPH hands it
+// over in two's complement and only the bit pattern is meaningful.
+template <typename T, typename L>
+inline void store_row(const L* s, T* d, ojph::ui32 width, size_t step,
+                      bool clamp, ojph::si64 lo, ojph::si64 hi) {
+    if (clamp) {
+        for (ojph::ui32 i = 0; i < width; ++i) {
+            ojph::si64 v = static_cast<ojph::si64>(s[i]);
+            if (v < lo) v = lo;
+            if (v > hi) v = hi;
+            d[i * step] = static_cast<T>(v);
+        }
+    } else {
+        for (ojph::ui32 i = 0; i < width; ++i)
+            d[i * step] = static_cast<T>(s[i]);
+    }
+}
+
+template <typename T>
+inline void store_line(const ojph::line_buf* line, T* d, ojph::ui32 width,
+                       size_t step, bool clamp, ojph::si64 lo,
+                       ojph::si64 hi) {
+    if (line->flags & ojph::line_buf::LFT_64BIT)
+        store_row<T, ojph::si64>(line->i64, d, width, step, clamp, lo, hi);
+    else
+        store_row<T, ojph::si32>(line->i32, d, width, step, clamp, lo, hi);
+}
+
+bool store_component_row(const ojph::line_buf* line, void* dst,
+                         int bytes_per_sample, bool is_signed,
+                         size_t offset, size_t step, ojph::ui32 width,
+                         int bit_depth) {
+    if (!(line->flags & ojph::line_buf::LFT_INTEGER)) return false;
+    const bool clamp = bit_depth < 32 ||
+        (line->flags & ojph::line_buf::LFT_64BIT) != 0;
+    const ojph::si64 lo = is_signed ? -(ojph::si64(1) << (bit_depth - 1)) : 0;
+    const ojph::si64 hi = is_signed ? (ojph::si64(1) << (bit_depth - 1)) - 1
+                                    : (ojph::si64(1) << bit_depth) - 1;
+    switch (bytes_per_sample * 2 + (is_signed ? 1 : 0)) {
+    case 2: store_line(line, static_cast<uint8_t*>(dst) + offset, width, step, clamp, lo, hi); break;
+    case 3: store_line(line, static_cast<int8_t*>(dst) + offset, width, step, clamp, lo, hi); break;
+    case 4: store_line(line, static_cast<uint16_t*>(dst) + offset, width, step, clamp, lo, hi); break;
+    case 5: store_line(line, static_cast<int16_t*>(dst) + offset, width, step, clamp, lo, hi); break;
+    case 8: store_line(line, static_cast<uint32_t*>(dst) + offset, width, step, clamp, lo, hi); break;
+    case 9: store_line(line, static_cast<int32_t*>(dst) + offset, width, step, clamp, lo, hi); break;
+    default: return false;
+    }
+    return true;
+}
+
+// Header facts shared by decode_info and decode.
+struct header_facts {
+    int components;
+    int bit_depth;
+    bool is_signed;
+    bool color_transform;
+    int nlt_type;
+    bool uniform;
+};
+
+int nlt_type_of(ojph::codestream& cs, ojph::ui32 c) {
+    ojph::ui8 bd = 0, type = 0;
+    bool sg = false;
+    if (cs.access_nlt().get_nonlinear_transform(c, bd, sg, type))
+        return static_cast<int>(type);
+    return 0;
+}
+
+header_facts read_facts(ojph::codestream& cs) {
+    header_facts f;
+    ojph::param_siz siz = cs.access_siz();
+    f.components = static_cast<int>(siz.get_num_components());
+    f.bit_depth = static_cast<int>(siz.get_bit_depth(0));
+    f.is_signed = siz.is_signed(0);
+    f.color_transform = cs.access_cod().is_using_color_transform();
+    f.nlt_type = nlt_type_of(cs, 0);
+    f.uniform = true;
+    for (int c = 0; c < f.components; ++c) {
+        const ojph::ui32 uc = static_cast<ojph::ui32>(c);
+        ojph::point ds = siz.get_downsampling(uc);
+        if (static_cast<int>(siz.get_bit_depth(uc)) != f.bit_depth ||
+            siz.is_signed(uc) != f.is_signed ||
+            ds.x != 1 || ds.y != 1 ||
+            nlt_type_of(cs, uc) != f.nlt_type) {
+            f.uniform = false;
+        }
+    }
+    return f;
 }
 
 }  // namespace
@@ -154,100 +251,126 @@ void opencodecs_htj2k_free(void* buf) {
 
 int opencodecs_htj2k_encode(
     const void* src,
-    int width,
-    int height,
-    int components,
-    int bit_depth,
-    int is_signed_in,
-    int bytes_per_sample,
-    int reversible,
-    float irrev_delta,
-    int num_decomp,
+    const opencodecs_htj2k_encode_params* p,
     void** out_buf,
     size_t* out_size
 ) {
     install_warning_collector();
-    if (!src || !out_buf || !out_size) {
+    if (!src || !p || !out_buf || !out_size) {
         set_error("null arg");
         return 1;
     }
-    if (width <= 0 || height <= 0 || components <= 0 ||
-        bit_depth < 1 || bit_depth > 16 ||
-        (bytes_per_sample != 1 && bytes_per_sample != 2)) {
+    if (p->width <= 0 || p->height <= 0 || p->components <= 0 ||
+        p->bit_depth < 1 || p->bit_depth > 32 ||
+        (p->bytes_per_sample != 1 && p->bytes_per_sample != 2 &&
+         p->bytes_per_sample != 4) ||
+        p->bit_depth > 8 * p->bytes_per_sample) {
         set_error("invalid frame info");
+        return 2;
+    }
+    if (p->color_transform && p->components < 3) {
+        set_error("the component transform needs at least 3 components");
         return 2;
     }
     *out_buf = nullptr;
     *out_size = 0;
 
-    const bool is_signed_data = (is_signed_in != 0);
-    const size_t plane_samples = static_cast<size_t>(width) * height;
+    const bool is_signed = (p->is_signed != 0);
+    const ojph::ui32 W = static_cast<ojph::ui32>(p->width);
+    const ojph::ui32 H = static_cast<ojph::ui32>(p->height);
+    const ojph::ui32 C = static_cast<ojph::ui32>(p->components);
+    const size_t plane = static_cast<size_t>(W) * H;
 
     try {
         ojph::codestream cs;
         ojph::mem_outfile mf;
         mf.open();
 
+        if (p->profile) cs.set_profile(p->profile);
+        cs.set_tilepart_divisions(p->tilepart_resolutions != 0,
+                                  p->tilepart_components != 0);
+        cs.request_tlm_marker(p->tlm != 0);
+
         ojph::param_siz siz = cs.access_siz();
-        siz.set_image_extent(ojph::point(width, height));
-        siz.set_num_components(components);
-        for (int c = 0; c < components; ++c) {
-            siz.set_component(
-                c, ojph::point(1, 1),
-                static_cast<ojph::ui32>(bit_depth),
-                is_signed_data);
+        siz.set_image_extent(ojph::point(W, H));
+        if (p->tile_w > 0 && p->tile_h > 0) {
+            siz.set_tile_size(ojph::size(
+                static_cast<ojph::ui32>(p->tile_w),
+                static_cast<ojph::ui32>(p->tile_h)));
+        }
+        siz.set_num_components(C);
+        for (ojph::ui32 c = 0; c < C; ++c) {
+            siz.set_component(c, ojph::point(1, 1),
+                              static_cast<ojph::ui32>(p->bit_depth),
+                              is_signed);
         }
 
         ojph::param_cod cod = cs.access_cod();
-        cod.set_num_decomposition(num_decomp);
-        cod.set_block_dims(64, 64);
-        cod.set_reversible(reversible != 0);
-        // Color transform (RGB->YCbCr) only when 3-component reversible
-        // encoding is desired; safer to leave off for arbitrary inputs.
-        cod.set_color_transform(false);
+        if (p->num_decomp >= 0)
+            cod.set_num_decomposition(static_cast<ojph::ui32>(p->num_decomp));
+        if (p->block_w > 0 && p->block_h > 0)
+            cod.set_block_dims(static_cast<ojph::ui32>(p->block_w),
+                               static_cast<ojph::ui32>(p->block_h));
+        cod.set_reversible(p->reversible != 0);
+        // The component transform (RCT on the reversible path, ICT on
+        // the irreversible one) decorrelates components 0..2. It is
+        // signaled in COD SGcod and every conforming decoder inverts it.
+        cod.set_color_transform(p->color_transform != 0);
+        if (p->prog_order) cod.set_progression_order(p->prog_order);
 
-        if (reversible == 0) {
+        if (p->reversible == 0) {
             ojph::param_qcd qcd = cs.access_qcd();
-            qcd.set_irrev_quant(irrev_delta);
+            if (p->qfactor > 0)
+                qcd.set_qfactor(static_cast<ojph::ui8>(p->qfactor));
+            else if (p->irrev_delta > 0.0f)
+                qcd.set_irrev_quant(p->irrev_delta);
+        }
+        if (p->nlt_binary_complement) {
+            cs.access_nlt().set_nonlinear_transform(
+                ojph::param_nlt::ALL_COMPS,
+                ojph::param_nlt::OJPH_NLT_BINARY_COMPLEMENT_NLT);
         }
 
-        // For one-component or planar multi-component, request planar
-        // exchange order (encoder pulls all rows of component 0, then
-        // component 1, ...).
-        cs.set_planar(true);
+        // OpenJPH can take whole components one after the other only
+        // when no component transform is in use; with one, it needs one
+        // row of every component at a time (ojph_codestream.h).
+        const bool planar_exchange = (p->color_transform == 0);
+        cs.set_planar(planar_exchange);
 
         cs.write_headers(&mf);
 
         ojph::ui32 next_comp = 0;
-        ojph::line_buf* cur_line = cs.exchange(nullptr, next_comp);
+        ojph::line_buf* line = cs.exchange(nullptr, next_comp);
 
-        const ojph::ui32 W = static_cast<ojph::ui32>(width);
-        const ojph::ui32 H = static_cast<ojph::ui32>(height);
-
-        for (int c = 0; c < components; ++c) {
-            if (static_cast<int>(next_comp) != c) {
+        // Where sample (c, r, 0) lives in src, and the stride between
+        // neighbors in a row.
+        const size_t step = p->src_planar ? 1 : C;
+        auto offset_of = [&](ojph::ui32 c, ojph::ui32 r) -> size_t {
+            return p->src_planar ? c * plane + static_cast<size_t>(r) * W
+                                 : (static_cast<size_t>(r) * W) * C + c;
+        };
+        auto push = [&](ojph::ui32 c, ojph::ui32 r) -> bool {
+            if (next_comp != c) {
                 set_error("component order mismatch");
-                return 3;
+                return false;
             }
-            const uint8_t* src_bytes =
-                reinterpret_cast<const uint8_t*>(src) +
-                static_cast<size_t>(c) * plane_samples * bytes_per_sample;
+            if (!load_component_row(src, p->bytes_per_sample, is_signed,
+                                    offset_of(c, r), step, line, W)) {
+                set_error("unexpected line buffer type");
+                return false;
+            }
+            line = cs.exchange(line, next_comp);
+            return true;
+        };
 
-            for (ojph::ui32 r = 0; r < H; ++r) {
-                if (bytes_per_sample == 1) {
-                    const uint8_t* row =
-                        src_bytes + static_cast<size_t>(r) * W;
-                    copy_row_signed_unsigned<uint8_t>(
-                        row, cur_line->i32, W, is_signed_data);
-                } else {
-                    const uint16_t* row =
-                        reinterpret_cast<const uint16_t*>(src_bytes) +
-                        static_cast<size_t>(r) * W;
-                    copy_row_signed_unsigned<uint16_t>(
-                        row, cur_line->i32, W, is_signed_data);
-                }
-                cur_line = cs.exchange(cur_line, next_comp);
-            }
+        if (planar_exchange) {
+            for (ojph::ui32 c = 0; c < C; ++c)
+                for (ojph::ui32 r = 0; r < H; ++r)
+                    if (!push(c, r)) return 3;
+        } else {
+            for (ojph::ui32 r = 0; r < H; ++r)
+                for (ojph::ui32 c = 0; c < C; ++c)
+                    if (!push(c, r)) return 3;
         }
         cs.flush();
         cs.close();
@@ -275,21 +398,17 @@ int opencodecs_htj2k_encode(
 int opencodecs_htj2k_decode_info(
     const void* src,
     size_t srcsize,
-    int reduce,
-    int* width,
-    int* height,
-    int* components,
-    int* bit_depth,
-    int* is_signed_out,
-    int* num_decompositions
+    int reduce_data,
+    int reduce_recon,
+    int resilient,
+    opencodecs_htj2k_info* info
 ) {
     install_warning_collector();
-    if (!src || srcsize == 0 || !width || !height || !components ||
-        !bit_depth || !is_signed_out) {
+    if (!src || srcsize == 0 || !info) {
         set_error("null arg");
         return 1;
     }
-    if (reduce < 0) {
+    if (reduce_data < 0 || reduce_recon < 0) {
         set_error("reduce must be >= 0");
         return 1;
     }
@@ -297,38 +416,36 @@ int opencodecs_htj2k_decode_info(
         ojph::codestream cs;
         ojph::mem_infile mf;
         mf.open(reinterpret_cast<const ojph::ui8*>(src), srcsize);
+        if (resilient) cs.enable_resilience();
         cs.read_headers(&mf);
 
         const int ndecomp =
             static_cast<int>(cs.access_cod().get_num_decompositions());
-        if (num_decompositions) {
-            *num_decompositions = ndecomp;
-        }
-        if (reduce > ndecomp) {
+        info->num_decompositions = ndecomp;
+        if (reduce_data > ndecomp || reduce_recon > ndecomp) {
             set_error("reduce exceeds the codestream's decomposition count");
             return 4;
         }
 
-        ojph::param_siz siz = cs.access_siz();
-        *components = static_cast<int>(siz.get_num_components());
-        *bit_depth = static_cast<int>(siz.get_bit_depth(0));
-        *is_signed_out = siz.is_signed(0) ? 1 : 0;
+        const header_facts f = read_facts(cs);
+        info->components = f.components;
+        info->bit_depth = f.bit_depth;
+        info->is_signed = f.is_signed ? 1 : 0;
+        info->color_transform = f.color_transform ? 1 : 0;
+        info->nlt_type = f.nlt_type;
+        info->uniform = f.uniform ? 1 : 0;
 
-        if (reduce == 0) {
-            ojph::point ext = siz.get_image_extent();
-            *width = static_cast<int>(ext.x);
-            *height = static_cast<int>(ext.y);
-        } else {
-            // get_recon_* only reports the reduced geometry once the
-            // restriction is in place, so ask for it the same way the
-            // decode will: restrict, then read back component 0.
+        // get_recon_* reports the reduced geometry once the restriction
+        // is in place, so ask for it the same way the decode will.
+        if (reduce_data > 0 || reduce_recon > 0) {
             cs.restrict_input_resolution(
-                static_cast<ojph::ui32>(reduce),
-                static_cast<ojph::ui32>(reduce));
-            *width = static_cast<int>(siz.get_recon_width(0));
-            *height = static_cast<int>(siz.get_recon_height(0));
+                static_cast<ojph::ui32>(reduce_data),
+                static_cast<ojph::ui32>(reduce_recon));
         }
-        if (*width <= 0 || *height <= 0) {
+        ojph::param_siz siz = cs.access_siz();
+        info->width = static_cast<int>(siz.get_recon_width(0));
+        info->height = static_cast<int>(siz.get_recon_height(0));
+        if (info->width <= 0 || info->height <= 0) {
             set_error("reduce leaves a zero-sized image");
             return 4;
         }
@@ -349,18 +466,22 @@ int opencodecs_htj2k_decode(
     void* dst,
     size_t dst_size,
     int bytes_per_sample,
-    int reduce
+    int reduce_data,
+    int reduce_recon,
+    int resilient,
+    int dst_planar
 ) {
     install_warning_collector();
     if (!src || srcsize == 0 || !dst) {
         set_error("null arg");
         return 1;
     }
-    if (bytes_per_sample != 1 && bytes_per_sample != 2) {
+    if (bytes_per_sample != 1 && bytes_per_sample != 2 &&
+        bytes_per_sample != 4) {
         set_error("invalid bytes_per_sample");
         return 2;
     }
-    if (reduce < 0) {
+    if (reduce_data < 0 || reduce_recon < 0) {
         set_error("reduce must be >= 0");
         return 2;
     }
@@ -368,75 +489,94 @@ int opencodecs_htj2k_decode(
         ojph::codestream cs;
         ojph::mem_infile mf;
         mf.open(reinterpret_cast<const ojph::ui8*>(src), srcsize);
+        if (resilient) cs.enable_resilience();
         cs.read_headers(&mf);
 
-        if (reduce > static_cast<int>(
-                cs.access_cod().get_num_decompositions())) {
+        const int ndecomp =
+            static_cast<int>(cs.access_cod().get_num_decompositions());
+        if (reduce_data > ndecomp || reduce_recon > ndecomp) {
             set_error("reduce exceeds the codestream's decomposition count");
             return 6;
         }
         // Must land between read_headers() and create(): OpenJPH uses it
         // to decide which subbands to read at all, so the finest
         // resolutions are never entropy-decoded rather than decoded and
-        // discarded. Both arguments are equal because we want the
-        // output image itself smaller, not just less data read.
-        if (reduce > 0) {
+        // discarded.
+        if (reduce_data > 0 || reduce_recon > 0) {
             cs.restrict_input_resolution(
-                static_cast<ojph::ui32>(reduce),
-                static_cast<ojph::ui32>(reduce));
+                static_cast<ojph::ui32>(reduce_data),
+                static_cast<ojph::ui32>(reduce_recon));
+        }
+
+        const header_facts f = read_facts(cs);
+        if (!f.uniform) {
+            set_error("components differ in bit depth, signedness, "
+                      "nonlinearity or subsampling; not supported");
+            return 7;
+        }
+        if (f.bit_depth < 1 || f.bit_depth > 8 * bytes_per_sample) {
+            set_error("bytes_per_sample too small for the bit depth");
+            return 2;
         }
 
         ojph::param_siz siz = cs.access_siz();
-        const ojph::ui32 W = reduce > 0 ? siz.get_recon_width(0)
-                                        : siz.get_image_extent().x;
-        const ojph::ui32 H = reduce > 0 ? siz.get_recon_height(0)
-                                        : siz.get_image_extent().y;
-        const int comps = static_cast<int>(siz.get_num_components());
-        const int bd = static_cast<int>(siz.get_bit_depth(0));
-        const bool sg = siz.is_signed(0);
+        const ojph::ui32 W = siz.get_recon_width(0);
+        const ojph::ui32 H = siz.get_recon_height(0);
+        const ojph::ui32 C = static_cast<ojph::ui32>(f.components);
 
-        const size_t plane_samples = static_cast<size_t>(W) * H;
-        const size_t need =
-            plane_samples * comps * bytes_per_sample;
+        const size_t plane = static_cast<size_t>(W) * H;
+        const size_t need = plane * C * bytes_per_sample;
         if (dst_size < need) {
             set_error("destination buffer too small");
             return 3;
         }
 
-        cs.set_planar(true);
+        // A codestream that uses the component transform must be pulled
+        // one row of every component at a time: the inverse RCT/ICT
+        // needs components 0..2 of a row together. Pulling it planar
+        // returns the transformed samples untouched, which is wrong data
+        // with no error (OpenJPH documents planar as "can only be used
+        // when there is no color transform").
+        const bool planar_pull = !f.color_transform;
+        cs.set_planar(planar_pull);
         cs.create();
 
-        const ojph::si32 min_val =
-            sg ? -(ojph::si32(1) << (bd - 1)) : 0;
-        const ojph::si32 max_val =
-            sg ? ( (ojph::si32(1) << (bd - 1)) - 1 )
-               : ( (ojph::si32(1) << bd) - 1 );
-
-        for (int c = 0; c < comps; ++c) {
-            uint8_t* dst_bytes =
-                reinterpret_cast<uint8_t*>(dst) +
-                static_cast<size_t>(c) * plane_samples * bytes_per_sample;
-            for (ojph::ui32 r = 0; r < H; ++r) {
-                ojph::ui32 pulled_comp = 0;
-                ojph::line_buf* line = cs.pull(pulled_comp);
-                if (static_cast<int>(pulled_comp) != c) {
-                    set_error("decode: component order mismatch");
-                    return 4;
-                }
-                if (bytes_per_sample == 1) {
-                    uint8_t* row =
-                        dst_bytes + static_cast<size_t>(r) * W;
-                    copy_row_to_planar<uint8_t>(
-                        line->i32, row, W, min_val, max_val);
-                } else {
-                    uint16_t* row =
-                        reinterpret_cast<uint16_t*>(dst_bytes) +
-                        static_cast<size_t>(r) * W;
-                    copy_row_to_planar<uint16_t>(
-                        line->i32, row, W, min_val, max_val);
-                }
+        const size_t step = dst_planar ? 1 : C;
+        auto offset_of = [&](ojph::ui32 c, ojph::ui32 r) -> size_t {
+            return dst_planar ? c * plane + static_cast<size_t>(r) * W
+                              : (static_cast<size_t>(r) * W) * C + c;
+        };
+        auto pull = [&](ojph::ui32 c, ojph::ui32 r) -> int {
+            ojph::ui32 got = 0;
+            ojph::line_buf* line = cs.pull(got);
+            if (!line || got != c) {
+                set_error("decode: component order mismatch");
+                return 4;
             }
+            if (line->size < W) {
+                set_error("decode: short line");
+                return 4;
+            }
+            if (!store_component_row(line, dst, bytes_per_sample,
+                                     f.is_signed, offset_of(c, r), step,
+                                     W, f.bit_depth)) {
+                set_error("decode: unexpected line buffer type");
+                return 4;
+            }
+            return 0;
+        };
+
+        int rc = 0;
+        if (planar_pull) {
+            for (ojph::ui32 c = 0; c < C && rc == 0; ++c)
+                for (ojph::ui32 r = 0; r < H && rc == 0; ++r)
+                    rc = pull(c, r);
+        } else {
+            for (ojph::ui32 r = 0; r < H && rc == 0; ++r)
+                for (ojph::ui32 c = 0; c < C && rc == 0; ++c)
+                    rc = pull(c, r);
         }
+        if (rc != 0) return rc;
         cs.close();
         return 0;
     } catch (const std::exception& e) {

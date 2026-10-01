@@ -245,12 +245,18 @@ def jpegxl_encode(data, level=None, distance=None, effort=None, lossless=None,
 
 def jpeg2k_decode(data, out=None, **kw):
     from .codecs._jpeg2k import decode as _decode
-    return _decode(bytes(data) if not isinstance(data, (bytes, bytearray)) else data)
+    return _decode(bytes(data) if not isinstance(data, (bytes, bytearray)) else data,
+                   out=out, **kw)
 
 
 def jpeg2k_encode(data, level=None, lossless=None, out=None, **kw):
+    # imagecodecs semantics: lossless unless level (a PSNR target) asks
+    # otherwise. bool(None) used to make every tifffile write lossy.
+    # tifffile never passes out= here; refuse it rather than drop it.
+    if out is not None:
+        raise TypeError("jpeg2k_encode: out= is not supported")
     from .codecs._jpeg2k import encode as _encode
-    return _encode(data, level=level, lossless=bool(lossless))
+    return _encode(data, level=level, lossless=lossless, **kw)
 
 
 # ---------------------------------------------------------------------------

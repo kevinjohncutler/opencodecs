@@ -153,8 +153,8 @@ Quick guidance:
 | `jpeg` | ✓ | ✓ | gray / RGB / CMYK (YCCK), 8/12-bit lossy, 2-16 bit lossless | libjpeg-turbo (TJ v3) | `.jpg`, `.jpeg` |
 | `mozjpeg` | ✓ | ✓ | gray / RGB, 8-bit encode; decodes what `jpeg` does (12-bit and lossless through `jpeg`) | system mozjpeg (TJ v2) | `.jpg` |
 | `webp` | ✓ | ✓ | RGB / RGBA, lossy + lossless; **animated** (decodes to a frame stack, like `gif`) | system libwebp (+ libwebpdemux) | `.webp` |
-| `jpeg2k` | ✓ | ✓ | gray / RGB / RGBA, 8/16-bit, lossless + lossy | OpenJPEG | `.jp2`, `.j2k`, `.jpx`, `.jpc` |
-| `htj2k` | ✓ | ✓ | gray / RGB / RGBA, 8/16-bit, lossless + lossy | OpenJPH 0.31.0 (source-built) | `.j2c` |
+| `jpeg2k` | ✓ | ✓ | up to 4095 components on encode (as imagecodecs), 8/16-bit unsigned or signed (decode to 32-bit), lossless + lossy | OpenJPEG | `.jp2`, `.j2k`, `.jpx`, `.jpc` |
+| `htj2k` | ✓ | ✓ | 1 to 16384 components, 8/16/32-bit unsigned or signed, float32, lossless + lossy | OpenJPH 0.31.0 (source-built) | `.j2c` |
 | `jpegls` | ✓ | ✓ | gray / RGB / RGBA, 2-16 bit, lossless + near-lossless | system CharLS | `.jls` |
 | `avif` | ✓ | ✓ | gray / gray+alpha (4:0:0) / RGB / RGBA, 8/10/12-bit, lossless + lossy (color YUV 4:4:4, identity matrix when lossless); **image sequences** (decode to a frame stack, like `gif`) | libavif | `.avif` |
 | `heif` | ✓ | ✓ | gray / gray+alpha (monochrome) / RGB / RGBA, 8/10/12-bit, lossless + lossy (HEVC, color 4:4:4); **every top-level image**, not just the primary | libheif (+ aomenc) | `.heif`, `.heic` |
