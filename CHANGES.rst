@@ -10,20 +10,37 @@ Versions follow the same ``YYYY.M.D`` cadence as upstream when we
 publish; the entries below cluster work by date rather than by
 release because most of it has shipped continuously to ``main``.
 
-0.4.1 (2026-09-30)
+0.5.0 (2026-10-01)
 ------------------
 
-Speed on Windows, where much of 0.4.0's work had arrived only in part,
-and in several codecs on every platform. There is no new API. The speed
-changes are the same code on every operating system and compiler, in a
-form each compiler measured builds well, except two below: bitshuffle's
-build guard, which now lets MSVC take the SSE2 path, and how uncompressed
-strips are read among other reads. Figures compare the
-published 0.4.0 wheels with 0.4.1's, each version's CI build: fresh
+Two things: speed, above all on Windows, where much of 0.4.0's work had
+arrived only in part; and a pass over every codec opencodecs shares with
+imagecodecs, which found and fixed formats and conventions that did not
+agree. The rule applied throughout: a published specification wins;
+a library's own format (pcodec, SZ3, SPERR, libaec, Rice, LZ4, Snappy)
+is written bare, with no header of opencodecs' own, and files earlier
+versions wrote still read; where no specification decides, opencodecs
+matches imagecodecs; and no parameter imagecodecs defines is silently
+ignored, and no data is silently lost: each is implemented or raises.
+
+Several fixes change the bytes opencodecs writes (each says so): the
+``floatpred`` codec, ``delta`` on floats, the five codecs that wrapped a
+library's stream in a header of their own, and some defaults. Data the
+old codecs wrote still decodes where the old form can be told apart;
+where it cannot (float ``delta``), the bullet says how to read it.
+
+Speed
+~~~~~
+
+The speed changes are the same code on every operating system and
+compiler, in a form each compiler measured builds well, except two
+below: bitshuffle's build guard, which now lets MSVC take the SSE2 path,
+and how uncompressed strips are read among other reads. Figures compare
+the published 0.4.0 wheels with 0.5.0's, each version's CI build: fresh
 processes, both versions alternating in shuffled order with 0.4.0 run a
-second time as a control, identical output required, on a 20-core
-Apple silicon Mac, a 64-core x86-64 Linux workstation (pinned to one
-core) and a 4-core x86-64 Windows laptop.
+second time as a control, identical output required, on a 20-core Apple
+silicon Mac, a 64-core x86-64 Linux workstation (pinned to one core) and
+a 4-core x86-64 Windows laptop.
 
 - **Delta and XOR decode keep their running values in registers**, and
   distances 2, 3 and 4 (gray and alpha, RGB, RGBA) walk every chain in
@@ -66,6 +83,9 @@ core) and a 4-core x86-64 Windows laptop.
   0.97x on the Mac, uncompressed strips 0.97x with one thread on Windows,
   and RGBA and uint32 predictor reads and 2-byte unshuffle 0.99x on some
   of the three.
+Compatibility and correctness
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
 - Fix: the ``floatpred`` codec (``get_codec("floatpred")``) did not
   implement TIFF predictor 3, though it said it did: it put each float's
   least significant byte plane first and restarted the difference at every
@@ -86,6 +106,966 @@ core) and a 4-core x86-64 Windows laptop.
   crashed the interpreter; it now raises ``ValueError``. Delta and XOR
   decode with a distance near ``sys.maxsize`` wrote at a negative index,
   and an empty predictor axis raised on decode; both now work.
+- Fix: the ``delta`` codec on float arrays subtracted float values, which
+  rounds: it did not even round-trip its own output (1.0 after 1e8 came
+  back as 0.0), and neither it nor imagecodecs could read the other's
+  stream. Delta and XOR now work on each sample's bit pattern as an
+  unsigned integer of the same width, modulo 2**bits, which is TIFF
+  predictor 2 as libtiff applies it and what imagecodecs does. Integer
+  output is unchanged; float delta output changes (a format change).
+  A float stream the old codec wrote carries no header to tell it apart
+  and decodes to wrong values with the default decode; pass
+  ``legacy_float=True`` to ``delta`` decode to sum it as floats, which
+  returns the values 0.4.0's decoder returned, bit for bit (in the
+  requested byte order, where 0.4.0 returned native order for a
+  big-endian dtype). ``xor`` on floats, which raised ``TypeError``, now
+  works the same way.
+  Output from both is byte-identical to imagecodecs for every dtype and
+  byte order at distance 1, the only distance imagecodecs implements. A
+  0-d array, which came back unchanged, now raises ``ValueError`` for
+  its missing axis, as imagecodecs does. So does a bool array, as in
+  imagecodecs: ``xor`` encoded and decoded one as bytes, and ``delta``
+  decode summed one as logical or.
+- Fix: ``delta`` and ``xor`` decode of big-endian integers without
+  ``out=`` raised "Big-endian buffer not supported"; decode now returns
+  the requested dtype, byte order included. Given an ndarray (the form
+  imagecodecs returns) and no ``dtype``, ``delta``, ``xor`` and
+  ``bitshuffle`` decoded it as flat bytes and returned wrong values
+  without an error; they now take the dtype, shape and element size from
+  the array, and ``bitshuffle`` and ``byteshuffle`` return an array of
+  that dtype and shape for array input. ``delta`` and ``xor`` encode of
+  bytes, which raised, now treats them as uint8.
+- Fix: ``packints`` accepted imagecodecs' ``runlen=`` and ``bitorder=``
+  and ignored them, returning a different stream. ``runlen`` now starts
+  each run of samples on a byte boundary, as TIFF stores rows;
+  ``bitorder="<"`` packs least significant bit first (GenICam
+  ``Mono12p`` and siblings) and ``bitorder=">"`` packs pairs of 10 or 12
+  bit samples into three bytes (GigE Vision ``Mono12Packed``), matching
+  imagecodecs byte for byte. Calls that passed these keywords now write
+  different bytes. A sample count that is not a whole number of runs
+  raises in encode and decode rather than dropping the last run, as
+  imagecodecs does. A sample too large for ``bitspersample`` (4096 at 12
+  bits) was masked to its low bits, as imagecodecs also does, and so
+  written as a different value; it now raises ``ValueError``. Whole
+  byte widths (16, 32, 64 bits) stay big endian, as the most significant
+  bit first stream the codec is defined as; imagecodecs copies them in
+  memory order instead, and the docstring now says so. Decode to a float
+  dtype, which returned the sample values as floats, or to an integer
+  dtype narrower than ``bitspersample``, which kept their low bits, now
+  raises ``ValueError`` as imagecodecs does; bool stays accepted for one
+  bit samples.
+- Fix: the filter codecs (``delta``, ``xor``, ``floatpred``,
+  ``packints``, ``bitshuffle``, ``byteshuffle``, ``quantize``) accepted
+  any keyword and ignored the ones they did not implement; they now raise
+  ``TypeError``. ``byteshuffle`` is the whole-buffer HDF5 and Blosc
+  shuffle, as before, and names imagecodecs' per-row ``axis``, ``dist``,
+  ``delta`` and ``reorder`` keywords in that error rather than returning
+  a stream imagecodecs would not read.
+- Fix: ``quantize`` mode ``"nsd"`` multiplied by a scale of
+  ``10**(nsd - 1 - floor(log10|x|))``, which is inexact once it is a
+  negative power of ten, and for float32 input computed it in float32:
+  1234.5678 (float32) at one digit came out 999.99994, 1175103902.8858647
+  (float64) came out 999999999.9999999, and 4 to 7 percent of values
+  missed the correctly rounded decimal. It now rounds each value to
+  ``nsd`` significant digits (ties to even) and returns the value of the
+  input type nearest that decimal, by dividing or multiplying by an exact
+  power of ten and rounding the few values near a half, or outside the
+  range of exact powers, from their decimal digits; a float32 or float16
+  whose float64 result lies halfway between two values of its type is
+  decided from the decimal rather than rounded a second time.
+  Infinities, which became NaN, are now kept, as is a value whose rounding would overflow
+  its type. These change the bytes ``"nsd"`` writes (a format change).
+  Its docstring claimed both modes matched imagecodecs, and ``"nsd"`` has
+  no imagecodecs counterpart. imagecodecs' modes ``"bitgroom"``,
+  ``"granularbr"`` (``"gbr"``) and ``"scale"`` are now implemented, bit
+  identical to imagecodecs for float32 and float64 at every ``nsd``
+  netCDF-C accepts, except for the zeros, NaN and infinities imagecodecs
+  alters, and ``mode`` and ``nsd`` may be passed by position as in
+  ``imagecodecs.quantize_encode``. As netCDF-C does in all three of its
+  modes, BitRound, BitGroom and Granular BitRound leave netCDF's fill
+  value (9.9692099683868690e+36), ``+0.0``, ``-0.0`` and NaN unchanged;
+  BitRound used to round the fill value and NaN, so a NaN whose payload
+  was only in its low bits became an infinity, and these change the bytes
+  written for data holding such values (a format change). Infinities are
+  kept too: netCDF-C's BitGroom turns an odd-indexed infinity into NaN,
+  and its Granular BitRound has undefined behavior for one. ``nsd`` is
+  checked as netCDF-C's ``nc_def_var_quantize`` checks it: at least 1, at
+  most the mantissa bits for BitRound, and at most 6 (float32), 15
+  (float64) or 2 (float16) digits for BitGroom and Granular BitRound, so
+  ``bitspersample=0``, which BitRound accepted, now raises; a fractional
+  ``nsd``, which was truncated, raises too. ``quantize`` decode is still
+  the identity, but an unknown ``mode``, or an ``nsd`` encode would
+  reject, passed to it now raises instead of being ignored.
+
+- Fix: the TIFF writer accepted ``predictor=2`` for float16, float32 and
+  float64 and subtracted neighboring samples as floats. TIFF 6.0 defines
+  Predictor 2 as horizontal differencing, and libtiff applies it to each
+  sample's storage word as an unsigned integer of the same width, so
+  libtiff and tifffile decoded those files to wrong values, and this
+  package's reader refused them. The writer now differences the bit
+  patterns as libtiff does, which is lossless. This changes the bytes
+  written for float data with predictor 2; integer data is unchanged.
+  Files written by earlier versions with float data and predictor 2 hold
+  rounded float differences that no reader decodes to the original
+  values, and have no tag that marks them, so they should be written
+  again from their source. This package's reader used to refuse such
+  files with ``NotImplementedError``. It now reads the LZW, Deflate and
+  Zstandard ones as libtiff and tifffile do, to the same wrong values.
+  For the uncompressed ones libtiff ignores the predictor and returns
+  the stored differences, while this reader undoes the predictor on the
+  storage word, as tifffile does for tiled files (it refuses the striped
+  ones); neither result is the original data.
+- Fix: the TIFF reader could not undo predictor 2 on 64-bit integer or
+  floating-point samples and raised ``NotImplementedError``. libtiff and
+  GDAL write predictor 2 for 8, 16, 32 and 64-bit samples of every
+  sample format, tifffile for 64-bit integers, and this package's writer
+  for all of them. The reader now undoes predictor 2 on the unsigned
+  storage word for 8, 16, 32 and 64-bit samples of any sample format, on
+  the fused native path as well as the general one.
+- Fix: the TIFF writer accepted ``predictor=2`` with ``compression="none"``
+  and wrote differenced samples under a Predictor tag. TIFF 6.0 defines
+  Predictor alongside LZW, and libtiff ignores it on uncompressed data,
+  so libtiff returned the raw differences while tifffile undid them.
+  With ``verify=True`` the same call wrote the samples undifferenced
+  under the Predictor tag, and every reader returned wrong values. For
+  image codecs (JPEG, JPEG 2000, WebP, JPEG XL, LERC) the writer dropped
+  ``predictor=2`` without saying so. Both now raise ``TiffWriterError``:
+  a predictor is written only with LZW, Deflate or Zstandard. tifffile
+  raises ``ValueError`` for the same calls except LERC, where it applies
+  the predictor before encoding; this writer does not implement that.
+  Uncompressed integer predictor 2 files written by earlier versions
+  read back exactly.
+- Fix: the TIFF writer took ``predictor=True`` as the integer 1 and wrote
+  no predictor without saying so. It now picks 3 for float and 2 for
+  integer samples, as tifffile does (tifffile refuses ``True`` for
+  64-bit integers, where this writer uses 2), and ``predictor=False``
+  means 1. This changes the bytes written for ``predictor=True``; with a
+  compression that takes no predictor it now raises, as above.
+  ``predictor=0`` and ``predictor=None`` raised and now mean 1, as in
+  tifffile. ``planar_config`` now refuses a bool rather than taking
+  ``True`` as 1.
+- Fix: the TIFF writer wrote ``planar_config=2`` into the
+  PlanarConfiguration tag but stored the samples interleaved, in one run
+  of strips or tiles. libtiff refuses those files, tifffile raises or
+  reads them to wrong values, and this package's reader raised or, for
+  single-strip and single-tile LZW pages, returned wrong values. The
+  writer now stores each sample's plane as its own strips or tiles, one
+  plane after another, as TIFF 6.0 defines; this changes the bytes
+  written for multi-sample images with ``planar_config=2``. Values other
+  than 1 and 2, and ``planar_config=2`` with WebP, which cannot store a
+  one-sample plane, now raise ``TiffWriterError``. The reader now reads a
+  PlanarConfiguration=2 page that holds a single run of strips or tiles,
+  which can only be that earlier layout, as interleaved samples, so
+  those files read back as they were written (for float predictor 2
+  files, see above). A full-page read of a separate-plane page with
+  fewer strips or tiles than its planes need read the later planes from
+  the wrong segments; it now raises ``ValueError``.
+- Fix: the TIFF reader took the samples of a LERC segment in a big-endian
+  file as native values and returned wrong values for 16, 32 and 64-bit
+  samples. The writer stores each sample in the file's byte order before
+  LERC encodes it, and tifffile swaps the decoded samples back; the
+  reader now does too, so big-endian LERC files with integer samples
+  that earlier versions wrote read back exactly. Byte-swapped floats can
+  be NaN patterns, which LERC does not store exactly, so in a file whose
+  byte order differs from the machine's (big-endian, on the usual
+  little-endian machines) the writer could store other values than it
+  was given without saying so. It now raises ``TiffWriterError`` when a
+  float segment it would hand to LERC for such a file holds such a
+  pattern.
+- Fix: the TIFF reader returned complex samples (SampleFormat 6) as
+  unsigned integers holding their bits. It now returns ``complex64`` and
+  ``complex128``, swapping each component in a big-endian file as
+  libtiff and tifffile do, and undoes predictor 2 on ``complex64`` as
+  libtiff does, on the 64-bit sample word. Predictor 2 on ``complex128``
+  raises ``NotImplementedError``; libtiff has no predictor 2 for 128-bit
+  samples either.
+
+- Fix: zstd decode sized its output from the first frame alone, so two
+  concatenated frames, or a skippable frame followed by a frame, failed
+  with "Destination buffer is too small". RFC 8878 defines zstd data as
+  one or more frames, and the zstd CLI writes and reads concatenations;
+  every frame now decodes and skippable frames are skipped. The LZ4
+  codec decoded only the first of several concatenated frames and
+  silently dropped the rest; it now decodes them all, as the LZ4 frame
+  specification and the lz4 CLI do, and bytes after the last frame that
+  are not a frame raise instead of being ignored.
+- Fix: the N5 reader sent ``"lz4"`` blocks to the LZ4 frame decoder, but
+  the N5 reference implementation writes lz4-java's ``LZ4Block`` stream,
+  so no N5 lz4 dataset could be read. That format is now decoded, with
+  its checksums verified; LZ4 frames are still accepted.
+- Fix: the deflate codec ignored ``raw=``. ``encode(raw=True)`` returned
+  a zlib stream and ``decode(raw=True)`` rejected bare DEFLATE. ``raw``
+  now selects a bare DEFLATE stream (RFC 1951) on both sides, as in
+  imagecodecs; the default stays zlib (RFC 1950).
+- Fix: gzip output depended on the platform and Python version, because
+  the stdlib let zlib write its own OS byte (19 on macOS or 3 on Linux
+  under Python 3.11 and 3.12, 255 under 3.13). gzip now encodes through
+  the same libdeflate engine as the deflate codec with a fixed header
+  (MTIME 0, OS 255), and accepts levels up to 12 as imagecodecs does.
+  Builds linked to libdeflate, as imagecodecs is, write bytes identical
+  to imagecodecs; a build that falls back to zlib, because libdeflate
+  was not found, writes the same header around zlib's DEFLATE data, and
+  so does a build without the deflate extension at all, through the
+  stdlib ``zlib`` module. The OME-Zarr writer's gzip chunks, which also
+  carried the time they were written, use the same encoder. This changes
+  the bytes written; decoding, including multi-member files, is
+  unchanged.
+- Fix: LZW and PackBits decode without ``expected_size`` capped the
+  output at 8 and 2 times the input and failed on anything that
+  compressed better, which broke ``decode_segment`` and
+  ``verify_segment`` (used by the NDTiff reader) for those codecs. Both
+  formats end themselves (TIFF 6.0 sections 9 and 13), so the output is
+  now sized from the stream. An LZW decode that exactly filled the
+  guessed buffer could also return a truncated result; it now grows and
+  decodes again.
+- Fix: ``.sz`` files were routed to the raw Snappy block codec, but
+  ``.sz`` is the extension of Snappy's framing format, so real ``.sz``
+  files failed to read. A new ``snappy_framed`` codec reads and writes
+  the framing format, checking each chunk's CRC-32C, and owns ``.sz``;
+  ``snappy`` stays the raw block, byte-identical to imagecodecs. This is
+  a format change: ``write("x.sz", ...)`` now writes the framing format,
+  where 0.4.0 wrote a raw Snappy block. ``.sz`` files 0.4.0 wrote still
+  read, because ``snappy_framed`` decodes data without the stream
+  identifier as a raw block (and raises if it is not a valid one).
+- Fix: blosc2 encode took ``shuffle`` only as a bool and silently
+  ignored ``splitmode``, ``blocksize`` and ``numthreads``. It now takes
+  c-blosc2's filter codes 0 to 4 and their names (``"bitshuffle"`` can
+  be written at last), split modes by code or name, a block size and a
+  thread count, as imagecodecs does. The split default now matches
+  imagecodecs, always split, where blosc2's own default skipped the
+  split for some compressors and levels (zstd at level 9, for one), so
+  equal settings write equal chunks. This is a format change at those
+  settings; every blosc2 decoder reads both forms. The default
+  ``typesize`` now also follows imagecodecs, in the codec and in the
+  native encoder, ``opencodecs.codecs._blosc2.encode``: 8 for a flat run
+  of unsigned bytes (``bytes``, ``bytearray``, a contiguous 1-D uint8
+  array) and the buffer's own item size otherwise. A ``uint16`` array
+  passed straight to the native encoder is shuffled as 2-byte items,
+  where it used to be written with a type size of 8, and a 1-D uint8
+  array given to the codec is written with a type size of 8, where it
+  used to get 1. That is a format change too: the bytes written change,
+  and the decoded data is the same.
+- Fix: brotli encode ignored ``mode`` and ``lgwin``; both are now
+  honored. Its default level is now 4, imagecodecs' default, instead of
+  3, which was chosen on the mistaken belief that imagecodecs used level
+  1 and was not smaller on every input. Default output changes and is
+  byte-identical to imagecodecs.
+- Fix: the deflate, gzip, zstd, LZ4, brotli, blosc2 and Snappy codecs
+  ignored ``out=`` on encode, and gzip ignored it on decode: the call
+  returned new bytes and left the caller's buffer untouched. ``out=``
+  now follows imagecodecs, here and in the new ``snappy_framed`` codec:
+  an int is a capacity, a writable buffer receives the result, and
+  ``out=bytearray`` returns a bytearray; a result that does not fit
+  raises. A buffer the result fills exactly is returned as is; a larger
+  numpy array returns a uint8 array view of the written prefix, as
+  imagecodecs does, where these codecs' decoders used to return a
+  memoryview, and any other buffer returns a memoryview. The decoders
+  other than gzip already wrote into a given buffer, but raised
+  ``TypeError`` for ``out=bytearray`` and returned a memoryview of a
+  buffer they filled exactly; both now follow imagecodecs. These codecs
+  also accepted any keyword and dropped the ones they did not know, so a
+  misspelled or unsupported option was silently ignored; an unknown
+  keyword now raises ``TypeError``. LZ4 encode takes imagecodecs'
+  ``blocksizeid``, ``contentchecksum`` and ``blockchecksum``; a block
+  size code the LZ4 frame format reserves (0 to 3 in the header) raises
+  instead of being written. Default output is unchanged. LZ4 encode now
+  clamps ``level`` to -1 through 12, as imagecodecs does, where a level
+  below -1 went to liblz4 as is and selected a faster, larger mode. This
+  is a format change at those levels: the bytes written change, and the
+  decoded data is the same.
+- zstd keeps passing negative levels (libzstd's fast modes) through to
+  libzstd; imagecodecs clamps them to its default, so ``level=-5``
+  differs between the two. DICOM RLE decode returns interleaved
+  ``(H, W, C)`` samples, Planar Configuration 0, where imagecodecs
+  returns planar bytes. Both are now documented.
+
+- Fix: PNG decode kept the color type only for some images. 1, 2 and
+  4-bit grayscale came back as RGBA, an indexed image as RGBA whose alpha
+  was always 255 because the tRNS chunk was never applied, and tRNS on
+  gray or RGB images was ignored. Decode now follows the PNG specification
+  and libpng, matching imagecodecs: gray stays ``(H, W)`` with sub-byte
+  samples scaled to 8 bits, a palette gives RGB, and tRNS adds the alpha
+  channel it defines (gray becomes ``(H, W, 2)``, RGB and indexed
+  ``(H, W, 4)`` with the palette alpha). The row reader follows the same
+  rule. Arrays for these images change shape; nothing written changes.
+- Fix: ``PngCodec.encode`` dropped ``filter_choice`` and every other
+  option except ``level`` and the ICC profile, and accepted unknown
+  options silently. It now forwards ``filter_choice``, ``strategy`` and
+  imagecodecs' ``filter=`` (its ``PNG.FILTER`` values), and raises
+  ``TypeError`` on an unknown option. ``strategy`` did nothing even in
+  the native encoder, because builds with libdeflate compress the image
+  data through it and libdeflate has no strategy; an explicit strategy
+  now compresses through zlib with that strategy, as in imagecodecs. A
+  big-endian ``uint16`` array was refused; it is now stored by value, as
+  PNG's most significant byte first rule requires (imagecodecs writes
+  such an array byte-swapped). ``filter`` also takes imagecodecs'
+  ``PNG.FILTER`` names, including ``"no"``, and ``strategy`` its
+  ``PNG.STRATEGY`` names; a strategy outside 0 to 4 raises, as in
+  imagecodecs, instead of reaching zlib. An invalid filter or strategy
+  raises ``PngOptionError``, which is both the ``PngError`` the encoder
+  raised before and the ``ValueError`` the row encoder raised.
+  ``PngCodec.decode`` and ``QoiCodec.decode`` dropped unknown options;
+  they now raise ``TypeError``, keeping ``out`` (the only option
+  imagecodecs defines) and ``numthreads``, which the PNG and QOI
+  encoders (and ``PngCodec.encode_rows``) also accept and which does
+  nothing in either. The PNG, WebP and QOI codec encoders take
+  imagecodecs' ``out=None``; any other ``out`` raises ``TypeError``
+  instead of being dropped, since the encoded bytes are returned or
+  written to ``dest``. Default PNG output is unchanged. This is a
+  format change for PNG written through the codec with
+  ``filter_choice`` or ``strategy``, since those settings now take
+  effect.
+- Fix: lossless WebP was not exact for RGBA. libwebp's default
+  ``exact=0`` rewrote the RGB values under fully transparent pixels, so
+  they did not round-trip; lossless encoding now sets ``exact=1``, as
+  imagecodecs does. In lossless mode ``level`` was ignored; it is now
+  libwebp's compression effort (0 fastest, 100 smallest), its meaning in
+  libwebp and imagecodecs. Lossless bytes also depended on ``numthreads``
+  and ``method``, because some argument combinations took libwebp's
+  simple API (effort 70) and others the advanced one (effort 75); every
+  encode now takes the advanced API. ``_webp.encode`` defaulted to lossy
+  while ``WebpCodec`` and ``imagecodecs.webp_encode`` default to
+  lossless; it now defaults to lossless, and with it TIFF
+  ``compression="webp"``, which used to write lossy tiles unless told
+  otherwise, the same default as tifffile. A negative ``level`` means
+  lossless, ``level`` is clamped to 100 and keeps its fraction, and
+  ``method`` is clamped to 0 to 6, with ``None`` meaning 4, as in
+  imagecodecs; ``method=-1`` therefore now means 0, where it meant
+  libwebp's default 4 before. ``lossless`` is read as imagecodecs reads
+  it, ``int(lossless)``, so ``0``, ``1`` and NumPy bools work and a
+  string such as ``"no"`` raises ``ValueError`` instead of meaning
+  lossless. This is a format change for
+  WebP: the bytes change for RGBA images with transparent pixels, every
+  lossless encode at a level other than 75, lossless encodes that took
+  the simple API, encodes with
+  ``method=-1`` or a fractional ``level``, and WebP TIFF tiles written
+  without an explicit setting. For an RGB or RGBA array, with the same
+  libwebp release, the bytes now equal ``imagecodecs.webp_encode``'s for
+  the same arguments.
+- Fix: ``WebpCodec.decode`` dropped imagecodecs' ``hasalpha`` and
+  ``index`` and any other option. ``hasalpha`` now forces RGBA or RGB as
+  in imagecodecs, ``index`` selects one frame of an animation (negative
+  values count from the end, out of range raises ``IndexError``), and an
+  unknown option raises ``TypeError``. An animation always decoded to
+  RGBA; with ``hasalpha=None`` it now keeps alpha only when a returned
+  canvas has a pixel that is not fully opaque (any frame of the stack, or
+  the frame ``index`` picks) and is RGB otherwise, as in imagecodecs, so
+  the array of an opaque animation changes shape. ``open()`` still
+  returns the RGBA canvas libwebp composes for every frame of an
+  animation. New API: the native ``opencodecs.codecs._webp`` module's
+  ``decode`` takes ``hasalpha``, it gains ``version()``, the linked
+  libwebp in ``imagecodecs.webp_version()``'s format, and
+  ``opencodecs._webp_codec.decode_webp`` is the decoder ``WebpCodec`` and
+  the tifffile adapter share.
+- Fix: the ``opencodecs.tifffile_patch`` WebP encoder defaulted to
+  ``lossless=False``, so ``tifffile.imwrite(compression="webp")`` inside
+  ``patched()`` wrote lossy tiles where plain tifffile writes exact ones.
+  It now defaults to lossless like imagecodecs and forwards ``method``
+  and ``numthreads``; the WebP decoder honors ``hasalpha``, which
+  tifffile passes for four-sample images whose opaque tiles libwebp
+  stores without alpha, and ``index``; the PNG encoder forwards
+  ``strategy`` and ``filter``. Options the adapters do not implement
+  raise ``TypeError`` instead of being dropped. This is a format change
+  for WebP tiles written through the patch without an explicit setting,
+  which are now lossless instead of lossy.
+- Fix: ``QoiCodec.encode`` dropped unknown options; it now raises
+  ``TypeError``. QOI output is unchanged, and how its RGBA output differs
+  from imagecodecs is now documented: header byte 13 only. The QOI
+  specification defines that byte as informative; opencodecs writes 0,
+  "sRGB with linear alpha", for RGB and RGBA alike, as the specification
+  and its reference encoder do, and imagecodecs writes 1 for RGBA.
+  ``srgb=False`` gives byte parity.
+
+- Fix: JPEG-LS could not decode a multi-component image coded with
+  interleave mode NONE (one scan per component, ITU-T T.87 Annex C.2.3),
+  which DICOM archives and other encoders write; it failed with "output
+  buffer too small". Such images now decode to (H, W, C) like the other
+  modes, through ``oc.read`` and DICOMweb alike.
+- Fix: JPEG-LS ignored ``level=``, imagecodecs' name for the NEAR bound,
+  and wrote a lossless file. ``level`` now sets NEAR, the same stream
+  imagecodecs writes apart from its SPIFF header, and disagreeing
+  ``level`` and ``near_lossless`` raise. Output is still a bare
+  codestream with sample interleave, both conforming choices.
+- Fix: AVIF and HEIF coded uint16 data at 10 bits with no range check,
+  so a plain ``encode`` clamped every value above 1023 and an explicit
+  ``bit_depth`` clamped too. uint16 data is now coded at 10 or 12 bits,
+  whichever holds its largest value, and data that does not fit the
+  depth (AV1 and the HEVC encoders stop at 12 bits) raises instead.
+  Files for data above 1023 change from a clamped 10-bit image to an
+  exact 12-bit one.
+- Fix: AVIF and HEIF stored gray input as three equal color planes, and
+  AVIF decoded every file, real monochrome ones included, as RGB. Gray
+  and gray with alpha are now coded monochrome (AV1 ``mono_chrome``,
+  HEVC chroma format 0). A monochrome AVIF decodes to (H, W) or
+  (H, W, 2), as imagecodecs.avif_decode returns it. A monochrome HEIF
+  still decodes to RGB(A) by default, as imagecodecs.heif_decode returns
+  it, and to (H, W) or (H, W, 2) with imagecodecs' keyword
+  ``photometric='monochrome'``, which now works on decode (it raises for
+  a color image, where imagecodecs returns the red channel). This
+  changes the bytes written for gray input, and the shape read back from
+  monochrome AVIF files. Gray AVIF is tagged with an
+  unspecified matrix (2), as imagecodecs tags it, since a single plane
+  has no chroma for a matrix to act on. Lossless gray AVIF then matches
+  imagecodecs byte for byte when both link the same libavif and libaom,
+  for images under 1024 px on the long axis; larger images are tiled
+  4x4 by default here and untiled in imagecodecs, and
+  ``tilelog2=(0, 0)`` writes them untiled.
+- Fix: AVIF and HEIF ignored ``level=`` unless ``lossless=False`` was
+  also passed, so imagecodecs-style ``encode(a, level=30)`` wrote a
+  lossless file. ``lossless`` now defaults to None: with no level, or a
+  level of 100 (AVIF) or above 100 (HEIF), the file is lossless, as in
+  imagecodecs, and a lower level is lossy; an AVIF level of -1 or lower
+  is lossy at libavif's own default quality, as imagecodecs maps it.
+  Gray (1 or 2 sample) AVIF is the one difference: imagecodecs writes it
+  lossless whatever the level, and opencodecs honors the level for it
+  as for color.
+  ``lossless=True`` with a lossy level raises. A bare
+  ``oc.get_codec("avif")`` or ``oc.get_codec("heif")`` encode is
+  unchanged (lossless). The extension functions
+  ``opencodecs.codecs._avif.encode`` and ``_heif.encode`` used to be
+  lossy by default (AVIF quality 60 at 4:2:0, HEIF quality 50); a bare
+  call to them is now lossless too. This is a format change: a level
+  alone now writes a lossy file where a lossless one was written, an
+  AVIF level of -1 or lower writes libavif's default quality where it
+  wrote quality 0, and a bare call to the extension functions writes
+  lossless, larger files.
+- Fix: lossy AVIF color was tagged with an unspecified matrix (2), which
+  leaves readers outside libavif to guess. It is now tagged BT.601 (6),
+  the matrix libavif converts with; pixels are unchanged, only that tag
+  in the ``colr`` box differs. Lossy AVIF can still decode a level or
+  two apart from imagecodecs on the same bytes: the imagecodecs build
+  converts with libyuv, this one with libavif's own converter, which
+  matches the rounded ITU-T H.273 result.
+- Fix: lossy AVIF and HEIF color was subsampled 4:2:0 by default, where
+  imagecodecs codes 4:4:4, which smears sharp color edges. Lossy color is
+  now 4:4:4 by default for both; AVIF's ``yuv_format`` (or
+  ``pixelformat``) still asks for subsampling. AVIF alpha is now coded
+  lossless at every level, as imagecodecs codes it, rather than at the
+  color quality. AVIF ``speed`` defaulted to 0, the slowest, through
+  ``oc.get_codec("avif")`` and to 6 in the extension; both now leave
+  libavif's default, as imagecodecs does, and a speed outside 0 to 10 is
+  clamped to that range, as imagecodecs clamps it, instead of being
+  ignored. This changes the bytes of lossy AVIF and HEIF files.
+- Fix: the AVIF, HEIF, JPEG-LS and LERC codecs dropped keywords they did
+  not know, on encode and decode. They now raise TypeError for them, and
+  accept imagecodecs' names: ``bitspersample``, ``pixelformat``,
+  ``tilelog2``, ``primaries``, ``transfer`` and ``matrix`` for AVIF
+  encode, ``index`` for AVIF decode (one image of a sequence, IndexError
+  past the end), ``bitspersample``, ``photometric`` and ``compression``
+  (HEVC only) for HEIF encode, by name or as libheif's integer enum
+  values as imagecodecs takes them, and ``photometric`` for HEIF
+  decode. A HEIF ``photometric`` that disagrees with the array raises.
+  The
+  AVIF wrapper also passes ``codec``, tiling, ``yuv_format`` and
+  ``codec_options`` through, which it used to drop.
+- Fix: a HEIF with an 8-bit image and a deeper alpha plane (HEIF codes
+  alpha as a separate image with its own bit depth) decoded to wrong
+  alpha values with no error, through libheif's RGBA conversion. A HEIF
+  whose alpha depth differs from the image's now raises HeifError, as a
+  deeper image with a shallower alpha already did, since one array
+  cannot hold both planes at their own depths. This needs libheif to
+  list the alpha as an auxiliary image, which the libheif 1.21 the
+  wheels bundle does. libheif 1.23 does not, and its own conversion
+  rescales the alpha to the image's depth (up by bit replication, down
+  by dropping low bits), so a build against it returns that instead of
+  raising.
+- Fix: LERC wrote Lerc2 codec version 6, which readers built on libLerc
+  before 4.0 cannot open and which libtiff warns about in TIFF, where it
+  fixes version 4. It now writes version 4 by default, byte-identical to
+  imagecodecs, with ``version=`` (2 to 6) to choose; every version still
+  decodes. This changes the bytes of every LERC blob and LERC TIFF tile
+  written. LERC also accepts imagecodecs' ``level``, ``masks``,
+  ``planar``, ``compression`` (zstd or deflate around the blob, unwrapped
+  again on decode) and 1-D input, returns masks on request, and decodes
+  pixels a mask marks invalid as 0 rather than leaving whatever the
+  output buffer held. A deflate ``compressionargs`` level outside -1 to
+  9 is clamped to that range, as imagecodecs clamps it, rather than
+  failing inside zlib.
+- Fix: the EER codec returned uint8 for a frame while ``oc.open`` on the
+  same EER file returned bool. A frame holds at most one event per pixel
+  and Falcon files declare BitsPerSample=1, so the codec now returns bool,
+  as imagecodecs and tifffile do; ``out=`` of uint8 or uint16 still
+  accumulates counts, and a bool ``out=`` now has events OR-ed in.
+
+- Fix: the ``rcomp``, ``aec``, ``pcodec``, ``sz3`` and ``sperr`` codecs
+  put a private header of ours in front of each library's stream, so
+  nothing else could read what they wrote and they could not read the
+  standard stream from anywhere else. Each now writes the stream its
+  specification or library defines, byte-identical to imagecodecs for
+  the same parameters and an array in native byte order, and takes what
+  that stream does not record as decode arguments, as imagecodecs does.
+  A big-endian array is coded by its values (aec by default, see
+  below); imagecodecs codes its bytes as if they were native numbers
+  (sz3 refuses it), so for such an array rcomp, pcodec and sperr write
+  different bytes, and an imagecodecs stream of one holds byte-swapped
+  numbers, which opencodecs decodes as the numbers they are, also into
+  a big-endian ``dtype``. This changes the bytes all five write. Blobs
+  written by earlier releases still decode: pcodec, sz3 and sperr
+  recognize their old header by its magic. rcomp and aec, whose old
+  headers had none, read a blob as an old one when every header field
+  holds a value the old encoder could write and agrees with what the
+  caller passes (coding parameters included, since 0.4.0's aec decode
+  accepted and ignored them), and the rest decodes. Where the same
+  bytes also decode as a standard stream, the reading whose values
+  encode back to exactly those bytes is kept, the standard one first,
+  and aec raises when neither does. Parameters take imagecodecs' names too (``nblock``,
+  ``bitspersample``, ``blocksize``, ``flags``, ``pagesize``, ``abs``,
+  ``rel``, ``level``, ``chunks``, ``numthreads``), and an option none of
+  them defines now raises ``TypeError`` instead of being ignored.
+- Fix: ``rcomp`` writes the bare cfitsio Rice stream, which is what FITS
+  stores in a ``RICE_1`` tile (FITS 4.0, section 10.4.1). Decoding it
+  takes ``shape`` and ``dtype`` and the block size (``blocksize`` or
+  ``nblock``, 32 by default), and returns the requested signed or
+  unsigned type, not flat unsigned words.
+- Fix: the Rice decoders behind ``rcomp`` and FITS ``RICE_1`` tiles could
+  read past the end of a damaged or truncated stream. cfitsio checks for
+  the end of the input once per coding block, and inside a block a run
+  of zero bits has no length limit, so the decoder kept reading until it
+  met a nonzero byte or faulted. Every byte is now checked before it is
+  read, and such a stream raises. Valid streams decode as before; the
+  check costs 3 to 8 percent of Rice decode time in our measurements.
+- Fix: ``aec`` writes the bare CCSDS 121.0-B-2 stream that libaec
+  produces, the stream GRIB2 and imagecodecs use. Its defaults are now
+  imagecodecs': block size 8 and reference sample interval 2 (they were
+  32 and 128), so that streams decode with the same defaults on both
+  sides; NetCDF and HDF5 szip data commonly use 32 and 128, which also
+  compress better, so pass them to both calls when you want them.
+  Decoding takes the coding parameters, and ``dtype`` and ``shape`` or
+  ``out`` for the sample type and count. An output too small for the
+  stream now raises instead of truncating, and a sample value that does
+  not fit ``bits_per_sample`` raises instead of losing its high bits,
+  for bytes input as for arrays. libaec takes a signed sample narrower
+  than its item as a ``bits_per_sample``-bit two's complement number.
+  Negative values in a signed array with ``bits_per_sample`` below the
+  item width were passed to it sign-extended, and decoded to other
+  values without an error (imagecodecs does the same); they are now
+  masked to ``bits_per_sample`` bits first, so they decode back to the
+  values given, and the bytes written for such data change. A value
+  above the signed range of ``bits_per_sample`` bits raises rather
+  than being read back as a negative number. A 0-d array was coded as
+  a run of zero bytes, as many as its value; it is now coded as one
+  sample, as imagecodecs codes it.
+  When neither ``flags`` nor ``msb`` is given, the byte order bit
+  (``AEC_DATA_MSB``) follows the array, so a big-endian array is coded
+  by value where imagecodecs codes its bytes as little-endian samples,
+  and decoding with ``dtype`` returns values. An explicit ``flags`` or
+  ``msb`` is kept as given, as in imagecodecs: the array's bytes are
+  coded in the order it gives, decoding returns the decoded bytes as
+  they are with or without ``dtype``, and a sample that does not fit
+  ``bits_per_sample`` read that way raises. int16 and int32 arrays
+  set the signed flag and int8 arrays do not, as in imagecodecs, so int8
+  streams are the same bytes and imagecodecs' int8 streams decode right
+  with ``dtype='i1'``. A big-endian int16 or int32 array sets it too,
+  where imagecodecs leaves it off (and cannot read the result back
+  into that array); pass ``signed=False`` and the stream's ``flags`` to
+  read such a stream. ``restricted`` and ``pad_rsi`` are new. libaec's
+  encoder writes the ``AEC_PAD_RSI`` padding only when built with
+  ``ENABLE_RSI_PADDING``; a libaec built without it accepts the flag
+  and writes no padding, a stream no decoder reads back with the flag.
+  Encoding with ``pad_rsi`` checks which the linked libaec does and
+  raises ``ValueError`` when it does not pad; decoding a padded stream
+  works with either build.
+- Fix: ``pcodec`` writes pcodec's standalone format (magic ``pco!``),
+  the format of the pcodec package, numcodecs and imagecodecs. It
+  records the number type and a hint of the element count, which the
+  format allows to be 0 for unknown, but no shape. ``decode`` takes the
+  count from ``shape`` or ``out`` when given, as imagecodecs does, and
+  otherwise from the hint, returning a flat array; a stream that holds
+  more than its hint, such as any nonempty stream whose hint is 0,
+  needs ``shape`` or ``out``.
+- Fix: ``sz3`` writes SZ3's own stream, and its defaults are now
+  imagecodecs': mode ``'abs'`` with an error bound of 0, where
+  opencodecs used 1e-3. A call with no bound therefore writes the same
+  bytes as ``imagecodecs.sz3_encode`` (more bytes than before, with no
+  error allowed); pass ``abs_err`` (or ``abs``) to compress lossily.
+  That stream does not reliably
+  record its data type, so ``decode`` needs ``dtype`` (or ``out``); the
+  shape defaults to the stored dimensions, which leave out those of size
+  1. SZ3 reads a payload without bounds checks and throws exceptions its
+  C API does not catch, so a stream it cannot read ends the process.
+  ``decode`` checks the header, the configuration and the layout of the
+  payload first, and raises for a truncated stream, a stream of another
+  SZ3 data version, or a payload not laid out the way SZ3 writes its
+  configuration. The layout also shows the value type wherever the
+  stream holds values SZ3 could not predict, so a ``dtype`` that does
+  not match raises ``ValueError`` instead of ending the process. A
+  stream with no such values is laid out the same for float32 and
+  float64, and a wrong ``dtype`` then decodes without an error. Damage
+  inside the coded data that leaves the layout intact can still crash
+  SZ3, as it does in imagecodecs. Asking for the ``psnr`` or ``norm``
+  mode, for integer data or for more than four dimensions longer than 1
+  also ended the process inside the SZ3 C API, which implements none of
+  them; each now raises ``ValueError``.
+- Fix: ``sperr`` writes SPERR's own format: a 2-D slice with SPERR's
+  10-byte header (``header=False`` leaves it off) and a 3-D volume as
+  SPERR returns it. ``decode`` takes the shape and precision from that
+  header. SPERR's header has no magic, so ``oc.read`` recognizes a
+  stream without ``format=`` by its fields: the version byte, flags
+  SPERR sets, dimensions holding 1 to 2**40 values, the chunk lengths
+  in the first 512 bytes, and as much of the first coded stream's fixed
+  fields as those bytes hold (for a stream under 512 bytes, every check
+  ``decode`` makes on the stream). In a volume of 117 chunks or more the chunk
+  table can push some or all of those fields past the 512th byte; the
+  chunk lengths then stand in for them. A 2-D stream written without its
+  header, or a stream of more than 2**40 values, needs
+  ``format='sperr'``.
+  In ``psnr`` mode SPERR's quantization step overflows to infinity for
+  float64 data of very large magnitude (values of about 1e154 and up in
+  our tests), and the stream it writes decodes to NaN; ``encode`` now
+  raises ``ValueError`` for such data instead of writing it, and
+  ``decode`` still reads such a stream, from imagecodecs or 0.4.0, as
+  NaN. SPERR's decoder checks none of its input, and a stream cut
+  short inside its fixed fields or with a damaged flag, bit-plane or
+  bit-count field ended the process (segmentation fault or abort), in
+  0.4.0 as in imagecodecs. ``decode`` now checks the header, the chunk
+  table and those fields of each coded stream first and raises
+  ``SperrError`` instead; in a fuzz of 300 single-byte changes, the
+  only failures left were the allocations described next. Damage the
+  checks cannot tell from a valid stream is not covered: changed coded
+  bits, or a header field changed to another plausible value, decode
+  to wrong values without an error and may still crash SPERR, and a
+  dimension made larger makes SPERR allocate memory for that size,
+  which for a high bit means hundreds of gigabytes. A 3-D volume is now
+  compressed as one chunk by default, as imagecodecs does, where it was
+  split into chunks of 256 along each axis; ``chunks=(256, 256, 256)``
+  gives that chunking (SPERR's sperr3d default), which lets the chunks
+  of a large volume compress on separate threads.
+
+- Fix: the ``jpeg`` codec's ``encode`` (``get_codec("jpeg")`` and
+  ``write(..., format="jpeg")``) dropped every option except ``level`` and
+  ``iccprofile``, without an error: ``subsampling="444"`` wrote 4:2:0 and
+  ``lossless=True`` wrote a lossy baseline JPEG. It now takes the
+  parameters of imagecodecs' ``jpeg8_encode`` (``colorspace``,
+  ``outcolorspace``, ``subsampling``, also as a ``(2, 2)`` tuple,
+  ``optimize``, ``smoothing``, ``lossless``, ``predictor``,
+  ``bitspersample``, and ``validate``, which has no effect in either
+  library), honoring each as libjpeg defines it. Where imagecodecs applies
+  an option, the bytes are the ones imagecodecs writes, with three
+  differences. imagecodecs ignores ``subsampling`` for an RGB, CMYK or
+  YCCK JPEG (RGB and CMYK are never subsampled, YCCK always 4:2:0), and
+  ``jpeg`` subsamples them as asked, which T.81 allows since every
+  component has its own sampling factors; left unset, the sampling factors
+  are imagecodecs'. And the packed input orders other than RGB (``"bgr"``,
+  ``"rgbx"``, ``"bgrx"``, ``"xrgb"``, ``"xbgr"``) are libjpeg-turbo's
+  JCS_EXT_* layouts in ``jpeg``: it reads the color samples in the order
+  named and stores a three-component (or grayscale) JPEG, without the
+  padding sample of a four-sample order. imagecodecs raises for the
+  J_COLOR_SPACE integers of these orders, and reads their names as an
+  unknown colorspace, storing every sample unconverted as its own
+  component: a four-sample order keeps its fourth sample in a
+  four-component frame, and a ``"bgr"`` array becomes three components
+  that decode to other pixels. The orders with alpha (``"rgba"``,
+  ``"bgra"``, ``"argb"``, ``"abgr"``) raise in ``jpeg`` and ``mozjpeg``,
+  since a JPEG has no alpha channel and the alpha samples would be lost;
+  imagecodecs raises for ``"rgba"`` and the integers, and keeps the fourth
+  sample as a component for the other names. And YCbCr input
+  (``colorspace="ycbcr"``) is stored unconverted, as in imagecodecs, but
+  TurboJPEG converts only from RGB, so ``jpeg`` passes the samples through
+  RGB storage and then labels the components as imagecodecs and libjpeg
+  label YCbCr, with component ids 1, 2, 3 and a JFIF marker (T.871). The
+  bytes still differ from imagecodecs': Cb and Cr share the luminance
+  quantization and Huffman tables. IJG libjpeg 9 infers the colorspace
+  from the component ids before any marker, and libjpeg-turbo reads the
+  markers first; both read the two streams as YCbCr (IJG libjpeg decodes
+  no lossless JPEG), and at quality 100 they decode to the same pixels. A
+  value TurboJPEG cannot honor, such as ``smoothing``, YCCK input, or,
+  with ``lossless=True``, a subsampling, a YCbCr, YCCK or grayscale JPEG
+  of color input, or ``optimize=False`` (T.81 allows the first two;
+  TurboJPEG's lossless mode writes neither and always computes its
+  Huffman tables, and imagecodecs ignores these there), raises, and an option the codec does not know is a
+  ``TypeError``. The native ``codecs._jpeg.encode`` and
+  ``codecs._mozjpeg.encode`` no longer cast a list or other non-array
+  input to uint8: as in imagecodecs, the input keeps the dtype NumPy gives
+  it, so a list of Python ints raises; pass a uint8 (or, for ``jpeg``,
+  uint16) array. The ``jpeg`` and ``mozjpeg`` decoders take imagecodecs'
+  ``tables``, ``header``, ``colorspace``, ``outcolorspace``,
+  ``fancyupsampling``, ``shape`` and ``bitspersample``; as in libjpeg,
+  ``colorspace`` without ``outcolorspace`` returns the stored components
+  unconverted, and ``fancyupsampling=False`` takes effect (imagecodecs
+  2026.8.16 sets it before reading the header, which resets it). The
+  packed output orders are libjpeg-turbo's layouts too, so
+  ``outcolorspace="bgr"`` returns blue, green, red, as imagecodecs does
+  for the J_COLOR_SPACE integer (8); imagecodecs reads the names other
+  than ``"rgba"`` as unknown and returns RGB for ``"bgr"``. A TIFF
+  photometric name that is no JPEG colorspace (``"CFA"``,
+  ``"LINEAR_RAW"``, ``"CIELAB"`` and the like, which tifffile passes for
+  DNG and other tiles) means the library default when decoding, as in
+  imagecodecs; any other unknown colorspace raises, where imagecodecs
+  falls back to the default. ``mozjpeg`` encode takes the parameters of
+  ``mozjpeg_encode`` and raises for those MozJPEG's TurboJPEG API fixes
+  (``optimize=False``, ``notrellis``, ``quanttable``, ``smoothing``, and
+  ``progressive=False``, which used to write the same progressive JPEG as
+  ``progressive=True``). The ``tifffile_patch`` JPEG adapters pass
+  tifffile's options through instead of dropping them, except the chroma
+  subsampling tifffile adds to a JPEG it stores as RGB or lossless, and
+  the YCbCr outcolorspace it adds to a lossless RGB one, which imagecodecs
+  does not apply either: for 8-bit RGB images those files are
+  byte-identical to the ones tifffile writes with imagecodecs, and a
+  lossless RGB JPEG TIFF, which 0.4.0 wrote lossy, now holds the exact
+  pixels. A tifffile write with ``photometric="ycbcr"``, whose samples
+  0.4.0 converted as if they were RGB, stores them unconverted, so the
+  file reads back like the one tifffile writes with imagecodecs (to the
+  same pixels at quality 100, and exactly with ``lossless=True``, which
+  0.4.0 also wrote lossy). The decode adapter hands imagecodecs a tile
+  TurboJPEG cannot decode as asked, instead of failing a file that reads
+  without the patch: one with a component count TurboJPEG has no
+  colorspace for (two, as in a two-sample lossless JPEG TIFF), and any
+  lossless one it raises for, such as one asked for a color conversion,
+  which TurboJPEG's lossless mode does not make (a lossless
+  ``photometric="ycbcr"`` TIFF, read as RGB). imagecodecs reads these as
+  it does without the patch, the lossless YCbCr tile as its stored
+  samples; ``jpeg`` itself raises for them. Format change: calls that
+  passed these options now get the stream they asked for; output with
+  default options is unchanged.
+- Fix: ``jpeg`` could not decode valid JPEG that imagecodecs writes and
+  reads: 12-bit DCT (the T.81 extended process), lossless (SOF3) at 2 to
+  16 bits, and four-component CMYK or YCCK (Adobe APP14). All decode now,
+  to uint16 above 8 bits and to (H, W, 4) for four components, equal to
+  imagecodecs' output, and JPEG-in-TIFF tiles of these kinds (a CMYK JPEG
+  TIFF, for example) read through the same path. ``jpeg`` also writes
+  them: uint16 as 12-bit lossy or 9 to 16-bit lossless, byte-identical
+  to imagecodecs at the same settings, and (H, W, 4) as CMYK. For CMYK
+  the default bytes differ from imagecodecs': ``jpeg`` writes the Adobe
+  APP14 marker that declares four components CMYK (Adobe Technical Note
+  5116) and component ids C, M, Y, K, which is what imagecodecs writes
+  with ``colorspace="cmyk", outcolorspace="cmyk"`` (``colorspace="cmyk"``
+  alone raises there); imagecodecs' default writes no marker and
+  ids 0 to 3, which libjpeg also reads as CMYK, so the pixels are the
+  same. Values wider than the precision raise. imagecodecs either raises
+  or writes a 12-bit lossy stream that decodes to other values, and by
+  default it stores lossless uint16 in a 12-bit frame even when samples
+  exceed 12 bits, which T.81 does not allow (libjpeg-turbo happens to
+  decode it back exactly). ``jpeg`` stores lossless uint16 data above
+  4095 at 16 bits instead, so those bytes differ from imagecodecs'. A
+  lossless stream asked to decode at a reduced scale raises a clear
+  error. ``mozjpeg`` decodes CMYK and YCCK too, and hands 12-bit and
+  lossless streams, which MozJPEG cannot decode, to ``jpeg``. Format
+  change: ``jpeg`` writes uint16 and (H, W, 4) arrays, which it used to
+  reject. The TIFF and NDTiff writers still reject them with
+  ``compression="jpeg"``, raising ``JpegError`` as before, because the
+  BitsPerSample and PhotometricInterpretation they write would not
+  describe a 12-bit or CMYK JPEG.
+- Fix: ``jpeg`` and ``mozjpeg`` rejected a trailing singleton channel,
+  (H, W, 1). It is grayscale now, as in ``png`` and imagecodecs, and
+  writes the same bytes as the (H, W) array.
+
+- Fix: HTJ2K decode ignored the component transform (RCT/ICT) that a
+  codestream signals in its COD marker, which imagecodecs, OpenJPH's
+  ``ojph_compress``, Kakadu and DICOM encoders all use for RGB and RGBA.
+  Such files decoded to wrong colors (uint8 off by up to 255) with no
+  error. They now decode as ISO/IEC 15444-1 Annex G requires, matching
+  imagecodecs and OpenJPEG, including the JPEG committee's conformance
+  codestreams.
+- Fix: HTJ2K encode now applies the component transform to 3- and
+  4-component input by default, as imagecodecs and ``ojph_compress`` do;
+  ``rgb=False`` turns it off. This is a format change: RGB and RGBA
+  output differs from 0.4.0 and is byte-identical to imagecodecs'.
+  Earlier files still decode.
+- Fix: HTJ2K decode clamped samples of more than 16 bits into uint16 or
+  int16, and decoded float32 codestreams (NLT type 3, ISO/IEC 15444-2)
+  to meaningless int16, both silently. It now returns uint32, int32 and
+  float32, and raises on codestreams whose components differ in
+  precision, sign or sampling instead of misreading them. Encode accepts
+  uint32, int32 and float32 and 1 to 16384 components, the range SIZ
+  allows; more raises, where imagecodecs writes an invalid codestream.
+- Fix: HTJ2K decode with ``planar=None`` (the default) returned every
+  multi-component image as (H, W, C). It now follows imagecodecs:
+  (H, W, C) when the codestream uses the component transform, as RGB
+  and RGBA encodes do, and (C, H, W) otherwise, for example for 2 or 5
+  components or ``rgb=False``. RGB files written by 0.4.0, which have
+  no transform, therefore decode as (C, H, W) with the same samples;
+  ``planar=False`` returns (H, W, C) for any codestream. The pyramid
+  reader and DICOMweb frames still return (H, W, C).
+- Fix: HTJ2K ``level`` now means what it means in imagecodecs: below 1 a
+  quantization step held as a float32 (under 1e-5, lossless, which
+  includes a level of exactly 1e-5), from 1 a quality factor up to 100.
+  A level of 1 or more used to be taken as a quantization step, a level
+  above 0 up to 1e-5 used to give a lossy file, and a level of 0 raised.
+  This is a format change: output for a level of 1 or more, or above 0
+  up to 1e-5, differs from 0.4.0. The other ``imagecodecs.htj2k_encode``
+  keywords (``rgb``, ``planar``, ``tile``, ``resolutions``,
+  ``reversible``, ``tlm``, ``tilepart``, ``block_size``, ``prog_order``,
+  ``profile``) are implemented, with encoded output byte-identical to
+  imagecodecs, and so are the ``htj2k_decode`` keywords ``planar``,
+  ``skipres``, ``resilient`` and ``out``. Encode does not implement
+  ``out=``; it raises ``TypeError``, as the codec does for any option it
+  does not know, instead of dropping it. The one exception to byte
+  identity is an explicit ``rgb=True``, which imagecodecs drops for
+  planar and float32 input: planar input gets the component transform,
+  and float32 input, or fewer than 3 components, raises ``ValueError``.
+- Fix: JPEG 2000 decode returned signed components (Ssiz bit 7) as
+  unsigned values offset by half their range, so a TIFF with signed
+  JPEG 2000 tiles read back with the sign bit flipped. Signed components
+  now decode to int8, int16 or int32, as ISO/IEC 15444-1 Annex A.5.1 and
+  G.1 define them, and components above 16 bits decode to (u)int32
+  instead of raising. Encode accepts int8 and int16.
+- Fix: JPEG 2000 encode failed on any image under 32 pixels on a side,
+  because it always asked OpenJPEG for 6 resolutions. It now uses
+  imagecodecs' resolution count, and lossless output is byte-identical
+  to imagecodecs' at every size. This is a format change for images
+  under 256 pixels on a side. Two-component JP2 files now declare the
+  gray color space, as imagecodecs writes them, instead of unspecified.
+- Fix: JPEG 2000 ``level`` is now imagecodecs' PSNR target in dB
+  (1 to 1000), and a level alone gives a lossy file, as in imagecodecs.
+  It used to be ignored unless ``lossless=False`` was passed, and was
+  then read as a compression ratio of 100/level; ``ratio=`` now asks for
+  a ratio. ``lossless=True`` with a lossy level raises. This is a format
+  change for lossy output. The lower-level encoder that the TIFF writer
+  and the tifffile patch call defaulted to a lossy 10:1 rate when given
+  no level; it is now lossless by default, like the codec. The NDTiff
+  writer with ``compression="jpeg2000"`` used to drop
+  ``compression_level`` and write lossless frames; a level from 1 to
+  1000 now gives lossy frames with that level as OpenJPEG's PSNR target,
+  as in the TIFF writer and imagecodecs, which
+  is a format change. Frames written with no level are still lossless.
+  The other ``imagecodecs.jpeg2k_encode`` keywords (``codecformat``,
+  ``colorspace``, ``planar``, ``bitspersample``, ``resolutions``,
+  ``reversible``, ``mct``, ``verbose``) are implemented, and the codec
+  raises on options it does not know. Encode does not implement
+  ``out=``: the codec and the tifffile patch raise ``TypeError`` for
+  it. Encode takes up to 4095 components, as imagecodecs does, so the
+  TIFF writer now writes JPEG 2000 with more than 4 samples per pixel,
+  which it used to refuse; it encodes each strip or tile as rows by
+  width by samples, whatever its height.
+  ``bitspersample`` takes 1 to 8 for 8-bit data and 9 to 16 for 16-bit
+  data, where imagecodecs uses it; other values raise, where
+  imagecodecs ignores them. ``verbose`` sends OpenJPEG's messages to
+  the ``opencodecs`` logger, at the same thresholds as imagecodecs.
+- Fix: the tifffile patch's ``jpeg2k_encode`` dropped the arguments
+  tifffile passes, including ``codecformat=0``, so tifffile's JPEG 2000
+  TIFFs got JP2-boxed tiles, lossy at a 10:1 rate. This is a format
+  change: tiles written through the patch are now raw J2K codestreams,
+  lossless unless a level asks otherwise, and in every case tested
+  (8- and 16-bit, signed and unsigned, gray and RGB, contiguous and
+  separate planes, lossless and with a level) the TIFF file is
+  byte-identical to the one tifffile writes with imagecodecs. TIFFs
+  with JP2-boxed tiles from 0.4.0 still read. The patch's
+  ``jpeg2k_decode`` now honors ``out=`` instead of dropping it.
+
+- Fix: GIF decoding ignored the Graphic Control Extension. A frame's
+  transparent index was painted in its palette color instead of leaving
+  the pixel underneath, disposal methods 2 (restore to background) and 3
+  (restore to previous) were not applied, ``decode`` and ``open`` did
+  not deinterlace interlaced frames, and the libgif path filled the area
+  outside a single sub-rectangle frame with zeros instead of the
+  background color. Every decode path now shares one reader whose
+  compositor follows the GIF89a specification. ``decode`` also takes
+  imagecodecs' ``index`` (one frame over the background, by position or
+  keyword) and ``out`` (a C-contiguous array of the decoded shape and
+  dtype, else ``ValueError``, as in imagecodecs), and ``asrgb=False``
+  returns every frame's indices on a canvas-sized array, ``(H, W)`` or
+  ``(N, H, W)``, where it used to refuse animations and return a
+  frame-sized array. Four differences from imagecodecs remain. When the
+  first frame uses its transparent index, imagecodecs returns a fourth
+  channel that is 255 everywhere; opencodecs still returns RGB.
+  imagecodecs skips the restore of a disposal 3 frame that follows a
+  disposal 2 frame, which opencodecs applies as the specification says.
+  A frame that extends past the logical screen is clipped to it, where
+  imagecodecs enlarges the canvas. A frame of zero width or height draws
+  nothing, where imagecodecs raises ``GifError``; with ``asrgb=False``
+  such a frame used to crash the interpreter. A frame whose image data
+  ends before width times height pixels now raises ``GifError``, as
+  libgif and imagecodecs do, where ``GifCodec.decode`` and ``open``
+  returned uninitialized memory for the missing pixels; codes past the
+  last pixel are ignored, as libgif ignores them, where those two
+  raised; and an LZW code naming a table entry that was never defined
+  raises ``GifError``, where it could read outside the decoder's table
+  and crash the interpreter. Decoded pixels change; written bytes do
+  not.
+- Fix: BMP read BI_BITFIELDS color masks from after the 52- and 56-byte
+  headers, which is pixel data, so those files decoded with wrong colors
+  (or raised ``OverflowError`` at 16 bits), and after a 40-byte header
+  it took the first pixel for an alpha mask and returned a fourth
+  channel of garbage. Masks are now read where each header defines them;
+  a fourth DWORD after a 40-byte header counts as alpha only when it
+  lies before the pixel data and is disjoint from the color masks.
+  Channels of 1 to 3 bits topped out at 128, 192 or 224 (an opaque 1-bit
+  alpha read as 128); every width now scales as
+  ``round(v * 255 / (2**n - 1))``, the PNG specification's reference
+  equation, which also moves
+  some 5- and 6-bit levels by one (imagecodecs truncates, so it can be
+  one lower). Uncompressed 1-, 2- and 4-bit paletted files and
+  BI_ALPHABITFIELDS now decode, and the imagecodecs parameters ``asrgb``
+  and ``out`` (decode) and ``ppm`` (encode), which were silently
+  ignored, are implemented; ``out`` must be a C-contiguous array of the
+  decoded shape and dtype, else ``ValueError``, as in imagecodecs.
+  24-bit BI_BITFIELDS files, which Microsoft documents only for 16 and
+  32 bits and imagecodecs refuses, still decode, now through their
+  masks, which used to be ignored; one with a zero color mask now raises
+  ``BmpError``, as Pillow refuses it, where earlier versions ignored the
+  masks and decoded it as BGR. A file whose pixel data offset lies inside
+  the three masks after a 40-byte header, so that the masks would be
+  pixels, now raises ``BmpError``, where earlier versions read the first
+  pixels as masks at 16 and 32 bits (imagecodecs still does) and decoded
+  a 24-bit one as BGR; with four masks (BI_ALPHABITFIELDS, which earlier
+  versions and imagecodecs refuse) it raises too. A channel mask whose bits are not
+  contiguous, which Microsoft's header documentation forbids, and a file
+  cut short in its headers, masks, color table or uncompressed rows now
+  raise ``BmpError``, where some such files raised numpy's
+  ``IndexError`` or ``ValueError`` or ``struct.error``, and a gapped
+  mask could also decode to wrong values. An RLE stream cut short
+  between codes still decodes, leaving the pixels it never reaches at
+  index 0. A paletted file with a bitfield compression now raises
+  ``BmpError``, as imagecodecs does, where earlier versions skipped
+  three masks and decoded its palette. ``ppm`` is a format change only
+  for calls that pass it: a ``ppm`` below 1 is written as 1, as
+  imagecodecs writes it, and without ``ppm`` the bytes are unchanged.
+- Fix: the ``numpy`` codec could not encode datetime64 or timedelta64
+  arrays, wrote Fortran-ordered input in C order with ``fortran_order:
+  False``, ignored ``level``, and returned an ``NpzFile`` instead of an
+  array for ``.npz`` input. It now writes what ``numpy.save`` writes
+  (object arrays still raise ``ValueError``, where ``numpy.save`` and
+  imagecodecs pickle them). This is a format change in two places: the
+  bytes for Fortran-ordered input change (to ``fortran_order: True``, as
+  imagecodecs writes), and ``level``, which used to be ignored, writes a
+  deflate-compressed ``.npz`` holding ``arr_0.npy`` with a fixed
+  timestamp. ``decode`` returns member ``index`` (default 0) of an
+  ``.npz``, raising ``KeyError`` for a member that does not exist. As in
+  imagecodecs, ``level`` and ``index`` may be given by position,
+  ``decode`` passes other keywords to ``numpy.load`` (``allow_pickle``
+  and the like) instead of dropping them, and ``encode`` raises
+  ``TypeError`` for a keyword it does not take.
+- Fix: ``opencodecs.rgbe_encode``, ``rgbe_decode``, ``rgbe_imread`` and
+  ``rgbe_imwrite`` were a second, pure-Python RGBE implementation that
+  disagreed with the ``rgbe`` codec. It wrote a ``GAMMA=1.0`` header
+  line, which is not a Radiance header variable, and decoded ``+Y`` and
+  ``-X`` files unflipped and refused X-first (transposed) files, though
+  the resolution string defines the scan order. They now call the codec.
+  This is a format change for ``rgbe_encode`` and ``rgbe_imwrite``: no
+  ``GAMMA`` line and different RLE run choices, so the bytes are now
+  identical to imagecodecs' ``rgbe_encode``. The codec gains
+  imagecodecs' ``header`` and ``rle`` options, which it used to ignore:
+  ``header=False`` writes and, given ``out``, reads a bare pixel stream;
+  ``rle=False`` writes flat pixels, also after a header, where
+  imagecodecs writes RLE regardless, so that one combination writes
+  different bytes than imagecodecs. With the default ``header=None``, a
+  bare stream is read only when ``out`` is given and the data neither
+  starts with the ``#?`` magic nor holds a header that parses without it
+  (one with a ``FORMAT`` line). A bare stream must fill ``out`` exactly;
+  input left over raises ``ValueError``, as in imagecodecs, which also
+  catches header text with neither the magic nor a ``FORMAT`` line. The
+  codec's own bytes change only for calls that pass ``header=False`` or
+  ``rle=False``, which it used to ignore (a format change for those
+  calls). The codec now also reads a ``#?`` header with no ``FORMAT``
+  line, as Radiance's own reader and the old helpers did, and reads the
+  ``FORMAT`` value as Radiance's ``formatval`` does, skipping whitespace
+  after ``FORMAT=``; it used to refuse both. A ``FORMAT`` line naming
+  only another pixel format (not RGBE or XYZE) raises ``RgbeError``, as
+  Radiance's picture readers refuse one, where the old helpers decoded
+  those pixels as RGBE. The codec's output buffer was 4 bytes per pixel,
+  but run-length encoding a noisy scanline takes up to one more byte per
+  128 per channel, so such images raised ``RgbeError`` (imagecodecs
+  fails on them the same way); the buffer is now sized for that worst
+  case, and every image the old helpers wrote can still be written.
+- Fix: BC3 (DXT5) alpha truncated its interpolated values while BC4,
+  whose block is the same 8 bytes, rounded them, so the same bytes
+  decoded one apart. The Khronos Data Format Specification defines both
+  with the same real-valued formulas, so BC3 alpha now goes through the
+  rounding BC4 kernel. About a third of interpolated alpha samples
+  decode one higher than before and than imagecodecs, which truncates;
+  BC3 decode measured 0.94x on the Mac. BC4 and BC5 already rounded, and
+  BC6H keeps its float32 default (``fp16=True`` is bit-identical to
+  imagecodecs); both are now documented.
 
 0.4.0 (2026-09-29)
 ------------------

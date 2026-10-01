@@ -348,4 +348,4 @@ __all__ = [
     "CziWriter", "CziPyramidWriter", "czi_recompress", "subblock_dims",
 ]
 
-__version__ = "0.4.1"
+__version__ = "0.5.0"

@@ -76,11 +76,12 @@ library is missing — see [INSTALL.md](INSTALL.md).
 | `brotli` | ✓ | ✓ | system libbrotli | `.br` |
 | `blosc2` | ✓ | ✓ | source-built c-blosc2 2.23 | `.b2` |
 | `deflate` | ✓ | ✓ | libdeflate / zlib-ng / zlib (auto-selected at build time) | `.zlib` |
-| `gzip` | ✓ | ✓ | stdlib gzip | `.gz` |
+| `gzip` | ✓ | ✓ | the deflate engine above (encode), stdlib zlib (decode) | `.gz` |
 | `none` | ✓ | ✓ | identity (filter-chain placeholder) | — |
 | `bz2` | ✓ | ✓ | stdlib bz2 | `.bz2` |
 | `lzma` | ✓ | ✓ | stdlib lzma | `.xz` |
-| `snappy` | ✓ | ✓ | system snappy | `.sz` |
+| `snappy` | ✓ | ✓ | system snappy (raw block) | (none) |
+| `snappy_framed` | ✓ | ✓ | system snappy (framing format) | `.sz` |
 | `bitshuffle` | ✓ | ✓ | vendored bitshuffle (filter) | — |
 
 `bitshuffle` is a *filter*, not a stand-alone compressor: bit-level
@@ -94,19 +95,30 @@ output is ~19% bigger). The default backend is auto-selected at build
 time: libdeflate when present (fastest at default level), else
 zlib-ng-compat, else the stdlib zlib.
 
-### Scientific / numerical-array codecs (ndarray ↔ bytes, self-describing)
+### Scientific / numerical-array codecs (ndarray ↔ bytes)
 
-These four codecs target *typed multidimensional arrays* rather than
-images or raw bytes. The encoded blob carries shape and dtype in its
-header, so `decode(blob)` reconstructs the full ndarray without
-out-of-band metadata.
+These codecs target *typed multidimensional arrays* rather than
+images or raw bytes. Each writes its library's own stream, which
+records more for some than for others:
+
+- `b2nd`, `lerc` and `zfp` streams carry the shape and dtype, so
+  `decode(blob)` reconstructs the full ndarray.
+- `aec` writes the bare CCSDS 121.0-B-2 stream, which records nothing
+  about its data: `decode` takes the coding parameters it was written
+  with, plus `dtype` and `shape` (or `out`).
+- `sz3` records the dimensions but not reliably the data type, so
+  `decode` needs `dtype` (or `out`).
+- `pcodec` records the number type but not the shape: without `shape`
+  (or `out`) `decode` returns a flat array.
 
 | Codec | Encode | Decode | Lossless | Lossy modes | Backing library | Extension |
 | --- | :-: | :-: | :-: | --- | --- | --- |
-| `b2nd` | ✓ | ✓ | ✓ | — | system c-blosc2 (NDim API) | `.b2nd` |
-| `aec` | ✓ | ✓ | ✓ | — | system libaec (CCSDS 121.0-B-2) | `.aec` |
+| `b2nd` | ✓ | ✓ | ✓ | none | system c-blosc2 (NDim API) | `.b2nd` |
+| `aec` | ✓ | ✓ | ✓ | none | system libaec (CCSDS 121.0-B-2) | `.aec` |
 | `lerc` | ✓ | ✓ | ✓ | `max_z_error` | system liblerc (Esri) | `.lerc` |
 | `zfp` | ✓ | ✓ | ✓ (reversible) | rate / precision / accuracy | system libzfp | `.zfp` |
+| `sz3` | ✓ | ✓ | ✓ (default, abs 0) | abs / rel / abs_or_rel / abs_and_rel | source-built SZ3 | `.sz3` |
+| `pcodec` | ✓ | ✓ | ✓ | none | source-built pcodec (Rust) | `.pco` |
 
 In fixed-rate mode `zfp` blocks are individually addressable, so
 `decode_block(data, n)` reads one 4x4x4 block without touching the rest
@@ -114,9 +126,6 @@ In fixed-rate mode `zfp` blocks are individually addressable, so
 splits the block grid across threads (110 ms → 30 ms on a 67 MB volume).
 The variable-rate modes have no computable block position and fall back
 to a whole-stream decode.
-
-| `sz3` | ✓ | ✓ | — | abs / rel / psnr / norm | source-built SZ3 | `.sz3` |
-| `pcodec` | ✓ | ✓ | ✓ | — | source-built pcodec (Rust) | `.pco` |
 
 Quick guidance:
 
@@ -139,16 +148,16 @@ Quick guidance:
 | --- | :-: | :-: | --- | --- | --- |
 | `qoi` | ✓ | ✓ | RGB / RGBA | vendored qoi.h | `.qoi` |
 | `bmp` | ✓ | ✓ | gray / RGB / RGBA | pure Python+numpy | `.bmp`, `.dib` |
-| `gif` | ✓ | ✓ | 8-bit palette → RGB / RGBA; **animated** (decodes to a frame stack); encode takes palette indices | system giflib + vendored LZW decoder | `.gif` |
+| `gif` | ✓ | ✓ | 8-bit palette → RGB, or the palette indices; **animated** (decodes to a frame stack); encode takes palette indices | system giflib + vendored LZW decoder | `.gif` |
 | `png` | ✓ | ✓ | gray / RGB / RGBA, 8/16-bit | vendored libspng + libdeflate | `.png` |
-| `jpeg` | ✓ | ✓ | gray / RGB | libjpeg-turbo (TJ v3) | `.jpg`, `.jpeg` |
-| `mozjpeg` | ✓ | ✓ | gray / RGB, 8/12-bit | system mozjpeg (TJ v2) | `.jpg` |
+| `jpeg` | ✓ | ✓ | gray / RGB / CMYK (YCCK), 8/12-bit lossy, 2-16 bit lossless | libjpeg-turbo (TJ v3) | `.jpg`, `.jpeg` |
+| `mozjpeg` | ✓ | ✓ | gray / RGB, 8-bit encode; decodes what `jpeg` does (12-bit and lossless through `jpeg`) | system mozjpeg (TJ v2) | `.jpg` |
 | `webp` | ✓ | ✓ | RGB / RGBA, lossy + lossless; **animated** (decodes to a frame stack, like `gif`) | system libwebp (+ libwebpdemux) | `.webp` |
-| `jpeg2k` | ✓ | ✓ | gray / RGB / RGBA, 8/16-bit, lossless + lossy | OpenJPEG | `.jp2`, `.j2k`, `.jpx`, `.jpc` |
-| `htj2k` | ✓ | ✓ | gray / RGB / RGBA, 8/16-bit, lossless + lossy | OpenJPH 0.31.0 (source-built) | `.j2c` |
+| `jpeg2k` | ✓ | ✓ | up to 4095 components on encode (as imagecodecs), 8/16-bit unsigned or signed (decode to 32-bit), lossless + lossy | OpenJPEG | `.jp2`, `.j2k`, `.jpx`, `.jpc` |
+| `htj2k` | ✓ | ✓ | 1 to 16384 components, 8/16/32-bit unsigned or signed, float32, lossless + lossy | OpenJPH 0.31.0 (source-built) | `.j2c` |
 | `jpegls` | ✓ | ✓ | gray / RGB / RGBA, 2-16 bit, lossless + near-lossless | system CharLS | `.jls` |
-| `avif` | ✓ | ✓ | RGB / RGBA, lossy + lossless (YUV444+identity); **image sequences** (decode to a frame stack, like `gif`) | libavif | `.avif` |
-| `heif` | ✓ | ✓ | RGB / RGBA, lossless + lossy (HEVC); **every top-level image**, not just the primary | libheif (+ aomenc) | `.heif`, `.heic` |
+| `avif` | ✓ | ✓ | gray / gray+alpha (4:0:0) / RGB / RGBA, 8/10/12-bit, lossless + lossy (color YUV 4:4:4, identity matrix when lossless); **image sequences** (decode to a frame stack, like `gif`) | libavif | `.avif` |
+| `heif` | ✓ | ✓ | gray / gray+alpha (monochrome) / RGB / RGBA, 8/10/12-bit, lossless + lossy (HEVC, color 4:4:4); **every top-level image**, not just the primary | libheif (+ aomenc) | `.heif`, `.heic` |
 | `jxl` | ✓ | ✓ | gray / RGB / RGBA, P3, HDR, multi-frame | vendored libjxl 0.11.2 | `.jxl` |
 | `bcdec` | — | ✓ | BC1-7 / DXT / BPTC GPU textures; band decode + threaded | vendored bcdec.h | `.dds` |
 | `rgbe` | ✓ | ✓ | float32 RGB HDR (Radiance) | vendored rgbe.c | `.hdr` |
@@ -282,7 +291,7 @@ readers" is eight threads each reading at once, both on defaults. Each
 number is how many times faster opencodecs is, the median over fresh
 processes alternating the two libraries, on a 20-core Apple silicon Mac
 (tifffile 2026.3.3) and a 64-core x86-64 Linux workstation (tifffile
-2026.5.2), with opencodecs 0.4.1 as its CI wheels ship it.
+2026.5.2), with opencodecs 0.5.0 as its CI wheels ship it.
 
 | 4096 x 4096 uint16 | Mac, 1 reader | Mac, 1 thread | Mac, 8 readers | Linux, 1 reader | Linux, 1 thread | Linux, 8 readers |
 |---|---:|---:|---:|---:|---:|---:|
@@ -303,14 +312,14 @@ Uncompressed strips are a copy for both libraries; opencodecs splits it
 into positioned reads on several threads, and for one thread's worth
 does whichever its kernel does faster: macOS copies out of the file
 mapping, Linux reads. The two cells below 1x, both on Linux, read the same
-with the 0.4.0 wheel (0.4.1 against 0.4.0 under the same conditions: 0.98x
+with the 0.4.0 wheel (0.5.0 against 0.4.0 under the same conditions: 0.98x
 and 1.01x); 0.4.0's table, measured on a local build, showed 1.1x and 1.0x
 for them.
 
 ### Codecs against imagecodecs
 
 Each row is one codec operation at the same settings in both packages:
-opencodecs 0.4.1 against imagecodecs 2026.8.16, each otherwise called with
+opencodecs 0.5.0 against imagecodecs 2026.8.16, each otherwise called with
 its defaults, on a 20-core Apple silicon Mac, a 64-core x86-64 Linux
 workstation and a 4-core x86-64 Windows laptop. Each cell is how many times
 faster opencodecs is (imagecodecs' time over opencodecs'), the median over
@@ -616,7 +625,7 @@ build).
 
 ## Status
 
-- **v0.4.1** on PyPI (September 2026). Every wheel carries the same 40
+- **v0.5.0** on PyPI (October 2026). Every wheel carries the same 40
   compiled extensions, and `ci/check_wheel_contents.py` fails the
   release build if one goes missing.
 - About 4,000 tests locally, including a 40-dataset conformance corpus;
