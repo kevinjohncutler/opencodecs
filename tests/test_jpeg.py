@@ -5,7 +5,7 @@ imagecodecs 2026.8.16 (``jpeg8_encode`` / ``jpeg8_decode`` link
 libjpeg-turbo directly), the frame header as ITU-T T.81 B.2.2 defines it
 (parsed here by hand), or streams assembled by hand from the spec.
 
-Covers the 0.4.1 fixes:
+Covers the 0.5.0 fixes:
 
 * ``JpegCodec.encode`` forwards ``subsampling``, ``lossless`` and every
   other ``jpeg8_encode`` parameter, and unknown options raise.

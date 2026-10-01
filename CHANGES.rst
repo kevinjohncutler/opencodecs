@@ -10,7 +10,7 @@ Versions follow the same ``YYYY.M.D`` cadence as upstream when we
 publish; the entries below cluster work by date rather than by
 release because most of it has shipped continuously to ``main``.
 
-0.4.1 (2026-09-30)
+0.5.0 (2026-10-01)
 ------------------
 
 Two things: speed, above all on Windows, where much of 0.4.0's work had
@@ -36,7 +36,7 @@ The speed changes are the same code on every operating system and
 compiler, in a form each compiler measured builds well, except two
 below: bitshuffle's build guard, which now lets MSVC take the SSE2 path,
 and how uncompressed strips are read among other reads. Figures compare
-the published 0.4.0 wheels with 0.4.1's, each version's CI build: fresh
+the published 0.4.0 wheels with 0.5.0's, each version's CI build: fresh
 processes, both versions alternating in shuffled order with 0.4.0 run a
 second time as a control, identical output required, on a 20-core Apple
 silicon Mac, a 64-core x86-64 Linux workstation (pinned to one core) and

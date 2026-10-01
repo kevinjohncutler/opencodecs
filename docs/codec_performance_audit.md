@@ -41,7 +41,7 @@ side produced:
 Neither is a slower implementation. For `sz3` the two calls were not
 the same: opencodecs then defaulted to an absolute error bound of 1e-3
 and imagecodecs to 0, so the two sides coded to different error bounds
-(since 0.4.1 the defaults match). `lerc` compresses harder at the same
+(since 0.5.0 the defaults match). `lerc` compresses harder at the same
 call, and its speed difference is the price of that. `bench/sweep.py`
 now withholds the ratio when the two outputs differ by more than 10% and
 prints `n/c`, because a speed number spanning different work is worse

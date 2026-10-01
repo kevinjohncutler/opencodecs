@@ -146,7 +146,7 @@ def test_mozjpeg_list_input_is_not_cast():
 
 
 # ---------------------------------------------------------------------------
-# 0.4.1: decode coverage, (H, W, 1), and parameters that are honored or
+# 0.5.0: decode coverage, (H, W, 1), and parameters that are honored or
 # raise. imagecodecs writes the reference streams: its mozjpeg is often a
 # stub, but jpeg8 links libjpeg-turbo, and decode is standard JPEG.
 # ---------------------------------------------------------------------------

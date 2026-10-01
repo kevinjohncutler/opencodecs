@@ -1031,7 +1031,7 @@ def encode(data, level=None, *, lossless=None, codec=None,
     ratio : float, optional
         Target compression ratio (OpenJPEG's ``tcp_rates``, what
         ``opj_compress -r`` takes) instead of a PSNR target; lossy.
-        Before 0.4.1 opencodecs read ``level`` as ``100 / ratio``.
+        Before 0.5.0 opencodecs read ``level`` as ``100 / ratio``.
     codec, codecformat : {"jp2", "j2k"}
         Container. ``jp2`` is the boxed format; ``j2k`` is the raw
         codestream that DICOM transfer syntaxes use.

@@ -1,6 +1,6 @@
 """Filter codecs against the definitions they implement, and imagecodecs.
 
-Each fix in the 0.4.1 compatibility round gets two kinds of pin here: a
+Each fix in the 0.5.0 compatibility round gets two kinds of pin here: a
 reference built by hand from the published definition (TIFF predictor 2
 on unsigned words, the TIFF row bitstream, GenICam and GigE Vision
 packed pixels, the HDF5 shuffle filter, netCDF-C's quantize modes), and,

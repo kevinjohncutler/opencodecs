@@ -291,7 +291,7 @@ readers" is eight threads each reading at once, both on defaults. Each
 number is how many times faster opencodecs is, the median over fresh
 processes alternating the two libraries, on a 20-core Apple silicon Mac
 (tifffile 2026.3.3) and a 64-core x86-64 Linux workstation (tifffile
-2026.5.2), with opencodecs 0.4.1 as its CI wheels ship it.
+2026.5.2), with opencodecs 0.5.0 as its CI wheels ship it.
 
 | 4096 x 4096 uint16 | Mac, 1 reader | Mac, 1 thread | Mac, 8 readers | Linux, 1 reader | Linux, 1 thread | Linux, 8 readers |
 |---|---:|---:|---:|---:|---:|---:|
@@ -312,14 +312,14 @@ Uncompressed strips are a copy for both libraries; opencodecs splits it
 into positioned reads on several threads, and for one thread's worth
 does whichever its kernel does faster: macOS copies out of the file
 mapping, Linux reads. The two cells below 1x, both on Linux, read the same
-with the 0.4.0 wheel (0.4.1 against 0.4.0 under the same conditions: 0.98x
+with the 0.4.0 wheel (0.5.0 against 0.4.0 under the same conditions: 0.98x
 and 1.01x); 0.4.0's table, measured on a local build, showed 1.1x and 1.0x
 for them.
 
 ### Codecs against imagecodecs
 
 Each row is one codec operation at the same settings in both packages:
-opencodecs 0.4.1 against imagecodecs 2026.8.16, each otherwise called with
+opencodecs 0.5.0 against imagecodecs 2026.8.16, each otherwise called with
 its defaults, on a 20-core Apple silicon Mac, a 64-core x86-64 Linux
 workstation and a 4-core x86-64 Windows laptop. Each cell is how many times
 faster opencodecs is (imagecodecs' time over opencodecs'), the median over
@@ -625,7 +625,7 @@ build).
 
 ## Status
 
-- **v0.4.1** on PyPI (September 2026). Every wheel carries the same 40
+- **v0.5.0** on PyPI (October 2026). Every wheel carries the same 40
   compiled extensions, and `ci/check_wheel_contents.py` fails the
   release build if one goes missing.
 - About 4,000 tests locally, including a 40-dataset conformance corpus;
