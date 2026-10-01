@@ -33,7 +33,7 @@ allocations, native working memory, and bytes requested from storage.
 | HEIF | Native `heif_reader` version 1 callbacks and `heif_context_get_image_handle` | Implemented source callbacks and metadata-only open geometry. Borrowed sources stay open. Native version 2 range-preload hints exist in the inspected installed header but are not required for version 1 correctness and are not advertised as integrated scheduling. Collections may contain differently sized images. |
 | AVIF | `avifIO.read`, `avifDecoderSetIO`, `AvifSequence` | Implemented custom input for public `open` and metadata frame count. One native decoder retains the parsed sample table. Inter-frame dependencies may require reference samples; frame indexing does not guarantee independently decodable frames. Scratch can grow to the largest requested compressed extent. Eager decode retains its existing fast path. |
 | Lempel-Ziv-Markov chain algorithm (LZMA)/XZ | `core/streaming.py:_StdlibDecoder`; `_lzma_codec.py` | Implemented genuine incremental decode/encode through standard-library state. Arbitrary block selection needs XZ footer/index parsing plus block/filter reset and checksum handling, or additional liblzma index APIs. Incremental sequential input is not indexed access. |
-| SPERR | `sperr.pxd:sperr_trunc_3d`; `_sperr.pyx:decode` | A truncation function is already declared, but not exposed publicly. It produces a reduced-information progressive stream, which changes reconstruction quality. This is a quality/size tradeoff requiring its own public contract and error-bound tests, not an equal-quality storage optimization or an arbitrary spatial index. Native thread budgeting is now forwarded. |
+| SPERR | `sperr.pxd:sperr_trunc_3d`; `_sperr.pyx:decode_native` | A truncation function is already declared, but not exposed publicly. It produces a reduced-information progressive stream, which changes reconstruction quality. This is a quality/size tradeoff requiring its own public contract and error-bound tests, not an equal-quality storage optimization or an arbitrary spatial index. Native thread budgeting is now forwarded. |
 
 ## Output sinks and incremental bytes
 
@@ -44,11 +44,13 @@ windows and some native block output remain additional working memory. The eager
 APIs keep their existing defaults. Deflate's explicit incremental mode uses the
 standard-library zlib engine; the eager optimized implementation remains separate.
 
-Adaptive Entropy Coding (AEC) has a declared `aec_stream` and encode init/process/end functions in
-`libaec.pxd`. Incremental decode declarations and a protocol carrying expected
-sample count are still needed. The raw stream does not supply a self-describing
-array size; arbitrary byte chunks must preserve sample/block alignment and final
-padding semantics. It should not be added to the generic seven-codec iterator by
+Adaptive Entropy Coding (AEC) has a declared `aec_stream` and the encode and
+decode init/process/end functions in `libaec.pxd`. `_aec.pyx:decode_raw` drives
+`aec_decode_init`/`aec_decode`/`aec_decode_end` over a whole input buffer, taking
+the expected byte count from the caller, since the raw stream does not supply a
+self-describing array size. An incremental public protocol is still missing:
+arbitrary byte chunks must preserve sample/block alignment and final padding
+semantics, so it should not be added to the generic seven-codec iterator by
 guessing termination from exhausted input.
 
 HEIF output callbacks now bypass the wrapper's growing encoded buffer. Native
@@ -78,7 +80,7 @@ tests and measurements.
 | Packints | Native `unpackints_into` decodes packed samples directly into caller storage without a samples-by-bits matrix. Independent streams cover widths through 64 bits, tails, signed storage and byte order. One-bit input uses the faster NumPy unpackbits path; standard byte widths retain their existing view/conversion path. |
 | Quantize | `_quantize_codec.py` distinguishes numeric rounding from decoding already stored values. Reusing decode output does not imply an in-place lossy encode is safe for caller arrays. |
 | Digital Imaging and Communications in Medicine run-length encoding (DICOM RLE) | `_dicomrle_codec.py:_assemble_dicomrle_array` combines independently encoded byte planes. Segment boundaries and byte significance must survive scratch reuse. Native/direct assembly is a separate kernel from a generic byte-buffer pool. |
-| Rcomp | `_rcomp.pyx:decode` now calls typed Rice decoders directly into validated caller storage. Header validation precedes division and native access; big-endian inputs and outputs preserve numeric values. Block prediction and external raw dimensions remain codec responsibilities; no arbitrary seek point is implied. |
+| Rcomp | `_rcomp.pyx:decode_raw` (the bare Rice stream) and `decode_framed` (blobs from 0.4.0 and earlier) call typed Rice decoders directly into validated caller storage. The element count, pixel size and block size come from the caller for a bare stream and from the validated old header otherwise, and the decoders check every input byte against the end of the stream; big-endian inputs and outputs preserve numeric values. Block prediction and external raw dimensions remain codec responsibilities; no arbitrary seek point is implied. |
 | Block Compression (BCn) | `_bcdec.pyx:decode_block_rows` proves independent 4-by-4 block rows. Destination pitch and partial edge geometry are the placement constraints. Block decoder functions have no reusable heavyweight context. |
 | Limited Error Raster Compression (LERC) | `lerc_decode` writes to caller output; validity-mask allocation can remain. The declared API has no persistent decode context to pool. Preserve mask and multiband geometry. |
 | Pcodec | `pco_standalone_simple_decompress_into` writes directly to output. The declared C wrapper has no persistent page decoder. Rust-level page/session support would require additional bindings. |

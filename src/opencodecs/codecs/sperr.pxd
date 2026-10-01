@@ -10,6 +10,10 @@ from libc.stddef cimport size_t
 
 cdef extern from "SPERR_C_API.h" nogil:
 
+    # From SperrConfig.h, which SPERR_C_API.h includes. A stream's
+    # first byte; SPERR refuses streams of another major version.
+    int SPERR_VERSION_MAJOR
+
     int sperr_comp_2d(
         const void* src,
         int is_float,

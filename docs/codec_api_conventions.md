@@ -183,11 +183,13 @@ in the same mode. Two ways that goes wrong, both seen in practice:
 * **Different modes.** A lossless encode against somebody's lossy one
   reports us as many times slower and many times larger, and neither
   number means anything.
-* **Different effort at the same nominal setting.** At its default `sz3`
-  emits 1.9 MB where `imagecodecs` emits 3.7 MB. We are twice as
-  thorough, so of course we take longer. (`lerc` was a second example
-  while it wrote codec version 6; it now writes version 4 by default, as
-  imagecodecs does, and the two default blobs are the same bytes.)
+* **Different settings, or different effort at the same setting.** Up
+  to 0.4.0 `sz3` defaulted to an absolute error bound of 1e-3 where
+  `imagecodecs` uses 0, and emitted 1.9 MB where `imagecodecs` emitted
+  3.7 MB: the two calls asked for different error bounds. `lerc` wrote
+  codec version 6 where `imagecodecs` writes version 4. Both defaults now
+  match `imagecodecs`. Either way the two sides did different work, so
+  the times differed too.
 
 `bench/sweep.py` guards the second case: it compares output sizes first
 and prints `n/c` rather than a speed ratio when they differ by more than

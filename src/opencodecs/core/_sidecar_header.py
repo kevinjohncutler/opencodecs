@@ -1,12 +1,14 @@
-"""The small header the array-compressing codecs prefix to their blobs.
+"""The small header sz3, sperr and pcodec prefixed to their blobs.
 
-sz3, sperr and pcodec each turn an ndarray into an opaque compressed
-blob that does not record its own shape or dtype, so each writes a
-header in front. They arrived at the same layout separately -- magic,
-dtype byte, ndim byte, padding, then fixed-width dimensions -- and
-kept three copies of the code for it. One copy now, parameterized by
-the two things that actually differ: the magic and how many dimension
-slots the format reserves.
+Up to 0.4.0 these codecs wrote a private header in front of the
+library's stream to carry the shape and dtype. They now write the
+library's own stream, as imagecodecs does, and take what it does not
+record as decode arguments; this header is only read, so blobs written
+before still open. The three arrived at the same layout separately --
+magic, dtype byte, ndim byte, padding, then fixed-width dimensions --
+and share one copy of the code, parameterized by the two things that
+actually differ: the magic and how many dimension slots the format
+reserves.
 """
 
 from __future__ import annotations

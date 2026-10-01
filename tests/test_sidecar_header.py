@@ -1,12 +1,13 @@
-"""The header sz3, sperr and pcodec prefix to their blobs.
+"""The header sz3, sperr and pcodec prefixed to their blobs up to 0.4.0.
 
-Each compresses an ndarray to a blob that does not record its own
-shape or dtype, so each writes a small header in front. They arrived
-at the same layout separately and kept three copies of the code for
-it; there is one now, parameterized by magic and dimension count.
+Each wrote a small private header in front of the library's stream.
+They now write the library's own stream instead (see
+test_wrapper_streams.py), but blobs written before still have to
+open, so the header code stays for reading. It is shared, parameterized
+by magic and dimension count.
 
-A header is a compatibility surface, so these check the produced BYTES
-against the formats written out literally -- not against the shared
+A header is a compatibility surface, so these check the BYTES against
+the formats written out literally -- not against the shared
 implementation, which would just be the new code marking its own work.
 """
 
@@ -98,12 +99,31 @@ def test_too_many_dimensions_is_refused_not_truncated():
         m._pack_header(3, 6, [1, 2, 3, 4, 5, 6])
 
 
+# The dtype byte and dimension slots each format used for float32
+# (4, 5, 6): sz3 stores (r1, r2, ...) fastest first with SZ_FLOAT = 0,
+# sperr stores (dimx, dimy, dimz) with 1 meaning float32, pcodec stores
+# the numpy shape with PCO_TYPE_F32 = 5.
+LEGACY_FIELDS = {
+    "sz3": (0, 3, [6, 5, 4, 0, 0]),
+    "sperr": (1, 3, [6, 5, 4, 0, 0]),
+    "pcodec": (5, 3, [4, 5, 6, 0, 0, 0, 0, 0]),
+}
+
+
 @pytest.mark.parametrize("name", sorted(LAYOUTS))
-def test_arrays_round_trip(name):
+def test_legacy_blobs_still_decode(name):
+    """A 0.4.0 blob is this header, built here from the literal layout,
+    followed by the library's own stream. It must decode to the shape
+    and dtype the header records, with no arguments."""
     if not oc.has_codec(name):
         pytest.skip(f"{name} not built")
     a = np.sin(np.arange(4 * 5 * 6) / 3.0).reshape(4, 5, 6).astype(np.float32)
     codec = oc.get_codec(name)
-    out = np.asarray(codec.decode(codec.encode(a)))
+    fmt, magic, _, _ = LAYOUTS[name]
+    dtype_byte, ndim, dims = LEGACY_FIELDS[name]
+    legacy = struct.pack(fmt, magic, dtype_byte, ndim, *dims) + bytes(codec.encode(a))
+    out = np.asarray(codec.decode(legacy))
     assert out.shape == a.shape
     assert out.dtype == a.dtype
+    if name == "pcodec":
+        np.testing.assert_array_equal(out, a)

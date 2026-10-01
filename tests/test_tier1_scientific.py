@@ -129,8 +129,10 @@ def test_aec_roundtrip(dtype):
         size=5000, dtype=dtype,
     )
     blob = oc.write(None, arr, format="aec")
-    back = oc.read(blob, format="aec")
-    np.testing.assert_array_equal(np.frombuffer(back, dtype=dtype), arr)
+    # A bare CCSDS stream does not record its sample type or count;
+    # dtype= supplies both the sample size and the signed flag.
+    back = oc.read(blob, format="aec", dtype=dtype, shape=arr.shape)
+    np.testing.assert_array_equal(back, arr)
 
 
 def test_aec_explicit_bits_per_sample():
@@ -139,7 +141,8 @@ def test_aec_explicit_bits_per_sample():
     _need("aec")
     arr = np.random.default_rng(0).integers(0, 4096, size=10000, dtype=np.uint16)
     blob = oc.write(None, arr, format="aec", bits_per_sample=12)
-    back = np.frombuffer(oc.read(blob, format="aec"), dtype=np.uint16)
+    back = oc.read(blob, format="aec", bits_per_sample=12,
+                   dtype=np.uint16, shape=arr.shape)
     np.testing.assert_array_equal(back, arr)
 
 
@@ -147,7 +150,14 @@ def test_aec_compresses_correlated_data():
     """AEC's strength: locally-predictable integer streams."""
     _need("aec")
     arr = np.arange(100000, dtype=np.uint16)  # perfectly predictable
+    # The defaults (block 8, RSI 2) are imagecodecs'; they send a
+    # reference sample every 16 samples. The NetCDF/HDF5 szip setting
+    # spaces them out and compresses much harder.
     blob = oc.write(None, arr, format="aec")
+    assert len(blob) * 3 < arr.nbytes, (
+        f"sequential u16 should compress >=3x, got {arr.nbytes/len(blob):.1f}x"
+    )
+    blob = oc.write(None, arr, format="aec", block_size=32, rsi=128)
     assert len(blob) * 5 < arr.nbytes, (
         f"sequential u16 should compress >=5x, got {arr.nbytes/len(blob):.1f}x"
     )
@@ -269,7 +279,7 @@ def test_sz3_abs_mode_respects_budget(shape):
     _need("sz3")
     arr = np.random.default_rng(0).random(shape).astype(np.float32)
     blob = oc.write(None, arr, format="sz3", mode="abs", abs_err=1e-3)
-    back = oc.read(blob, format="sz3")
+    back = oc.read(blob, format="sz3", dtype=arr.dtype, shape=arr.shape)
     assert np.abs(arr - back).max() <= 1e-3 + 1e-6
 
 
@@ -278,8 +288,10 @@ def test_sz3_dtype_roundtrip(dtype):
     _need("sz3")
     arr = np.random.default_rng(0).random((128, 128)).astype(dtype)
     blob = oc.write(None, arr, format="sz3", mode="abs", abs_err=1e-3)
-    back = oc.read(blob, format="sz3")
+    # SZ3's stream records the dimensions but not reliably the type.
+    back = oc.read(blob, format="sz3", dtype=dtype)
     assert back.dtype == arr.dtype
+    assert back.shape == arr.shape
     np.testing.assert_allclose(back, arr, atol=1e-3)
 
 
@@ -351,13 +363,19 @@ def test_sperr_rejects_unsupported_ndim():
         oc.write(None, arr, format="sperr")
 
 
-def test_sperr_signature_round_trips():
+def test_sperr_writes_its_own_2d_header():
+    """SPERR_C_API.h: a 2-D stream may carry a 10-byte header, the
+    major version, a flag byte (0x20 = float, not 3-D) and the two
+    dimensions as uint32, fastest first. That is what we write now,
+    in place of the private 'SPRR' preamble of 0.4.0."""
     _need("sperr")
-    arr = np.random.default_rng(0).random((32, 32)).astype(np.float32)
+    import struct
+    arr = np.random.default_rng(0).random((24, 32)).astype(np.float32)
     blob = oc.write(None, arr, format="sperr", mode="psnr", psnr=80)
     assert isinstance(blob, (bytes, bytearray))
-    # opencodecs SPERR preamble: 4-byte ASCII 'SPRR'.
-    assert bytes(blob[:4]) == b"SPRR"
+    assert bytes(blob[:4]) != b"SPRR"
+    version, flags, dimx, dimy = struct.unpack_from("<BBII", blob)
+    assert (flags, dimx, dimy) == (0x20, 32, 24)
 
 
 # ---------------------------------------------------------------------------
@@ -405,10 +423,14 @@ def test_pcodec_beats_zstd_on_floats():
 
 
 def test_pcodec_multidim_shape_preserved():
+    """The standalone format records the element count, not a shape:
+    the stream decodes flat, and shape= restores the array."""
     _need("pcodec")
     arr = np.random.default_rng(0).random((8, 16, 32)).astype(np.float32)
     blob = oc.write(None, arr, format="pcodec")
-    back = oc.read(blob, format="pcodec")
+    flat = oc.read(blob, format="pcodec")
+    assert flat.shape == (arr.size,)
+    back = oc.read(blob, format="pcodec", shape=arr.shape)
     assert back.shape == arr.shape
     assert back.dtype == arr.dtype
     np.testing.assert_array_equal(back, arr)

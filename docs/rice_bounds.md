@@ -1,9 +1,12 @@
 # Rice decompressor bounds checks, and where upstream still lacks them
 
 Short version: our vendored Rice decompressors reject a truncated input
-in all three pixel widths. Upstream cfitsio 4.7.0 rejects it in one of
-the three. The other two read the first pixel out of a buffer that may
-be shorter than the read.
+in all three pixel widths, and check every byte they read against the
+end of the input. Upstream cfitsio 4.7.0 rejects a too-short input in
+one of the three; the other two read the first pixel out of a buffer
+that may be shorter than the read. In all three, upstream checks for
+the end of the input only once per block, so a damaged stream can read
+past its buffer inside a block (see "Reads inside the decode loop").
 
 ## Why the checks are absent upstream at all
 
@@ -53,6 +56,28 @@ fewer bytes than its first pixel needs.
 
 Worth reporting to HEASARC. Two of these are a one-line fix each, in the
 same shape as the change they already made to `fits_rdecomp`.
+
+## Reads inside the decode loop
+
+The up-front guards cover the first pixel only. After it, upstream
+checks for the end of the input once per coding block, after decoding
+the block. Within a block nothing stops the reads, and one of them has
+no bound at all: a Rice code starts with a run of zero bits, and the
+decoder keeps reading bytes until it finds a one. A damaged or
+truncated stream whose remaining bits are zero sends it on through
+whatever memory follows the buffer, until it finds a nonzero byte or
+faults. A stream crafted to start with a valid FS code and then only
+zeros does this in all three widths.
+
+Our copy checks each byte before reading it (`RICE_NEED_BYTE` in
+`ricecomp.c`) and returns `RCOMP_ERROR_EOS` at the end of the input.
+A valid stream never reads past its last byte, so what it decodes to
+is unchanged; the extra comparison costs 3 to 8 percent of decode
+time in our measurements.
+`tests/test_wrapper_streams.py::test_rcomp_decoder_stops_at_the_end_of_its_input`
+puts such streams, and every truncation of real ones, against a page
+with no access rights, so a read past the end crashes the test's child
+process instead of passing unnoticed.
 
 ## Related
 

@@ -74,12 +74,17 @@ def test_byte_destinations_reject_invalid_buffers(name, options):
         oc.read(encoded, format=name, out=bytearray(1), **options)
 
 
+# SZ3's stream does not reliably record its data type (as for
+# imagecodecs.sz3_decode, the caller passes it).
+DECODE_OPTIONS = {"sz3": {"dtype": np.float32}}
+
+
 @pytest.mark.parametrize("name,dtype", ARRAY_CASES)
 def test_public_array_destinations(name, dtype):
     available(name)
     data = (np.arange(64 * 80 * 3).reshape(64, 80, 3) % 127).astype(dtype)
     encoded = oc.write(None, data, format=name)
-    expected = oc.read(encoded, format=name)
+    expected = oc.read(encoded, format=name, **DECODE_OPTIONS.get(name, {}))
     destination = np.empty_like(expected)
     actual = oc.read(encoded, format=name, out=destination)
     assert actual is destination

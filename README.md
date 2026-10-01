@@ -95,19 +95,30 @@ output is ~19% bigger). The default backend is auto-selected at build
 time: libdeflate when present (fastest at default level), else
 zlib-ng-compat, else the stdlib zlib.
 
-### Scientific / numerical-array codecs (ndarray ↔ bytes, self-describing)
+### Scientific / numerical-array codecs (ndarray ↔ bytes)
 
-These four codecs target *typed multidimensional arrays* rather than
-images or raw bytes. The encoded blob carries shape and dtype in its
-header, so `decode(blob)` reconstructs the full ndarray without
-out-of-band metadata.
+These codecs target *typed multidimensional arrays* rather than
+images or raw bytes. Each writes its library's own stream, which
+records more for some than for others:
+
+- `b2nd`, `lerc` and `zfp` streams carry the shape and dtype, so
+  `decode(blob)` reconstructs the full ndarray.
+- `aec` writes the bare CCSDS 121.0-B-2 stream, which records nothing
+  about its data: `decode` takes the coding parameters it was written
+  with, plus `dtype` and `shape` (or `out`).
+- `sz3` records the dimensions but not reliably the data type, so
+  `decode` needs `dtype` (or `out`).
+- `pcodec` records the number type but not the shape: without `shape`
+  (or `out`) `decode` returns a flat array.
 
 | Codec | Encode | Decode | Lossless | Lossy modes | Backing library | Extension |
 | --- | :-: | :-: | :-: | --- | --- | --- |
-| `b2nd` | ✓ | ✓ | ✓ | — | system c-blosc2 (NDim API) | `.b2nd` |
-| `aec` | ✓ | ✓ | ✓ | — | system libaec (CCSDS 121.0-B-2) | `.aec` |
+| `b2nd` | ✓ | ✓ | ✓ | none | system c-blosc2 (NDim API) | `.b2nd` |
+| `aec` | ✓ | ✓ | ✓ | none | system libaec (CCSDS 121.0-B-2) | `.aec` |
 | `lerc` | ✓ | ✓ | ✓ | `max_z_error` | system liblerc (Esri) | `.lerc` |
 | `zfp` | ✓ | ✓ | ✓ (reversible) | rate / precision / accuracy | system libzfp | `.zfp` |
+| `sz3` | ✓ | ✓ | ✓ (default, abs 0) | abs / rel / abs_or_rel / abs_and_rel | source-built SZ3 | `.sz3` |
+| `pcodec` | ✓ | ✓ | ✓ | none | source-built pcodec (Rust) | `.pco` |
 
 In fixed-rate mode `zfp` blocks are individually addressable, so
 `decode_block(data, n)` reads one 4x4x4 block without touching the rest
@@ -115,9 +126,6 @@ In fixed-rate mode `zfp` blocks are individually addressable, so
 splits the block grid across threads (110 ms → 30 ms on a 67 MB volume).
 The variable-rate modes have no computable block position and fall back
 to a whole-stream decode.
-
-| `sz3` | ✓ | ✓ | — | abs / rel / psnr / norm | source-built SZ3 | `.sz3` |
-| `pcodec` | ✓ | ✓ | ✓ | — | source-built pcodec (Rust) | `.pco` |
 
 Quick guidance:
 

@@ -287,11 +287,9 @@ def _build_workloads(rng: np.random.Generator,
     w = _try_prep("rcomp/int16_4k", prep_rcomp, skipped)
     if w is not None: workloads.append(w)
 
-    # aec: CCSDS 121.0 Rice-like coder. opencodecs wraps the raw libaec
-    # output in a self-describing header; imagecodecs takes block-size
-    # parameters at decode time. The wire formats aren't compatible
-    # so each side encodes-then-decodes its own blob. Both pinned to
-    # the same effective settings (bps=16, block_size=32, rsi=128).
+    # aec: CCSDS 121.0 Rice-like coder. Both sides write the bare
+    # libaec stream and take the coding parameters at decode time.
+    # Both pinned to the same settings (bps=16, block_size=32, rsi=128).
     def prep_aec():
         if not oc.has_codec("aec") or not hasattr(ic, "aec_encode"):
             raise RuntimeError("aec not available on both sides")
@@ -308,7 +306,8 @@ def _build_workloads(rng: np.random.Generator,
                 x, bits_per_sample=16, block_size=32, rsi=128),
             encode_ic=lambda x=arr_u16: ic.aec_encode(
                 x, bitspersample=16, blocksize=32, rsi=128),
-            decode_oc=lambda b=blob_oc: oc.get_codec("aec").decode(b),
+            decode_oc=lambda b=blob_oc, o=ic_out: oc.get_codec("aec").decode(
+                b, bits_per_sample=16, block_size=32, rsi=128, out=o),
             decode_ic=lambda b=blob_ic, o=ic_out: ic.aec_decode(
                 b, bitspersample=16, blocksize=32, rsi=128, out=o),
         )

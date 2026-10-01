@@ -162,8 +162,12 @@ OC_THREAD_LOCAL, defined next to the min/max compatibility defines."""
   modified = true
   note = """Keeps the error-code return convention an earlier vendoring \
 introduced, because our binding depends on it, with upstream's \
-buffer-size guard applied on top. A blind update would break the \
-binding; port the fix, do not overwrite."""
+buffer-size guard applied on top. The three decoders also check every \
+input byte against the end of the stream (RICE_NEED_BYTE): upstream \
+checks once per block, and a run of zero bits within a block has no \
+length limit, so a damaged stream read past its buffer. See \
+docs/rice_bounds.md. A blind update would break the binding and drop \
+the checks; port the fix, do not overwrite."""
   # These three live in this directory but are opencodecs code, not
   # cfitsio's. ours = true means the drift check tracks them for
   # accidental edits but never compares them to upstream.

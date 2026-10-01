@@ -394,18 +394,15 @@ def test_zfp_reversible_on_smooth_field(smooth_field_3d, dtype):
 
 # Wire-format note for scientific compressors
 # --------------------------------------------
-# opencodecs's pcodec / sz3 / sperr / aec / rcomp wrap each library's
-# raw output with a small self-describing header (shape + dtype) so
-# users don't have to remember the original shape. imagecodecs's
-# corresponding *_decode helpers expect the *raw* library output and
-# require the caller to pass shape/dtype, so the two libraries are
-# **not** wire-compatible by design. We don't write interop tests
-# against ic for these — instead, each codec has its own
-# self-roundtrip test in test_tier1_scientific.py.
+# opencodecs's pcodec / sz3 / sperr / aec / rcomp write each library's
+# own stream, as imagecodecs does, and take what the stream does not
+# record (shape, dtype, coding parameters) as decode arguments. Up to
+# 0.4.0 they wrapped it in a private header instead, which nothing else
+# could read; those blobs still decode. The interop tests against
+# imagecodecs are in test_wrapper_streams.py.
 #
-# zfp is the exception: opencodecs's zfp codec uses zfp's native
-# self-describing serialization (zfp headers carry shape + dtype),
-# so the wire format IS interoperable with imagecodecs.zfp_decode.
+# zfp's own serialization is self-describing (shape + dtype), so its
+# wire format has always been interoperable with imagecodecs.zfp_decode.
 
 
 def test_zfp_interop_with_imagecodecs(smooth_field_3d):
@@ -425,15 +422,19 @@ def test_zfp_interop_with_imagecodecs(smooth_field_3d):
 
 
 def test_sci_compressors_self_roundtrip(smooth_field_3d):
-    """For wire-format-incompatible sci compressors, prove each one
-    roundtrips its own blob — the codec is functional even if the
-    bytes aren't ic-readable."""
+    """Each sci compressor roundtrips its own blob on a realistic
+    field, given what its stream does not record."""
+    options = {
+        "pcodec": {"shape": smooth_field_3d.shape},
+        "sz3": {"dtype": smooth_field_3d.dtype},
+        "sperr": {},
+    }
     for name in ("pcodec", "sz3", "sperr"):
         if not oc.has_codec(name):
             continue
         c = oc.get_codec(name)
         blob = c.encode(smooth_field_3d)
-        back = c.decode(blob)
+        back = c.decode(blob, **options[name])
         if back.shape != smooth_field_3d.shape:
             back = back.reshape(smooth_field_3d.shape)
         # pcodec is lossless on floats; sz3/sperr are lossy. We only
@@ -495,11 +496,9 @@ def test_compressor_kodak_bytes_interop(kodak_bytes, codec, ic_attr):
 # ---------------------------------------------------------------------------
 # rcomp / aec — self-roundtrip on Kodak-derived data.
 #
-# Like sz3/pcodec/sperr, opencodecs's rcomp and aec codecs add their
-# own shape/dtype prefix to the library output. ic's rcomp_decode /
-# aec_decode operate on the raw library bytes and need shape/dtype
-# passed in. Different wire formats by design; we just verify our
-# own roundtrip on a realistic data shape.
+# Both write the bare library stream (FITS RICE_1, CCSDS 121.0-B-2),
+# which records neither shape nor dtype, so decode takes them as
+# arguments, as imagecodecs' rcomp_decode / aec_decode do.
 # ---------------------------------------------------------------------------
 
 
@@ -509,10 +508,8 @@ def test_rcomp_kodak_self_roundtrip(kodak_bytes):
     arr = np.frombuffer(kodak_bytes, dtype=np.uint8).astype(np.int16)
     c = oc.get_codec("rcomp")
     blob = c.encode(arr)
-    back = c.decode(blob)
-    # rcomp returns raw bytes; reshape to original.
-    arr_back = np.frombuffer(back, dtype=arr.dtype) if isinstance(back, (bytes, bytearray)) else back
-    np.testing.assert_array_equal(arr_back, arr)
+    back = c.decode(blob, shape=arr.shape, dtype=arr.dtype)
+    np.testing.assert_array_equal(back, arr)
 
 
 def test_aec_kodak_self_roundtrip(kodak_bytes):

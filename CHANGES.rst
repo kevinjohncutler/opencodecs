@@ -563,6 +563,150 @@ core) and a 4-core x86-64 Windows laptop.
   as imagecodecs and tifffile do; ``out=`` of uint8 or uint16 still
   accumulates counts, and a bool ``out=`` now has events OR-ed in.
 
+- Fix: the ``rcomp``, ``aec``, ``pcodec``, ``sz3`` and ``sperr`` codecs
+  put a private header of ours in front of each library's stream, so
+  nothing else could read what they wrote and they could not read the
+  standard stream from anywhere else. Each now writes the stream its
+  specification or library defines, byte-identical to imagecodecs for
+  the same parameters and an array in native byte order, and takes what
+  that stream does not record as decode arguments, as imagecodecs does.
+  A big-endian array is coded by its values (aec by default, see
+  below); imagecodecs codes its bytes as if they were native numbers
+  (sz3 refuses it), so for such an array rcomp, pcodec and sperr write
+  different bytes, and an imagecodecs stream of one holds byte-swapped
+  numbers, which opencodecs decodes as the numbers they are, also into
+  a big-endian ``dtype``. This changes the bytes all five write. Blobs
+  written by earlier releases still decode: pcodec, sz3 and sperr
+  recognize their old header by its magic. rcomp and aec, whose old
+  headers had none, read a blob as an old one when every header field
+  holds a value the old encoder could write and agrees with what the
+  caller passes (coding parameters included, since 0.4.0's aec decode
+  accepted and ignored them), and the rest decodes. Where the same
+  bytes also decode as a standard stream, the reading whose values
+  encode back to exactly those bytes is kept, the standard one first,
+  and aec raises when neither does. Parameters take imagecodecs' names too (``nblock``,
+  ``bitspersample``, ``blocksize``, ``flags``, ``pagesize``, ``abs``,
+  ``rel``, ``level``, ``chunks``, ``numthreads``), and an option none of
+  them defines now raises ``TypeError`` instead of being ignored.
+- Fix: ``rcomp`` writes the bare cfitsio Rice stream, which is what FITS
+  stores in a ``RICE_1`` tile (FITS 4.0, section 10.4.1). Decoding it
+  takes ``shape`` and ``dtype`` and the block size (``blocksize`` or
+  ``nblock``, 32 by default), and returns the requested signed or
+  unsigned type, not flat unsigned words.
+- Fix: the Rice decoders behind ``rcomp`` and FITS ``RICE_1`` tiles could
+  read past the end of a damaged or truncated stream. cfitsio checks for
+  the end of the input once per coding block, and inside a block a run
+  of zero bits has no length limit, so the decoder kept reading until it
+  met a nonzero byte or faulted. Every byte is now checked before it is
+  read, and such a stream raises. Valid streams decode as before; the
+  check costs 3 to 8 percent of Rice decode time in our measurements.
+- Fix: ``aec`` writes the bare CCSDS 121.0-B-2 stream that libaec
+  produces, the stream GRIB2 and imagecodecs use. Its defaults are now
+  imagecodecs': block size 8 and reference sample interval 2 (they were
+  32 and 128), so that streams decode with the same defaults on both
+  sides; NetCDF and HDF5 szip data commonly use 32 and 128, which also
+  compress better, so pass them to both calls when you want them.
+  Decoding takes the coding parameters, and ``dtype`` and ``shape`` or
+  ``out`` for the sample type and count. An output too small for the
+  stream now raises instead of truncating, and a sample value that does
+  not fit ``bits_per_sample`` raises instead of losing its high bits,
+  for bytes input as for arrays. libaec takes a signed sample narrower
+  than its item as a ``bits_per_sample``-bit two's complement number.
+  Negative values in a signed array with ``bits_per_sample`` below the
+  item width were passed to it sign-extended, and decoded to other
+  values without an error (imagecodecs does the same); they are now
+  masked to ``bits_per_sample`` bits first, so they decode back to the
+  values given, and the bytes written for such data change. A value
+  above the signed range of ``bits_per_sample`` bits raises rather
+  than being read back as a negative number. A 0-d array was coded as
+  a run of zero bytes, as many as its value; it is now coded as one
+  sample, as imagecodecs codes it.
+  When neither ``flags`` nor ``msb`` is given, the byte order bit
+  (``AEC_DATA_MSB``) follows the array, so a big-endian array is coded
+  by value where imagecodecs codes its bytes as little-endian samples,
+  and decoding with ``dtype`` returns values. An explicit ``flags`` or
+  ``msb`` is kept as given, as in imagecodecs: the array's bytes are
+  coded in the order it gives, decoding returns the decoded bytes as
+  they are with or without ``dtype``, and a sample that does not fit
+  ``bits_per_sample`` read that way raises. int16 and int32 arrays
+  set the signed flag and int8 arrays do not, as in imagecodecs, so int8
+  streams are the same bytes and imagecodecs' int8 streams decode right
+  with ``dtype='i1'``. A big-endian int16 or int32 array sets it too,
+  where imagecodecs leaves it off (and cannot read the result back
+  into that array); pass ``signed=False`` and the stream's ``flags`` to
+  read such a stream. ``restricted`` and ``pad_rsi`` are new. libaec's
+  encoder writes the ``AEC_PAD_RSI`` padding only when built with
+  ``ENABLE_RSI_PADDING``; a libaec built without it accepts the flag
+  and writes no padding, a stream no decoder reads back with the flag.
+  Encoding with ``pad_rsi`` checks which the linked libaec does and
+  raises ``ValueError`` when it does not pad; decoding a padded stream
+  works with either build.
+- Fix: ``pcodec`` writes pcodec's standalone format (magic ``pco!``),
+  the format of the pcodec package, numcodecs and imagecodecs. It
+  records the number type and a hint of the element count, which the
+  format allows to be 0 for unknown, but no shape. ``decode`` takes the
+  count from ``shape`` or ``out`` when given, as imagecodecs does, and
+  otherwise from the hint, returning a flat array; a stream that holds
+  more than its hint, such as any nonempty stream whose hint is 0,
+  needs ``shape`` or ``out``.
+- Fix: ``sz3`` writes SZ3's own stream, and its defaults are now
+  imagecodecs': mode ``'abs'`` with an error bound of 0, where
+  opencodecs used 1e-3. A call with no bound therefore writes the same
+  bytes as ``imagecodecs.sz3_encode`` (more bytes than before, with no
+  error allowed); pass ``abs_err`` (or ``abs``) to compress lossily.
+  That stream does not reliably
+  record its data type, so ``decode`` needs ``dtype`` (or ``out``); the
+  shape defaults to the stored dimensions, which leave out those of size
+  1. SZ3 reads a payload without bounds checks and throws exceptions its
+  C API does not catch, so a stream it cannot read ends the process.
+  ``decode`` checks the header, the configuration and the layout of the
+  payload first, and raises for a truncated stream, a stream of another
+  SZ3 data version, or a payload not laid out the way SZ3 writes its
+  configuration. The layout also shows the value type wherever the
+  stream holds values SZ3 could not predict, so a ``dtype`` that does
+  not match raises ``ValueError`` instead of ending the process. A
+  stream with no such values is laid out the same for float32 and
+  float64, and a wrong ``dtype`` then decodes without an error. Damage
+  inside the coded data that leaves the layout intact can still crash
+  SZ3, as it does in imagecodecs. Asking for the ``psnr`` or ``norm``
+  mode, for integer data or for more than four dimensions longer than 1
+  also ended the process inside the SZ3 C API, which implements none of
+  them; each now raises ``ValueError``.
+- Fix: ``sperr`` writes SPERR's own format: a 2-D slice with SPERR's
+  10-byte header (``header=False`` leaves it off) and a 3-D volume as
+  SPERR returns it. ``decode`` takes the shape and precision from that
+  header. SPERR's header has no magic, so ``oc.read`` recognizes a
+  stream without ``format=`` by its fields: the version byte, flags
+  SPERR sets, dimensions holding 1 to 2**40 values, the chunk lengths
+  in the first 512 bytes, and as much of the first coded stream's fixed
+  fields as those bytes hold (for a stream under 512 bytes, every check
+  ``decode`` makes on the stream). In a volume of 117 chunks or more the chunk
+  table can push some or all of those fields past the 512th byte; the
+  chunk lengths then stand in for them. A 2-D stream written without its
+  header, or a stream of more than 2**40 values, needs
+  ``format='sperr'``.
+  In ``psnr`` mode SPERR's quantization step overflows to infinity for
+  float64 data of very large magnitude (values of about 1e154 and up in
+  our tests), and the stream it writes decodes to NaN; ``encode`` now
+  raises ``ValueError`` for such data instead of writing it, and
+  ``decode`` still reads such a stream, from imagecodecs or 0.4.0, as
+  NaN. SPERR's decoder checks none of its input, and a stream cut
+  short inside its fixed fields or with a damaged flag, bit-plane or
+  bit-count field ended the process (segmentation fault or abort), in
+  0.4.0 as in imagecodecs. ``decode`` now checks the header, the chunk
+  table and those fields of each coded stream first and raises
+  ``SperrError`` instead; in a fuzz of 300 single-byte changes, the
+  only failures left were the allocations described next. Damage the
+  checks cannot tell from a valid stream is not covered: changed coded
+  bits, or a header field changed to another plausible value, decode
+  to wrong values without an error and may still crash SPERR, and a
+  dimension made larger makes SPERR allocate memory for that size,
+  which for a high bit means hundreds of gigabytes. A 3-D volume is now
+  compressed as one chunk by default, as imagecodecs does, where it was
+  split into chunks of 256 along each axis; ``chunks=(256, 256, 256)``
+  gives that chunking (SPERR's sperr3d default), which lets the chunks
+  of a large volume compress on separate threads.
+
 0.4.0 (2026-09-29)
 ------------------
 
