@@ -344,10 +344,12 @@ def test_jpeg2k_lossy_cross_decode(level):
     rng = np.random.default_rng(0)
     arr = rng.integers(0, 256, (64, 96, 3), dtype=np.uint8)
     enc = oc.write(None, arr, format="jpeg2k", level=level)
-    np.testing.assert_array_equal(
-        oc.read(enc, format="jpeg2k"),
-        imagecodecs.jpeg2k_decode(enc),
-    )
+    # A lossy (irreversible) codestream is decoded with floating-point
+    # wavelets, and two OpenJPEG builds may round a sample differently.
+    ours = oc.read(enc, format="jpeg2k").astype(np.int16)
+    theirs = np.asarray(imagecodecs.jpeg2k_decode(enc)).astype(np.int16)
+    assert ours.shape == theirs.shape
+    assert np.abs(ours - theirs).max() <= 1
 
 
 # ---------------------------------------------------------------------------

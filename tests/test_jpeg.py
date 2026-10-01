@@ -19,6 +19,7 @@ import numpy as np
 import pytest
 
 import opencodecs as oc
+from _tifffile_guard import requires_patchable_tifffile
 
 J = pytest.importorskip("opencodecs.codecs._jpeg")
 ic = pytest.importorskip("imagecodecs")
@@ -801,6 +802,7 @@ def test_decoder_context_resets_options():
 # ---------------------------------------------------------------------------
 
 
+@requires_patchable_tifffile
 def test_tifffile_patch_forwards_jpeg_options(tmp_path):
     tifffile = pytest.importorskip("tifffile")
     from opencodecs import tifffile_patch as patch
@@ -832,6 +834,7 @@ def test_tifffile_patch_forwards_jpeg_options(tmp_path):
     (34892, (32, 48, 3), np.uint16, {"lossless": True}),
     (32803, (32, 48), np.uint16, {"lossless": True, "bitspersample": 12}),
 ])
+@requires_patchable_tifffile
 def test_tifffile_patch_reads_photometric_jpeg(tmp_path, photometric, shape,
                                                dtype, args):
     # tifffile decodes these with outcolorspace set to the photometric
@@ -856,6 +859,7 @@ def test_tifffile_patch_reads_photometric_jpeg(tmp_path, photometric, shape,
         np.testing.assert_array_equal(ours, data)
 
 
+@requires_patchable_tifffile
 def test_tifffile_patch_writes_rgb_jpeg_like_imagecodecs(tmp_path):
     # tifffile passes subsampling=(2, 2) with every RGB JPEG it writes,
     # also when compressionargs keep the JPEG RGB. The TIFF then says
@@ -887,6 +891,7 @@ def test_tifffile_patch_writes_rgb_jpeg_like_imagecodecs(tmp_path):
 
 @pytest.mark.parametrize("extra", [{}, {"subsampling": (1, 1)},
                                    {"subsampling": (2, 1)}])
+@requires_patchable_tifffile
 def test_tifffile_patch_writes_lossless_rgb_like_imagecodecs(tmp_path,
                                                              extra):
     # tifffile adds subsampling=(2, 2), colorspace "RGB" and
@@ -912,6 +917,7 @@ def test_tifffile_patch_writes_lossless_rgb_like_imagecodecs(tmp_path,
     np.testing.assert_array_equal(tifffile.imread(path), rgb)
 
 
+@requires_patchable_tifffile
 def test_tifffile_patch_writes_ycbcr_pixels(tmp_path):
     # photometric="ycbcr" hands the JPEG encoder YCbCr samples
     # (colorspace "YCBCR"), stored unconverted. The reference is the
@@ -970,6 +976,7 @@ def test_tiff_writer_jpeg_reads_in_tifffile(tmp_path):
         np.testing.assert_array_equal(oc.read(path), tifffile.imread(path))
 
 
+@requires_patchable_tifffile
 def test_tifffile_patch_reads_two_sample_lossless_jpeg(tmp_path):
     # tifffile writes a two-sample lossless JPEG TIFF (as DNG stores
     # some raw data) and reads it with imagecodecs. TurboJPEG has no
@@ -999,6 +1006,7 @@ def test_tifffile_patch_reads_two_sample_lossless_jpeg(tmp_path):
     np.testing.assert_array_equal(ours, tifffile.imread(path))
 
 
+@requires_patchable_tifffile
 def test_tifffile_patch_reads_lossless_ycbcr_tiff(tmp_path):
     # tifffile writes photometric="ycbcr" with compressionargs
     # {"lossless": True} and asks the decoder for RGB. TurboJPEG's

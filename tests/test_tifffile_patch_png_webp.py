@@ -24,6 +24,7 @@ pytest.importorskip("opencodecs.codecs._png")
 
 import opencodecs.tifffile_patch as patch  # noqa: E402
 from opencodecs.codecs import _webp  # noqa: E402
+from _tifffile_guard import requires_patchable_tifffile  # noqa: E402
 
 
 def _textured(shape=(64, 96), channels=3, seed=0):
@@ -105,6 +106,7 @@ def test_webp_decode_hasalpha_for_an_opaque_rgba_tile():
     np.testing.assert_array_equal(got, tile)
 
 
+@requires_patchable_tifffile
 def test_tifffile_webp_default_is_exact_and_matches_plain_tifffile():
     image = _textured()
     plain = io.BytesIO()
@@ -121,6 +123,7 @@ def test_tifffile_webp_default_is_exact_and_matches_plain_tifffile():
         assert patched.getvalue() == plain.getvalue()
 
 
+@requires_patchable_tifffile
 def test_tifffile_webp_rgba_with_opaque_tiles():
     image = _textured(channels=4)
     image[..., 3] = 255
@@ -147,6 +150,7 @@ def test_png_encode_forwards_strategy_and_filter():
         np.testing.assert_array_equal(imagecodecs.png_decode(encoded), flat)
 
 
+@requires_patchable_tifffile
 def test_tifffile_png_compressionargs_reach_the_encoder():
     # Smooth, so deflate's fixed-Huffman block beats a stored one.
     image = np.add.outer(np.arange(64), np.arange(96)).astype(np.uint8)

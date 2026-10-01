@@ -492,8 +492,14 @@ def test_heif_color_alpha_at_its_own_depth(tmp_path, ybits, abits):
         pytest.skip("libheif could not write this image here")
     blob = path.read_bytes()
     if ybits != abits:
-        with pytest.raises(_heif.HeifError, match="alpha plane"):
-            heif.decode(blob)
+        # Where the linked libheif would hand back the wrong bits of the
+        # alpha plane, decode refuses; where it keeps them, alpha is exact.
+        try:
+            got = heif.decode(blob)
+        except _heif.HeifError as exc:
+            assert "alpha plane" in str(exc)
+            return
+        np.testing.assert_array_equal(got[..., 3], a)
         return
     np.testing.assert_array_equal(heif.decode(blob)[..., 3], a)
 

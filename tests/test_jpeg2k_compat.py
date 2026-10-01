@@ -20,6 +20,7 @@ import math
 
 import numpy as np
 import pytest
+from _tifffile_guard import requires_patchable_tifffile
 
 oj = pytest.importorskip("opencodecs.codecs._jpeg2k")
 imagecodecs = pytest.importorskip("imagecodecs")
@@ -292,6 +293,7 @@ def test_codec_rejects_unknown_options():
 # ---------------------------------------------------------------------------
 
 
+@requires_patchable_tifffile
 def test_tifffile_patch_defaults_to_lossless():
     """The imagecodecs-compatible shim passed lossless=bool(None), which
     made every tifffile JPEG 2000 write lossy."""
@@ -333,6 +335,7 @@ def _first_tile(tifffile, data):
     (np.uint8, (64, 80, 3), {"photometric": "rgb",
                              "compressionargs": {"level": 40}}),
 ])
+@requires_patchable_tifffile
 def test_tifffile_patch_writes_raw_codestreams_like_imagecodecs(dtype, shape,
                                                                 kw):
     """tifffile asks for codecformat=0 (a raw J2K codestream). 0.4.0's
@@ -347,6 +350,7 @@ def test_tifffile_patch_writes_raw_codestreams_like_imagecodecs(dtype, shape,
     assert _first_tile(tifffile, ours)[:4] == b"\xff\x4f\xff\x51"
 
 
+@requires_patchable_tifffile
 def test_tifffile_patch_reads_jp2_tiles_written_by_040(monkeypatch):
     """Files 0.4.0 wrote through the patch hold JP2-boxed tiles. That
     container still reads, through the patch and through imagecodecs.
@@ -377,6 +381,7 @@ def test_tifffile_patch_reads_jp2_tiles_written_by_040(monkeypatch):
         (tifffile_patch.install if was else tifffile_patch.uninstall)()
 
 
+@requires_patchable_tifffile
 def test_tifffile_patch_out():
     """decode(out=) fills the caller's array, as imagecodecs does;
     encode(out=) raises instead of being dropped."""

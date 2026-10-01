@@ -119,14 +119,14 @@ def test_float_delta_reads_streams_from_0_4_0(dtype, shape, axis, dist, stream, 
     for out in (None, np.empty(shape, dtype)):
         got = codec.decode(raw, legacy_float=True, out=out, **kw)
         assert got.dtype == np.dtype(dtype) and got.shape == shape
-        assert _same_bits(got.astype(want.dtype), want)
+        assert _same_bits_any_nan(got.astype(want.dtype), want)
     # The same rule by hand: a running float sum of each lane.
     diffs = np.frombuffer(raw, dtype).reshape(shape).astype(want.dtype)
     lanes = np.moveaxis(diffs, axis, -1).copy()
     with np.errstate(invalid="ignore", over="ignore"):
         for k in range(dist, lanes.shape[-1]):
             lanes[..., k] = lanes[..., k] + lanes[..., k - dist]
-    assert _same_bits(np.moveaxis(lanes, -1, axis), want)
+    assert _same_bits_any_nan(np.moveaxis(lanes, -1, axis), want)
 
 
 def test_float_delta_legacy_flag_is_delta_and_float_only():
@@ -568,6 +568,16 @@ def _values(dtype, n=20000, seed=0):
 
 def _same_bits(a, b):
     return np.array_equal(a.view(f"u{a.dtype.itemsize}"), b.view(f"u{b.dtype.itemsize}"))
+
+
+def _same_bits_any_nan(a, b):
+    """Bits equal except that a NaN may have any sign and payload: an
+    arithmetic NaN (inf + -inf) is positive on Arm and negative on x86,
+    so the NaN 0.4.0 produced depends on where it ran."""
+    nan = np.isnan(a)
+    if not np.array_equal(nan, np.isnan(b)):
+        return False
+    return _same_bits(np.where(nan, 0, a).astype(a.dtype), np.where(nan, 0, b).astype(b.dtype))
 
 
 def _q(a, mode, nsd):
