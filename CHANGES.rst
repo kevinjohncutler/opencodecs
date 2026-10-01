@@ -43,7 +43,8 @@ Speed
 The speed changes are the same code on every operating system and
 compiler, in a form each compiler measured builds well, except two
 below: bitshuffle's build guard, which now lets MSVC take the SSE2 path,
-and how uncompressed strips are read among other reads. Figures compare
+and how uncompressed strips are read among other reads. The Linux wheels
+also link newer libraries (last bullet but one). Figures compare
 the published 0.4.0 wheels with 0.5.0's, each version's CI build: fresh
 processes, both versions alternating in shuffled order with 0.4.0 run a
 second time as a control, identical output required, on a 20-core Apple
@@ -85,9 +86,18 @@ a 4-core x86-64 Windows laptop.
   with it. On both, such a copy is now split into parts on several
   threads, as reads are: two concurrent readers on the Mac took 1.45
   against 1.87 ms per read.
-- Level or within noise: RGB uint16 everywhere, deflate strips on the
-  Mac and Linux (1.21x on Windows), uncompressed strips, PackBits, BC1
-  and CRC-32C. Slower: LZW encode 0.95x on Windows, and BC3 decode 0.80x
+- **The Linux wheels build their codec libraries from source**, as the
+  macOS and Windows wheels get current ones from Homebrew and
+  conda-forge. They took zstd, lz4, brotli, libdeflate, ISA-L, giflib,
+  libwebp and openjpeg from AlmaLinux 8, and so shipped zstd 1.4.4, lz4
+  1.8.3, libwebp 1.0, openjpeg 2.4 and a libdeflate built by GCC 8 that
+  inflated 1.2x slower than the same source built by GCC 14. Serial
+  reads of deflate TIFFs on Linux: 1.2 to 1.5x. With the old libraries,
+  58 tests that pass on the other platforms failed against the Linux
+  wheel (JPEG 2000 options, zstd parameters, lossless WebP); they pass.
+- Level or within noise: RGB uint16 on the Mac and Windows, deflate
+  strips on the Mac (1.21x on Windows, 1.24x on Linux with the libraries
+  above), uncompressed strips, PackBits, BC1 and CRC-32C. Slower: LZW encode 0.95x on Windows, and BC3 decode 0.80x
   on the Mac (0.89x on Windows, where 0.4.0 against itself measured
   0.93x; 1.03x on Linux), because BC3 alpha now rounds as the
   specification defines (below), through bcdec's BC4 kernel.

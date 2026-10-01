@@ -17,6 +17,13 @@ much larger file shows up in the results.
 Usage (the package under test comes from the environment or PYTHONPATH):
 
   python bench/bench_vs_imagecodecs.py run --rounds 5 --data /tmp/ocic --out mac.json
+  python bench/bench_vs_imagecodecs.py run ... --cpus 8-11,72-75   (Linux)
+
+--cpus pins every measured process to those CPUs. On a processor whose
+cores sit in several groups with an L3 cache each (AMD Threadripper and
+EPYC), an unpinned process lands on a different group from one run to the
+next, and one-thread timings move by up to 20% with it; pin to the CPUs
+that share one L3.
   python bench/bench_vs_imagecodecs.py table mac=mac.json linux=linux.json windows=win.json
   python bench/bench_vs_imagecodecs.py once CASE LIB DATADIR   (internal)
 """
@@ -275,9 +282,22 @@ def versions() -> dict:
                                      text=True, check=True).stdout)
 
 
-def run(rounds: int, data: pathlib.Path, out: pathlib.Path, cases: list[str]) -> None:
+def cpu_list(spec: str) -> set[int]:
+    """'8-11,72-75' -> {8, 9, 10, 11, 72, 73, 74, 75}."""
+    out = set()
+    for part in spec.split(","):
+        lo, _, hi = part.partition("-")
+        out.update(range(int(lo), int(hi or lo) + 1))
+    return out
+
+
+def run(rounds: int, data: pathlib.Path, out: pathlib.Path, cases: list[str],
+        cpus: set[int] | None = None) -> None:
     subprocess.run([sys.executable, str(HERE), "prepare", str(data)], check=True)
+    pin = (lambda: os.sched_setaffinity(0, cpus)) if cpus else None
     meta = versions()
+    if cpus:
+        meta["cpus"] = sorted(cpus)
     print(meta, flush=True)
     rows = []
     jobs = [(c, lib) for c in cases for lib in ("oc", "ic")]
@@ -285,7 +305,7 @@ def run(rounds: int, data: pathlib.Path, out: pathlib.Path, cases: list[str]) ->
         random.Random(7000 + r).shuffle(jobs)
         for c, lib in jobs:
             p = subprocess.run([sys.executable, str(HERE), "once", c, lib, str(data)],
-                               capture_output=True, text=True)
+                               capture_output=True, text=True, preexec_fn=pin)
             if p.returncode:
                 rows.append({"case": c, "lib": lib, "error": p.stderr.strip().splitlines()[-1:]})
                 continue
@@ -387,9 +407,12 @@ if __name__ == "__main__":
         ap.add_argument("--data", required=True)
         ap.add_argument("--out", required=True)
         ap.add_argument("--cases", default="")
+        ap.add_argument("--cpus", default="", help="pin each measured process "
+                        "to these CPUs, e.g. 8-11,72-75 (Linux)")
         a = ap.parse_args()
         run(a.rounds, pathlib.Path(a.data), pathlib.Path(a.out),
-            a.cases.split(",") if a.cases else case_names())
+            a.cases.split(",") if a.cases else case_names(),
+            cpu_list(a.cpus) if a.cpus else None)
     elif cmd == "table":
         table([(s.split("=", 1)[0], pathlib.Path(s.split("=", 1)[1])) for s in sys.argv[2:]])
     else:

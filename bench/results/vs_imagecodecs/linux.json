@@ -4,3886 +4,3896 @@
   "imagecodecs": "2026.8.16",
   "python": "3.12.13",
   "machine": "x86_64",
-  "system": "Linux"
+  "system": "Linux",
+  "cpus": [
+   8,
+   9,
+   10,
+   11,
+   72,
+   73,
+   74,
+   75
+  ]
  },
  "rows": [
   {
    "case": "jpeg:decode",
    "lib": "ic",
-   "ms": 43.62421669065952,
-   "n": 10,
-   "cpu": 0.9997366822171161,
+   "ms": 50.09653512388468,
+   "n": 8,
+   "cpu": 0.9996534974490928,
    "check": "8b57664a34177e35uint8(2048, 2048, 3)"
   },
   {
    "case": "webp:encode",
    "lib": "ic",
-   "ms": 474.9168958514929,
+   "ms": 452.31619104743004,
    "n": 5,
-   "cpu": 0.9995747755194688,
+   "cpu": 0.9989813910850935,
    "bytes": 1530260,
    "check": "lossy"
   },
   {
    "case": "delta_u16:decode",
    "lib": "ic",
-   "ms": 12.336360290646553,
-   "n": 33,
-   "cpu": 1.000265387287078,
-   "check": "545c8753b23bcc7auint16(4096, 4096)"
-  },
-  {
-   "case": "packints12:decode",
-   "lib": "ic",
-   "ms": 45.34289613366127,
-   "n": 11,
-   "cpu": 1.0000833474492348,
-   "check": "e3c8f4983a69a69duint16(16777216,)"
-  },
-  {
-   "case": "xor_u16:decode",
-   "lib": "oc",
-   "ms": 10.908348485827446,
-   "n": 37,
-   "cpu": 1.0000924104080435,
-   "check": "545c8753b23bcc7auint16(4096, 4096)"
-  },
-  {
-   "case": "snappy:decode",
-   "lib": "ic",
-   "ms": 20.888077095150948,
-   "n": 20,
-   "cpu": 0.9992766500782034,
-   "check": "545c8753b23bcc7a"
-  },
-  {
-   "case": "lerc:decode",
-   "lib": "ic",
-   "ms": 9.557033888995647,
-   "n": 40,
-   "cpu": 0.9998927200655159,
-   "check": "2c03f7593e03c345uint16(2048, 2048)"
-  },
-  {
-   "case": "jpeg2k:encode",
-   "lib": "ic",
-   "ms": 737.2286450117826,
-   "n": 5,
-   "cpu": 0.9993401805040287,
-   "bytes": 5671623,
-   "check": "lossless"
-  },
-  {
-   "case": "bitshuffle:decode",
-   "lib": "ic",
-   "ms": 36.995779722929,
-   "n": 11,
-   "cpu": 0.9998958350734265,
-   "check": "545c8753b23bcc7a"
-  },
-  {
-   "case": "blosc2:decode",
-   "lib": "oc",
-   "ms": 60.92445831745863,
-   "n": 6,
-   "cpu": 1.0002431084812082,
-   "check": "545c8753b23bcc7a"
-  },
-  {
-   "case": "jpeg2k:encode",
-   "lib": "oc",
-   "ms": 37.78792358934879,
-   "n": 11,
-   "cpu": 28.454076066246532,
-   "bytes": 5671623,
-   "check": "lossless"
-  },
-  {
-   "case": "brotli:encode",
-   "lib": "oc",
-   "ms": 393.45191046595573,
-   "n": 5,
-   "cpu": 0.9998422490621441,
-   "bytes": 30367478,
-   "check": "lossless"
-  },
-  {
-   "case": "bc7:decode",
-   "lib": "ic",
-   "ms": 42.12159849703312,
-   "n": 9,
-   "cpu": 1.000228543485141,
-   "check": "3ac07035613bdca6uint8(2048, 2048, 4)"
-  },
-  {
-   "case": "jxl_lossy:decode",
-   "lib": "oc",
-   "ms": 47.312069684267044,
-   "n": 9,
-   "cpu": 4.785701543791632,
-   "check": "9cb90456bf8bd537uint8(2048, 2048, 3)"
-  },
-  {
-   "case": "jpeg:encode",
-   "lib": "ic",
-   "ms": 97.44099900126457,
-   "n": 5,
-   "cpu": 1.0001834007543573,
-   "bytes": 2437855,
-   "check": "lossy"
-  },
-  {
-   "case": "qoi:encode",
-   "lib": "oc",
-   "ms": 40.024593472480774,
-   "n": 11,
-   "cpu": 0.9927331148140871,
-   "bytes": 11486989,
-   "check": "lossless"
-  },
-  {
-   "case": "lerc:decode",
-   "lib": "oc",
-   "ms": 9.956983849406242,
-   "n": 40,
-   "cpu": 1.0003496602628548,
-   "check": "2c03f7593e03c345uint16(2048, 2048)"
-  },
-  {
-   "case": "lzw:encode",
-   "lib": "ic",
-   "ms": 164.2550230026245,
-   "n": 5,
-   "cpu": 0.9991151831401143,
-   "bytes": 9115259,
-   "check": "lossless"
-  },
-  {
-   "case": "lzma:encode",
-   "lib": "oc",
-   "ms": 2847.705414518714,
-   "n": 5,
-   "cpu": 0.9956516618945245,
-   "bytes": 6913284,
-   "check": "lossless"
-  },
-  {
-   "case": "snappy:decode",
-   "lib": "oc",
-   "ms": 21.870503202080727,
-   "n": 19,
-   "cpu": 1.0003925201445047,
-   "check": "545c8753b23bcc7a"
-  },
-  {
-   "case": "bc7:decode",
-   "lib": "oc",
-   "ms": 3.4433184191584587,
-   "n": 40,
-   "cpu": 11.628006791162091,
-   "check": "3ac07035613bdca6uint8(2048, 2048, 4)"
-  },
-  {
-   "case": "brotli:encode",
-   "lib": "ic",
-   "ms": 359.71604101359844,
-   "n": 5,
-   "cpu": 1.0000087792923285,
-   "bytes": 30369076,
-   "check": "lossless"
-  },
-  {
-   "case": "packbits:decode",
-   "lib": "oc",
-   "ms": 2.709481865167618,
-   "n": 40,
-   "cpu": 1.0021095158140163,
-   "check": "bd2b5bc1208ccdc7"
-  },
-  {
-   "case": "zfp:decode",
-   "lib": "ic",
-   "ms": 121.33319675922394,
-   "n": 5,
-   "cpu": 1.0001359055017072,
-   "check": "f7c8b25aa8c92c17float32(2048, 2048)"
-  },
-  {
-   "case": "jpegls:decode",
-   "lib": "oc",
-   "ms": 119.51228231191635,
-   "n": 5,
-   "cpu": 1.0000923394517103,
-   "check": "2c03f7593e03c345uint16(2048, 2048)"
-  },
-  {
-   "case": "bitshuffle:decode",
-   "lib": "oc",
-   "ms": 35.683044232428074,
-   "n": 12,
-   "cpu": 1.0002861054981682,
-   "check": "545c8753b23bcc7a"
-  },
-  {
-   "case": "jxl_lossy:encode",
-   "lib": "oc",
-   "ms": 273.4098844230175,
-   "n": 5,
-   "cpu": 13.463821862281899,
-   "bytes": 2150106,
-   "check": "lossy"
-  },
-  {
-   "case": "bc1:decode",
-   "lib": "ic",
-   "ms": 3.3274879679083824,
-   "n": 40,
-   "cpu": 1.0013051261689518,
-   "check": "a7de88b06c2026c8uint8(2048, 2048, 4)"
-  },
-  {
-   "case": "lerc:encode",
-   "lib": "ic",
-   "ms": 41.52753762900829,
-   "n": 10,
-   "cpu": 1.0002934341700966,
-   "bytes": 6099531,
-   "check": "lossless"
-  },
-  {
-   "case": "lzma:decode",
-   "lib": "oc",
-   "ms": 221.30759246647358,
-   "n": 5,
-   "cpu": 1.0000545413607878,
-   "check": "6c0d74d9608f6773"
-  },
-  {
-   "case": "jpeg:decode",
-   "lib": "oc",
-   "ms": 26.452229358255863,
-   "n": 16,
-   "cpu": 1.000141885198309,
-   "check": "8b57664a34177e35uint8(2048, 2048, 3)"
-  },
-  {
-   "case": "blosc2:decode",
-   "lib": "ic",
-   "ms": 50.58216396719217,
-   "n": 8,
-   "cpu": 1.0002567480481845,
-   "check": "545c8753b23bcc7a"
-  },
-  {
-   "case": "zfp:encode",
-   "lib": "ic",
-   "ms": 128.68945859372616,
-   "n": 5,
-   "cpu": 1.0001352447739202,
-   "bytes": 12505192,
-   "check": "lossless"
-  },
-  {
-   "case": "lerc:encode",
-   "lib": "oc",
-   "ms": 34.22169480472803,
-   "n": 12,
-   "cpu": 1.000289175783426,
-   "bytes": 6099531,
-   "check": "lossless"
-  },
-  {
-   "case": "zfp:decode",
-   "lib": "oc",
-   "ms": 99.05579499900341,
-   "n": 5,
-   "cpu": 1.0002213889590694,
-   "check": "f7c8b25aa8c92c17float32(2048, 2048)"
-  },
-  {
-   "case": "zfp:encode",
-   "lib": "oc",
-   "ms": 96.68096527457237,
-   "n": 5,
-   "cpu": 1.0001723829850042,
-   "bytes": 12505192,
-   "check": "lossless"
-  },
-  {
-   "case": "png:decode",
-   "lib": "oc",
-   "ms": 62.791695818305016,
-   "n": 7,
-   "cpu": 1.0002157239426521,
-   "check": "db40c29c960cb630uint8(2048, 2048, 3)"
-  },
-  {
-   "case": "jpegls:encode",
-   "lib": "ic",
-   "ms": 111.44483648240566,
-   "n": 5,
-   "cpu": 0.9999123205690607,
-   "bytes": 5639796,
-   "check": "lossless"
-  },
-  {
-   "case": "blosc2:encode",
-   "lib": "ic",
-   "ms": 499.26045536994934,
-   "n": 5,
-   "cpu": 0.9999756869376109,
-   "bytes": 25395545,
-   "check": "lossless"
-  },
-  {
-   "case": "lzw:encode",
-   "lib": "oc",
-   "ms": 114.95029181241989,
-   "n": 5,
-   "cpu": 1.0002033437297413,
-   "bytes": 9116054,
-   "check": "lossless"
-  },
-  {
-   "case": "packints12:decode",
-   "lib": "oc",
-   "ms": 40.259551256895065,
-   "n": 10,
-   "cpu": 1.000349320571954,
-   "check": "e3c8f4983a69a69duint16(16777216,)"
-  },
-  {
-   "case": "bitshuffle:encode",
-   "lib": "oc",
-   "ms": 65.67376665771008,
-   "n": 7,
-   "cpu": 1.0002373018464683,
-   "bytes": 33554432,
-   "check": "lossless"
-  },
-  {
-   "case": "jpegls:encode",
-   "lib": "oc",
-   "ms": 108.5158921778202,
-   "n": 5,
-   "cpu": 1.0001538436493664,
-   "bytes": 5639752,
-   "check": "lossless"
-  },
-  {
-   "case": "jpeg2k:decode",
-   "lib": "oc",
-   "ms": 51.345350220799446,
-   "n": 8,
-   "cpu": 17.61173172719479,
-   "check": "2c03f7593e03c345uint16(2048, 2048)"
-  },
-  {
-   "case": "zstd:decode",
-   "lib": "oc",
-   "ms": 59.6733707934618,
-   "n": 7,
-   "cpu": 1.0002550723325845,
-   "check": "545c8753b23bcc7a"
-  },
-  {
-   "case": "bz2:decode",
-   "lib": "ic",
-   "ms": 364.53388817608356,
-   "n": 5,
-   "cpu": 1.0000191713686417,
-   "check": "6c0d74d9608f6773"
-  },
-  {
-   "case": "zstd:encode",
-   "lib": "ic",
-   "ms": 89.13950249552727,
-   "n": 5,
-   "cpu": 1.000205419296238,
-   "bytes": 30476820,
-   "check": "lossless"
-  },
-  {
-   "case": "lzma:encode",
-   "lib": "ic",
-   "ms": 3079.5370787382126,
-   "n": 5,
-   "cpu": 0.9999617411147796,
-   "bytes": 6913284,
-   "check": "lossless"
-  },
-  {
-   "case": "qoi:decode",
-   "lib": "oc",
-   "ms": 31.112633645534515,
-   "n": 13,
-   "cpu": 1.0002988009299028,
-   "check": "db40c29c960cb630uint8(2048, 2048, 3)"
-  },
-  {
-   "case": "qoi:decode",
-   "lib": "ic",
-   "ms": 38.47967088222504,
-   "n": 10,
-   "cpu": 1.0003654149896446,
-   "check": "db40c29c960cb630uint8(2048, 2048, 3)"
-  },
-  {
-   "case": "bz2:encode",
-   "lib": "ic",
-   "ms": 618.0120687931776,
-   "n": 5,
-   "cpu": 1.000002337276149,
-   "bytes": 6179458,
-   "check": "lossless"
-  },
-  {
-   "case": "lz4:decode",
-   "lib": "oc",
-   "ms": 26.322636753320694,
-   "n": 16,
-   "cpu": 1.0003264175113076,
-   "check": "545c8753b23bcc7a"
-  },
-  {
-   "case": "brotli:decode",
-   "lib": "oc",
-   "ms": 215.50977416336536,
-   "n": 5,
-   "cpu": 1.0000875060712346,
-   "check": "545c8753b23bcc7a"
-  },
-  {
-   "case": "lzw:decode",
-   "lib": "oc",
-   "ms": 25.993861258029938,
-   "n": 16,
-   "cpu": 1.0003435411884254,
-   "check": "bd2b5bc1208ccdc7"
-  },
-  {
-   "case": "png:encode",
-   "lib": "oc",
-   "ms": 265.90750738978386,
-   "n": 5,
-   "cpu": 1.000053406680099,
-   "bytes": 6493730,
-   "check": "lossless"
-  },
-  {
-   "case": "packbits:decode",
-   "lib": "ic",
-   "ms": 7.500607520341873,
-   "n": 40,
-   "cpu": 1.0009279723074604,
-   "check": "bd2b5bc1208ccdc7"
-  },
-  {
-   "case": "deflate:decode",
-   "lib": "oc",
-   "ms": 140.67571982741356,
-   "n": 5,
-   "cpu": 1.000082533549513,
-   "check": "545c8753b23bcc7a"
-  },
-  {
-   "case": "jxl_lossless:encode",
-   "lib": "oc",
-   "ms": 96.95769473910332,
-   "n": 5,
-   "cpu": 6.533043301107034,
-   "bytes": 5615519,
-   "check": "lossless"
-  },
-  {
-   "case": "webp:decode",
-   "lib": "oc",
-   "ms": 100.31614266335964,
-   "n": 5,
-   "cpu": 1.000180440919308,
-   "check": "491156c91eb0fb5auint8(2048, 2048, 3)"
-  },
-  {
-   "case": "webp:encode",
-   "lib": "oc",
-   "ms": 545.7186326384544,
-   "n": 5,
-   "cpu": 1.0000063249811046,
-   "bytes": 1530260,
-   "check": "lossy"
-  },
-  {
-   "case": "png:decode",
-   "lib": "ic",
-   "ms": 63.31223249435425,
-   "n": 7,
-   "cpu": 1.0002396985322668,
-   "check": "db40c29c960cb630uint8(2048, 2048, 3)"
-  },
-  {
-   "case": "zstd:encode",
-   "lib": "oc",
-   "ms": 106.28373734652996,
-   "n": 5,
-   "cpu": 1.0001487671593636,
-   "bytes": 30509764,
-   "check": "lossless"
-  },
-  {
-   "case": "lz4:encode",
-   "lib": "oc",
-   "ms": 89.5191840827465,
-   "n": 5,
-   "cpu": 1.0005440936996115,
-   "bytes": 33556499,
-   "check": "lossless"
-  },
-  {
-   "case": "lzma:decode",
-   "lib": "ic",
-   "ms": 216.1783091723919,
-   "n": 5,
-   "cpu": 1.0000697791921602,
-   "check": "6c0d74d9608f6773"
-  },
-  {
-   "case": "zstd:decode",
-   "lib": "ic",
-   "ms": 51.95965804159641,
-   "n": 8,
-   "cpu": 1.0002610171338937,
-   "check": "545c8753b23bcc7a"
-  },
-  {
-   "case": "jxl_lossy:decode",
-   "lib": "ic",
-   "ms": 144.9464149773121,
-   "n": 5,
-   "cpu": 1.0002155712258483,
-   "check": "6d2072454ecb48f3uint8(2048, 2048, 3)"
-  },
-  {
-   "case": "jxl_lossless:decode",
-   "lib": "oc",
-   "ms": 28.955601155757904,
-   "n": 14,
-   "cpu": 9.822629992325059,
-   "check": "2c03f7593e03c345uint16(2048, 2048)"
-  },
-  {
-   "case": "qoi:encode",
-   "lib": "ic",
-   "ms": 42.71750431507826,
-   "n": 10,
-   "cpu": 1.0002697290064295,
-   "bytes": 11486989,
-   "check": "lossless"
-  },
-  {
-   "case": "bz2:encode",
-   "lib": "oc",
-   "ms": 623.8285843282938,
-   "n": 5,
-   "cpu": 0.9961530072431257,
-   "bytes": 6179458,
-   "check": "lossless"
-  },
-  {
-   "case": "delta_u16:decode",
-   "lib": "oc",
-   "ms": 11.733604595065117,
-   "n": 35,
-   "cpu": 1.0004461239998472,
-   "check": "545c8753b23bcc7auint16(4096, 4096)"
-  },
-  {
-   "case": "lz4:decode",
-   "lib": "ic",
-   "ms": 21.925708279013634,
-   "n": 19,
-   "cpu": 1.000487719741692,
-   "check": "545c8753b23bcc7a"
-  },
-  {
-   "case": "jxl_lossless:decode",
-   "lib": "ic",
-   "ms": 192.74699687957764,
-   "n": 5,
-   "cpu": 1.0000854123475327,
-   "check": "2c03f7593e03c345uint16(2048, 2048)"
-  },
-  {
-   "case": "snappy:encode",
-   "lib": "ic",
-   "ms": 77.47176382690668,
-   "n": 6,
-   "cpu": 1.0002020929578164,
-   "bytes": 33555972,
-   "check": "lossless"
-  },
-  {
-   "case": "brotli:decode",
-   "lib": "ic",
-   "ms": 210.4158829897642,
-   "n": 5,
-   "cpu": 1.0001209320598792,
-   "check": "545c8753b23bcc7a"
-  },
-  {
-   "case": "png:encode",
-   "lib": "ic",
-   "ms": 967.7959997206926,
-   "n": 5,
-   "cpu": 0.999980757929831,
-   "bytes": 6437751,
-   "check": "lossless"
-  },
-  {
-   "case": "bz2:decode",
-   "lib": "oc",
-   "ms": 401.87994204461575,
-   "n": 5,
-   "cpu": 0.9994880373376092,
-   "check": "6c0d74d9608f6773"
-  },
-  {
-   "case": "jxl_lossless:encode",
-   "lib": "ic",
-   "ms": 277.77656354010105,
-   "n": 5,
-   "cpu": 0.9999661309037604,
-   "bytes": 5629900,
-   "check": "lossless"
-  },
-  {
-   "case": "lz4:encode",
-   "lib": "ic",
-   "ms": 83.21996033191681,
-   "n": 5,
-   "cpu": 1.0001098626637486,
-   "bytes": 33556499,
-   "check": "lossless"
-  },
-  {
-   "case": "deflate:encode",
-   "lib": "oc",
-   "ms": 449.70315508544445,
-   "n": 5,
-   "cpu": 1.0000109204668903,
-   "bytes": 30524176,
-   "check": "lossless"
-  },
-  {
-   "case": "webp:decode",
-   "lib": "ic",
-   "ms": 104.00748811662197,
-   "n": 5,
-   "cpu": 1.0001800748888088,
-   "check": "491156c91eb0fb5auint8(2048, 2048, 3)"
-  },
-  {
-   "case": "lzw:decode",
-   "lib": "ic",
-   "ms": 80.04827797412872,
-   "n": 5,
-   "cpu": 1.0002748766193619,
-   "check": "bd2b5bc1208ccdc7"
-  },
-  {
-   "case": "bc1:decode",
-   "lib": "oc",
-   "ms": 2.293609082698822,
-   "n": 40,
-   "cpu": 4.083645502515151,
-   "check": "a7de88b06c2026c8uint8(2048, 2048, 4)"
-  },
-  {
-   "case": "blosc2:encode",
-   "lib": "oc",
-   "ms": 517.6581908017397,
-   "n": 5,
-   "cpu": 1.00000715477348,
-   "bytes": 24962982,
-   "check": "lossless"
-  },
-  {
-   "case": "jpegls:decode",
-   "lib": "ic",
-   "ms": 95.49758583307266,
-   "n": 5,
-   "cpu": 1.000185810766035,
-   "check": "2c03f7593e03c345uint16(2048, 2048)"
-  },
-  {
-   "case": "deflate:decode",
-   "lib": "ic",
-   "ms": 175.4167079925537,
-   "n": 5,
-   "cpu": 1.0001183330158911,
-   "check": "545c8753b23bcc7a"
-  },
-  {
-   "case": "jpeg2k:decode",
-   "lib": "ic",
-   "ms": 621.3471051305532,
-   "n": 5,
-   "cpu": 0.9999736963601504,
-   "check": "2c03f7593e03c345uint16(2048, 2048)"
-  },
-  {
-   "case": "jpeg:encode",
-   "lib": "oc",
-   "ms": 18.384558148682117,
-   "n": 22,
-   "cpu": 1.0004048410888027,
-   "bytes": 2437855,
-   "check": "lossy"
-  },
-  {
-   "case": "snappy:encode",
-   "lib": "oc",
-   "ms": 69.75946109741926,
-   "n": 6,
-   "cpu": 1.0002332942061447,
-   "bytes": 33555972,
-   "check": "lossless"
-  },
-  {
-   "case": "jxl_lossy:encode",
-   "lib": "ic",
-   "ms": 870.1910339295864,
-   "n": 5,
-   "cpu": 0.999994209422162,
-   "bytes": 2238951,
-   "check": "lossy"
-  },
-  {
-   "case": "bitshuffle:encode",
-   "lib": "ic",
-   "ms": 58.27039107680321,
-   "n": 7,
-   "cpu": 1.0002366450431661,
-   "bytes": 33554432,
-   "check": "lossless"
-  },
-  {
-   "case": "deflate:encode",
-   "lib": "ic",
-   "ms": 1144.9199598282576,
-   "n": 5,
-   "cpu": 0.9999412038037032,
-   "bytes": 30447420,
-   "check": "lossless"
-  },
-  {
-   "case": "xor_u16:decode",
-   "lib": "ic",
-   "ms": 14.930946752429008,
-   "n": 27,
-   "cpu": 1.0005750831119917,
-   "check": "545c8753b23bcc7auint16(4096, 4096)"
-  },
-  {
-   "case": "qoi:decode",
-   "lib": "oc",
-   "ms": 33.380985260009766,
-   "n": 13,
-   "cpu": 1.0002924442982613,
-   "check": "db40c29c960cb630uint8(2048, 2048, 3)"
-  },
-  {
-   "case": "jpeg2k:decode",
-   "lib": "oc",
-   "ms": 67.22865253686905,
-   "n": 7,
-   "cpu": 12.27929914873791,
-   "check": "2c03f7593e03c345uint16(2048, 2048)"
-  },
-  {
-   "case": "png:decode",
-   "lib": "ic",
-   "ms": 69.71253082156181,
-   "n": 6,
-   "cpu": 1.0002686127459115,
-   "check": "db40c29c960cb630uint8(2048, 2048, 3)"
-  },
-  {
-   "case": "brotli:decode",
-   "lib": "ic",
-   "ms": 202.54728756844997,
-   "n": 5,
-   "cpu": 1.000107820112784,
-   "check": "545c8753b23bcc7a"
-  },
-  {
-   "case": "jxl_lossless:encode",
-   "lib": "ic",
-   "ms": 277.04085409641266,
-   "n": 5,
-   "cpu": 1.000039951317394,
-   "bytes": 5629900,
-   "check": "lossless"
-  },
-  {
-   "case": "lerc:decode",
-   "lib": "ic",
-   "ms": 9.648752398788929,
-   "n": 40,
-   "cpu": 1.0004853483318112,
-   "check": "2c03f7593e03c345uint16(2048, 2048)"
-  },
-  {
-   "case": "bc7:decode",
-   "lib": "oc",
-   "ms": 3.8545336574316025,
-   "n": 40,
-   "cpu": 10.542662911677986,
-   "check": "3ac07035613bdca6uint8(2048, 2048, 4)"
-  },
-  {
-   "case": "bc1:decode",
-   "lib": "oc",
-   "ms": 2.128295600414276,
-   "n": 40,
-   "cpu": 4.095187882557149,
-   "check": "a7de88b06c2026c8uint8(2048, 2048, 4)"
-  },
-  {
-   "case": "deflate:decode",
-   "lib": "oc",
-   "ms": 139.47471603751183,
-   "n": 5,
-   "cpu": 1.000166258761594,
-   "check": "545c8753b23bcc7a"
-  },
-  {
-   "case": "jpeg2k:decode",
-   "lib": "ic",
-   "ms": 622.5636322051287,
-   "n": 5,
-   "cpu": 0.9999996657553952,
-   "check": "2c03f7593e03c345uint16(2048, 2048)"
-  },
-  {
-   "case": "packints12:decode",
-   "lib": "oc",
-   "ms": 35.28737649321556,
-   "n": 12,
-   "cpu": 1.0000463001174547,
-   "check": "e3c8f4983a69a69duint16(16777216,)"
-  },
-  {
-   "case": "jpegls:decode",
-   "lib": "ic",
-   "ms": 96.41734883189201,
-   "n": 5,
-   "cpu": 0.9999066731291584,
-   "check": "2c03f7593e03c345uint16(2048, 2048)"
-  },
-  {
-   "case": "bz2:encode",
-   "lib": "oc",
-   "ms": 691.2919543683529,
-   "n": 5,
-   "cpu": 0.9998682380212945,
-   "bytes": 6179458,
-   "check": "lossless"
-  },
-  {
-   "case": "packbits:decode",
-   "lib": "oc",
-   "ms": 2.206471748650074,
-   "n": 40,
-   "cpu": 1.0023961974481408,
-   "check": "bd2b5bc1208ccdc7"
-  },
-  {
-   "case": "xor_u16:decode",
-   "lib": "oc",
-   "ms": 11.034615337848663,
+   "ms": 11.936182156205177,
    "n": 34,
-   "cpu": 1.0002808439213682,
+   "cpu": 0.9994164823626132,
    "check": "545c8753b23bcc7auint16(4096, 4096)"
   },
   {
-   "case": "lz4:encode",
+   "case": "packints12:decode",
    "lib": "ic",
-   "ms": 71.93193677812815,
-   "n": 6,
-   "cpu": 0.9997435233795596,
-   "bytes": 33556499,
-   "check": "lossless"
+   "ms": 25.41766967624426,
+   "n": 16,
+   "cpu": 0.9988877995761887,
+   "check": "e3c8f4983a69a69duint16(16777216,)"
   },
   {
-   "case": "brotli:encode",
+   "case": "xor_u16:decode",
    "lib": "oc",
-   "ms": 504.7505386173725,
-   "n": 5,
-   "cpu": 0.9997279785777327,
-   "bytes": 30367478,
-   "check": "lossless"
-  },
-  {
-   "case": "jpeg:decode",
-   "lib": "ic",
-   "ms": 43.64824295043945,
-   "n": 10,
-   "cpu": 1.0002427452772285,
-   "check": "8b57664a34177e35uint8(2048, 2048, 3)"
-  },
-  {
-   "case": "lzma:decode",
-   "lib": "ic",
-   "ms": 209.7958568483591,
-   "n": 5,
-   "cpu": 0.9997054935684859,
-   "check": "6c0d74d9608f6773"
-  },
-  {
-   "case": "jxl_lossless:decode",
-   "lib": "ic",
-   "ms": 169.41814124584198,
-   "n": 5,
-   "cpu": 0.9998621053121178,
-   "check": "2c03f7593e03c345uint16(2048, 2048)"
-  },
-  {
-   "case": "snappy:decode",
-   "lib": "ic",
-   "ms": 21.68191224336624,
-   "n": 19,
-   "cpu": 0.9994215207702903,
-   "check": "545c8753b23bcc7a"
-  },
-  {
-   "case": "zfp:encode",
-   "lib": "oc",
-   "ms": 95.12205235660076,
-   "n": 5,
-   "cpu": 0.9991666599550376,
-   "bytes": 12505192,
-   "check": "lossless"
-  },
-  {
-   "case": "png:encode",
-   "lib": "ic",
-   "ms": 1021.0644863545895,
-   "n": 5,
-   "cpu": 0.999552544135217,
-   "bytes": 6437751,
-   "check": "lossless"
-  },
-  {
-   "case": "brotli:decode",
-   "lib": "oc",
-   "ms": 237.69105225801468,
-   "n": 5,
-   "cpu": 0.9998444006719966,
-   "check": "545c8753b23bcc7a"
-  },
-  {
-   "case": "brotli:encode",
-   "lib": "ic",
-   "ms": 370.9762580692768,
-   "n": 5,
-   "cpu": 1.00003587266272,
-   "bytes": 30369076,
-   "check": "lossless"
-  },
-  {
-   "case": "zfp:decode",
-   "lib": "ic",
-   "ms": 99.25565682351589,
-   "n": 5,
-   "cpu": 1.000174509826093,
-   "check": "f7c8b25aa8c92c17float32(2048, 2048)"
-  },
-  {
-   "case": "jxl_lossless:decode",
-   "lib": "oc",
-   "ms": 15.006618574261665,
-   "n": 27,
-   "cpu": 15.347132219546832,
-   "check": "2c03f7593e03c345uint16(2048, 2048)"
-  },
-  {
-   "case": "zstd:decode",
-   "lib": "oc",
-   "ms": 65.92429801821709,
-   "n": 7,
-   "cpu": 0.9999696996926294,
-   "check": "545c8753b23bcc7a"
-  },
-  {
-   "case": "zstd:encode",
-   "lib": "ic",
-   "ms": 92.3304483294487,
-   "n": 5,
-   "cpu": 1.0001836860525832,
-   "bytes": 30476820,
-   "check": "lossless"
-  },
-  {
-   "case": "webp:decode",
-   "lib": "oc",
-   "ms": 106.10704310238361,
-   "n": 5,
-   "cpu": 0.9998795523957472,
-   "check": "491156c91eb0fb5auint8(2048, 2048, 3)"
-  },
-  {
-   "case": "bc7:decode",
-   "lib": "ic",
-   "ms": 39.34535011649132,
-   "n": 11,
-   "cpu": 1.0002559937535338,
-   "check": "3ac07035613bdca6uint8(2048, 2048, 4)"
-  },
-  {
-   "case": "jpeg2k:encode",
-   "lib": "ic",
-   "ms": 742.11903847754,
-   "n": 5,
-   "cpu": 0.9999230080072997,
-   "bytes": 5671623,
-   "check": "lossless"
-  },
-  {
-   "case": "webp:decode",
-   "lib": "ic",
-   "ms": 95.74788622558117,
-   "n": 5,
-   "cpu": 1.000082157178032,
-   "check": "491156c91eb0fb5auint8(2048, 2048, 3)"
-  },
-  {
-   "case": "bz2:decode",
-   "lib": "oc",
-   "ms": 360.8474638313055,
-   "n": 5,
-   "cpu": 0.9995000248912425,
-   "check": "6c0d74d9608f6773"
-  },
-  {
-   "case": "lz4:decode",
-   "lib": "ic",
-   "ms": 20.7447474822402,
-   "n": 20,
-   "cpu": 0.9997447162892439,
-   "check": "545c8753b23bcc7a"
-  },
-  {
-   "case": "zstd:encode",
-   "lib": "oc",
-   "ms": 84.3539759516716,
-   "n": 5,
-   "cpu": 1.0001905705682244,
-   "bytes": 30509764,
-   "check": "lossless"
-  },
-  {
-   "case": "jpeg:encode",
-   "lib": "oc",
-   "ms": 18.36322247982025,
-   "n": 22,
-   "cpu": 1.0000628397261098,
-   "bytes": 2437855,
-   "check": "lossy"
-  },
-  {
-   "case": "bc1:decode",
-   "lib": "ic",
-   "ms": 4.118667915463448,
-   "n": 40,
-   "cpu": 1.0009872080840096,
-   "check": "a7de88b06c2026c8uint8(2048, 2048, 4)"
-  },
-  {
-   "case": "jxl_lossy:decode",
-   "lib": "oc",
-   "ms": 36.7230074480176,
-   "n": 12,
-   "cpu": 7.085497875271108,
-   "check": "9cb90456bf8bd537uint8(2048, 2048, 3)"
-  },
-  {
-   "case": "jpegls:encode",
-   "lib": "oc",
-   "ms": 131.50461204349995,
-   "n": 5,
-   "cpu": 1.000126849579356,
-   "bytes": 5639752,
-   "check": "lossless"
-  },
-  {
-   "case": "jxl_lossless:encode",
-   "lib": "oc",
-   "ms": 77.0176313817501,
-   "n": 6,
-   "cpu": 10.682665889261772,
-   "bytes": 5615519,
-   "check": "lossless"
-  },
-  {
-   "case": "blosc2:decode",
-   "lib": "ic",
-   "ms": 60.27458794414997,
-   "n": 7,
-   "cpu": 1.0001853354036856,
-   "check": "545c8753b23bcc7a"
-  },
-  {
-   "case": "lzw:encode",
-   "lib": "oc",
-   "ms": 114.7173959761858,
-   "n": 5,
-   "cpu": 0.9994609774823319,
-   "bytes": 9116054,
-   "check": "lossless"
-  },
-  {
-   "case": "snappy:encode",
-   "lib": "ic",
-   "ms": 78.02318409085274,
-   "n": 6,
-   "cpu": 0.9998684826734743,
-   "bytes": 33555972,
-   "check": "lossless"
-  },
-  {
-   "case": "blosc2:encode",
-   "lib": "oc",
-   "ms": 629.3958052992821,
-   "n": 5,
-   "cpu": 0.9993720283414304,
-   "bytes": 24962982,
-   "check": "lossless"
-  },
-  {
-   "case": "deflate:encode",
-   "lib": "oc",
-   "ms": 443.80026310682297,
-   "n": 5,
-   "cpu": 0.9990224683958941,
-   "bytes": 30524176,
-   "check": "lossless"
-  },
-  {
-   "case": "jpeg:encode",
-   "lib": "ic",
-   "ms": 92.95112267136574,
-   "n": 5,
-   "cpu": 0.9999268868970574,
-   "bytes": 2437855,
-   "check": "lossy"
-  },
-  {
-   "case": "lzw:decode",
-   "lib": "oc",
-   "ms": 31.775258481502533,
-   "n": 14,
-   "cpu": 1.000295524941276,
-   "check": "bd2b5bc1208ccdc7"
-  },
-  {
-   "case": "jxl_lossy:decode",
-   "lib": "ic",
-   "ms": 135.9767597168684,
-   "n": 5,
-   "cpu": 1.0000542774084225,
-   "check": "6d2072454ecb48f3uint8(2048, 2048, 3)"
-  },
-  {
-   "case": "png:encode",
-   "lib": "oc",
-   "ms": 314.04974311590195,
-   "n": 5,
-   "cpu": 0.9996025653531049,
-   "bytes": 6493730,
-   "check": "lossless"
-  },
-  {
-   "case": "zfp:encode",
-   "lib": "ic",
-   "ms": 97.26566076278687,
-   "n": 5,
-   "cpu": 0.9995890137444652,
-   "bytes": 12505192,
-   "check": "lossless"
-  },
-  {
-   "case": "bz2:encode",
-   "lib": "ic",
-   "ms": 598.4887517988682,
-   "n": 5,
-   "cpu": 0.9995396232295292,
-   "bytes": 6179458,
-   "check": "lossless"
-  },
-  {
-   "case": "bitshuffle:decode",
-   "lib": "oc",
-   "ms": 35.246278159320354,
-   "n": 12,
-   "cpu": 1.0002909888863936,
-   "check": "545c8753b23bcc7a"
-  },
-  {
-   "case": "lerc:encode",
-   "lib": "oc",
-   "ms": 27.968330308794975,
-   "n": 14,
-   "cpu": 0.9997191767356906,
-   "bytes": 6099531,
-   "check": "lossless"
-  },
-  {
-   "case": "delta_u16:decode",
-   "lib": "oc",
-   "ms": 11.03859581053257,
-   "n": 35,
-   "cpu": 1.0000140226398269,
+   "ms": 10.646531358361244,
+   "n": 38,
+   "cpu": 0.9994196280995569,
    "check": "545c8753b23bcc7auint16(4096, 4096)"
   },
   {
    "case": "snappy:decode",
-   "lib": "oc",
-   "ms": 22.22298365086317,
+   "lib": "ic",
+   "ms": 22.86007534712553,
    "n": 18,
-   "cpu": 1.0002024194471524,
+   "cpu": 0.9995807530757734,
    "check": "545c8753b23bcc7a"
   },
   {
-   "case": "png:decode",
-   "lib": "oc",
-   "ms": 62.14635260403156,
-   "n": 7,
-   "cpu": 0.9997709434829961,
-   "check": "db40c29c960cb630uint8(2048, 2048, 3)"
-  },
-  {
-   "case": "bitshuffle:decode",
+   "case": "lerc:decode",
    "lib": "ic",
-   "ms": 35.21762974560261,
-   "n": 12,
-   "cpu": 0.999591403150986,
-   "check": "545c8753b23bcc7a"
-  },
-  {
-   "case": "qoi:decode",
-   "lib": "ic",
-   "ms": 29.752309434115887,
-   "n": 14,
-   "cpu": 0.9998989280618996,
-   "check": "db40c29c960cb630uint8(2048, 2048, 3)"
-  },
-  {
-   "case": "lzw:decode",
-   "lib": "ic",
-   "ms": 98.52577187120914,
-   "n": 5,
-   "cpu": 0.9999180110695459,
-   "check": "bd2b5bc1208ccdc7"
-  },
-  {
-   "case": "lerc:encode",
-   "lib": "ic",
-   "ms": 50.96565745770931,
-   "n": 8,
-   "cpu": 1.0002648213050416,
-   "bytes": 6099531,
-   "check": "lossless"
-  },
-  {
-   "case": "packbits:decode",
-   "lib": "ic",
-   "ms": 6.608881056308746,
+   "ms": 8.969197981059551,
    "n": 40,
-   "cpu": 1.0007625567177598,
-   "check": "bd2b5bc1208ccdc7"
-  },
-  {
-   "case": "qoi:encode",
-   "lib": "ic",
-   "ms": 37.4787300825119,
-   "n": 11,
-   "cpu": 1.0000728671765489,
-   "bytes": 11486989,
-   "check": "lossless"
+   "cpu": 0.9993715966280602,
+   "check": "2c03f7593e03c345uint16(2048, 2048)"
   },
   {
    "case": "jpeg2k:encode",
-   "lib": "oc",
-   "ms": 78.47320102155209,
-   "n": 6,
-   "cpu": 15.866761097396079,
+   "lib": "ic",
+   "ms": 703.7555072456598,
+   "n": 5,
+   "cpu": 0.9991110405871992,
    "bytes": 5671623,
    "check": "lossless"
   },
   {
-   "case": "lz4:decode",
-   "lib": "oc",
-   "ms": 20.834853872656822,
-   "n": 20,
-   "cpu": 1.00018099225286,
+   "case": "bitshuffle:decode",
+   "lib": "ic",
+   "ms": 38.32816705107689,
+   "n": 11,
+   "cpu": 0.9993327306028263,
    "check": "545c8753b23bcc7a"
-  },
-  {
-   "case": "webp:encode",
-   "lib": "oc",
-   "ms": 537.8303732722998,
-   "n": 5,
-   "cpu": 0.9993891182859175,
-   "bytes": 1530260,
-   "check": "lossy"
-  },
-  {
-   "case": "packints12:decode",
-   "lib": "ic",
-   "ms": 26.527049019932747,
-   "n": 16,
-   "cpu": 1.0003151068396845,
-   "check": "e3c8f4983a69a69duint16(16777216,)"
-  },
-  {
-   "case": "delta_u16:decode",
-   "lib": "ic",
-   "ms": 12.281714007258415,
-   "n": 33,
-   "cpu": 1.0005875729551232,
-   "check": "545c8753b23bcc7auint16(4096, 4096)"
-  },
-  {
-   "case": "zfp:decode",
-   "lib": "oc",
-   "ms": 121.78198806941509,
-   "n": 5,
-   "cpu": 0.9993337105701158,
-   "check": "f7c8b25aa8c92c17float32(2048, 2048)"
-  },
-  {
-   "case": "lerc:decode",
-   "lib": "oc",
-   "ms": 12.532729655504227,
-   "n": 32,
-   "cpu": 1.000383080183892,
-   "check": "2c03f7593e03c345uint16(2048, 2048)"
   },
   {
    "case": "blosc2:decode",
    "lib": "oc",
-   "ms": 48.98760840296745,
-   "n": 9,
-   "cpu": 0.9992184134271772,
+   "ms": 55.20409066230059,
+   "n": 8,
+   "cpu": 0.9995950459589841,
    "check": "545c8753b23bcc7a"
   },
   {
-   "case": "jxl_lossy:encode",
+   "case": "jpeg2k:encode",
    "lib": "oc",
-   "ms": 250.3205370157957,
+   "ms": 150.69955214858055,
    "n": 5,
-   "cpu": 30.833510786817264,
-   "bytes": 2150106,
-   "check": "lossy"
+   "cpu": 7.326426274790584,
+   "bytes": 5671623,
+   "check": "lossless"
   },
   {
-   "case": "webp:encode",
-   "lib": "ic",
-   "ms": 472.3484441637993,
+   "case": "brotli:encode",
+   "lib": "oc",
+   "ms": 332.47491903603077,
    "n": 5,
-   "cpu": 0.9993246637125234,
-   "bytes": 1530260,
-   "check": "lossy"
+   "cpu": 0.999228915840116,
+   "bytes": 30369076,
+   "check": "lossless"
   },
   {
-   "case": "zstd:decode",
+   "case": "bc7:decode",
    "lib": "ic",
-   "ms": 50.615630112588406,
+   "ms": 37.594255059957504,
+   "n": 11,
+   "cpu": 0.999050930269099,
+   "check": "3ac07035613bdca6uint8(2048, 2048, 4)"
+  },
+  {
+   "case": "jxl_lossy:decode",
+   "lib": "oc",
+   "ms": 52.85829398781061,
    "n": 8,
-   "cpu": 0.9999660048526104,
-   "check": "545c8753b23bcc7a"
+   "cpu": 4.977784754601913,
+   "check": "9cb90456bf8bd537uint8(2048, 2048, 3)"
   },
   {
-   "case": "bitshuffle:encode",
+   "case": "jpeg:encode",
    "lib": "ic",
-   "ms": 54.30979188531637,
-   "n": 8,
-   "cpu": 0.9998148726524507,
-   "bytes": 33554432,
-   "check": "lossless"
-  },
-  {
-   "case": "blosc2:encode",
-   "lib": "ic",
-   "ms": 492.4292825162411,
-   "n": 5,
-   "cpu": 0.9995825825148623,
-   "bytes": 25395545,
-   "check": "lossless"
-  },
-  {
-   "case": "jpeg:decode",
-   "lib": "oc",
-   "ms": 23.99389073252678,
-   "n": 16,
-   "cpu": 1.0001101093919584,
-   "check": "8b57664a34177e35uint8(2048, 2048, 3)"
-  },
-  {
-   "case": "jpegls:encode",
-   "lib": "ic",
-   "ms": 106.14974424242973,
-   "n": 5,
-   "cpu": 1.0001532016443726,
-   "bytes": 5639796,
-   "check": "lossless"
-  },
-  {
-   "case": "lzma:encode",
-   "lib": "oc",
-   "ms": 2793.828247115016,
-   "n": 5,
-   "cpu": 0.9995488608799634,
-   "bytes": 6913284,
-   "check": "lossless"
-  },
-  {
-   "case": "lzma:decode",
-   "lib": "oc",
-   "ms": 211.0110316425562,
-   "n": 5,
-   "cpu": 0.999587906273211,
-   "check": "6c0d74d9608f6773"
-  },
-  {
-   "case": "lz4:encode",
-   "lib": "oc",
-   "ms": 78.71522195637226,
+   "ms": 75.179030187428,
    "n": 6,
-   "cpu": 0.9999327640047457,
-   "bytes": 33556499,
+   "cpu": 0.998765487595861,
+   "bytes": 2437855,
+   "check": "lossy"
+  },
+  {
+   "case": "qoi:encode",
+   "lib": "oc",
+   "ms": 36.05868387967348,
+   "n": 12,
+   "cpu": 0.9992380130811818,
+   "bytes": 11486989,
    "check": "lossless"
   },
   {
-   "case": "jpegls:decode",
+   "case": "lerc:decode",
    "lib": "oc",
-   "ms": 94.47572007775307,
-   "n": 5,
-   "cpu": 1.000181302718251,
+   "ms": 11.20476983487606,
+   "n": 36,
+   "cpu": 0.9995270210612409,
    "check": "2c03f7593e03c345uint16(2048, 2048)"
-  },
-  {
-   "case": "bz2:decode",
-   "lib": "ic",
-   "ms": 365.3067760169506,
-   "n": 5,
-   "cpu": 0.9995189573868858,
-   "check": "6c0d74d9608f6773"
-  },
-  {
-   "case": "xor_u16:decode",
-   "lib": "ic",
-   "ms": 12.296151369810104,
-   "n": 33,
-   "cpu": 0.9998414849987417,
-   "check": "545c8753b23bcc7auint16(4096, 4096)"
-  },
-  {
-   "case": "snappy:encode",
-   "lib": "oc",
-   "ms": 74.82274156063795,
-   "n": 6,
-   "cpu": 1.0001682712806084,
-   "bytes": 33555972,
-   "check": "lossless"
-  },
-  {
-   "case": "jxl_lossy:encode",
-   "lib": "ic",
-   "ms": 842.9238628596067,
-   "n": 5,
-   "cpu": 0.9995174231665637,
-   "bytes": 2238951,
-   "check": "lossy"
   },
   {
    "case": "lzw:encode",
    "lib": "ic",
-   "ms": 159.68218632042408,
+   "ms": 173.31858724355698,
    "n": 5,
-   "cpu": 0.9996175598009501,
+   "cpu": 0.9995027797069201,
    "bytes": 9115259,
    "check": "lossless"
   },
   {
    "case": "lzma:encode",
-   "lib": "ic",
-   "ms": 2772.439355030656,
+   "lib": "oc",
+   "ms": 2567.6272604614496,
    "n": 5,
-   "cpu": 0.999373765346362,
+   "cpu": 0.9990187731231726,
    "bytes": 6913284,
-   "check": "lossless"
-  },
-  {
-   "case": "deflate:decode",
-   "lib": "ic",
-   "ms": 169.58597861230373,
-   "n": 5,
-   "cpu": 0.999199056011969,
-   "check": "545c8753b23bcc7a"
-  },
-  {
-   "case": "bitshuffle:encode",
-   "lib": "oc",
-   "ms": 62.89760582149029,
-   "n": 7,
-   "cpu": 0.9990452554325354,
-   "bytes": 33554432,
-   "check": "lossless"
-  },
-  {
-   "case": "deflate:encode",
-   "lib": "ic",
-   "ms": 1320.006312802434,
-   "n": 5,
-   "cpu": 0.9991810621429185,
-   "bytes": 30447420,
-   "check": "lossless"
-  },
-  {
-   "case": "qoi:encode",
-   "lib": "oc",
-   "ms": 44.52335648238659,
-   "n": 9,
-   "cpu": 0.9998462620759959,
-   "bytes": 11486989,
-   "check": "lossless"
-  },
-  {
-   "case": "jpegls:encode",
-   "lib": "ic",
-   "ms": 116.21161550283432,
-   "n": 5,
-   "cpu": 0.9993110740292525,
-   "bytes": 5639796,
-   "check": "lossless"
-  },
-  {
-   "case": "bitshuffle:encode",
-   "lib": "oc",
-   "ms": 59.40164625644684,
-   "n": 7,
-   "cpu": 0.9995824144692614,
-   "bytes": 33554432,
-   "check": "lossless"
-  },
-  {
-   "case": "jpeg:decode",
-   "lib": "ic",
-   "ms": 51.738034933805466,
-   "n": 8,
-   "cpu": 0.9991074403886108,
-   "check": "8b57664a34177e35uint8(2048, 2048, 3)"
-  },
-  {
-   "case": "bc7:decode",
-   "lib": "oc",
-   "ms": 3.2307738438248634,
-   "n": 40,
-   "cpu": 11.190614105989706,
-   "check": "3ac07035613bdca6uint8(2048, 2048, 4)"
-  },
-  {
-   "case": "png:decode",
-   "lib": "oc",
-   "ms": 77.35300064086914,
-   "n": 6,
-   "cpu": 0.9990126925730416,
-   "check": "db40c29c960cb630uint8(2048, 2048, 3)"
-  },
-  {
-   "case": "lzma:decode",
-   "lib": "oc",
-   "ms": 210.16503497958183,
-   "n": 5,
-   "cpu": 0.9991271496526936,
-   "check": "6c0d74d9608f6773"
-  },
-  {
-   "case": "lz4:encode",
-   "lib": "ic",
-   "ms": 71.69137336313725,
-   "n": 6,
-   "cpu": 0.9996543078909117,
-   "bytes": 33556499,
-   "check": "lossless"
-  },
-  {
-   "case": "qoi:decode",
-   "lib": "oc",
-   "ms": 32.48055465519428,
-   "n": 13,
-   "cpu": 0.9981625984147255,
-   "check": "db40c29c960cb630uint8(2048, 2048, 3)"
-  },
-  {
-   "case": "bc1:decode",
-   "lib": "ic",
-   "ms": 3.290407359600067,
-   "n": 40,
-   "cpu": 1.0010462619223828,
-   "check": "a7de88b06c2026c8uint8(2048, 2048, 4)"
-  },
-  {
-   "case": "qoi:encode",
-   "lib": "oc",
-   "ms": 37.634413689374924,
-   "n": 11,
-   "cpu": 0.999560091601249,
-   "bytes": 11486989,
-   "check": "lossless"
-  },
-  {
-   "case": "bc7:decode",
-   "lib": "ic",
-   "ms": 48.78370836377144,
-   "n": 9,
-   "cpu": 0.9999929668849807,
-   "check": "3ac07035613bdca6uint8(2048, 2048, 4)"
-  },
-  {
-   "case": "jpeg:encode",
-   "lib": "ic",
-   "ms": 77.50161830335855,
-   "n": 6,
-   "cpu": 1.0000889918822415,
-   "bytes": 2437855,
-   "check": "lossy"
-  },
-  {
-   "case": "lerc:encode",
-   "lib": "ic",
-   "ms": 50.36550015211105,
-   "n": 8,
-   "cpu": 0.9982965733118006,
-   "bytes": 6099531,
-   "check": "lossless"
-  },
-  {
-   "case": "packbits:decode",
-   "lib": "ic",
-   "ms": 6.917174905538559,
-   "n": 40,
-   "cpu": 0.9987939938110091,
-   "check": "bd2b5bc1208ccdc7"
-  },
-  {
-   "case": "zfp:decode",
-   "lib": "oc",
-   "ms": 118.67496371269226,
-   "n": 5,
-   "cpu": 0.9988155705165306,
-   "check": "f7c8b25aa8c92c17float32(2048, 2048)"
-  },
-  {
-   "case": "deflate:encode",
-   "lib": "oc",
-   "ms": 443.05911660194397,
-   "n": 5,
-   "cpu": 0.9997207172969701,
-   "bytes": 30524176,
-   "check": "lossless"
-  },
-  {
-   "case": "deflate:decode",
-   "lib": "ic",
-   "ms": 170.43845541775227,
-   "n": 5,
-   "cpu": 0.9991723411054015,
-   "check": "545c8753b23bcc7a"
-  },
-  {
-   "case": "xor_u16:decode",
-   "lib": "ic",
-   "ms": 14.08548466861248,
-   "n": 29,
-   "cpu": 0.9996702354099285,
-   "check": "545c8753b23bcc7auint16(4096, 4096)"
-  },
-  {
-   "case": "blosc2:encode",
-   "lib": "ic",
-   "ms": 487.8858234733343,
-   "n": 5,
-   "cpu": 0.998936688370065,
-   "bytes": 25395545,
    "check": "lossless"
   },
   {
    "case": "snappy:decode",
    "lib": "oc",
-   "ms": 20.249747671186924,
-   "n": 20,
-   "cpu": 0.9994663143474525,
+   "ms": 19.964544102549553,
+   "n": 21,
+   "cpu": 0.9990584255343249,
    "check": "545c8753b23bcc7a"
   },
   {
-   "case": "png:encode",
-   "lib": "ic",
-   "ms": 949.2562413215637,
-   "n": 5,
-   "cpu": 0.9992344517461299,
-   "bytes": 6437751,
-   "check": "lossless"
-  },
-  {
-   "case": "jxl_lossless:decode",
-   "lib": "ic",
-   "ms": 188.16999904811382,
-   "n": 5,
-   "cpu": 0.9993416998724479,
-   "check": "2c03f7593e03c345uint16(2048, 2048)"
-  },
-  {
-   "case": "deflate:decode",
+   "case": "bc7:decode",
    "lib": "oc",
-   "ms": 160.35735234618187,
-   "n": 5,
-   "cpu": 0.9995919651068726,
-   "check": "545c8753b23bcc7a"
+   "ms": 8.2948487251997,
+   "n": 40,
+   "cpu": 5.692102662132037,
+   "check": "3ac07035613bdca6uint8(2048, 2048, 4)"
   },
   {
-   "case": "png:decode",
+   "case": "brotli:encode",
    "lib": "ic",
-   "ms": 61.50861084461212,
-   "n": 7,
-   "cpu": 0.9992641695567213,
-   "check": "db40c29c960cb630uint8(2048, 2048, 3)"
-  },
-  {
-   "case": "zfp:decode",
-   "lib": "ic",
-   "ms": 98.34002330899239,
+   "ms": 333.2722317427397,
    "n": 5,
-   "cpu": 0.9992228762369044,
-   "check": "f7c8b25aa8c92c17float32(2048, 2048)"
-  },
-  {
-   "case": "bz2:encode",
-   "lib": "ic",
-   "ms": 590.0433734059334,
-   "n": 5,
-   "cpu": 0.9992891532267857,
-   "bytes": 6179458,
-   "check": "lossless"
-  },
-  {
-   "case": "xor_u16:decode",
-   "lib": "oc",
-   "ms": 11.086592450737953,
-   "n": 36,
-   "cpu": 0.9989423298090369,
-   "check": "545c8753b23bcc7auint16(4096, 4096)"
-  },
-  {
-   "case": "zstd:encode",
-   "lib": "ic",
-   "ms": 100.10120458900928,
-   "n": 5,
-   "cpu": 0.9996708146940889,
-   "bytes": 30476820,
-   "check": "lossless"
-  },
-  {
-   "case": "jpeg2k:encode",
-   "lib": "ic",
-   "ms": 727.1537259221077,
-   "n": 5,
-   "cpu": 0.9990751489544332,
-   "bytes": 5671623,
-   "check": "lossless"
-  },
-  {
-   "case": "blosc2:decode",
-   "lib": "ic",
-   "ms": 48.97592402994633,
-   "n": 9,
-   "cpu": 0.9989620388142476,
-   "check": "545c8753b23bcc7a"
-  },
-  {
-   "case": "lzma:decode",
-   "lib": "ic",
-   "ms": 205.40964789688587,
-   "n": 5,
-   "cpu": 0.9990104910556118,
-   "check": "6c0d74d9608f6773"
-  },
-  {
-   "case": "bz2:decode",
-   "lib": "oc",
-   "ms": 429.05271984636784,
-   "n": 5,
-   "cpu": 0.9990958211226951,
-   "check": "6c0d74d9608f6773"
-  },
-  {
-   "case": "jxl_lossless:encode",
-   "lib": "ic",
-   "ms": 319.73630003631115,
-   "n": 5,
-   "cpu": 0.9994839814777683,
-   "bytes": 5629900,
+   "cpu": 0.9992774587815572,
+   "bytes": 30369076,
    "check": "lossless"
   },
   {
    "case": "packbits:decode",
    "lib": "oc",
-   "ms": 2.409292384982109,
+   "ms": 2.360372804105282,
    "n": 40,
-   "cpu": 1.000395125334259,
+   "cpu": 0.9971619604656907,
    "check": "bd2b5bc1208ccdc7"
   },
   {
-   "case": "lerc:decode",
+   "case": "zfp:decode",
    "lib": "ic",
-   "ms": 9.258215315639973,
-   "n": 40,
-   "cpu": 0.9991135972393315,
-   "check": "2c03f7593e03c345uint16(2048, 2048)"
-  },
-  {
-   "case": "jxl_lossless:decode",
-   "lib": "oc",
-   "ms": 15.092922374606133,
-   "n": 27,
-   "cpu": 15.259311020911348,
-   "check": "2c03f7593e03c345uint16(2048, 2048)"
-  },
-  {
-   "case": "snappy:encode",
-   "lib": "oc",
-   "ms": 76.06862392276525,
-   "n": 6,
-   "cpu": 0.9984014094187511,
-   "bytes": 33555972,
-   "check": "lossless"
+   "ms": 114.58544246852398,
+   "n": 5,
+   "cpu": 0.9989037372367597,
+   "check": "f7c8b25aa8c92c17float32(2048, 2048)"
   },
   {
    "case": "jpegls:decode",
    "lib": "oc",
-   "ms": 93.02173182368279,
+   "ms": 108.68190042674541,
    "n": 5,
-   "cpu": 0.99953259551594,
+   "cpu": 0.999236525570417,
    "check": "2c03f7593e03c345uint16(2048, 2048)"
   },
   {
-   "case": "lzw:decode",
+   "case": "bitshuffle:decode",
+   "lib": "oc",
+   "ms": 38.76596875488758,
+   "n": 11,
+   "cpu": 0.9985988611741432,
+   "check": "545c8753b23bcc7a"
+  },
+  {
+   "case": "jxl_lossy:encode",
+   "lib": "oc",
+   "ms": 351.47942416369915,
+   "n": 5,
+   "cpu": 4.943717135401209,
+   "bytes": 2150106,
+   "check": "lossy"
+  },
+  {
+   "case": "bc1:decode",
    "lib": "ic",
-   "ms": 77.93251890689135,
-   "n": 6,
-   "cpu": 0.9997124292970401,
-   "check": "bd2b5bc1208ccdc7"
+   "ms": 3.2013989984989166,
+   "n": 40,
+   "cpu": 1.0008331276614149,
+   "check": "a7de88b06c2026c8uint8(2048, 2048, 4)"
+  },
+  {
+   "case": "lerc:encode",
+   "lib": "ic",
+   "ms": 47.67455346882343,
+   "n": 9,
+   "cpu": 0.9991024245742508,
+   "bytes": 6099531,
+   "check": "lossless"
+  },
+  {
+   "case": "lzma:decode",
+   "lib": "oc",
+   "ms": 208.00538174808025,
+   "n": 5,
+   "cpu": 0.9991427522784619,
+   "check": "6c0d74d9608f6773"
+  },
+  {
+   "case": "jpeg:decode",
+   "lib": "oc",
+   "ms": 27.76837907731533,
+   "n": 15,
+   "cpu": 0.9990532229244364,
+   "check": "8b57664a34177e35uint8(2048, 2048, 3)"
+  },
+  {
+   "case": "blosc2:decode",
+   "lib": "ic",
+   "ms": 56.181805208325386,
+   "n": 8,
+   "cpu": 0.999764063444338,
+   "check": "545c8753b23bcc7a"
   },
   {
    "case": "zfp:encode",
    "lib": "ic",
-   "ms": 93.37863698601723,
+   "ms": 108.9792549610138,
    "n": 5,
-   "cpu": 0.9988250072968948,
+   "cpu": 0.9996139572525528,
    "bytes": 12505192,
    "check": "lossless"
   },
   {
-   "case": "deflate:encode",
-   "lib": "ic",
-   "ms": 1152.401266619563,
+   "case": "lerc:encode",
+   "lib": "oc",
+   "ms": 31.863071024417877,
+   "n": 13,
+   "cpu": 0.9994916767735443,
+   "bytes": 6099531,
+   "check": "lossless"
+  },
+  {
+   "case": "zfp:decode",
+   "lib": "oc",
+   "ms": 112.82727867364883,
    "n": 5,
-   "cpu": 0.9990797091962151,
-   "bytes": 30447420,
+   "cpu": 0.9995034627843281,
+   "check": "f7c8b25aa8c92c17float32(2048, 2048)"
+  },
+  {
+   "case": "zfp:encode",
+   "lib": "oc",
+   "ms": 110.80973222851753,
+   "n": 5,
+   "cpu": 0.9993542678601554,
+   "bytes": 12505192,
+   "check": "lossless"
+  },
+  {
+   "case": "png:decode",
+   "lib": "oc",
+   "ms": 72.00606353580952,
+   "n": 6,
+   "cpu": 0.9995171639936966,
+   "check": "db40c29c960cb630uint8(2048, 2048, 3)"
+  },
+  {
+   "case": "jpegls:encode",
+   "lib": "ic",
+   "ms": 123.10341745615005,
+   "n": 5,
+   "cpu": 1.000047874840966,
+   "bytes": 5639796,
+   "check": "lossless"
+  },
+  {
+   "case": "blosc2:encode",
+   "lib": "ic",
+   "ms": 469.9401594698429,
+   "n": 5,
+   "cpu": 0.9992155553282649,
+   "bytes": 25395545,
+   "check": "lossless"
+  },
+  {
+   "case": "lzw:encode",
+   "lib": "oc",
+   "ms": 131.62272796034813,
+   "n": 5,
+   "cpu": 0.9989813824734931,
+   "bytes": 9116054,
+   "check": "lossless"
+  },
+  {
+   "case": "packints12:decode",
+   "lib": "oc",
+   "ms": 36.774370819330215,
+   "n": 11,
+   "cpu": 0.999531423939893,
+   "check": "e3c8f4983a69a69duint16(16777216,)"
+  },
+  {
+   "case": "bitshuffle:encode",
+   "lib": "oc",
+   "ms": 49.486808478832245,
+   "n": 9,
+   "cpu": 0.9989618946961613,
+   "bytes": 33554432,
+   "check": "lossless"
+  },
+  {
+   "case": "jpegls:encode",
+   "lib": "oc",
+   "ms": 126.24804861843586,
+   "n": 5,
+   "cpu": 0.9997687723045039,
+   "bytes": 5639752,
+   "check": "lossless"
+  },
+  {
+   "case": "jpeg2k:decode",
+   "lib": "oc",
+   "ms": 128.66741605103016,
+   "n": 5,
+   "cpu": 7.1673658369356925,
+   "check": "2c03f7593e03c345uint16(2048, 2048)"
+  },
+  {
+   "case": "zstd:decode",
+   "lib": "oc",
+   "ms": 47.865765169262886,
+   "n": 9,
+   "cpu": 1.0000307121987941,
+   "check": "545c8753b23bcc7a"
+  },
+  {
+   "case": "bz2:decode",
+   "lib": "ic",
+   "ms": 344.94115971028805,
+   "n": 5,
+   "cpu": 0.9990981455925054,
+   "check": "6c0d74d9608f6773"
+  },
+  {
+   "case": "zstd:encode",
+   "lib": "ic",
+   "ms": 95.83606012165546,
+   "n": 5,
+   "cpu": 0.9988732275507347,
+   "bytes": 30476820,
+   "check": "lossless"
+  },
+  {
+   "case": "lzma:encode",
+   "lib": "ic",
+   "ms": 2526.5913978219032,
+   "n": 5,
+   "cpu": 0.9990440931272127,
+   "bytes": 6913284,
+   "check": "lossless"
+  },
+  {
+   "case": "qoi:decode",
+   "lib": "oc",
+   "ms": 35.142501816153526,
+   "n": 12,
+   "cpu": 0.9996418625350095,
+   "check": "db40c29c960cb630uint8(2048, 2048, 3)"
+  },
+  {
+   "case": "qoi:decode",
+   "lib": "ic",
+   "ms": 35.12707259505987,
+   "n": 12,
+   "cpu": 0.9993553088664596,
+   "check": "db40c29c960cb630uint8(2048, 2048, 3)"
+  },
+  {
+   "case": "bz2:encode",
+   "lib": "ic",
+   "ms": 561.9156621396542,
+   "n": 5,
+   "cpu": 0.999035942784117,
+   "bytes": 6179458,
+   "check": "lossless"
+  },
+  {
+   "case": "lz4:decode",
+   "lib": "oc",
+   "ms": 19.790735095739365,
+   "n": 21,
+   "cpu": 0.9988200697763735,
+   "check": "545c8753b23bcc7a"
+  },
+  {
+   "case": "brotli:decode",
+   "lib": "oc",
+   "ms": 188.30838426947594,
+   "n": 5,
+   "cpu": 0.9989105886467955,
+   "check": "545c8753b23bcc7a"
+  },
+  {
+   "case": "lzw:decode",
+   "lib": "oc",
+   "ms": 29.790586791932583,
+   "n": 14,
+   "cpu": 0.9994060635795471,
+   "check": "bd2b5bc1208ccdc7"
+  },
+  {
+   "case": "png:encode",
+   "lib": "oc",
+   "ms": 251.32411904633045,
+   "n": 5,
+   "cpu": 0.9989755930421043,
+   "bytes": 6493730,
+   "check": "lossless"
+  },
+  {
+   "case": "packbits:decode",
+   "lib": "ic",
+   "ms": 6.475660018622875,
+   "n": 40,
+   "cpu": 0.9998247373628468,
+   "check": "bd2b5bc1208ccdc7"
+  },
+  {
+   "case": "deflate:decode",
+   "lib": "oc",
+   "ms": 129.87878173589706,
+   "n": 5,
+   "cpu": 0.9990119015760681,
+   "check": "545c8753b23bcc7a"
+  },
+  {
+   "case": "jxl_lossless:encode",
+   "lib": "oc",
+   "ms": 105.92428408563137,
+   "n": 5,
+   "cpu": 4.20849225234671,
+   "bytes": 5615519,
    "check": "lossless"
   },
   {
    "case": "webp:decode",
    "lib": "oc",
-   "ms": 117.57823452353477,
+   "ms": 91.20474196970463,
    "n": 5,
-   "cpu": 0.999197865932877,
+   "cpu": 0.9996414275895776,
    "check": "491156c91eb0fb5auint8(2048, 2048, 3)"
   },
   {
-   "case": "jpeg:decode",
+   "case": "webp:encode",
    "lib": "oc",
-   "ms": 28.638171032071114,
-   "n": 15,
-   "cpu": 0.9991547788138708,
-   "check": "8b57664a34177e35uint8(2048, 2048, 3)"
-  },
-  {
-   "case": "blosc2:decode",
-   "lib": "oc",
-   "ms": 48.12433198094368,
-   "n": 9,
-   "cpu": 0.9996297360373636,
-   "check": "545c8753b23bcc7a"
-  },
-  {
-   "case": "bz2:encode",
-   "lib": "oc",
-   "ms": 584.0148609131575,
+   "ms": 437.8472864627838,
    "n": 5,
-   "cpu": 0.998987737925802,
-   "bytes": 6179458,
-   "check": "lossless"
+   "cpu": 0.9991835158831409,
+   "bytes": 1530260,
+   "check": "lossy"
   },
   {
-   "case": "brotli:encode",
+   "case": "png:decode",
    "lib": "ic",
-   "ms": 342.64935180544853,
-   "n": 5,
-   "cpu": 0.9992240000680358,
-   "bytes": 30369076,
-   "check": "lossless"
+   "ms": 71.86358701437712,
+   "n": 6,
+   "cpu": 0.9999837436839202,
+   "check": "db40c29c960cb630uint8(2048, 2048, 3)"
   },
   {
-   "case": "brotli:encode",
+   "case": "zstd:encode",
    "lib": "oc",
-   "ms": 418.93541999161243,
+   "ms": 96.98138013482094,
    "n": 5,
-   "cpu": 0.999244066030744,
-   "bytes": 30367478,
+   "cpu": 0.9996215594339176,
+   "bytes": 30476820,
    "check": "lossless"
   },
   {
    "case": "lz4:encode",
    "lib": "oc",
-   "ms": 81.96916989982128,
-   "n": 5,
-   "cpu": 1.000179920080185,
+   "ms": 78.93327716737986,
+   "n": 6,
+   "cpu": 0.9998600161877668,
    "bytes": 33556499,
    "check": "lossless"
   },
   {
-   "case": "lerc:decode",
+   "case": "lzma:decode",
+   "lib": "ic",
+   "ms": 197.49317318201065,
+   "n": 5,
+   "cpu": 0.9991275648969652,
+   "check": "6c0d74d9608f6773"
+  },
+  {
+   "case": "zstd:decode",
+   "lib": "ic",
+   "ms": 56.722681038081646,
+   "n": 8,
+   "cpu": 0.9996245258516031,
+   "check": "545c8753b23bcc7a"
+  },
+  {
+   "case": "jxl_lossy:decode",
+   "lib": "ic",
+   "ms": 141.19965210556984,
+   "n": 5,
+   "cpu": 0.9993639307810845,
+   "check": "6d2072454ecb48f3uint8(2048, 2048, 3)"
+  },
+  {
+   "case": "jxl_lossless:decode",
    "lib": "oc",
-   "ms": 11.643996462225914,
+   "ms": 42.30387229472399,
+   "n": 10,
+   "cpu": 7.646901307977482,
+   "check": "2c03f7593e03c345uint16(2048, 2048)"
+  },
+  {
+   "case": "qoi:encode",
+   "lib": "ic",
+   "ms": 38.6101882904768,
+   "n": 11,
+   "cpu": 0.9995238480767248,
+   "bytes": 11486989,
+   "check": "lossless"
+  },
+  {
+   "case": "bz2:encode",
+   "lib": "oc",
+   "ms": 566.8371934443712,
+   "n": 5,
+   "cpu": 0.9990825314473273,
+   "bytes": 6179458,
+   "check": "lossless"
+  },
+  {
+   "case": "delta_u16:decode",
+   "lib": "oc",
+   "ms": 11.638903990387917,
    "n": 35,
-   "cpu": 0.9996725465196903,
-   "check": "2c03f7593e03c345uint16(2048, 2048)"
-  },
-  {
-   "case": "qoi:decode",
-   "lib": "ic",
-   "ms": 36.19757015258074,
-   "n": 12,
-   "cpu": 0.9989636729279389,
-   "check": "db40c29c960cb630uint8(2048, 2048, 3)"
-  },
-  {
-   "case": "lzw:encode",
-   "lib": "ic",
-   "ms": 191.50630943477154,
-   "n": 5,
-   "cpu": 0.9993599801687741,
-   "bytes": 9115259,
-   "check": "lossless"
-  },
-  {
-   "case": "jpeg2k:encode",
-   "lib": "oc",
-   "ms": 37.708885967731476,
-   "n": 11,
-   "cpu": 28.15368461028985,
-   "bytes": 5671623,
-   "check": "lossless"
-  },
-  {
-   "case": "brotli:decode",
-   "lib": "oc",
-   "ms": 251.8810722976923,
-   "n": 5,
-   "cpu": 0.9991926610620524,
-   "check": "545c8753b23bcc7a"
-  },
-  {
-   "case": "jpeg:encode",
-   "lib": "oc",
-   "ms": 21.44741639494896,
-   "n": 19,
-   "cpu": 0.9995431495722776,
-   "bytes": 2437855,
-   "check": "lossy"
-  },
-  {
-   "case": "zstd:decode",
-   "lib": "ic",
-   "ms": 58.536168187856674,
-   "n": 7,
-   "cpu": 1.0001053361225605,
-   "check": "545c8753b23bcc7a"
-  },
-  {
-   "case": "qoi:encode",
-   "lib": "ic",
-   "ms": 41.713411919772625,
-   "n": 10,
-   "cpu": 1.0000038391806276,
-   "bytes": 11486989,
-   "check": "lossless"
-  },
-  {
-   "case": "zfp:encode",
-   "lib": "oc",
-   "ms": 94.93325464427471,
-   "n": 5,
-   "cpu": 0.9998332432258616,
-   "bytes": 12505192,
-   "check": "lossless"
-  },
-  {
-   "case": "snappy:encode",
-   "lib": "ic",
-   "ms": 78.86987924575806,
-   "n": 6,
-   "cpu": 0.9991284683533317,
-   "bytes": 33555972,
-   "check": "lossless"
-  },
-  {
-   "case": "bitshuffle:decode",
-   "lib": "oc",
-   "ms": 41.18525516241789,
-   "n": 10,
-   "cpu": 0.9985107575146033,
-   "check": "545c8753b23bcc7a"
-  },
-  {
-   "case": "zstd:decode",
-   "lib": "oc",
-   "ms": 70.64464129507542,
-   "n": 6,
-   "cpu": 0.9998108729073316,
-   "check": "545c8753b23bcc7a"
-  },
-  {
-   "case": "delta_u16:decode",
-   "lib": "ic",
-   "ms": 12.224806472659111,
-   "n": 33,
-   "cpu": 1.00028403568865,
+   "cpu": 0.9982543038962306,
    "check": "545c8753b23bcc7auint16(4096, 4096)"
-  },
-  {
-   "case": "lzma:encode",
-   "lib": "oc",
-   "ms": 2649.8259026557207,
-   "n": 5,
-   "cpu": 0.9991151021970232,
-   "bytes": 6913284,
-   "check": "lossless"
-  },
-  {
-   "case": "jpegls:encode",
-   "lib": "oc",
-   "ms": 125.65440498292446,
-   "n": 5,
-   "cpu": 0.9991083000450175,
-   "bytes": 5639752,
-   "check": "lossless"
-  },
-  {
-   "case": "snappy:decode",
-   "lib": "ic",
-   "ms": 20.41202038526535,
-   "n": 20,
-   "cpu": 0.9989115847105915,
-   "check": "545c8753b23bcc7a"
-  },
-  {
-   "case": "lz4:decode",
-   "lib": "oc",
-   "ms": 23.525947704911232,
-   "n": 17,
-   "cpu": 0.9995057244003993,
-   "check": "545c8753b23bcc7a"
-  },
-  {
-   "case": "lerc:encode",
-   "lib": "oc",
-   "ms": 29.967624694108963,
-   "n": 14,
-   "cpu": 0.9999525447133798,
-   "bytes": 6099531,
-   "check": "lossless"
-  },
-  {
-   "case": "blosc2:encode",
-   "lib": "oc",
-   "ms": 505.03560714423656,
-   "n": 5,
-   "cpu": 0.9990613697511509,
-   "bytes": 24962982,
-   "check": "lossless"
-  },
-  {
-   "case": "bz2:decode",
-   "lib": "ic",
-   "ms": 359.7439657896757,
-   "n": 5,
-   "cpu": 0.9992454702836864,
-   "check": "6c0d74d9608f6773"
-  },
-  {
-   "case": "jpegls:decode",
-   "lib": "ic",
-   "ms": 93.96176412701607,
-   "n": 5,
-   "cpu": 0.9996482032897114,
-   "check": "2c03f7593e03c345uint16(2048, 2048)"
-  },
-  {
-   "case": "delta_u16:decode",
-   "lib": "oc",
-   "ms": 10.801102966070175,
-   "n": 37,
-   "cpu": 0.9993295062333537,
-   "check": "545c8753b23bcc7auint16(4096, 4096)"
-  },
-  {
-   "case": "jxl_lossy:decode",
-   "lib": "ic",
-   "ms": 134.5131564885378,
-   "n": 5,
-   "cpu": 0.9996918098948788,
-   "check": "6d2072454ecb48f3uint8(2048, 2048, 3)"
-  },
-  {
-   "case": "webp:decode",
-   "lib": "ic",
-   "ms": 102.77731344103813,
-   "n": 5,
-   "cpu": 0.9990747114991183,
-   "check": "491156c91eb0fb5auint8(2048, 2048, 3)"
-  },
-  {
-   "case": "lzw:decode",
-   "lib": "oc",
-   "ms": 29.332507401704788,
-   "n": 14,
-   "cpu": 0.9987710495107839,
-   "check": "bd2b5bc1208ccdc7"
   },
   {
    "case": "lz4:decode",
    "lib": "ic",
-   "ms": 23.60466681420803,
-   "n": 17,
-   "cpu": 0.9994437894286987,
-   "check": "545c8753b23bcc7a"
-  },
-  {
-   "case": "png:encode",
-   "lib": "oc",
-   "ms": 261.4119090139866,
-   "n": 5,
-   "cpu": 0.9991453414171272,
-   "bytes": 6493730,
-   "check": "lossless"
-  },
-  {
-   "case": "lzw:encode",
-   "lib": "oc",
-   "ms": 112.28396743535995,
-   "n": 5,
-   "cpu": 0.9995175115304179,
-   "bytes": 9116054,
-   "check": "lossless"
-  },
-  {
-   "case": "webp:encode",
-   "lib": "ic",
-   "ms": 467.992739751935,
-   "n": 5,
-   "cpu": 0.9994836943998117,
-   "bytes": 1530260,
-   "check": "lossy"
-  },
-  {
-   "case": "webp:encode",
-   "lib": "oc",
-   "ms": 528.9833787828684,
-   "n": 5,
-   "cpu": 0.9990630893106222,
-   "bytes": 1530260,
-   "check": "lossy"
-  },
-  {
-   "case": "jxl_lossless:encode",
-   "lib": "oc",
-   "ms": 75.86320862174034,
-   "n": 6,
-   "cpu": 10.575232301025716,
-   "bytes": 5615519,
-   "check": "lossless"
-  },
-  {
-   "case": "bc1:decode",
-   "lib": "oc",
-   "ms": 1.959279179573059,
-   "n": 40,
-   "cpu": 3.5179416453250543,
-   "check": "a7de88b06c2026c8uint8(2048, 2048, 4)"
-  },
-  {
-   "case": "zstd:encode",
-   "lib": "oc",
-   "ms": 97.24443592131138,
-   "n": 5,
-   "cpu": 0.9996811110248064,
-   "bytes": 30509764,
-   "check": "lossless"
-  },
-  {
-   "case": "jpeg2k:decode",
-   "lib": "oc",
-   "ms": 37.38241642713547,
-   "n": 11,
-   "cpu": 22.94201851306603,
-   "check": "2c03f7593e03c345uint16(2048, 2048)"
-  },
-  {
-   "case": "packints12:decode",
-   "lib": "oc",
-   "ms": 38.1193533539772,
-   "n": 11,
-   "cpu": 0.9998522425349144,
-   "check": "e3c8f4983a69a69duint16(16777216,)"
-  },
-  {
-   "case": "bitshuffle:decode",
-   "lib": "ic",
-   "ms": 34.69913359731436,
-   "n": 12,
-   "cpu": 0.999667780833174,
-   "check": "545c8753b23bcc7a"
-  },
-  {
-   "case": "jxl_lossy:decode",
-   "lib": "oc",
-   "ms": 37.06864081323147,
-   "n": 11,
-   "cpu": 6.883147243450546,
-   "check": "9cb90456bf8bd537uint8(2048, 2048, 3)"
-  },
-  {
-   "case": "jxl_lossy:encode",
-   "lib": "ic",
-   "ms": 834.3640267848969,
-   "n": 5,
-   "cpu": 0.9991749427356434,
-   "bytes": 2238951,
-   "check": "lossy"
-  },
-  {
-   "case": "bitshuffle:encode",
-   "lib": "ic",
-   "ms": 52.10317391902208,
-   "n": 8,
-   "cpu": 1.0001375382999533,
-   "bytes": 33554432,
-   "check": "lossless"
-  },
-  {
-   "case": "lzma:encode",
-   "lib": "ic",
-   "ms": 2875.771565362811,
-   "n": 5,
-   "cpu": 0.999107459256603,
-   "bytes": 6913284,
-   "check": "lossless"
-  },
-  {
-   "case": "jpeg2k:decode",
-   "lib": "ic",
-   "ms": 717.5389993935823,
-   "n": 5,
-   "cpu": 0.9966008634436853,
-   "check": "2c03f7593e03c345uint16(2048, 2048)"
-  },
-  {
-   "case": "brotli:decode",
-   "lib": "ic",
-   "ms": 195.89880481362343,
-   "n": 5,
-   "cpu": 0.9992503471600682,
-   "check": "545c8753b23bcc7a"
-  },
-  {
-   "case": "packints12:decode",
-   "lib": "ic",
-   "ms": 30.494969338178635,
-   "n": 13,
-   "cpu": 0.9984327092348247,
-   "check": "e3c8f4983a69a69duint16(16777216,)"
-  },
-  {
-   "case": "jxl_lossy:encode",
-   "lib": "oc",
-   "ms": 237.22121492028236,
-   "n": 5,
-   "cpu": 30.952959075197807,
-   "bytes": 2150106,
-   "check": "lossy"
-  },
-  {
-   "case": "jpeg2k:encode",
-   "lib": "ic",
-   "ms": 732.53458365798,
-   "n": 5,
-   "cpu": 0.9990575232233803,
-   "bytes": 5671623,
-   "check": "lossless"
-  },
-  {
-   "case": "jxl_lossy:encode",
-   "lib": "ic",
-   "ms": 833.9522909373045,
-   "n": 5,
-   "cpu": 0.999232113124975,
-   "bytes": 2238951,
-   "check": "lossy"
-  },
-  {
-   "case": "delta_u16:decode",
-   "lib": "oc",
-   "ms": 11.083961464464664,
-   "n": 36,
-   "cpu": 0.9991765483213866,
-   "check": "545c8753b23bcc7auint16(4096, 4096)"
-  },
-  {
-   "case": "zfp:encode",
-   "lib": "ic",
-   "ms": 106.88455030322075,
-   "n": 5,
-   "cpu": 0.9994931980144701,
-   "bytes": 12505192,
-   "check": "lossless"
-  },
-  {
-   "case": "zfp:decode",
-   "lib": "oc",
-   "ms": 98.06658141314983,
-   "n": 5,
-   "cpu": 0.9997055222156829,
-   "check": "f7c8b25aa8c92c17float32(2048, 2048)"
-  },
-  {
-   "case": "bc7:decode",
-   "lib": "ic",
-   "ms": 38.874343037605286,
-   "n": 11,
-   "cpu": 0.9999163966585248,
-   "check": "3ac07035613bdca6uint8(2048, 2048, 4)"
-  },
-  {
-   "case": "jpeg:decode",
-   "lib": "ic",
-   "ms": 50.1181036233902,
-   "n": 8,
-   "cpu": 0.9993191791163427,
-   "check": "8b57664a34177e35uint8(2048, 2048, 3)"
-  },
-  {
-   "case": "packints12:decode",
-   "lib": "oc",
-   "ms": 38.165539503097534,
-   "n": 11,
-   "cpu": 0.9996759347523275,
-   "check": "e3c8f4983a69a69duint16(16777216,)"
-  },
-  {
-   "case": "png:encode",
-   "lib": "oc",
-   "ms": 316.4990395307541,
-   "n": 5,
-   "cpu": 0.9990035268590892,
-   "bytes": 6493730,
-   "check": "lossless"
-  },
-  {
-   "case": "blosc2:encode",
-   "lib": "ic",
-   "ms": 585.0193500518799,
-   "n": 5,
-   "cpu": 0.9991373795868048,
-   "bytes": 25395545,
-   "check": "lossless"
-  },
-  {
-   "case": "brotli:decode",
-   "lib": "oc",
-   "ms": 246.94407731294632,
-   "n": 5,
-   "cpu": 0.9988801801615828,
-   "check": "545c8753b23bcc7a"
-  },
-  {
-   "case": "snappy:encode",
-   "lib": "oc",
-   "ms": 78.98330688476562,
-   "n": 6,
-   "cpu": 0.9991038827403395,
-   "bytes": 33555972,
-   "check": "lossless"
-  },
-  {
-   "case": "bc1:decode",
-   "lib": "oc",
-   "ms": 1.9763493910431862,
-   "n": 40,
-   "cpu": 3.504195123200896,
-   "check": "a7de88b06c2026c8uint8(2048, 2048, 4)"
-  },
-  {
-   "case": "jxl_lossy:decode",
-   "lib": "ic",
-   "ms": 134.49523970484734,
-   "n": 5,
-   "cpu": 0.999203627041363,
-   "check": "6d2072454ecb48f3uint8(2048, 2048, 3)"
-  },
-  {
-   "case": "lzw:decode",
-   "lib": "ic",
-   "ms": 76.99080184102058,
-   "n": 6,
-   "cpu": 0.999715077448069,
-   "check": "bd2b5bc1208ccdc7"
-  },
-  {
-   "case": "qoi:encode",
-   "lib": "ic",
-   "ms": 37.01496683061123,
-   "n": 11,
-   "cpu": 1.0001370108350571,
-   "bytes": 11486989,
-   "check": "lossless"
-  },
-  {
-   "case": "packbits:decode",
-   "lib": "ic",
-   "ms": 6.084143184125423,
-   "n": 40,
-   "cpu": 0.9997259168089143,
-   "check": "bd2b5bc1208ccdc7"
-  },
-  {
-   "case": "packbits:decode",
-   "lib": "oc",
-   "ms": 2.3257238790392876,
-   "n": 40,
-   "cpu": 0.9988051398234206,
-   "check": "bd2b5bc1208ccdc7"
-  },
-  {
-   "case": "jpeg:encode",
-   "lib": "oc",
-   "ms": 21.628402173519135,
-   "n": 19,
-   "cpu": 1.0000007553576111,
-   "bytes": 2437855,
-   "check": "lossy"
-  },
-  {
-   "case": "jxl_lossless:encode",
-   "lib": "oc",
-   "ms": 75.68616513162851,
-   "n": 6,
-   "cpu": 10.92000848953473,
-   "bytes": 5615519,
-   "check": "lossless"
-  },
-  {
-   "case": "xor_u16:decode",
-   "lib": "oc",
-   "ms": 12.127529829740524,
-   "n": 33,
-   "cpu": 0.9997736809832373,
-   "check": "545c8753b23bcc7auint16(4096, 4096)"
-  },
-  {
-   "case": "webp:encode",
-   "lib": "oc",
-   "ms": 527.513736858964,
-   "n": 5,
-   "cpu": 0.999128494220619,
-   "bytes": 1530260,
-   "check": "lossy"
-  },
-  {
-   "case": "bitshuffle:decode",
-   "lib": "oc",
-   "ms": 36.09665762633085,
-   "n": 12,
-   "cpu": 0.9990532780133122,
-   "check": "545c8753b23bcc7a"
-  },
-  {
-   "case": "qoi:encode",
-   "lib": "oc",
-   "ms": 37.05737739801407,
-   "n": 11,
-   "cpu": 1.000067623611757,
-   "bytes": 11486989,
-   "check": "lossless"
-  },
-  {
-   "case": "xor_u16:decode",
-   "lib": "ic",
-   "ms": 12.096438556909561,
-   "n": 34,
-   "cpu": 0.9991346877705458,
-   "check": "545c8753b23bcc7auint16(4096, 4096)"
-  },
-  {
-   "case": "brotli:encode",
-   "lib": "ic",
-   "ms": 337.9346542060375,
-   "n": 5,
-   "cpu": 0.9990622643967841,
-   "bytes": 30369076,
-   "check": "lossless"
-  },
-  {
-   "case": "zstd:decode",
-   "lib": "ic",
-   "ms": 53.749109618365765,
-   "n": 8,
-   "cpu": 0.9989033516179924,
-   "check": "545c8753b23bcc7a"
-  },
-  {
-   "case": "jxl_lossy:encode",
-   "lib": "oc",
-   "ms": 245.67589908838272,
-   "n": 5,
-   "cpu": 32.50963559895004,
-   "bytes": 2150106,
-   "check": "lossy"
-  },
-  {
-   "case": "zfp:decode",
-   "lib": "ic",
-   "ms": 98.33557903766632,
-   "n": 5,
-   "cpu": 0.9997202756330674,
-   "check": "f7c8b25aa8c92c17float32(2048, 2048)"
-  },
-  {
-   "case": "lz4:decode",
-   "lib": "oc",
-   "ms": 20.372102968394756,
-   "n": 20,
-   "cpu": 0.9997259015633663,
-   "check": "545c8753b23bcc7a"
-  },
-  {
-   "case": "zstd:decode",
-   "lib": "oc",
-   "ms": 64.44259360432625,
-   "n": 7,
-   "cpu": 0.9986864192355834,
-   "check": "545c8753b23bcc7a"
-  },
-  {
-   "case": "jpegls:encode",
-   "lib": "oc",
-   "ms": 103.97335886955261,
-   "n": 5,
-   "cpu": 0.9992587907139237,
-   "bytes": 5639752,
-   "check": "lossless"
-  },
-  {
-   "case": "bz2:decode",
-   "lib": "oc",
-   "ms": 351.47672705352306,
-   "n": 5,
-   "cpu": 0.9991522151023966,
-   "check": "6c0d74d9608f6773"
-  },
-  {
-   "case": "lzw:decode",
-   "lib": "oc",
-   "ms": 25.694934651255608,
-   "n": 16,
-   "cpu": 0.9990655719737631,
-   "check": "bd2b5bc1208ccdc7"
-  },
-  {
-   "case": "brotli:encode",
-   "lib": "oc",
-   "ms": 357.9161837697029,
-   "n": 5,
-   "cpu": 0.9992361069960874,
-   "bytes": 30367478,
-   "check": "lossless"
-  },
-  {
-   "case": "snappy:encode",
-   "lib": "ic",
-   "ms": 66.35430455207825,
-   "n": 7,
-   "cpu": 0.9999302797989423,
-   "bytes": 33555972,
-   "check": "lossless"
-  },
-  {
-   "case": "bitshuffle:encode",
-   "lib": "ic",
-   "ms": 52.049824967980385,
-   "n": 8,
-   "cpu": 0.999315532660931,
-   "bytes": 33554432,
-   "check": "lossless"
-  },
-  {
-   "case": "webp:decode",
-   "lib": "ic",
-   "ms": 94.0951444208622,
-   "n": 5,
-   "cpu": 0.9993423434589587,
-   "check": "491156c91eb0fb5auint8(2048, 2048, 3)"
-  },
-  {
-   "case": "lerc:decode",
-   "lib": "ic",
-   "ms": 9.18405968695879,
-   "n": 40,
-   "cpu": 0.9996570716978433,
-   "check": "2c03f7593e03c345uint16(2048, 2048)"
-  },
-  {
-   "case": "blosc2:decode",
-   "lib": "ic",
-   "ms": 51.862409338355064,
-   "n": 8,
-   "cpu": 0.9990197834180633,
-   "check": "545c8753b23bcc7a"
-  },
-  {
-   "case": "lzma:decode",
-   "lib": "oc",
-   "ms": 219.9568059295416,
-   "n": 5,
-   "cpu": 0.9995354386792279,
-   "check": "6c0d74d9608f6773"
-  },
-  {
-   "case": "jpegls:decode",
-   "lib": "ic",
-   "ms": 93.94826367497444,
-   "n": 5,
-   "cpu": 0.9986941262636253,
-   "check": "2c03f7593e03c345uint16(2048, 2048)"
-  },
-  {
-   "case": "bz2:encode",
-   "lib": "ic",
-   "ms": 587.593462318182,
-   "n": 5,
-   "cpu": 0.9990927910348975,
-   "bytes": 6179458,
-   "check": "lossless"
-  },
-  {
-   "case": "bitshuffle:encode",
-   "lib": "oc",
-   "ms": 52.23440378904343,
-   "n": 8,
-   "cpu": 0.9996328260923059,
-   "bytes": 33554432,
-   "check": "lossless"
-  },
-  {
-   "case": "zstd:encode",
-   "lib": "oc",
-   "ms": 82.58014358580112,
-   "n": 5,
-   "cpu": 0.9997180773252574,
-   "bytes": 30509764,
-   "check": "lossless"
-  },
-  {
-   "case": "png:encode",
-   "lib": "ic",
-   "ms": 953.4362740814686,
-   "n": 5,
-   "cpu": 0.9991815938666649,
-   "bytes": 6437751,
-   "check": "lossless"
-  },
-  {
-   "case": "bz2:encode",
-   "lib": "oc",
-   "ms": 579.645399004221,
-   "n": 5,
-   "cpu": 0.9989317867678829,
-   "bytes": 6179458,
-   "check": "lossless"
-  },
-  {
-   "case": "jxl_lossless:decode",
-   "lib": "ic",
-   "ms": 164.92101550102234,
-   "n": 5,
-   "cpu": 0.9998868883788935,
-   "check": "2c03f7593e03c345uint16(2048, 2048)"
-  },
-  {
-   "case": "brotli:decode",
-   "lib": "ic",
-   "ms": 227.26388834416866,
-   "n": 5,
-   "cpu": 0.9996141009538952,
-   "check": "545c8753b23bcc7a"
-  },
-  {
-   "case": "lz4:encode",
-   "lib": "oc",
-   "ms": 82.15387538075447,
-   "n": 5,
-   "cpu": 0.9990228359405879,
-   "bytes": 33556499,
-   "check": "lossless"
-  },
-  {
-   "case": "lzw:encode",
-   "lib": "ic",
-   "ms": 155.82023188471794,
-   "n": 5,
-   "cpu": 0.9992466768436626,
-   "bytes": 9115259,
-   "check": "lossless"
-  },
-  {
-   "case": "qoi:decode",
-   "lib": "oc",
-   "ms": 30.0738038495183,
-   "n": 14,
-   "cpu": 0.9995785292863302,
-   "check": "db40c29c960cb630uint8(2048, 2048, 3)"
-  },
-  {
-   "case": "png:decode",
-   "lib": "oc",
-   "ms": 67.29352008551359,
-   "n": 6,
-   "cpu": 0.9996092172424524,
-   "check": "db40c29c960cb630uint8(2048, 2048, 3)"
-  },
-  {
-   "case": "png:decode",
-   "lib": "ic",
-   "ms": 60.541195794939995,
-   "n": 7,
-   "cpu": 0.9997165696701876,
-   "check": "db40c29c960cb630uint8(2048, 2048, 3)"
-  },
-  {
-   "case": "jpeg2k:encode",
-   "lib": "oc",
-   "ms": 37.81710006296635,
-   "n": 11,
-   "cpu": 27.587178758093135,
-   "bytes": 5671623,
-   "check": "lossless"
-  },
-  {
-   "case": "webp:encode",
-   "lib": "ic",
-   "ms": 564.1064513474703,
-   "n": 5,
-   "cpu": 0.9989844654008392,
-   "bytes": 1530260,
-   "check": "lossy"
-  },
-  {
-   "case": "jpegls:encode",
-   "lib": "ic",
-   "ms": 104.1155681014061,
-   "n": 5,
-   "cpu": 0.9995411333482297,
-   "bytes": 5639796,
-   "check": "lossless"
-  },
-  {
-   "case": "bz2:decode",
-   "lib": "ic",
-   "ms": 356.82967118918896,
-   "n": 5,
-   "cpu": 0.9991231753541494,
-   "check": "6c0d74d9608f6773"
-  },
-  {
-   "case": "packints12:decode",
-   "lib": "ic",
-   "ms": 31.224090605974197,
-   "n": 13,
-   "cpu": 0.9994806191428569,
-   "check": "e3c8f4983a69a69duint16(16777216,)"
-  },
-  {
-   "case": "jpeg2k:decode",
-   "lib": "oc",
-   "ms": 37.29931823909283,
-   "n": 11,
-   "cpu": 22.91583004805911,
-   "check": "2c03f7593e03c345uint16(2048, 2048)"
-  },
-  {
-   "case": "lz4:decode",
-   "lib": "ic",
-   "ms": 20.872555673122406,
-   "n": 19,
-   "cpu": 0.9993508606750627,
-   "check": "545c8753b23bcc7a"
-  },
-  {
-   "case": "lz4:encode",
-   "lib": "ic",
-   "ms": 70.70487271994352,
-   "n": 6,
-   "cpu": 0.9986385437926559,
-   "bytes": 33556499,
-   "check": "lossless"
-  },
-  {
-   "case": "deflate:encode",
-   "lib": "ic",
-   "ms": 1105.0005462020636,
-   "n": 5,
-   "cpu": 0.9992466915728019,
-   "bytes": 30447420,
-   "check": "lossless"
-  },
-  {
-   "case": "bc1:decode",
-   "lib": "ic",
-   "ms": 3.2023657113313675,
-   "n": 40,
-   "cpu": 0.9999994177891277,
-   "check": "a7de88b06c2026c8uint8(2048, 2048, 4)"
-  },
-  {
-   "case": "lerc:encode",
-   "lib": "oc",
-   "ms": 32.910728827118874,
-   "n": 13,
-   "cpu": 0.9995125549426709,
-   "bytes": 6099531,
-   "check": "lossless"
-  },
-  {
-   "case": "bc7:decode",
-   "lib": "oc",
-   "ms": 2.7507590129971504,
-   "n": 40,
-   "cpu": 12.381586119319568,
-   "check": "3ac07035613bdca6uint8(2048, 2048, 4)"
-  },
-  {
-   "case": "lzma:decode",
-   "lib": "ic",
-   "ms": 203.97639274597168,
-   "n": 5,
-   "cpu": 0.9993569578390646,
-   "check": "6c0d74d9608f6773"
-  },
-  {
-   "case": "zfp:encode",
-   "lib": "oc",
-   "ms": 92.86190569400787,
-   "n": 5,
-   "cpu": 0.998803414406644,
-   "bytes": 12505192,
-   "check": "lossless"
-  },
-  {
-   "case": "delta_u16:decode",
-   "lib": "ic",
-   "ms": 14.075271785259247,
-   "n": 29,
-   "cpu": 0.9996850033875154,
-   "check": "545c8753b23bcc7auint16(4096, 4096)"
-  },
-  {
-   "case": "deflate:decode",
-   "lib": "oc",
-   "ms": 160.87519749999046,
-   "n": 5,
-   "cpu": 0.9988430594774316,
-   "check": "545c8753b23bcc7a"
-  },
-  {
-   "case": "zstd:encode",
-   "lib": "ic",
-   "ms": 86.11984364688396,
-   "n": 5,
-   "cpu": 0.9993863919443322,
-   "bytes": 30476820,
-   "check": "lossless"
-  },
-  {
-   "case": "webp:decode",
-   "lib": "oc",
-   "ms": 117.62110888957977,
-   "n": 5,
-   "cpu": 0.9989040705640942,
-   "check": "491156c91eb0fb5auint8(2048, 2048, 3)"
-  },
-  {
-   "case": "lerc:decode",
-   "lib": "oc",
-   "ms": 9.714280255138874,
-   "n": 40,
-   "cpu": 1.0000917235955304,
-   "check": "2c03f7593e03c345uint16(2048, 2048)"
-  },
-  {
-   "case": "lzma:encode",
-   "lib": "oc",
-   "ms": 2662.1281560510397,
-   "n": 5,
-   "cpu": 0.9991349078272239,
-   "bytes": 6913284,
-   "check": "lossless"
-  },
-  {
-   "case": "bitshuffle:decode",
-   "lib": "ic",
-   "ms": 41.15594178438187,
-   "n": 10,
-   "cpu": 0.9997632911771506,
-   "check": "545c8753b23bcc7a"
-  },
-  {
-   "case": "jpeg:decode",
-   "lib": "oc",
-   "ms": 28.588933870196342,
-   "n": 15,
-   "cpu": 0.9989917784751067,
-   "check": "8b57664a34177e35uint8(2048, 2048, 3)"
-  },
-  {
-   "case": "blosc2:encode",
-   "lib": "oc",
-   "ms": 502.0388290286064,
-   "n": 5,
-   "cpu": 0.9991782269212258,
-   "bytes": 24962982,
-   "check": "lossless"
-  },
-  {
-   "case": "lzma:encode",
-   "lib": "ic",
-   "ms": 2652.2796619683504,
-   "n": 5,
-   "cpu": 0.9989630961075885,
-   "bytes": 6913284,
-   "check": "lossless"
-  },
-  {
-   "case": "jxl_lossless:encode",
-   "lib": "ic",
-   "ms": 269.657040014863,
-   "n": 5,
-   "cpu": 0.9992007198787337,
-   "bytes": 5629900,
-   "check": "lossless"
-  },
-  {
-   "case": "lerc:encode",
-   "lib": "ic",
-   "ms": 40.936779230833054,
-   "n": 10,
-   "cpu": 0.9996766511067114,
-   "bytes": 6099531,
-   "check": "lossless"
-  },
-  {
-   "case": "blosc2:decode",
-   "lib": "oc",
-   "ms": 57.35054425895214,
-   "n": 7,
-   "cpu": 0.9995117136339393,
-   "check": "545c8753b23bcc7a"
-  },
-  {
-   "case": "snappy:decode",
-   "lib": "oc",
-   "ms": 23.604104295372963,
-   "n": 17,
-   "cpu": 0.9993841678823328,
-   "check": "545c8753b23bcc7a"
-  },
-  {
-   "case": "lzw:encode",
-   "lib": "oc",
-   "ms": 135.5279441922903,
-   "n": 5,
-   "cpu": 0.9990244320434275,
-   "bytes": 9116054,
-   "check": "lossless"
-  },
-  {
-   "case": "deflate:decode",
-   "lib": "ic",
-   "ms": 208.85564759373665,
-   "n": 5,
-   "cpu": 0.9999311329304282,
-   "check": "545c8753b23bcc7a"
-  },
-  {
-   "case": "jpegls:decode",
-   "lib": "oc",
-   "ms": 99.36649538576603,
-   "n": 5,
-   "cpu": 0.9994861136081313,
-   "check": "2c03f7593e03c345uint16(2048, 2048)"
-  },
-  {
-   "case": "qoi:decode",
-   "lib": "ic",
-   "ms": 36.24013066291809,
-   "n": 11,
-   "cpu": 0.9996916842854882,
-   "check": "db40c29c960cb630uint8(2048, 2048, 3)"
-  },
-  {
-   "case": "jxl_lossless:decode",
-   "lib": "oc",
-   "ms": 15.157302841544151,
-   "n": 27,
-   "cpu": 14.799906441907737,
-   "check": "2c03f7593e03c345uint16(2048, 2048)"
-  },
-  {
-   "case": "jpeg:encode",
-   "lib": "ic",
-   "ms": 91.46610088646412,
-   "n": 5,
-   "cpu": 0.9989189654667465,
-   "bytes": 2437855,
-   "check": "lossy"
-  },
-  {
-   "case": "snappy:decode",
-   "lib": "ic",
-   "ms": 20.5831378698349,
-   "n": 20,
-   "cpu": 0.9991614985534463,
-   "check": "545c8753b23bcc7a"
-  },
-  {
-   "case": "jpeg2k:decode",
-   "lib": "ic",
-   "ms": 604.9757581204176,
-   "n": 5,
-   "cpu": 0.9991775525198996,
-   "check": "2c03f7593e03c345uint16(2048, 2048)"
-  },
-  {
-   "case": "deflate:encode",
-   "lib": "oc",
-   "ms": 480.78284971415997,
-   "n": 5,
-   "cpu": 0.9990619953552011,
-   "bytes": 30524176,
-   "check": "lossless"
-  },
-  {
-   "case": "jxl_lossy:decode",
-   "lib": "oc",
-   "ms": 37.69919462502003,
-   "n": 11,
-   "cpu": 7.122981675039641,
-   "check": "9cb90456bf8bd537uint8(2048, 2048, 3)"
-  },
-  {
-   "case": "deflate:decode",
-   "lib": "oc",
-   "ms": 133.67355056107044,
-   "n": 5,
-   "cpu": 0.9990430354869875,
-   "check": "545c8753b23bcc7a"
-  },
-  {
-   "case": "jxl_lossy:encode",
-   "lib": "ic",
-   "ms": 830.6814525276423,
-   "n": 5,
-   "cpu": 0.999007608408873,
-   "bytes": 2238951,
-   "check": "lossy"
-  },
-  {
-   "case": "lerc:encode",
-   "lib": "oc",
-   "ms": 31.952280551195145,
-   "n": 13,
-   "cpu": 0.999829537553959,
-   "bytes": 6099531,
-   "check": "lossless"
-  },
-  {
-   "case": "snappy:encode",
-   "lib": "oc",
-   "ms": 77.41864491254091,
-   "n": 6,
-   "cpu": 1.000170988835746,
-   "bytes": 33555972,
-   "check": "lossless"
-  },
-  {
-   "case": "bz2:decode",
-   "lib": "ic",
-   "ms": 353.1671538949013,
-   "n": 5,
-   "cpu": 0.9991694463051435,
-   "check": "6c0d74d9608f6773"
-  },
-  {
-   "case": "brotli:decode",
-   "lib": "oc",
-   "ms": 204.86360415816307,
-   "n": 5,
-   "cpu": 0.9992223562727742,
-   "check": "545c8753b23bcc7a"
-  },
-  {
-   "case": "bc1:decode",
-   "lib": "ic",
-   "ms": 3.2255956903100014,
-   "n": 40,
-   "cpu": 1.0007675022314468,
-   "check": "a7de88b06c2026c8uint8(2048, 2048, 4)"
-  },
-  {
-   "case": "deflate:encode",
-   "lib": "oc",
-   "ms": 436.26416102051735,
-   "n": 5,
-   "cpu": 0.9991334267612635,
-   "bytes": 30524176,
-   "check": "lossless"
-  },
-  {
-   "case": "qoi:decode",
-   "lib": "ic",
-   "ms": 30.261225998401642,
-   "n": 13,
-   "cpu": 0.9993696006275795,
-   "check": "db40c29c960cb630uint8(2048, 2048, 3)"
-  },
-  {
-   "case": "jpeg2k:encode",
-   "lib": "ic",
-   "ms": 720.8374515175819,
-   "n": 5,
-   "cpu": 0.9991628874992174,
-   "bytes": 5671623,
-   "check": "lossless"
-  },
-  {
-   "case": "bz2:encode",
-   "lib": "ic",
-   "ms": 664.5406447350979,
-   "n": 5,
-   "cpu": 0.999197977953611,
-   "bytes": 6179458,
-   "check": "lossless"
-  },
-  {
-   "case": "bz2:decode",
-   "lib": "oc",
-   "ms": 352.80293226242065,
-   "n": 5,
-   "cpu": 0.9991812291523452,
-   "check": "6c0d74d9608f6773"
-  },
-  {
-   "case": "bc1:decode",
-   "lib": "oc",
-   "ms": 1.9067032262682915,
-   "n": 40,
-   "cpu": 3.660499926707118,
-   "check": "a7de88b06c2026c8uint8(2048, 2048, 4)"
-  },
-  {
-   "case": "qoi:decode",
-   "lib": "oc",
-   "ms": 29.811492189764977,
-   "n": 14,
-   "cpu": 0.9991868473609412,
-   "check": "db40c29c960cb630uint8(2048, 2048, 3)"
-  },
-  {
-   "case": "webp:encode",
-   "lib": "ic",
-   "ms": 467.67717599868774,
-   "n": 5,
-   "cpu": 0.9989874285200796,
-   "bytes": 1530260,
-   "check": "lossy"
-  },
-  {
-   "case": "jpeg2k:decode",
-   "lib": "oc",
-   "ms": 37.272125482559204,
-   "n": 11,
-   "cpu": 22.84471359009813,
-   "check": "2c03f7593e03c345uint16(2048, 2048)"
-  },
-  {
-   "case": "bitshuffle:encode",
-   "lib": "ic",
-   "ms": 53.101337514817715,
-   "n": 8,
-   "cpu": 0.99979670138547,
-   "bytes": 33554432,
-   "check": "lossless"
-  },
-  {
-   "case": "xor_u16:decode",
-   "lib": "oc",
-   "ms": 12.376852333545685,
-   "n": 33,
-   "cpu": 1.0001168500163866,
-   "check": "545c8753b23bcc7auint16(4096, 4096)"
-  },
-  {
-   "case": "lerc:decode",
-   "lib": "ic",
-   "ms": 9.319336153566837,
-   "n": 40,
-   "cpu": 1.000241660633286,
-   "check": "2c03f7593e03c345uint16(2048, 2048)"
-  },
-  {
-   "case": "webp:encode",
-   "lib": "oc",
-   "ms": 525.2566859126091,
-   "n": 5,
-   "cpu": 0.9990302413597656,
-   "bytes": 1530260,
-   "check": "lossy"
-  },
-  {
-   "case": "bitshuffle:decode",
-   "lib": "ic",
-   "ms": 34.99446250498295,
-   "n": 12,
-   "cpu": 0.9997548397004169,
-   "check": "545c8753b23bcc7a"
-  },
-  {
-   "case": "zfp:decode",
-   "lib": "oc",
-   "ms": 95.86473740637302,
-   "n": 5,
-   "cpu": 0.9993399639733042,
-   "check": "f7c8b25aa8c92c17float32(2048, 2048)"
-  },
-  {
-   "case": "lerc:encode",
-   "lib": "ic",
-   "ms": 40.85424542427063,
-   "n": 10,
-   "cpu": 0.9994982934978308,
-   "bytes": 6099531,
-   "check": "lossless"
-  },
-  {
-   "case": "lzw:encode",
-   "lib": "ic",
-   "ms": 156.84056468307972,
-   "n": 5,
-   "cpu": 0.9988175491431787,
-   "bytes": 9115259,
-   "check": "lossless"
-  },
-  {
-   "case": "lzma:encode",
-   "lib": "ic",
-   "ms": 2632.662605494261,
-   "n": 5,
-   "cpu": 0.9989706957962708,
-   "bytes": 6913284,
-   "check": "lossless"
-  },
-  {
-   "case": "jpeg2k:decode",
-   "lib": "ic",
-   "ms": 603.911628946662,
-   "n": 5,
-   "cpu": 0.998986069805402,
-   "check": "2c03f7593e03c345uint16(2048, 2048)"
-  },
-  {
-   "case": "jpeg:decode",
-   "lib": "ic",
-   "ms": 51.75678711384535,
-   "n": 8,
-   "cpu": 0.9990297673269892,
-   "check": "8b57664a34177e35uint8(2048, 2048, 3)"
-  },
-  {
-   "case": "blosc2:decode",
-   "lib": "ic",
-   "ms": 48.45270700752735,
-   "n": 9,
-   "cpu": 0.9983727608568228,
-   "check": "545c8753b23bcc7a"
-  },
-  {
-   "case": "png:encode",
-   "lib": "ic",
-   "ms": 1123.0182070285082,
-   "n": 5,
-   "cpu": 0.9989706370460448,
-   "bytes": 6437751,
-   "check": "lossless"
-  },
-  {
-   "case": "bitshuffle:decode",
-   "lib": "oc",
-   "ms": 38.835739716887474,
-   "n": 11,
-   "cpu": 0.9995368801552471,
-   "check": "545c8753b23bcc7a"
-  },
-  {
-   "case": "bc7:decode",
-   "lib": "oc",
-   "ms": 3.1851911917328835,
-   "n": 40,
-   "cpu": 10.913904884359578,
-   "check": "3ac07035613bdca6uint8(2048, 2048, 4)"
-  },
-  {
-   "case": "zstd:decode",
-   "lib": "ic",
-   "ms": 59.66660939157009,
-   "n": 7,
-   "cpu": 0.9999059742903523,
-   "check": "545c8753b23bcc7a"
-  },
-  {
-   "case": "lzma:encode",
-   "lib": "oc",
-   "ms": 2663.401525467634,
-   "n": 5,
-   "cpu": 0.9991329686085587,
-   "bytes": 6913284,
-   "check": "lossless"
-  },
-  {
-   "case": "lz4:encode",
-   "lib": "ic",
-   "ms": 71.52543123811483,
-   "n": 6,
-   "cpu": 0.9994171950241729,
-   "bytes": 33556499,
-   "check": "lossless"
-  },
-  {
-   "case": "jxl_lossless:decode",
-   "lib": "ic",
-   "ms": 163.78751583397388,
-   "n": 5,
-   "cpu": 0.9990686783195787,
-   "check": "2c03f7593e03c345uint16(2048, 2048)"
-  },
-  {
-   "case": "qoi:encode",
-   "lib": "oc",
-   "ms": 37.14251145720482,
-   "n": 11,
-   "cpu": 0.9994068838905462,
-   "bytes": 11486989,
-   "check": "lossless"
-  },
-  {
-   "case": "png:encode",
-   "lib": "oc",
-   "ms": 258.15250538289547,
-   "n": 5,
-   "cpu": 0.9990276625048512,
-   "bytes": 6493730,
-   "check": "lossless"
-  },
-  {
-   "case": "qoi:encode",
-   "lib": "ic",
-   "ms": 36.88388131558895,
-   "n": 11,
-   "cpu": 0.9993722316335897,
-   "bytes": 11486989,
-   "check": "lossless"
-  },
-  {
-   "case": "jxl_lossless:decode",
-   "lib": "oc",
-   "ms": 15.08127897977829,
-   "n": 27,
-   "cpu": 15.028232921926255,
-   "check": "2c03f7593e03c345uint16(2048, 2048)"
-  },
-  {
-   "case": "deflate:encode",
-   "lib": "ic",
-   "ms": 1120.2260684221983,
-   "n": 5,
-   "cpu": 0.9991870325203402,
-   "bytes": 30447420,
-   "check": "lossless"
-  },
-  {
-   "case": "brotli:encode",
-   "lib": "ic",
-   "ms": 351.4411188662052,
-   "n": 5,
-   "cpu": 0.9992630737372252,
-   "bytes": 30369076,
-   "check": "lossless"
-  },
-  {
-   "case": "bz2:encode",
-   "lib": "oc",
-   "ms": 581.9253977388144,
-   "n": 5,
-   "cpu": 0.9990492280174469,
-   "bytes": 6179458,
-   "check": "lossless"
-  },
-  {
-   "case": "packbits:decode",
-   "lib": "ic",
-   "ms": 6.640693172812462,
-   "n": 40,
-   "cpu": 1.000091353617003,
-   "check": "bd2b5bc1208ccdc7"
-  },
-  {
-   "case": "snappy:encode",
-   "lib": "ic",
-   "ms": 66.07024557888508,
-   "n": 7,
-   "cpu": 0.9994143546590754,
-   "bytes": 33555972,
-   "check": "lossless"
-  },
-  {
-   "case": "jpegls:decode",
-   "lib": "ic",
-   "ms": 113.63192647695541,
-   "n": 5,
-   "cpu": 0.9997508523337797,
-   "check": "2c03f7593e03c345uint16(2048, 2048)"
-  },
-  {
-   "case": "blosc2:decode",
-   "lib": "oc",
-   "ms": 51.361940801143646,
-   "n": 8,
-   "cpu": 0.9996532466179682,
-   "check": "545c8753b23bcc7a"
-  },
-  {
-   "case": "jpegls:decode",
-   "lib": "oc",
-   "ms": 92.32279099524021,
-   "n": 5,
-   "cpu": 0.9990272687222281,
-   "check": "2c03f7593e03c345uint16(2048, 2048)"
-  },
-  {
-   "case": "lerc:decode",
-   "lib": "oc",
-   "ms": 11.269917711615562,
-   "n": 36,
-   "cpu": 0.9997725409469487,
-   "check": "2c03f7593e03c345uint16(2048, 2048)"
-  },
-  {
-   "case": "zstd:encode",
-   "lib": "ic",
-   "ms": 99.22110103070736,
-   "n": 5,
-   "cpu": 1.000118703855347,
-   "bytes": 30476820,
-   "check": "lossless"
-  },
-  {
-   "case": "delta_u16:decode",
-   "lib": "ic",
-   "ms": 11.949227191507816,
-   "n": 34,
-   "cpu": 1.0002826574728376,
-   "check": "545c8753b23bcc7auint16(4096, 4096)"
-  },
-  {
-   "case": "deflate:decode",
-   "lib": "ic",
-   "ms": 184.3455657362938,
-   "n": 5,
-   "cpu": 0.999279779778947,
-   "check": "545c8753b23bcc7a"
-  },
-  {
-   "case": "png:decode",
-   "lib": "oc",
-   "ms": 76.91098283976316,
-   "n": 6,
-   "cpu": 0.9996858964649752,
-   "check": "db40c29c960cb630uint8(2048, 2048, 3)"
-  },
-  {
-   "case": "delta_u16:decode",
-   "lib": "oc",
-   "ms": 12.08408735692501,
-   "n": 33,
-   "cpu": 0.9999581315157119,
-   "check": "545c8753b23bcc7auint16(4096, 4096)"
-  },
-  {
-   "case": "packints12:decode",
-   "lib": "ic",
-   "ms": 31.228460371494293,
-   "n": 13,
-   "cpu": 0.9996181759360325,
-   "check": "e3c8f4983a69a69duint16(16777216,)"
-  },
-  {
-   "case": "lzw:encode",
-   "lib": "oc",
-   "ms": 111.84974759817123,
-   "n": 5,
-   "cpu": 0.9992568942953197,
-   "bytes": 9116054,
-   "check": "lossless"
-  },
-  {
-   "case": "snappy:decode",
-   "lib": "oc",
-   "ms": 20.816206000745296,
-   "n": 20,
-   "cpu": 0.9994508584754693,
-   "check": "545c8753b23bcc7a"
-  },
-  {
-   "case": "jpeg2k:encode",
-   "lib": "oc",
-   "ms": 37.29494847357273,
-   "n": 11,
-   "cpu": 28.300984592707614,
-   "bytes": 5671623,
-   "check": "lossless"
-  },
-  {
-   "case": "brotli:encode",
-   "lib": "oc",
-   "ms": 403.1417891383171,
-   "n": 5,
-   "cpu": 0.9996701295718591,
-   "bytes": 30367478,
-   "check": "lossless"
-  },
-  {
-   "case": "lzma:decode",
-   "lib": "ic",
-   "ms": 248.4657932072878,
-   "n": 5,
-   "cpu": 0.9990608139452972,
-   "check": "6c0d74d9608f6773"
-  },
-  {
-   "case": "lz4:decode",
-   "lib": "oc",
-   "ms": 24.1186935454607,
-   "n": 17,
-   "cpu": 0.9995947229403958,
-   "check": "545c8753b23bcc7a"
-  },
-  {
-   "case": "jpeg:encode",
-   "lib": "oc",
-   "ms": 21.659016609191895,
-   "n": 19,
-   "cpu": 0.9992489347717715,
-   "bytes": 2437855,
-   "check": "lossy"
-  },
-  {
-   "case": "zfp:encode",
-   "lib": "oc",
-   "ms": 113.90319280326366,
-   "n": 5,
-   "cpu": 0.9992107136536237,
-   "bytes": 12505192,
-   "check": "lossless"
-  },
-  {
-   "case": "png:decode",
-   "lib": "ic",
-   "ms": 59.91734191775322,
-   "n": 7,
-   "cpu": 0.9999361025009078,
-   "check": "db40c29c960cb630uint8(2048, 2048, 3)"
-  },
-  {
-   "case": "zfp:decode",
-   "lib": "ic",
-   "ms": 95.56706249713898,
-   "n": 5,
-   "cpu": 0.9989496759616437,
-   "check": "f7c8b25aa8c92c17float32(2048, 2048)"
-  },
-  {
-   "case": "jxl_lossy:decode",
-   "lib": "oc",
-   "ms": 37.677643820643425,
-   "n": 11,
-   "cpu": 7.007031536876716,
-   "check": "9cb90456bf8bd537uint8(2048, 2048, 3)"
-  },
-  {
-   "case": "lz4:decode",
-   "lib": "ic",
-   "ms": 21.35940082371235,
-   "n": 19,
-   "cpu": 0.9999852338180191,
-   "check": "545c8753b23bcc7a"
-  },
-  {
-   "case": "zfp:encode",
-   "lib": "ic",
-   "ms": 112.36222833395004,
-   "n": 5,
-   "cpu": 0.9997664154890055,
-   "bytes": 12505192,
-   "check": "lossless"
-  },
-  {
-   "case": "jpeg:encode",
-   "lib": "ic",
-   "ms": 92.77000837028027,
-   "n": 5,
-   "cpu": 0.999729917934456,
-   "bytes": 2437855,
-   "check": "lossy"
-  },
-  {
-   "case": "lzw:decode",
-   "lib": "oc",
-   "ms": 30.68290464580059,
-   "n": 14,
-   "cpu": 0.9998178939241031,
-   "check": "bd2b5bc1208ccdc7"
-  },
-  {
-   "case": "jpeg:decode",
-   "lib": "oc",
-   "ms": 24.030763655900955,
-   "n": 17,
-   "cpu": 0.9991737671964492,
-   "check": "8b57664a34177e35uint8(2048, 2048, 3)"
-  },
-  {
-   "case": "bitshuffle:encode",
-   "lib": "oc",
-   "ms": 51.90614052116871,
-   "n": 8,
-   "cpu": 0.9998339735790155,
-   "bytes": 33554432,
-   "check": "lossless"
-  },
-  {
-   "case": "packbits:decode",
-   "lib": "oc",
-   "ms": 2.5855014100670815,
-   "n": 40,
-   "cpu": 1.0011023931466538,
-   "check": "bd2b5bc1208ccdc7"
-  },
-  {
-   "case": "lz4:encode",
-   "lib": "oc",
-   "ms": 81.89145661890507,
-   "n": 5,
-   "cpu": 0.9993259338120641,
-   "bytes": 33556499,
-   "check": "lossless"
-  },
-  {
-   "case": "lzma:decode",
-   "lib": "oc",
-   "ms": 251.77222304046154,
-   "n": 5,
-   "cpu": 0.9985588125404851,
-   "check": "6c0d74d9608f6773"
-  },
-  {
-   "case": "webp:decode",
-   "lib": "oc",
-   "ms": 118.17760393023491,
-   "n": 5,
-   "cpu": 0.9990041729989714,
-   "check": "491156c91eb0fb5auint8(2048, 2048, 3)"
-  },
-  {
-   "case": "jxl_lossy:decode",
-   "lib": "ic",
-   "ms": 162.00243681669235,
-   "n": 5,
-   "cpu": 0.9989891472054475,
-   "check": "6d2072454ecb48f3uint8(2048, 2048, 3)"
-  },
-  {
-   "case": "snappy:decode",
-   "lib": "ic",
-   "ms": 22.838211618363857,
+   "ms": 22.907929494976997,
    "n": 18,
-   "cpu": 0.9996492100206062,
+   "cpu": 0.9998201449733979,
+   "check": "545c8753b23bcc7a"
+  },
+  {
+   "case": "jxl_lossless:decode",
+   "lib": "ic",
+   "ms": 158.03725831210613,
+   "n": 5,
+   "cpu": 0.9994968562823504,
+   "check": "2c03f7593e03c345uint16(2048, 2048)"
+  },
+  {
+   "case": "snappy:encode",
+   "lib": "ic",
+   "ms": 73.48936423659325,
+   "n": 6,
+   "cpu": 0.999171092498718,
+   "bytes": 33555972,
+   "check": "lossless"
+  },
+  {
+   "case": "brotli:decode",
+   "lib": "ic",
+   "ms": 184.03807654976845,
+   "n": 5,
+   "cpu": 0.9992766520200356,
+   "check": "545c8753b23bcc7a"
+  },
+  {
+   "case": "png:encode",
+   "lib": "ic",
+   "ms": 924.5098568499088,
+   "n": 5,
+   "cpu": 0.9992243077802102,
+   "bytes": 6437751,
+   "check": "lossless"
+  },
+  {
+   "case": "bz2:decode",
+   "lib": "oc",
+   "ms": 345.55966407060623,
+   "n": 5,
+   "cpu": 0.9996931071774421,
+   "check": "6c0d74d9608f6773"
+  },
+  {
+   "case": "jxl_lossless:encode",
+   "lib": "ic",
+   "ms": 261.3770719617605,
+   "n": 5,
+   "cpu": 0.999381310101081,
+   "bytes": 5629900,
+   "check": "lossless"
+  },
+  {
+   "case": "lz4:encode",
+   "lib": "ic",
+   "ms": 78.40585894882679,
+   "n": 6,
+   "cpu": 0.9982122675928682,
+   "bytes": 33556499,
+   "check": "lossless"
+  },
+  {
+   "case": "deflate:encode",
+   "lib": "oc",
+   "ms": 416.80860333144665,
+   "n": 5,
+   "cpu": 0.9990512906389789,
+   "bytes": 30524176,
+   "check": "lossless"
+  },
+  {
+   "case": "webp:decode",
+   "lib": "ic",
+   "ms": 110.97297072410583,
+   "n": 5,
+   "cpu": 0.9989994378141437,
+   "check": "491156c91eb0fb5auint8(2048, 2048, 3)"
+  },
+  {
+   "case": "lzw:decode",
+   "lib": "ic",
+   "ms": 75.85233077406883,
+   "n": 6,
+   "cpu": 0.999165739167906,
+   "check": "bd2b5bc1208ccdc7"
+  },
+  {
+   "case": "bc1:decode",
+   "lib": "oc",
+   "ms": 1.83065515011549,
+   "n": 40,
+   "cpu": 3.41935484222943,
+   "check": "a7de88b06c2026c8uint8(2048, 2048, 4)"
+  },
+  {
+   "case": "blosc2:encode",
+   "lib": "oc",
+   "ms": 491.348335519433,
+   "n": 5,
+   "cpu": 0.998900400424913,
+   "bytes": 24962982,
+   "check": "lossless"
+  },
+  {
+   "case": "jpegls:decode",
+   "lib": "ic",
+   "ms": 109.57102477550507,
+   "n": 5,
+   "cpu": 0.9985296907056489,
+   "check": "2c03f7593e03c345uint16(2048, 2048)"
+  },
+  {
+   "case": "deflate:decode",
+   "lib": "ic",
+   "ms": 182.63722397387028,
+   "n": 5,
+   "cpu": 0.9989372099033236,
+   "check": "545c8753b23bcc7a"
+  },
+  {
+   "case": "jpeg2k:decode",
+   "lib": "ic",
+   "ms": 587.6306779682636,
+   "n": 5,
+   "cpu": 0.9992609693940286,
+   "check": "2c03f7593e03c345uint16(2048, 2048)"
+  },
+  {
+   "case": "jpeg:encode",
+   "lib": "oc",
+   "ms": 20.92757448554039,
+   "n": 20,
+   "cpu": 0.9991701453922084,
+   "bytes": 2437855,
+   "check": "lossy"
+  },
+  {
+   "case": "snappy:encode",
+   "lib": "oc",
+   "ms": 72.82417174428701,
+   "n": 6,
+   "cpu": 0.9995547468774096,
+   "bytes": 33555972,
+   "check": "lossless"
+  },
+  {
+   "case": "jxl_lossy:encode",
+   "lib": "ic",
+   "ms": 808.9299201965332,
+   "n": 5,
+   "cpu": 0.99920125945389,
+   "bytes": 2238951,
+   "check": "lossy"
+  },
+  {
+   "case": "bitshuffle:encode",
+   "lib": "ic",
+   "ms": 59.63953398168087,
+   "n": 7,
+   "cpu": 0.9987884096298855,
+   "bytes": 33554432,
+   "check": "lossless"
+  },
+  {
+   "case": "deflate:encode",
+   "lib": "ic",
+   "ms": 1076.025603339076,
+   "n": 5,
+   "cpu": 0.9991069704916242,
+   "bytes": 30447420,
+   "check": "lossless"
+  },
+  {
+   "case": "xor_u16:decode",
+   "lib": "ic",
+   "ms": 13.608597218990326,
+   "n": 30,
+   "cpu": 0.9996713236381232,
+   "check": "545c8753b23bcc7auint16(4096, 4096)"
+  },
+  {
+   "case": "qoi:decode",
+   "lib": "oc",
+   "ms": 35.155837424099445,
+   "n": 12,
+   "cpu": 0.9988320621270458,
+   "check": "db40c29c960cb630uint8(2048, 2048, 3)"
+  },
+  {
+   "case": "jpeg2k:decode",
+   "lib": "oc",
+   "ms": 128.9969515055418,
+   "n": 5,
+   "cpu": 7.139538395902645,
+   "check": "2c03f7593e03c345uint16(2048, 2048)"
+  },
+  {
+   "case": "png:decode",
+   "lib": "ic",
+   "ms": 59.47963148355484,
+   "n": 7,
+   "cpu": 0.9987501152367841,
+   "check": "db40c29c960cb630uint8(2048, 2048, 3)"
+  },
+  {
+   "case": "brotli:decode",
+   "lib": "ic",
+   "ms": 183.98422375321388,
+   "n": 5,
+   "cpu": 0.9992024565870172,
+   "check": "545c8753b23bcc7a"
+  },
+  {
+   "case": "jxl_lossless:encode",
+   "lib": "ic",
+   "ms": 260.7023250311613,
+   "n": 5,
+   "cpu": 0.9993664748514466,
+   "bytes": 5629900,
+   "check": "lossless"
+  },
+  {
+   "case": "lerc:decode",
+   "lib": "ic",
+   "ms": 10.682898573577404,
+   "n": 38,
+   "cpu": 1.0000506682100867,
+   "check": "2c03f7593e03c345uint16(2048, 2048)"
+  },
+  {
+   "case": "bc7:decode",
+   "lib": "oc",
+   "ms": 8.258245885372162,
+   "n": 40,
+   "cpu": 5.770000768665181,
+   "check": "3ac07035613bdca6uint8(2048, 2048, 4)"
+  },
+  {
+   "case": "bc1:decode",
+   "lib": "oc",
+   "ms": 1.7599165439605713,
+   "n": 40,
+   "cpu": 3.6212211853123857,
+   "check": "a7de88b06c2026c8uint8(2048, 2048, 4)"
+  },
+  {
+   "case": "deflate:decode",
+   "lib": "oc",
+   "ms": 114.09253627061844,
+   "n": 5,
+   "cpu": 0.9991006683001626,
+   "check": "545c8753b23bcc7a"
+  },
+  {
+   "case": "jpeg2k:decode",
+   "lib": "ic",
+   "ms": 587.3810071498156,
+   "n": 5,
+   "cpu": 0.9992059912442336,
+   "check": "2c03f7593e03c345uint16(2048, 2048)"
+  },
+  {
+   "case": "packints12:decode",
+   "lib": "oc",
+   "ms": 36.78451478481293,
+   "n": 11,
+   "cpu": 0.9994062493497856,
+   "check": "e3c8f4983a69a69duint16(16777216,)"
+  },
+  {
+   "case": "jpegls:decode",
+   "lib": "ic",
+   "ms": 109.97898317873478,
+   "n": 5,
+   "cpu": 0.9992063320224807,
+   "check": "2c03f7593e03c345uint16(2048, 2048)"
+  },
+  {
+   "case": "bz2:encode",
+   "lib": "oc",
+   "ms": 572.0570161938667,
+   "n": 5,
+   "cpu": 0.9993348417368716,
+   "bytes": 6179458,
+   "check": "lossless"
+  },
+  {
+   "case": "packbits:decode",
+   "lib": "oc",
+   "ms": 2.2911718115210533,
+   "n": 40,
+   "cpu": 1.0018165551632718,
+   "check": "bd2b5bc1208ccdc7"
+  },
+  {
+   "case": "xor_u16:decode",
+   "lib": "oc",
+   "ms": 10.439420118927956,
+   "n": 39,
+   "cpu": 1.0000989631374322,
+   "check": "545c8753b23bcc7auint16(4096, 4096)"
+  },
+  {
+   "case": "lz4:encode",
+   "lib": "ic",
+   "ms": 79.65183164924383,
+   "n": 6,
+   "cpu": 0.9998812924312579,
+   "bytes": 33556499,
+   "check": "lossless"
+  },
+  {
+   "case": "brotli:encode",
+   "lib": "oc",
+   "ms": 393.18664744496346,
+   "n": 5,
+   "cpu": 0.9991438648015912,
+   "bytes": 30369076,
+   "check": "lossless"
+  },
+  {
+   "case": "jpeg:decode",
+   "lib": "ic",
+   "ms": 50.13399198651314,
+   "n": 8,
+   "cpu": 0.9995841062689647,
+   "check": "8b57664a34177e35uint8(2048, 2048, 3)"
+  },
+  {
+   "case": "lzma:decode",
+   "lib": "ic",
+   "ms": 199.05044324696064,
+   "n": 5,
+   "cpu": 0.9991557088916656,
+   "check": "6c0d74d9608f6773"
+  },
+  {
+   "case": "jxl_lossless:decode",
+   "lib": "ic",
+   "ms": 181.79775960743427,
+   "n": 5,
+   "cpu": 0.9993482334320077,
+   "check": "2c03f7593e03c345uint16(2048, 2048)"
+  },
+  {
+   "case": "snappy:decode",
+   "lib": "ic",
+   "ms": 22.945418022572994,
+   "n": 18,
+   "cpu": 0.9991386024768798,
+   "check": "545c8753b23bcc7a"
+  },
+  {
+   "case": "zfp:encode",
+   "lib": "oc",
+   "ms": 90.89120663702488,
+   "n": 5,
+   "cpu": 0.9998148463318131,
+   "bytes": 12505192,
+   "check": "lossless"
+  },
+  {
+   "case": "png:encode",
+   "lib": "ic",
+   "ms": 929.7389183193445,
+   "n": 5,
+   "cpu": 0.999280619013373,
+   "bytes": 6437751,
+   "check": "lossless"
+  },
+  {
+   "case": "brotli:decode",
+   "lib": "oc",
+   "ms": 190.15107303857803,
+   "n": 5,
+   "cpu": 0.999480556700955,
+   "check": "545c8753b23bcc7a"
+  },
+  {
+   "case": "brotli:encode",
+   "lib": "ic",
+   "ms": 331.27271197736263,
+   "n": 5,
+   "cpu": 0.9992118764256962,
+   "bytes": 30369076,
+   "check": "lossless"
+  },
+  {
+   "case": "zfp:decode",
+   "lib": "ic",
+   "ms": 94.42591480910778,
+   "n": 5,
+   "cpu": 0.9997550652161147,
+   "check": "f7c8b25aa8c92c17float32(2048, 2048)"
+  },
+  {
+   "case": "jxl_lossless:decode",
+   "lib": "oc",
+   "ms": 43.070836924016476,
+   "n": 10,
+   "cpu": 7.589485416635645,
+   "check": "2c03f7593e03c345uint16(2048, 2048)"
+  },
+  {
+   "case": "zstd:decode",
+   "lib": "oc",
+   "ms": 48.00527170300484,
+   "n": 9,
+   "cpu": 0.9987611781098188,
+   "check": "545c8753b23bcc7a"
+  },
+  {
+   "case": "zstd:encode",
+   "lib": "ic",
+   "ms": 96.91068902611732,
+   "n": 5,
+   "cpu": 0.9990647859910566,
+   "bytes": 30476820,
+   "check": "lossless"
+  },
+  {
+   "case": "webp:decode",
+   "lib": "oc",
+   "ms": 91.41404554247856,
+   "n": 5,
+   "cpu": 0.999230557783847,
+   "check": "491156c91eb0fb5auint8(2048, 2048, 3)"
+  },
+  {
+   "case": "bc7:decode",
+   "lib": "ic",
+   "ms": 45.5965232104063,
+   "n": 9,
+   "cpu": 0.9984894772877024,
+   "check": "3ac07035613bdca6uint8(2048, 2048, 4)"
+  },
+  {
+   "case": "jpeg2k:encode",
+   "lib": "ic",
+   "ms": 711.7777615785599,
+   "n": 5,
+   "cpu": 0.9994345282275551,
+   "bytes": 5671623,
+   "check": "lossless"
+  },
+  {
+   "case": "webp:decode",
+   "lib": "ic",
+   "ms": 111.01890541613102,
+   "n": 5,
+   "cpu": 0.9992551804002759,
+   "check": "491156c91eb0fb5auint8(2048, 2048, 3)"
+  },
+  {
+   "case": "bz2:decode",
+   "lib": "oc",
+   "ms": 344.9541758745909,
+   "n": 5,
+   "cpu": 0.9992504815015237,
+   "check": "6c0d74d9608f6773"
+  },
+  {
+   "case": "lz4:decode",
+   "lib": "ic",
+   "ms": 22.94090948998928,
+   "n": 18,
+   "cpu": 0.9985407108236225,
+   "check": "545c8753b23bcc7a"
+  },
+  {
+   "case": "zstd:encode",
+   "lib": "oc",
+   "ms": 96.47534415125847,
+   "n": 5,
+   "cpu": 0.9991416361818588,
+   "bytes": 30476820,
+   "check": "lossless"
+  },
+  {
+   "case": "jpeg:encode",
+   "lib": "oc",
+   "ms": 17.46644638478756,
+   "n": 23,
+   "cpu": 0.9992375946069477,
+   "bytes": 2437855,
+   "check": "lossy"
+  },
+  {
+   "case": "bc1:decode",
+   "lib": "ic",
+   "ms": 3.818199969828129,
+   "n": 40,
+   "cpu": 0.9998179546354797,
+   "check": "a7de88b06c2026c8uint8(2048, 2048, 4)"
+  },
+  {
+   "case": "jxl_lossy:decode",
+   "lib": "oc",
+   "ms": 52.43052076548338,
+   "n": 8,
+   "cpu": 5.0158710465882645,
+   "check": "9cb90456bf8bd537uint8(2048, 2048, 3)"
+  },
+  {
+   "case": "jpegls:encode",
+   "lib": "oc",
+   "ms": 100.74484907090664,
+   "n": 5,
+   "cpu": 0.9989820950474386,
+   "bytes": 5639752,
+   "check": "lossless"
+  },
+  {
+   "case": "jxl_lossless:encode",
+   "lib": "oc",
+   "ms": 105.98037391901016,
+   "n": 5,
+   "cpu": 4.1989460030870775,
+   "bytes": 5615519,
+   "check": "lossless"
+  },
+  {
+   "case": "blosc2:decode",
+   "lib": "ic",
+   "ms": 55.19059672951698,
+   "n": 8,
+   "cpu": 0.9994138153098511,
+   "check": "545c8753b23bcc7a"
+  },
+  {
+   "case": "lzw:encode",
+   "lib": "oc",
+   "ms": 127.68062576651573,
+   "n": 5,
+   "cpu": 0.9985546350495109,
+   "bytes": 9116054,
+   "check": "lossless"
+  },
+  {
+   "case": "snappy:encode",
+   "lib": "ic",
+   "ms": 74.05799627304077,
+   "n": 6,
+   "cpu": 0.9988161128267348,
+   "bytes": 33555972,
+   "check": "lossless"
+  },
+  {
+   "case": "blosc2:encode",
+   "lib": "oc",
+   "ms": 489.87345211207867,
+   "n": 5,
+   "cpu": 0.9990390901840975,
+   "bytes": 24962982,
+   "check": "lossless"
+  },
+  {
+   "case": "deflate:encode",
+   "lib": "oc",
+   "ms": 416.93285666406155,
+   "n": 5,
+   "cpu": 0.9990285372564786,
+   "bytes": 30524176,
+   "check": "lossless"
+  },
+  {
+   "case": "jpeg:encode",
+   "lib": "ic",
+   "ms": 90.07038921117783,
+   "n": 5,
+   "cpu": 0.9978953694521369,
+   "bytes": 2437855,
+   "check": "lossy"
+  },
+  {
+   "case": "lzw:decode",
+   "lib": "oc",
+   "ms": 29.749290086328983,
+   "n": 14,
+   "cpu": 0.9998106700879718,
+   "check": "bd2b5bc1208ccdc7"
+  },
+  {
+   "case": "jxl_lossy:decode",
+   "lib": "ic",
+   "ms": 146.28583565354347,
+   "n": 5,
+   "cpu": 0.9991484605540272,
+   "check": "6d2072454ecb48f3uint8(2048, 2048, 3)"
+  },
+  {
+   "case": "png:encode",
+   "lib": "oc",
+   "ms": 250.14705024659634,
+   "n": 5,
+   "cpu": 0.9992540803720122,
+   "bytes": 6493730,
+   "check": "lossless"
+  },
+  {
+   "case": "zfp:encode",
+   "lib": "ic",
+   "ms": 92.26598963141441,
+   "n": 5,
+   "cpu": 0.9995897988100609,
+   "bytes": 12505192,
+   "check": "lossless"
+  },
+  {
+   "case": "bz2:encode",
+   "lib": "ic",
+   "ms": 570.390522480011,
+   "n": 5,
+   "cpu": 0.9992194125755183,
+   "bytes": 6179458,
+   "check": "lossless"
+  },
+  {
+   "case": "bitshuffle:decode",
+   "lib": "oc",
+   "ms": 38.919076323509216,
+   "n": 11,
+   "cpu": 0.9993445369490068,
+   "check": "545c8753b23bcc7a"
+  },
+  {
+   "case": "lerc:encode",
+   "lib": "oc",
+   "ms": 31.933868303894997,
+   "n": 13,
+   "cpu": 0.999823483487645,
+   "bytes": 6099531,
+   "check": "lossless"
+  },
+  {
+   "case": "delta_u16:decode",
+   "lib": "oc",
+   "ms": 11.600092053413391,
+   "n": 35,
+   "cpu": 0.9998418491699341,
+   "check": "545c8753b23bcc7auint16(4096, 4096)"
+  },
+  {
+   "case": "snappy:decode",
+   "lib": "oc",
+   "ms": 22.86782395094633,
+   "n": 18,
+   "cpu": 0.9985796996336275,
+   "check": "545c8753b23bcc7a"
+  },
+  {
+   "case": "png:decode",
+   "lib": "oc",
+   "ms": 59.67477895319462,
+   "n": 7,
+   "cpu": 0.9999936877902236,
+   "check": "db40c29c960cb630uint8(2048, 2048, 3)"
+  },
+  {
+   "case": "bitshuffle:decode",
+   "lib": "ic",
+   "ms": 37.86172345280647,
+   "n": 11,
+   "cpu": 1.0000347616343643,
+   "check": "545c8753b23bcc7a"
+  },
+  {
+   "case": "qoi:decode",
+   "lib": "ic",
+   "ms": 35.224550403654575,
+   "n": 12,
+   "cpu": 0.9991615924084184,
+   "check": "db40c29c960cb630uint8(2048, 2048, 3)"
+  },
+  {
+   "case": "lzw:decode",
+   "lib": "ic",
+   "ms": 91.51613898575306,
+   "n": 5,
+   "cpu": 0.9996031622592302,
+   "check": "bd2b5bc1208ccdc7"
+  },
+  {
+   "case": "lerc:encode",
+   "lib": "ic",
+   "ms": 47.43543826043606,
+   "n": 9,
+   "cpu": 0.9993636103922918,
+   "bytes": 6099531,
+   "check": "lossless"
+  },
+  {
+   "case": "packbits:decode",
+   "lib": "ic",
+   "ms": 6.448032334446907,
+   "n": 40,
+   "cpu": 0.9998142272575151,
+   "check": "bd2b5bc1208ccdc7"
+  },
+  {
+   "case": "qoi:encode",
+   "lib": "ic",
+   "ms": 43.26622746884823,
+   "n": 10,
+   "cpu": 1.0001350539325533,
+   "bytes": 11486989,
+   "check": "lossless"
+  },
+  {
+   "case": "jpeg2k:encode",
+   "lib": "oc",
+   "ms": 151.9601158797741,
+   "n": 5,
+   "cpu": 7.356109265710757,
+   "bytes": 5671623,
+   "check": "lossless"
+  },
+  {
+   "case": "lz4:decode",
+   "lib": "oc",
+   "ms": 19.795920699834824,
+   "n": 21,
+   "cpu": 0.9997410250364167,
+   "check": "545c8753b23bcc7a"
+  },
+  {
+   "case": "webp:encode",
+   "lib": "oc",
+   "ms": 440.000431612134,
+   "n": 5,
+   "cpu": 0.9990821523421266,
+   "bytes": 1530260,
+   "check": "lossy"
+  },
+  {
+   "case": "packints12:decode",
+   "lib": "ic",
+   "ms": 30.181127600371838,
+   "n": 14,
+   "cpu": 0.9998308707542665,
+   "check": "e3c8f4983a69a69duint16(16777216,)"
+  },
+  {
+   "case": "delta_u16:decode",
+   "lib": "ic",
+   "ms": 13.61208688467741,
+   "n": 30,
+   "cpu": 0.9999451157638297,
+   "check": "545c8753b23bcc7auint16(4096, 4096)"
+  },
+  {
+   "case": "zfp:decode",
+   "lib": "oc",
+   "ms": 94.41961906850338,
+   "n": 5,
+   "cpu": 0.9991467258413698,
+   "check": "f7c8b25aa8c92c17float32(2048, 2048)"
+  },
+  {
+   "case": "lerc:decode",
+   "lib": "oc",
+   "ms": 11.204434558749199,
+   "n": 36,
+   "cpu": 0.9992861204533959,
+   "check": "2c03f7593e03c345uint16(2048, 2048)"
+  },
+  {
+   "case": "blosc2:decode",
+   "lib": "oc",
+   "ms": 55.63013069331646,
+   "n": 8,
+   "cpu": 0.9991388960781978,
+   "check": "545c8753b23bcc7a"
+  },
+  {
+   "case": "jxl_lossy:encode",
+   "lib": "oc",
+   "ms": 350.4679910838604,
+   "n": 5,
+   "cpu": 4.939074233372093,
+   "bytes": 2150106,
+   "check": "lossy"
+  },
+  {
+   "case": "webp:encode",
+   "lib": "ic",
+   "ms": 541.327491402626,
+   "n": 5,
+   "cpu": 0.9988521544350761,
+   "bytes": 1530260,
+   "check": "lossy"
+  },
+  {
+   "case": "zstd:decode",
+   "lib": "ic",
+   "ms": 56.85517471283674,
+   "n": 8,
+   "cpu": 0.9991767749330692,
+   "check": "545c8753b23bcc7a"
+  },
+  {
+   "case": "bitshuffle:encode",
+   "lib": "ic",
+   "ms": 58.83636139333248,
+   "n": 7,
+   "cpu": 0.9992769942405474,
+   "bytes": 33554432,
+   "check": "lossless"
+  },
+  {
+   "case": "blosc2:encode",
+   "lib": "ic",
+   "ms": 562.815872952342,
+   "n": 5,
+   "cpu": 0.9995013885698038,
+   "bytes": 25395545,
+   "check": "lossless"
+  },
+  {
+   "case": "jpeg:decode",
+   "lib": "oc",
+   "ms": 27.73497626185417,
+   "n": 15,
+   "cpu": 0.9991882792847951,
+   "check": "8b57664a34177e35uint8(2048, 2048, 3)"
+  },
+  {
+   "case": "jpegls:encode",
+   "lib": "ic",
+   "ms": 122.91532382369041,
+   "n": 5,
+   "cpu": 0.9995007706029511,
+   "bytes": 5639796,
+   "check": "lossless"
+  },
+  {
+   "case": "lzma:encode",
+   "lib": "oc",
+   "ms": 2614.8585863411427,
+   "n": 5,
+   "cpu": 0.9992134542547653,
+   "bytes": 6913284,
+   "check": "lossless"
+  },
+  {
+   "case": "lzma:decode",
+   "lib": "oc",
+   "ms": 202.73955538868904,
+   "n": 5,
+   "cpu": 0.9995825668520475,
+   "check": "6c0d74d9608f6773"
+  },
+  {
+   "case": "lz4:encode",
+   "lib": "oc",
+   "ms": 79.76000756025314,
+   "n": 6,
+   "cpu": 0.9999347312113847,
+   "bytes": 33556499,
+   "check": "lossless"
+  },
+  {
+   "case": "jpegls:decode",
+   "lib": "oc",
+   "ms": 108.60151052474976,
+   "n": 5,
+   "cpu": 0.999804421667394,
+   "check": "2c03f7593e03c345uint16(2048, 2048)"
+  },
+  {
+   "case": "bz2:decode",
+   "lib": "ic",
+   "ms": 345.4225156456232,
+   "n": 5,
+   "cpu": 0.9990120955404893,
+   "check": "6c0d74d9608f6773"
+  },
+  {
+   "case": "xor_u16:decode",
+   "lib": "ic",
+   "ms": 13.581372797489166,
+   "n": 30,
+   "cpu": 0.998911732859488,
+   "check": "545c8753b23bcc7auint16(4096, 4096)"
+  },
+  {
+   "case": "snappy:encode",
+   "lib": "oc",
+   "ms": 74.18839074671268,
+   "n": 6,
+   "cpu": 0.9992696671812791,
+   "bytes": 33555972,
+   "check": "lossless"
+  },
+  {
+   "case": "jxl_lossy:encode",
+   "lib": "ic",
+   "ms": 807.1243278682232,
+   "n": 5,
+   "cpu": 0.9991926311704273,
+   "bytes": 2238951,
+   "check": "lossy"
+  },
+  {
+   "case": "lzw:encode",
+   "lib": "ic",
+   "ms": 177.35899798572063,
+   "n": 5,
+   "cpu": 0.9994257884275191,
+   "bytes": 9115259,
+   "check": "lossless"
+  },
+  {
+   "case": "lzma:encode",
+   "lib": "ic",
+   "ms": 2566.4660204201937,
+   "n": 5,
+   "cpu": 0.9990118837888812,
+   "bytes": 6913284,
+   "check": "lossless"
+  },
+  {
+   "case": "deflate:decode",
+   "lib": "ic",
+   "ms": 195.85705548524857,
+   "n": 5,
+   "cpu": 0.9994205901267444,
+   "check": "545c8753b23bcc7a"
+  },
+  {
+   "case": "bitshuffle:encode",
+   "lib": "oc",
+   "ms": 59.16508845984936,
+   "n": 7,
+   "cpu": 0.9996733226648986,
+   "bytes": 33554432,
+   "check": "lossless"
+  },
+  {
+   "case": "deflate:encode",
+   "lib": "ic",
+   "ms": 1075.213411822915,
+   "n": 5,
+   "cpu": 0.9991017873146659,
+   "bytes": 30447420,
+   "check": "lossless"
+  },
+  {
+   "case": "qoi:encode",
+   "lib": "oc",
+   "ms": 43.346269987523556,
+   "n": 10,
+   "cpu": 0.999626730570384,
+   "bytes": 11486989,
+   "check": "lossless"
+  },
+  {
+   "case": "jpegls:encode",
+   "lib": "ic",
+   "ms": 121.92784622311592,
+   "n": 5,
+   "cpu": 0.9989290237572734,
+   "bytes": 5639796,
+   "check": "lossless"
+  },
+  {
+   "case": "bitshuffle:encode",
+   "lib": "oc",
+   "ms": 60.229748487472534,
+   "n": 7,
+   "cpu": 0.9994787853451814,
+   "bytes": 33554432,
+   "check": "lossless"
+  },
+  {
+   "case": "jpeg:decode",
+   "lib": "ic",
+   "ms": 46.968135982751846,
+   "n": 9,
+   "cpu": 0.9992040738064755,
+   "check": "8b57664a34177e35uint8(2048, 2048, 3)"
+  },
+  {
+   "case": "bc7:decode",
+   "lib": "oc",
+   "ms": 8.317491039633751,
+   "n": 40,
+   "cpu": 5.595459311470035,
+   "check": "3ac07035613bdca6uint8(2048, 2048, 4)"
+  },
+  {
+   "case": "png:decode",
+   "lib": "oc",
+   "ms": 66.14220701158047,
+   "n": 7,
+   "cpu": 0.9982678921761782,
+   "check": "db40c29c960cb630uint8(2048, 2048, 3)"
+  },
+  {
+   "case": "lzma:decode",
+   "lib": "oc",
+   "ms": 236.37487180531025,
+   "n": 5,
+   "cpu": 0.9993220719223792,
+   "check": "6c0d74d9608f6773"
+  },
+  {
+   "case": "lz4:encode",
+   "lib": "ic",
+   "ms": 80.01373521983624,
+   "n": 5,
+   "cpu": 0.9985147746116878,
+   "bytes": 33556499,
+   "check": "lossless"
+  },
+  {
+   "case": "qoi:decode",
+   "lib": "oc",
+   "ms": 32.958606258034706,
+   "n": 13,
+   "cpu": 0.9996732989867512,
+   "check": "db40c29c960cb630uint8(2048, 2048, 3)"
+  },
+  {
+   "case": "bc1:decode",
+   "lib": "ic",
+   "ms": 3.1277379021048546,
+   "n": 40,
+   "cpu": 1.001050974756365,
+   "check": "a7de88b06c2026c8uint8(2048, 2048, 4)"
+  },
+  {
+   "case": "qoi:encode",
+   "lib": "oc",
+   "ms": 36.156877875328064,
+   "n": 12,
+   "cpu": 0.9987827617626446,
+   "bytes": 11486989,
+   "check": "lossless"
+  },
+  {
+   "case": "bc7:decode",
+   "lib": "ic",
+   "ms": 45.49846425652504,
+   "n": 9,
+   "cpu": 0.9993988778135261,
+   "check": "3ac07035613bdca6uint8(2048, 2048, 4)"
+  },
+  {
+   "case": "jpeg:encode",
+   "lib": "ic",
+   "ms": 89.97200801968575,
+   "n": 5,
+   "cpu": 0.9994182208789327,
+   "bytes": 2437855,
+   "check": "lossy"
+  },
+  {
+   "case": "lerc:encode",
+   "lib": "ic",
+   "ms": 47.676609829068184,
+   "n": 9,
+   "cpu": 0.9992326672296846,
+   "bytes": 6099531,
+   "check": "lossless"
+  },
+  {
+   "case": "packbits:decode",
+   "lib": "ic",
+   "ms": 6.142371334135532,
+   "n": 40,
+   "cpu": 0.999760253269894,
+   "check": "bd2b5bc1208ccdc7"
+  },
+  {
+   "case": "zfp:decode",
+   "lib": "oc",
+   "ms": 106.77232407033443,
+   "n": 5,
+   "cpu": 0.998835575464993,
+   "check": "f7c8b25aa8c92c17float32(2048, 2048)"
+  },
+  {
+   "case": "deflate:encode",
+   "lib": "oc",
+   "ms": 418.935090303421,
+   "n": 5,
+   "cpu": 0.9992719085145343,
+   "bytes": 30524176,
+   "check": "lossless"
+  },
+  {
+   "case": "deflate:decode",
+   "lib": "ic",
+   "ms": 181.61244876682758,
+   "n": 5,
+   "cpu": 0.9990195330554181,
+   "check": "545c8753b23bcc7a"
+  },
+  {
+   "case": "xor_u16:decode",
+   "lib": "ic",
+   "ms": 13.695387169718742,
+   "n": 30,
+   "cpu": 0.9995051597996587,
+   "check": "545c8753b23bcc7auint16(4096, 4096)"
+  },
+  {
+   "case": "blosc2:encode",
+   "lib": "ic",
+   "ms": 472.93042577803135,
+   "n": 5,
+   "cpu": 0.998991278853445,
+   "bytes": 25395545,
+   "check": "lossless"
+  },
+  {
+   "case": "snappy:decode",
+   "lib": "oc",
+   "ms": 22.9371078312397,
+   "n": 18,
+   "cpu": 0.998943703009693,
+   "check": "545c8753b23bcc7a"
+  },
+  {
+   "case": "png:encode",
+   "lib": "ic",
+   "ms": 922.725435346365,
+   "n": 5,
+   "cpu": 0.9991812674055299,
+   "bytes": 6437751,
+   "check": "lossless"
+  },
+  {
+   "case": "jxl_lossless:decode",
+   "lib": "ic",
+   "ms": 183.38588625192642,
+   "n": 5,
+   "cpu": 0.9991435577775083,
+   "check": "2c03f7593e03c345uint16(2048, 2048)"
+  },
+  {
+   "case": "deflate:decode",
+   "lib": "oc",
+   "ms": 131.87062367796898,
+   "n": 5,
+   "cpu": 0.9985561760856967,
+   "check": "545c8753b23bcc7a"
+  },
+  {
+   "case": "png:decode",
+   "lib": "ic",
+   "ms": 71.5021314099431,
+   "n": 6,
+   "cpu": 0.9990724294623151,
+   "check": "db40c29c960cb630uint8(2048, 2048, 3)"
+  },
+  {
+   "case": "zfp:decode",
+   "lib": "ic",
+   "ms": 113.78510482609272,
+   "n": 5,
+   "cpu": 1.0000798769161523,
+   "check": "f7c8b25aa8c92c17float32(2048, 2048)"
+  },
+  {
+   "case": "bz2:encode",
+   "lib": "ic",
+   "ms": 569.7460472583771,
+   "n": 5,
+   "cpu": 0.9991855223524427,
+   "bytes": 6179458,
+   "check": "lossless"
+  },
+  {
+   "case": "xor_u16:decode",
+   "lib": "oc",
+   "ms": 11.794722639024258,
+   "n": 34,
+   "cpu": 0.999584881416306,
+   "check": "545c8753b23bcc7auint16(4096, 4096)"
+  },
+  {
+   "case": "zstd:encode",
+   "lib": "ic",
+   "ms": 95.52816115319729,
+   "n": 5,
+   "cpu": 0.9993431375609598,
+   "bytes": 30476820,
+   "check": "lossless"
+  },
+  {
+   "case": "jpeg2k:encode",
+   "lib": "ic",
+   "ms": 705.1540203392506,
+   "n": 5,
+   "cpu": 0.999045092756271,
+   "bytes": 5671623,
+   "check": "lossless"
+  },
+  {
+   "case": "blosc2:decode",
+   "lib": "ic",
+   "ms": 56.1923747882247,
+   "n": 8,
+   "cpu": 0.9991028356093433,
+   "check": "545c8753b23bcc7a"
+  },
+  {
+   "case": "lzma:decode",
+   "lib": "ic",
+   "ms": 198.89898039400578,
+   "n": 5,
+   "cpu": 0.9990922837521811,
+   "check": "6c0d74d9608f6773"
+  },
+  {
+   "case": "bz2:decode",
+   "lib": "oc",
+   "ms": 344.65079568326473,
+   "n": 5,
+   "cpu": 0.9990721703708494,
+   "check": "6c0d74d9608f6773"
+  },
+  {
+   "case": "jxl_lossless:encode",
+   "lib": "ic",
+   "ms": 260.6650274246931,
+   "n": 5,
+   "cpu": 0.9994034703860017,
+   "bytes": 5629900,
+   "check": "lossless"
+  },
+  {
+   "case": "packbits:decode",
+   "lib": "oc",
+   "ms": 2.296244725584984,
+   "n": 40,
+   "cpu": 1.0003965516415854,
+   "check": "bd2b5bc1208ccdc7"
+  },
+  {
+   "case": "lerc:decode",
+   "lib": "ic",
+   "ms": 10.712359100580215,
+   "n": 38,
+   "cpu": 0.9990434942250404,
+   "check": "2c03f7593e03c345uint16(2048, 2048)"
+  },
+  {
+   "case": "jxl_lossless:decode",
+   "lib": "oc",
+   "ms": 42.70604066550732,
+   "n": 10,
+   "cpu": 7.448946345739442,
+   "check": "2c03f7593e03c345uint16(2048, 2048)"
+  },
+  {
+   "case": "snappy:encode",
+   "lib": "oc",
+   "ms": 64.0563815832138,
+   "n": 7,
+   "cpu": 0.9993426563778155,
+   "bytes": 33555972,
+   "check": "lossless"
+  },
+  {
+   "case": "jpegls:decode",
+   "lib": "oc",
+   "ms": 108.98868925869465,
+   "n": 5,
+   "cpu": 0.9992437485417023,
+   "check": "2c03f7593e03c345uint16(2048, 2048)"
+  },
+  {
+   "case": "lzw:decode",
+   "lib": "ic",
+   "ms": 91.78262390196323,
+   "n": 5,
+   "cpu": 0.9991813830264371,
+   "check": "bd2b5bc1208ccdc7"
+  },
+  {
+   "case": "zfp:encode",
+   "lib": "ic",
+   "ms": 110.86266301572323,
+   "n": 5,
+   "cpu": 0.9989738997750032,
+   "bytes": 12505192,
+   "check": "lossless"
+  },
+  {
+   "case": "deflate:encode",
+   "lib": "ic",
+   "ms": 1071.8463510274887,
+   "n": 5,
+   "cpu": 0.9990120881659168,
+   "bytes": 30447420,
+   "check": "lossless"
+  },
+  {
+   "case": "webp:decode",
+   "lib": "oc",
+   "ms": 110.87410524487495,
+   "n": 5,
+   "cpu": 0.9991562132472149,
+   "check": "491156c91eb0fb5auint8(2048, 2048, 3)"
+  },
+  {
+   "case": "jpeg:decode",
+   "lib": "oc",
+   "ms": 27.768423780798912,
+   "n": 15,
+   "cpu": 0.9989193842827577,
+   "check": "8b57664a34177e35uint8(2048, 2048, 3)"
+  },
+  {
+   "case": "blosc2:decode",
+   "lib": "oc",
+   "ms": 55.362071841955185,
+   "n": 8,
+   "cpu": 0.99920120459705,
+   "check": "545c8753b23bcc7a"
+  },
+  {
+   "case": "bz2:encode",
+   "lib": "oc",
+   "ms": 569.4423280656338,
+   "n": 5,
+   "cpu": 0.9990916216048413,
+   "bytes": 6179458,
+   "check": "lossless"
+  },
+  {
+   "case": "brotli:encode",
+   "lib": "ic",
+   "ms": 330.44799230992794,
+   "n": 5,
+   "cpu": 0.9990574295525121,
+   "bytes": 30369076,
+   "check": "lossless"
+  },
+  {
+   "case": "brotli:encode",
+   "lib": "oc",
+   "ms": 421.38483189046383,
+   "n": 5,
+   "cpu": 0.9990560786608189,
+   "bytes": 30369076,
+   "check": "lossless"
+  },
+  {
+   "case": "lz4:encode",
+   "lib": "oc",
+   "ms": 78.19083146750927,
+   "n": 6,
+   "cpu": 0.9996108669628367,
+   "bytes": 33556499,
+   "check": "lossless"
+  },
+  {
+   "case": "lerc:decode",
+   "lib": "oc",
+   "ms": 9.402595460414886,
+   "n": 40,
+   "cpu": 0.9995548541946322,
+   "check": "2c03f7593e03c345uint16(2048, 2048)"
+  },
+  {
+   "case": "qoi:decode",
+   "lib": "ic",
+   "ms": 35.17666645348072,
+   "n": 12,
+   "cpu": 0.999675097813166,
+   "check": "db40c29c960cb630uint8(2048, 2048, 3)"
+  },
+  {
+   "case": "lzw:encode",
+   "lib": "ic",
+   "ms": 172.5904680788517,
+   "n": 5,
+   "cpu": 0.999654943703359,
+   "bytes": 9115259,
+   "check": "lossless"
+  },
+  {
+   "case": "jpeg2k:encode",
+   "lib": "oc",
+   "ms": 152.85410732030869,
+   "n": 5,
+   "cpu": 7.364626450936337,
+   "bytes": 5671623,
+   "check": "lossless"
+  },
+  {
+   "case": "brotli:decode",
+   "lib": "oc",
+   "ms": 188.05067241191864,
+   "n": 5,
+   "cpu": 0.998843057028512,
+   "check": "545c8753b23bcc7a"
+  },
+  {
+   "case": "jpeg:encode",
+   "lib": "oc",
+   "ms": 17.46782660484314,
+   "n": 23,
+   "cpu": 0.9988888896045938,
+   "bytes": 2437855,
+   "check": "lossy"
+  },
+  {
+   "case": "zstd:decode",
+   "lib": "ic",
+   "ms": 56.65160343050957,
+   "n": 8,
+   "cpu": 0.9992450736550985,
+   "check": "545c8753b23bcc7a"
+  },
+  {
+   "case": "qoi:encode",
+   "lib": "ic",
+   "ms": 35.89573036879301,
+   "n": 12,
+   "cpu": 0.9994320612751363,
+   "bytes": 11486989,
+   "check": "lossless"
+  },
+  {
+   "case": "zfp:encode",
+   "lib": "oc",
+   "ms": 108.94087702035904,
+   "n": 5,
+   "cpu": 0.9994638779293255,
+   "bytes": 12505192,
+   "check": "lossless"
+  },
+  {
+   "case": "snappy:encode",
+   "lib": "ic",
+   "ms": 73.64174071699381,
+   "n": 6,
+   "cpu": 0.9992840027515648,
+   "bytes": 33555972,
+   "check": "lossless"
+  },
+  {
+   "case": "bitshuffle:decode",
+   "lib": "oc",
+   "ms": 33.87146536260843,
+   "n": 12,
+   "cpu": 0.9984152272612056,
+   "check": "545c8753b23bcc7a"
+  },
+  {
+   "case": "zstd:decode",
+   "lib": "oc",
+   "ms": 47.82578721642494,
+   "n": 9,
+   "cpu": 0.9991050739449763,
+   "check": "545c8753b23bcc7a"
+  },
+  {
+   "case": "delta_u16:decode",
+   "lib": "ic",
+   "ms": 13.591629453003407,
+   "n": 30,
+   "cpu": 0.9986865717452307,
+   "check": "545c8753b23bcc7auint16(4096, 4096)"
+  },
+  {
+   "case": "lzma:encode",
+   "lib": "oc",
+   "ms": 2608.591563999653,
+   "n": 5,
+   "cpu": 0.999019820298406,
+   "bytes": 6913284,
+   "check": "lossless"
+  },
+  {
+   "case": "jpegls:encode",
+   "lib": "oc",
+   "ms": 122.71909974515438,
+   "n": 5,
+   "cpu": 0.9991826072841536,
+   "bytes": 5639752,
+   "check": "lossless"
+  },
+  {
+   "case": "snappy:decode",
+   "lib": "ic",
+   "ms": 23.0810409411788,
+   "n": 18,
+   "cpu": 0.9992099531772571,
+   "check": "545c8753b23bcc7a"
+  },
+  {
+   "case": "lz4:decode",
+   "lib": "oc",
+   "ms": 22.802102379500866,
+   "n": 18,
+   "cpu": 0.9995971727955976,
+   "check": "545c8753b23bcc7a"
+  },
+  {
+   "case": "lerc:encode",
+   "lib": "oc",
+   "ms": 26.746410876512527,
+   "n": 15,
+   "cpu": 0.9981142780514694,
+   "bytes": 6099531,
+   "check": "lossless"
+  },
+  {
+   "case": "blosc2:encode",
+   "lib": "oc",
+   "ms": 488.99379186332226,
+   "n": 5,
+   "cpu": 0.999401859730721,
+   "bytes": 24962982,
+   "check": "lossless"
+  },
+  {
+   "case": "bz2:decode",
+   "lib": "ic",
+   "ms": 396.63086645305157,
+   "n": 5,
+   "cpu": 0.9990950917934683,
+   "check": "6c0d74d9608f6773"
+  },
+  {
+   "case": "jpegls:decode",
+   "lib": "ic",
+   "ms": 109.89929921925068,
+   "n": 5,
+   "cpu": 0.9995798533049186,
+   "check": "2c03f7593e03c345uint16(2048, 2048)"
+  },
+  {
+   "case": "delta_u16:decode",
+   "lib": "oc",
+   "ms": 10.657135397195816,
+   "n": 37,
+   "cpu": 0.9990213495507205,
+   "check": "545c8753b23bcc7auint16(4096, 4096)"
+  },
+  {
+   "case": "jxl_lossy:decode",
+   "lib": "ic",
+   "ms": 155.9244729578495,
+   "n": 5,
+   "cpu": 0.9994833473308792,
+   "check": "6d2072454ecb48f3uint8(2048, 2048, 3)"
+  },
+  {
+   "case": "webp:decode",
+   "lib": "ic",
+   "ms": 110.80201156437397,
+   "n": 5,
+   "cpu": 0.9990131078651363,
+   "check": "491156c91eb0fb5auint8(2048, 2048, 3)"
+  },
+  {
+   "case": "lzw:decode",
+   "lib": "oc",
+   "ms": 29.8317177221179,
+   "n": 14,
+   "cpu": 0.9988901163963467,
+   "check": "bd2b5bc1208ccdc7"
+  },
+  {
+   "case": "lz4:decode",
+   "lib": "ic",
+   "ms": 22.84423168748617,
+   "n": 18,
+   "cpu": 0.9995446964044389,
+   "check": "545c8753b23bcc7a"
+  },
+  {
+   "case": "png:encode",
+   "lib": "oc",
+   "ms": 251.30574963986874,
+   "n": 5,
+   "cpu": 0.9991996478347772,
+   "bytes": 6493730,
+   "check": "lossless"
+  },
+  {
+   "case": "lzw:encode",
+   "lib": "oc",
+   "ms": 131.14728406071663,
+   "n": 5,
+   "cpu": 0.9996082182390377,
+   "bytes": 9116054,
+   "check": "lossless"
+  },
+  {
+   "case": "webp:encode",
+   "lib": "ic",
+   "ms": 545.8348765969276,
+   "n": 5,
+   "cpu": 0.9987574728890765,
+   "bytes": 1530260,
+   "check": "lossy"
+  },
+  {
+   "case": "webp:encode",
+   "lib": "oc",
+   "ms": 440.5073504894972,
+   "n": 5,
+   "cpu": 0.9990536641200982,
+   "bytes": 1530260,
+   "check": "lossy"
+  },
+  {
+   "case": "jxl_lossless:encode",
+   "lib": "oc",
+   "ms": 108.1770546734333,
+   "n": 5,
+   "cpu": 4.09883454647365,
+   "bytes": 5615519,
+   "check": "lossless"
+  },
+  {
+   "case": "bc1:decode",
+   "lib": "oc",
+   "ms": 1.7655789852142334,
+   "n": 40,
+   "cpu": 3.6691872411859716,
+   "check": "a7de88b06c2026c8uint8(2048, 2048, 4)"
+  },
+  {
+   "case": "zstd:encode",
+   "lib": "oc",
+   "ms": 92.1155996620655,
+   "n": 5,
+   "cpu": 0.9995617642314306,
+   "bytes": 30476820,
+   "check": "lossless"
+  },
+  {
+   "case": "jpeg2k:decode",
+   "lib": "oc",
+   "ms": 126.23369880020618,
+   "n": 5,
+   "cpu": 7.140483868260055,
+   "check": "2c03f7593e03c345uint16(2048, 2048)"
+  },
+  {
+   "case": "packints12:decode",
+   "lib": "oc",
+   "ms": 31.0378335416317,
+   "n": 13,
+   "cpu": 1.0000670873079671,
+   "check": "e3c8f4983a69a69duint16(16777216,)"
+  },
+  {
+   "case": "bitshuffle:decode",
+   "lib": "ic",
+   "ms": 33.86286459863186,
+   "n": 12,
+   "cpu": 0.9986809866669474,
+   "check": "545c8753b23bcc7a"
+  },
+  {
+   "case": "jxl_lossy:decode",
+   "lib": "oc",
+   "ms": 52.68238391727209,
+   "n": 8,
+   "cpu": 4.984146124125068,
+   "check": "9cb90456bf8bd537uint8(2048, 2048, 3)"
+  },
+  {
+   "case": "jxl_lossy:encode",
+   "lib": "ic",
+   "ms": 806.4970355480909,
+   "n": 5,
+   "cpu": 0.9992570868694429,
+   "bytes": 2238951,
+   "check": "lossy"
+  },
+  {
+   "case": "bitshuffle:encode",
+   "lib": "ic",
+   "ms": 59.21199545264244,
+   "n": 7,
+   "cpu": 0.9998687979278572,
+   "bytes": 33554432,
+   "check": "lossless"
+  },
+  {
+   "case": "lzma:encode",
+   "lib": "ic",
+   "ms": 2554.4840805232525,
+   "n": 5,
+   "cpu": 0.9991544010927492,
+   "bytes": 6913284,
+   "check": "lossless"
+  },
+  {
+   "case": "jpeg2k:decode",
+   "lib": "ic",
+   "ms": 588.1932321935892,
+   "n": 5,
+   "cpu": 0.9993164132003343,
+   "check": "2c03f7593e03c345uint16(2048, 2048)"
+  },
+  {
+   "case": "brotli:decode",
+   "lib": "ic",
+   "ms": 195.73906622827053,
+   "n": 5,
+   "cpu": 0.9987781439713844,
+   "check": "545c8753b23bcc7a"
+  },
+  {
+   "case": "packints12:decode",
+   "lib": "ic",
+   "ms": 25.346839800477028,
+   "n": 16,
+   "cpu": 0.9986980810334266,
+   "check": "e3c8f4983a69a69duint16(16777216,)"
+  },
+  {
+   "case": "jxl_lossy:encode",
+   "lib": "oc",
+   "ms": 358.10820013284683,
+   "n": 5,
+   "cpu": 4.894470900112232,
+   "bytes": 2150106,
+   "check": "lossy"
+  },
+  {
+   "case": "jpeg2k:encode",
+   "lib": "ic",
+   "ms": 703.7045285105705,
+   "n": 5,
+   "cpu": 0.998989633500462,
+   "bytes": 5671623,
+   "check": "lossless"
+  },
+  {
+   "case": "jxl_lossy:encode",
+   "lib": "ic",
+   "ms": 811.1527040600777,
+   "n": 5,
+   "cpu": 0.9989040890685272,
+   "bytes": 2238951,
+   "check": "lossy"
+  },
+  {
+   "case": "delta_u16:decode",
+   "lib": "oc",
+   "ms": 11.714819818735123,
+   "n": 35,
+   "cpu": 0.9998917527993385,
+   "check": "545c8753b23bcc7auint16(4096, 4096)"
+  },
+  {
+   "case": "zfp:encode",
+   "lib": "ic",
+   "ms": 91.01294353604317,
+   "n": 5,
+   "cpu": 0.9992178061004247,
+   "bytes": 12505192,
+   "check": "lossless"
+  },
+  {
+   "case": "zfp:decode",
+   "lib": "oc",
+   "ms": 94.81114894151688,
+   "n": 5,
+   "cpu": 0.9989741487829561,
+   "check": "f7c8b25aa8c92c17float32(2048, 2048)"
+  },
+  {
+   "case": "bc7:decode",
+   "lib": "ic",
+   "ms": 45.49258016049862,
+   "n": 9,
+   "cpu": 0.9989874114947761,
+   "check": "3ac07035613bdca6uint8(2048, 2048, 4)"
+  },
+  {
+   "case": "jpeg:decode",
+   "lib": "ic",
+   "ms": 41.73614364117384,
+   "n": 10,
+   "cpu": 0.9980239413175491,
+   "check": "8b57664a34177e35uint8(2048, 2048, 3)"
+  },
+  {
+   "case": "packints12:decode",
+   "lib": "oc",
+   "ms": 36.73914074897766,
+   "n": 11,
+   "cpu": 0.9998856164628407,
+   "check": "e3c8f4983a69a69duint16(16777216,)"
+  },
+  {
+   "case": "png:encode",
+   "lib": "oc",
+   "ms": 253.44103761017323,
+   "n": 5,
+   "cpu": 0.9989333107456301,
+   "bytes": 6493730,
+   "check": "lossless"
+  },
+  {
+   "case": "blosc2:encode",
+   "lib": "ic",
+   "ms": 471.5196192264557,
+   "n": 5,
+   "cpu": 0.9991680437321865,
+   "bytes": 25395545,
+   "check": "lossless"
+  },
+  {
+   "case": "brotli:decode",
+   "lib": "oc",
+   "ms": 190.34509360790253,
+   "n": 5,
+   "cpu": 0.9992561595222775,
+   "check": "545c8753b23bcc7a"
+  },
+  {
+   "case": "snappy:encode",
+   "lib": "oc",
+   "ms": 73.49069137126207,
+   "n": 6,
+   "cpu": 0.9996829411350074,
+   "bytes": 33555972,
+   "check": "lossless"
+  },
+  {
+   "case": "bc1:decode",
+   "lib": "oc",
+   "ms": 1.7984062433242798,
+   "n": 40,
+   "cpu": 3.5291720409505,
+   "check": "a7de88b06c2026c8uint8(2048, 2048, 4)"
+  },
+  {
+   "case": "jxl_lossy:decode",
+   "lib": "ic",
+   "ms": 131.09231367707253,
+   "n": 5,
+   "cpu": 0.9990658915996306,
+   "check": "6d2072454ecb48f3uint8(2048, 2048, 3)"
+  },
+  {
+   "case": "lzw:decode",
+   "lib": "ic",
+   "ms": 91.79682098329067,
+   "n": 5,
+   "cpu": 0.9995980366501299,
+   "check": "bd2b5bc1208ccdc7"
+  },
+  {
+   "case": "qoi:encode",
+   "lib": "ic",
+   "ms": 43.291122652590275,
+   "n": 10,
+   "cpu": 0.9993845884091521,
+   "bytes": 11486989,
+   "check": "lossless"
+  },
+  {
+   "case": "packbits:decode",
+   "lib": "ic",
+   "ms": 6.203778088092804,
+   "n": 40,
+   "cpu": 0.9989773412741526,
+   "check": "bd2b5bc1208ccdc7"
+  },
+  {
+   "case": "packbits:decode",
+   "lib": "oc",
+   "ms": 2.252478152513504,
+   "n": 40,
+   "cpu": 1.001039841948546,
+   "check": "bd2b5bc1208ccdc7"
+  },
+  {
+   "case": "jpeg:encode",
+   "lib": "oc",
+   "ms": 20.94011101871729,
+   "n": 20,
+   "cpu": 0.9985729912362847,
+   "bytes": 2437855,
+   "check": "lossy"
+  },
+  {
+   "case": "jxl_lossless:encode",
+   "lib": "oc",
+   "ms": 107.02423937618732,
+   "n": 5,
+   "cpu": 4.121816266372625,
+   "bytes": 5615519,
+   "check": "lossless"
+  },
+  {
+   "case": "xor_u16:decode",
+   "lib": "oc",
+   "ms": 11.710627004504204,
+   "n": 35,
+   "cpu": 0.9995324731879045,
+   "check": "545c8753b23bcc7auint16(4096, 4096)"
+  },
+  {
+   "case": "webp:encode",
+   "lib": "oc",
+   "ms": 439.49564918875694,
+   "n": 5,
+   "cpu": 0.9989907597858826,
+   "bytes": 1530260,
+   "check": "lossy"
+  },
+  {
+   "case": "bitshuffle:decode",
+   "lib": "oc",
+   "ms": 39.0857569873333,
+   "n": 11,
+   "cpu": 0.9994883402829823,
+   "check": "545c8753b23bcc7a"
+  },
+  {
+   "case": "qoi:encode",
+   "lib": "oc",
+   "ms": 43.261476792395115,
+   "n": 10,
+   "cpu": 0.9992270940147424,
+   "bytes": 11486989,
+   "check": "lossless"
+  },
+  {
+   "case": "xor_u16:decode",
+   "lib": "ic",
+   "ms": 11.709783226251602,
+   "n": 35,
+   "cpu": 0.9995763775397399,
+   "check": "545c8753b23bcc7auint16(4096, 4096)"
+  },
+  {
+   "case": "brotli:encode",
+   "lib": "ic",
+   "ms": 328.4540716558695,
+   "n": 5,
+   "cpu": 0.9991832281985343,
+   "bytes": 30369076,
+   "check": "lossless"
+  },
+  {
+   "case": "zstd:decode",
+   "lib": "ic",
+   "ms": 47.7070901542902,
+   "n": 9,
+   "cpu": 0.9992551017977724,
+   "check": "545c8753b23bcc7a"
+  },
+  {
+   "case": "jxl_lossy:encode",
+   "lib": "oc",
+   "ms": 352.7237828820944,
+   "n": 5,
+   "cpu": 4.941428849011538,
+   "bytes": 2150106,
+   "check": "lossy"
+  },
+  {
+   "case": "zfp:decode",
+   "lib": "ic",
+   "ms": 94.10697035491467,
+   "n": 5,
+   "cpu": 0.998745758927516,
+   "check": "f7c8b25aa8c92c17float32(2048, 2048)"
+  },
+  {
+   "case": "lz4:decode",
+   "lib": "oc",
+   "ms": 23.435428738594055,
+   "n": 18,
+   "cpu": 0.9995156729037868,
+   "check": "545c8753b23bcc7a"
+  },
+  {
+   "case": "zstd:decode",
+   "lib": "oc",
+   "ms": 56.91278073936701,
+   "n": 8,
+   "cpu": 0.9985291301974908,
+   "check": "545c8753b23bcc7a"
+  },
+  {
+   "case": "jpegls:encode",
+   "lib": "oc",
+   "ms": 121.61627039313316,
+   "n": 5,
+   "cpu": 0.9991820113660609,
+   "bytes": 5639752,
+   "check": "lossless"
+  },
+  {
+   "case": "bz2:decode",
+   "lib": "oc",
+   "ms": 345.3821409493685,
+   "n": 5,
+   "cpu": 0.9991549059070683,
+   "check": "6c0d74d9608f6773"
+  },
+  {
+   "case": "lzw:decode",
+   "lib": "oc",
+   "ms": 29.777484014630318,
+   "n": 14,
+   "cpu": 0.9989947435687574,
+   "check": "bd2b5bc1208ccdc7"
+  },
+  {
+   "case": "brotli:encode",
+   "lib": "oc",
+   "ms": 334.7530961036682,
+   "n": 5,
+   "cpu": 0.999019235689159,
+   "bytes": 30369076,
+   "check": "lossless"
+  },
+  {
+   "case": "snappy:encode",
+   "lib": "ic",
+   "ms": 73.51296115666628,
+   "n": 6,
+   "cpu": 0.9995152081288267,
+   "bytes": 33555972,
+   "check": "lossless"
+  },
+  {
+   "case": "bitshuffle:encode",
+   "lib": "ic",
+   "ms": 50.5493963137269,
+   "n": 8,
+   "cpu": 0.9993499352092441,
+   "bytes": 33554432,
+   "check": "lossless"
+  },
+  {
+   "case": "webp:decode",
+   "lib": "ic",
+   "ms": 111.04957200586796,
+   "n": 5,
+   "cpu": 0.9986979095927524,
+   "check": "491156c91eb0fb5auint8(2048, 2048, 3)"
+  },
+  {
+   "case": "lerc:decode",
+   "lib": "ic",
+   "ms": 10.739424265921116,
+   "n": 38,
+   "cpu": 0.9991913938144441,
+   "check": "2c03f7593e03c345uint16(2048, 2048)"
+  },
+  {
+   "case": "blosc2:decode",
+   "lib": "ic",
+   "ms": 56.06848932802677,
+   "n": 8,
+   "cpu": 0.9991027181134516,
+   "check": "545c8753b23bcc7a"
+  },
+  {
+   "case": "lzma:decode",
+   "lib": "oc",
+   "ms": 201.29208266735077,
+   "n": 5,
+   "cpu": 0.9989085094129684,
+   "check": "6c0d74d9608f6773"
+  },
+  {
+   "case": "jpegls:decode",
+   "lib": "ic",
+   "ms": 90.8090602606535,
+   "n": 5,
+   "cpu": 0.9992446402879048,
+   "check": "2c03f7593e03c345uint16(2048, 2048)"
+  },
+  {
+   "case": "bz2:encode",
+   "lib": "ic",
+   "ms": 570.8721689879894,
+   "n": 5,
+   "cpu": 0.9990455631875598,
+   "bytes": 6179458,
+   "check": "lossless"
+  },
+  {
+   "case": "bitshuffle:encode",
+   "lib": "oc",
+   "ms": 59.28334407508373,
+   "n": 7,
+   "cpu": 0.9987759659112093,
+   "bytes": 33554432,
+   "check": "lossless"
+  },
+  {
+   "case": "zstd:encode",
+   "lib": "oc",
+   "ms": 96.22377716004848,
+   "n": 5,
+   "cpu": 0.999478618055173,
+   "bytes": 30476820,
+   "check": "lossless"
+  },
+  {
+   "case": "png:encode",
+   "lib": "ic",
+   "ms": 957.5749672949314,
+   "n": 5,
+   "cpu": 0.999170073441056,
+   "bytes": 6437751,
+   "check": "lossless"
+  },
+  {
+   "case": "bz2:encode",
+   "lib": "oc",
+   "ms": 676.8185570836067,
+   "n": 5,
+   "cpu": 0.999243578694379,
+   "bytes": 6179458,
+   "check": "lossless"
+  },
+  {
+   "case": "jxl_lossless:decode",
+   "lib": "ic",
+   "ms": 171.93011194467545,
+   "n": 5,
+   "cpu": 0.9990168806301813,
+   "check": "2c03f7593e03c345uint16(2048, 2048)"
+  },
+  {
+   "case": "brotli:decode",
+   "lib": "ic",
+   "ms": 193.68080981075764,
+   "n": 5,
+   "cpu": 0.9993741990982415,
+   "check": "545c8753b23bcc7a"
+  },
+  {
+   "case": "lz4:encode",
+   "lib": "oc",
+   "ms": 79.53664846718311,
+   "n": 6,
+   "cpu": 0.9985642913101821,
+   "bytes": 33556499,
+   "check": "lossless"
+  },
+  {
+   "case": "lzw:encode",
+   "lib": "ic",
+   "ms": 153.68842147290707,
+   "n": 5,
+   "cpu": 0.9992438246338811,
+   "bytes": 9115259,
+   "check": "lossless"
+  },
+  {
+   "case": "qoi:decode",
+   "lib": "oc",
+   "ms": 35.12061387300491,
+   "n": 12,
+   "cpu": 0.9991180284421035,
+   "check": "db40c29c960cb630uint8(2048, 2048, 3)"
+  },
+  {
+   "case": "png:decode",
+   "lib": "oc",
+   "ms": 72.60513678193092,
+   "n": 6,
+   "cpu": 0.9979640520256013,
+   "check": "db40c29c960cb630uint8(2048, 2048, 3)"
+  },
+  {
+   "case": "png:decode",
+   "lib": "ic",
+   "ms": 71.7168478295207,
+   "n": 6,
+   "cpu": 0.9994577690114967,
+   "check": "db40c29c960cb630uint8(2048, 2048, 3)"
+  },
+  {
+   "case": "jpeg2k:encode",
+   "lib": "oc",
+   "ms": 148.17011915147305,
+   "n": 5,
+   "cpu": 7.326138833617173,
+   "bytes": 5671623,
+   "check": "lossless"
+  },
+  {
+   "case": "webp:encode",
+   "lib": "ic",
+   "ms": 452.88550667464733,
+   "n": 5,
+   "cpu": 0.9991274718627033,
+   "bytes": 1530260,
+   "check": "lossy"
+  },
+  {
+   "case": "jpegls:encode",
+   "lib": "ic",
+   "ms": 121.51460722088814,
+   "n": 5,
+   "cpu": 0.9993682301166106,
+   "bytes": 5639796,
+   "check": "lossless"
+  },
+  {
+   "case": "bz2:decode",
+   "lib": "ic",
+   "ms": 344.9267242103815,
+   "n": 5,
+   "cpu": 0.9991448609225265,
+   "check": "6c0d74d9608f6773"
+  },
+  {
+   "case": "packints12:decode",
+   "lib": "ic",
+   "ms": 30.159994959831238,
+   "n": 14,
+   "cpu": 0.9997161284008244,
+   "check": "e3c8f4983a69a69duint16(16777216,)"
+  },
+  {
+   "case": "jpeg2k:decode",
+   "lib": "oc",
+   "ms": 129.24961559474468,
+   "n": 5,
+   "cpu": 7.171062850474537,
+   "check": "2c03f7593e03c345uint16(2048, 2048)"
+  },
+  {
+   "case": "lz4:decode",
+   "lib": "ic",
+   "ms": 19.66617815196514,
+   "n": 21,
+   "cpu": 0.9985857934087488,
+   "check": "545c8753b23bcc7a"
+  },
+  {
+   "case": "lz4:encode",
+   "lib": "ic",
+   "ms": 76.383201405406,
+   "n": 6,
+   "cpu": 0.9987933213855202,
+   "bytes": 33556499,
+   "check": "lossless"
+  },
+  {
+   "case": "deflate:encode",
+   "lib": "ic",
+   "ms": 1074.9170165508986,
+   "n": 5,
+   "cpu": 0.9991334092195199,
+   "bytes": 30447420,
+   "check": "lossless"
+  },
+  {
+   "case": "bc1:decode",
+   "lib": "ic",
+   "ms": 3.1700804829597473,
+   "n": 40,
+   "cpu": 1.000580736548137,
+   "check": "a7de88b06c2026c8uint8(2048, 2048, 4)"
+  },
+  {
+   "case": "lerc:encode",
+   "lib": "oc",
+   "ms": 26.715124025940895,
+   "n": 15,
+   "cpu": 0.999840993296085,
+   "bytes": 6099531,
+   "check": "lossless"
+  },
+  {
+   "case": "bc7:decode",
+   "lib": "oc",
+   "ms": 8.55666771531105,
+   "n": 40,
+   "cpu": 5.449937574902144,
+   "check": "3ac07035613bdca6uint8(2048, 2048, 4)"
+  },
+  {
+   "case": "lzma:decode",
+   "lib": "ic",
+   "ms": 198.72655160725117,
+   "n": 5,
+   "cpu": 0.9993341064266644,
+   "check": "6c0d74d9608f6773"
+  },
+  {
+   "case": "zfp:encode",
+   "lib": "oc",
+   "ms": 109.70268584787846,
+   "n": 5,
+   "cpu": 0.9992457266727575,
+   "bytes": 12505192,
+   "check": "lossless"
+  },
+  {
+   "case": "delta_u16:decode",
+   "lib": "ic",
+   "ms": 13.578401878476143,
+   "n": 30,
+   "cpu": 1.0001741016954995,
+   "check": "545c8753b23bcc7auint16(4096, 4096)"
+  },
+  {
+   "case": "deflate:decode",
+   "lib": "oc",
+   "ms": 118.24512667953968,
+   "n": 5,
+   "cpu": 0.9997086641569147,
+   "check": "545c8753b23bcc7a"
+  },
+  {
+   "case": "zstd:encode",
+   "lib": "ic",
+   "ms": 95.9458127617836,
+   "n": 5,
+   "cpu": 0.9999805977309046,
+   "bytes": 30476820,
+   "check": "lossless"
+  },
+  {
+   "case": "webp:decode",
+   "lib": "oc",
+   "ms": 111.19098588824272,
+   "n": 5,
+   "cpu": 0.9988702690214031,
+   "check": "491156c91eb0fb5auint8(2048, 2048, 3)"
+  },
+  {
+   "case": "lerc:decode",
+   "lib": "oc",
+   "ms": 9.392729960381985,
+   "n": 40,
+   "cpu": 0.9993875184417894,
+   "check": "2c03f7593e03c345uint16(2048, 2048)"
+  },
+  {
+   "case": "lzma:encode",
+   "lib": "oc",
+   "ms": 2593.322515487671,
+   "n": 5,
+   "cpu": 0.9990156678788936,
+   "bytes": 6913284,
+   "check": "lossless"
+  },
+  {
+   "case": "bitshuffle:decode",
+   "lib": "ic",
+   "ms": 38.86903263628483,
+   "n": 11,
+   "cpu": 0.9981638359941879,
+   "check": "545c8753b23bcc7a"
+  },
+  {
+   "case": "jpeg:decode",
+   "lib": "oc",
+   "ms": 27.841027826070786,
+   "n": 15,
+   "cpu": 0.9994975697329829,
+   "check": "8b57664a34177e35uint8(2048, 2048, 3)"
+  },
+  {
+   "case": "blosc2:encode",
+   "lib": "oc",
+   "ms": 490.4874116182327,
+   "n": 5,
+   "cpu": 0.9990945773144273,
+   "bytes": 24962982,
+   "check": "lossless"
+  },
+  {
+   "case": "lzma:encode",
+   "lib": "ic",
+   "ms": 2555.688524618745,
+   "n": 5,
+   "cpu": 0.9991075454203523,
+   "bytes": 6913284,
+   "check": "lossless"
+  },
+  {
+   "case": "jxl_lossless:encode",
+   "lib": "ic",
+   "ms": 262.26942986249924,
+   "n": 5,
+   "cpu": 0.9991928661424143,
+   "bytes": 5629900,
+   "check": "lossless"
+  },
+  {
+   "case": "lerc:encode",
+   "lib": "ic",
+   "ms": 39.80807401239872,
+   "n": 11,
+   "cpu": 0.9994691293235959,
+   "bytes": 6099531,
+   "check": "lossless"
+  },
+  {
+   "case": "blosc2:decode",
+   "lib": "oc",
+   "ms": 55.21049164235592,
+   "n": 8,
+   "cpu": 0.9986686300890052,
+   "check": "545c8753b23bcc7a"
+  },
+  {
+   "case": "snappy:decode",
+   "lib": "oc",
+   "ms": 22.792309522628784,
+   "n": 18,
+   "cpu": 0.9991001967805331,
+   "check": "545c8753b23bcc7a"
+  },
+  {
+   "case": "lzw:encode",
+   "lib": "oc",
+   "ms": 131.2977708876133,
+   "n": 5,
+   "cpu": 0.9991343502142719,
+   "bytes": 9116054,
+   "check": "lossless"
+  },
+  {
+   "case": "deflate:decode",
+   "lib": "ic",
+   "ms": 162.0106641203165,
+   "n": 5,
+   "cpu": 0.9987338346379456,
+   "check": "545c8753b23bcc7a"
+  },
+  {
+   "case": "jpegls:decode",
+   "lib": "oc",
+   "ms": 109.9739596247673,
+   "n": 5,
+   "cpu": 0.9990597737982401,
+   "check": "2c03f7593e03c345uint16(2048, 2048)"
+  },
+  {
+   "case": "qoi:decode",
+   "lib": "ic",
+   "ms": 35.174526274204254,
+   "n": 12,
+   "cpu": 0.9996567455432456,
+   "check": "db40c29c960cb630uint8(2048, 2048, 3)"
+  },
+  {
+   "case": "jxl_lossless:decode",
+   "lib": "oc",
+   "ms": 42.90137719362974,
+   "n": 10,
+   "cpu": 7.565272512898658,
+   "check": "2c03f7593e03c345uint16(2048, 2048)"
+  },
+  {
+   "case": "jpeg:encode",
+   "lib": "ic",
+   "ms": 81.92703872919083,
+   "n": 5,
+   "cpu": 0.9991662563855018,
+   "bytes": 2437855,
+   "check": "lossy"
+  },
+  {
+   "case": "snappy:decode",
+   "lib": "ic",
+   "ms": 19.97535675764084,
+   "n": 21,
+   "cpu": 0.9994747024638363,
+   "check": "545c8753b23bcc7a"
+  },
+  {
+   "case": "jpeg2k:decode",
+   "lib": "ic",
+   "ms": 586.8525542318821,
+   "n": 5,
+   "cpu": 0.9992434875633953,
+   "check": "2c03f7593e03c345uint16(2048, 2048)"
+  },
+  {
+   "case": "deflate:encode",
+   "lib": "oc",
+   "ms": 419.4946587085724,
+   "n": 5,
+   "cpu": 0.9991151673288498,
+   "bytes": 30524176,
+   "check": "lossless"
+  },
+  {
+   "case": "jxl_lossy:decode",
+   "lib": "oc",
+   "ms": 52.66755633056164,
+   "n": 8,
+   "cpu": 5.016701005095106,
+   "check": "9cb90456bf8bd537uint8(2048, 2048, 3)"
+  },
+  {
+   "case": "deflate:decode",
+   "lib": "oc",
+   "ms": 109.707435593009,
+   "n": 5,
+   "cpu": 0.9996396711118566,
+   "check": "545c8753b23bcc7a"
+  },
+  {
+   "case": "jxl_lossy:encode",
+   "lib": "ic",
+   "ms": 821.6524962335825,
+   "n": 5,
+   "cpu": 0.9991866304609759,
+   "bytes": 2238951,
+   "check": "lossy"
+  },
+  {
+   "case": "lerc:encode",
+   "lib": "oc",
+   "ms": 26.753420010209084,
+   "n": 15,
+   "cpu": 0.999210108829374,
+   "bytes": 6099531,
+   "check": "lossless"
+  },
+  {
+   "case": "snappy:encode",
+   "lib": "oc",
+   "ms": 73.34908284246922,
+   "n": 6,
+   "cpu": 0.9990432297423159,
+   "bytes": 33555972,
+   "check": "lossless"
+  },
+  {
+   "case": "bz2:decode",
+   "lib": "ic",
+   "ms": 417.8438689559698,
+   "n": 5,
+   "cpu": 0.9990869669163375,
+   "check": "6c0d74d9608f6773"
+  },
+  {
+   "case": "brotli:decode",
+   "lib": "oc",
+   "ms": 188.98065015673637,
+   "n": 5,
+   "cpu": 0.9992935148627243,
+   "check": "545c8753b23bcc7a"
+  },
+  {
+   "case": "bc1:decode",
+   "lib": "ic",
+   "ms": 3.1679561361670494,
+   "n": 40,
+   "cpu": 0.9999370715301279,
+   "check": "a7de88b06c2026c8uint8(2048, 2048, 4)"
+  },
+  {
+   "case": "deflate:encode",
+   "lib": "oc",
+   "ms": 417.4894504249096,
+   "n": 5,
+   "cpu": 0.9990359769912075,
+   "bytes": 30524176,
+   "check": "lossless"
+  },
+  {
+   "case": "qoi:decode",
+   "lib": "ic",
+   "ms": 35.24278663098812,
+   "n": 12,
+   "cpu": 0.9996271787111886,
+   "check": "db40c29c960cb630uint8(2048, 2048, 3)"
+  },
+  {
+   "case": "jpeg2k:encode",
+   "lib": "ic",
+   "ms": 703.2178081572056,
+   "n": 5,
+   "cpu": 0.9990595596551789,
+   "bytes": 5671623,
+   "check": "lossless"
+  },
+  {
+   "case": "bz2:encode",
+   "lib": "ic",
+   "ms": 569.3786628544331,
+   "n": 5,
+   "cpu": 0.9990569454765531,
+   "bytes": 6179458,
+   "check": "lossless"
+  },
+  {
+   "case": "bz2:decode",
+   "lib": "oc",
+   "ms": 345.7161244004965,
+   "n": 5,
+   "cpu": 0.9994399115297283,
+   "check": "6c0d74d9608f6773"
+  },
+  {
+   "case": "bc1:decode",
+   "lib": "oc",
+   "ms": 1.7751650884747505,
+   "n": 40,
+   "cpu": 3.6862564912038356,
+   "check": "a7de88b06c2026c8uint8(2048, 2048, 4)"
+  },
+  {
+   "case": "qoi:decode",
+   "lib": "oc",
+   "ms": 35.16041673719883,
+   "n": 12,
+   "cpu": 0.9997634183321382,
+   "check": "db40c29c960cb630uint8(2048, 2048, 3)"
+  },
+  {
+   "case": "webp:encode",
+   "lib": "ic",
+   "ms": 454.1151486337185,
+   "n": 5,
+   "cpu": 0.9990531553144472,
+   "bytes": 1530260,
+   "check": "lossy"
+  },
+  {
+   "case": "jpeg2k:decode",
+   "lib": "oc",
+   "ms": 127.0015798509121,
+   "n": 5,
+   "cpu": 7.07413365255031,
+   "check": "2c03f7593e03c345uint16(2048, 2048)"
+  },
+  {
+   "case": "bitshuffle:encode",
+   "lib": "ic",
+   "ms": 50.80367159098387,
+   "n": 8,
+   "cpu": 0.9999280465889955,
+   "bytes": 33554432,
+   "check": "lossless"
+  },
+  {
+   "case": "xor_u16:decode",
+   "lib": "oc",
+   "ms": 10.52649412304163,
+   "n": 38,
+   "cpu": 0.9994796082131604,
+   "check": "545c8753b23bcc7auint16(4096, 4096)"
+  },
+  {
+   "case": "lerc:decode",
+   "lib": "ic",
+   "ms": 10.704852640628815,
+   "n": 38,
+   "cpu": 0.9989947444037893,
+   "check": "2c03f7593e03c345uint16(2048, 2048)"
+  },
+  {
+   "case": "webp:encode",
+   "lib": "oc",
+   "ms": 440.44268876314163,
+   "n": 5,
+   "cpu": 0.999040891359463,
+   "bytes": 1530260,
+   "check": "lossy"
+  },
+  {
+   "case": "bitshuffle:decode",
+   "lib": "ic",
+   "ms": 38.89095038175583,
+   "n": 11,
+   "cpu": 0.9987312818255796,
+   "check": "545c8753b23bcc7a"
+  },
+  {
+   "case": "zfp:decode",
+   "lib": "oc",
+   "ms": 112.77938447892666,
+   "n": 5,
+   "cpu": 0.9986340906046912,
+   "check": "f7c8b25aa8c92c17float32(2048, 2048)"
+  },
+  {
+   "case": "lerc:encode",
+   "lib": "ic",
+   "ms": 47.787878662347794,
+   "n": 9,
+   "cpu": 0.9997228003975147,
+   "bytes": 6099531,
+   "check": "lossless"
+  },
+  {
+   "case": "lzw:encode",
+   "lib": "ic",
+   "ms": 172.94303141534328,
+   "n": 5,
+   "cpu": 0.9991216522348323,
+   "bytes": 9115259,
+   "check": "lossless"
+  },
+  {
+   "case": "lzma:encode",
+   "lib": "ic",
+   "ms": 2580.5301144719124,
+   "n": 5,
+   "cpu": 0.9990425241663871,
+   "bytes": 6913284,
+   "check": "lossless"
+  },
+  {
+   "case": "jpeg2k:decode",
+   "lib": "ic",
+   "ms": 588.4632561355829,
+   "n": 5,
+   "cpu": 0.999162691163369,
+   "check": "2c03f7593e03c345uint16(2048, 2048)"
+  },
+  {
+   "case": "jpeg:decode",
+   "lib": "ic",
+   "ms": 50.03343429416418,
+   "n": 8,
+   "cpu": 0.9999212313990308,
+   "check": "8b57664a34177e35uint8(2048, 2048, 3)"
+  },
+  {
+   "case": "blosc2:decode",
+   "lib": "ic",
+   "ms": 56.218027137219906,
+   "n": 8,
+   "cpu": 0.999311933570599,
+   "check": "545c8753b23bcc7a"
+  },
+  {
+   "case": "png:encode",
+   "lib": "ic",
+   "ms": 920.7916054874659,
+   "n": 5,
+   "cpu": 0.9991410095263195,
+   "bytes": 6437751,
+   "check": "lossless"
+  },
+  {
+   "case": "bitshuffle:decode",
+   "lib": "oc",
+   "ms": 38.76790963113308,
+   "n": 11,
+   "cpu": 1.000187782871403,
+   "check": "545c8753b23bcc7a"
+  },
+  {
+   "case": "bc7:decode",
+   "lib": "oc",
+   "ms": 8.794669061899185,
+   "n": 40,
+   "cpu": 5.6174332215801535,
+   "check": "3ac07035613bdca6uint8(2048, 2048, 4)"
+  },
+  {
+   "case": "zstd:decode",
+   "lib": "ic",
+   "ms": 56.47803656756878,
+   "n": 8,
+   "cpu": 0.9995689335260418,
+   "check": "545c8753b23bcc7a"
+  },
+  {
+   "case": "lzma:encode",
+   "lib": "oc",
+   "ms": 2600.6590723991394,
+   "n": 5,
+   "cpu": 0.9989861146460322,
+   "bytes": 6913284,
+   "check": "lossless"
+  },
+  {
+   "case": "lz4:encode",
+   "lib": "ic",
+   "ms": 80.01447655260563,
+   "n": 5,
+   "cpu": 0.9998575265815053,
+   "bytes": 33556499,
+   "check": "lossless"
+  },
+  {
+   "case": "jxl_lossless:decode",
+   "lib": "ic",
+   "ms": 175.78885704278946,
+   "n": 5,
+   "cpu": 0.9997100017819066,
+   "check": "2c03f7593e03c345uint16(2048, 2048)"
+  },
+  {
+   "case": "qoi:encode",
+   "lib": "oc",
+   "ms": 43.21610368788242,
+   "n": 10,
+   "cpu": 0.9995050574751857,
+   "bytes": 11486989,
+   "check": "lossless"
+  },
+  {
+   "case": "png:encode",
+   "lib": "oc",
+   "ms": 250.91267377138138,
+   "n": 5,
+   "cpu": 0.9992370462728987,
+   "bytes": 6493730,
+   "check": "lossless"
+  },
+  {
+   "case": "qoi:encode",
+   "lib": "ic",
+   "ms": 43.341939337551594,
+   "n": 10,
+   "cpu": 0.9995130788064007,
+   "bytes": 11486989,
+   "check": "lossless"
+  },
+  {
+   "case": "jxl_lossless:decode",
+   "lib": "oc",
+   "ms": 42.76098217815161,
+   "n": 10,
+   "cpu": 7.596698481524613,
+   "check": "2c03f7593e03c345uint16(2048, 2048)"
+  },
+  {
+   "case": "deflate:encode",
+   "lib": "ic",
+   "ms": 1075.9698059409857,
+   "n": 5,
+   "cpu": 0.9989608507991724,
+   "bytes": 30447420,
+   "check": "lossless"
+  },
+  {
+   "case": "brotli:encode",
+   "lib": "ic",
+   "ms": 329.094335436821,
+   "n": 5,
+   "cpu": 0.9992400381603778,
+   "bytes": 30369076,
+   "check": "lossless"
+  },
+  {
+   "case": "bz2:encode",
+   "lib": "oc",
+   "ms": 564.8522078990936,
+   "n": 5,
+   "cpu": 0.9994556908424445,
+   "bytes": 6179458,
+   "check": "lossless"
+  },
+  {
+   "case": "packbits:decode",
+   "lib": "ic",
+   "ms": 6.494240835309029,
+   "n": 40,
+   "cpu": 1.0004222751537506,
+   "check": "bd2b5bc1208ccdc7"
+  },
+  {
+   "case": "snappy:encode",
+   "lib": "ic",
+   "ms": 74.18902590870857,
+   "n": 6,
+   "cpu": 0.9998444483301215,
+   "bytes": 33555972,
+   "check": "lossless"
+  },
+  {
+   "case": "jpegls:decode",
+   "lib": "ic",
+   "ms": 112.08451725542545,
+   "n": 5,
+   "cpu": 0.9996593275369182,
+   "check": "2c03f7593e03c345uint16(2048, 2048)"
+  },
+  {
+   "case": "blosc2:decode",
+   "lib": "oc",
+   "ms": 54.435065016150475,
+   "n": 8,
+   "cpu": 0.9992337272600336,
+   "check": "545c8753b23bcc7a"
+  },
+  {
+   "case": "jpegls:decode",
+   "lib": "oc",
+   "ms": 108.57824422419071,
+   "n": 5,
+   "cpu": 0.9992265580131763,
+   "check": "2c03f7593e03c345uint16(2048, 2048)"
+  },
+  {
+   "case": "lerc:decode",
+   "lib": "oc",
+   "ms": 11.22443936765194,
+   "n": 36,
+   "cpu": 0.9988849502162009,
+   "check": "2c03f7593e03c345uint16(2048, 2048)"
+  },
+  {
+   "case": "zstd:encode",
+   "lib": "ic",
+   "ms": 81.89797587692738,
+   "n": 5,
+   "cpu": 0.999735762256328,
+   "bytes": 30476820,
+   "check": "lossless"
+  },
+  {
+   "case": "delta_u16:decode",
+   "lib": "ic",
+   "ms": 13.65312747657299,
+   "n": 30,
+   "cpu": 0.9996080287923471,
+   "check": "545c8753b23bcc7auint16(4096, 4096)"
+  },
+  {
+   "case": "deflate:decode",
+   "lib": "ic",
+   "ms": 175.79885944724083,
+   "n": 5,
+   "cpu": 0.9993100086722869,
+   "check": "545c8753b23bcc7a"
+  },
+  {
+   "case": "png:decode",
+   "lib": "oc",
+   "ms": 72.56655767560005,
+   "n": 6,
+   "cpu": 0.9991414786779369,
+   "check": "db40c29c960cb630uint8(2048, 2048, 3)"
+  },
+  {
+   "case": "delta_u16:decode",
+   "lib": "oc",
+   "ms": 11.723846197128296,
+   "n": 35,
+   "cpu": 0.9996716712440993,
+   "check": "545c8753b23bcc7auint16(4096, 4096)"
+  },
+  {
+   "case": "packints12:decode",
+   "lib": "ic",
+   "ms": 30.23081924766302,
+   "n": 14,
+   "cpu": 1.000084693465868,
+   "check": "e3c8f4983a69a69duint16(16777216,)"
+  },
+  {
+   "case": "lzw:encode",
+   "lib": "oc",
+   "ms": 118.08822490274906,
+   "n": 5,
+   "cpu": 0.9996249184275947,
+   "bytes": 9116054,
+   "check": "lossless"
+  },
+  {
+   "case": "snappy:decode",
+   "lib": "oc",
+   "ms": 22.27461338043213,
+   "n": 18,
+   "cpu": 0.9993197417432709,
+   "check": "545c8753b23bcc7a"
+  },
+  {
+   "case": "jpeg2k:encode",
+   "lib": "oc",
+   "ms": 151.07015147805214,
+   "n": 5,
+   "cpu": 7.3668814247960945,
+   "bytes": 5671623,
+   "check": "lossless"
+  },
+  {
+   "case": "brotli:encode",
+   "lib": "oc",
+   "ms": 390.10732620954514,
+   "n": 5,
+   "cpu": 0.999080153782826,
+   "bytes": 30369076,
+   "check": "lossless"
+  },
+  {
+   "case": "lzma:decode",
+   "lib": "ic",
+   "ms": 199.40875098109245,
+   "n": 5,
+   "cpu": 0.9994681835449903,
+   "check": "6c0d74d9608f6773"
+  },
+  {
+   "case": "lz4:decode",
+   "lib": "oc",
+   "ms": 23.113281466066837,
+   "n": 18,
+   "cpu": 0.9996664566918186,
+   "check": "545c8753b23bcc7a"
+  },
+  {
+   "case": "jpeg:encode",
+   "lib": "oc",
+   "ms": 20.9650956094265,
+   "n": 20,
+   "cpu": 0.9993195931068425,
+   "bytes": 2437855,
+   "check": "lossy"
+  },
+  {
+   "case": "zfp:encode",
+   "lib": "oc",
+   "ms": 111.19594611227512,
+   "n": 5,
+   "cpu": 0.9995941809154995,
+   "bytes": 12505192,
+   "check": "lossless"
+  },
+  {
+   "case": "png:decode",
+   "lib": "ic",
+   "ms": 59.32430364191532,
+   "n": 7,
+   "cpu": 0.9998614688528553,
+   "check": "db40c29c960cb630uint8(2048, 2048, 3)"
+  },
+  {
+   "case": "zfp:decode",
+   "lib": "ic",
+   "ms": 114.3843475729227,
+   "n": 5,
+   "cpu": 0.999573810530864,
+   "check": "f7c8b25aa8c92c17float32(2048, 2048)"
+  },
+  {
+   "case": "jxl_lossy:decode",
+   "lib": "oc",
+   "ms": 52.342308685183525,
+   "n": 8,
+   "cpu": 5.003828649077478,
+   "check": "9cb90456bf8bd537uint8(2048, 2048, 3)"
+  },
+  {
+   "case": "lz4:decode",
+   "lib": "ic",
+   "ms": 22.769846953451633,
+   "n": 18,
+   "cpu": 0.9988030543164849,
+   "check": "545c8753b23bcc7a"
+  },
+  {
+   "case": "zfp:encode",
+   "lib": "ic",
+   "ms": 111.15971766412258,
+   "n": 5,
+   "cpu": 0.9991590184882597,
+   "bytes": 12505192,
+   "check": "lossless"
+  },
+  {
+   "case": "jpeg:encode",
+   "lib": "ic",
+   "ms": 74.57896787673235,
+   "n": 6,
+   "cpu": 0.9988676357206152,
+   "bytes": 2437855,
+   "check": "lossy"
+  },
+  {
+   "case": "lzw:decode",
+   "lib": "oc",
+   "ms": 29.743390157818794,
+   "n": 14,
+   "cpu": 0.999379842494689,
+   "check": "bd2b5bc1208ccdc7"
+  },
+  {
+   "case": "jpeg:decode",
+   "lib": "oc",
+   "ms": 22.991937585175037,
+   "n": 18,
+   "cpu": 0.9999005851543641,
+   "check": "8b57664a34177e35uint8(2048, 2048, 3)"
+  },
+  {
+   "case": "bitshuffle:encode",
+   "lib": "oc",
+   "ms": 59.30270440876484,
+   "n": 7,
+   "cpu": 0.9996932614530388,
+   "bytes": 33554432,
+   "check": "lossless"
+  },
+  {
+   "case": "packbits:decode",
+   "lib": "oc",
+   "ms": 2.2815531119704247,
+   "n": 40,
+   "cpu": 1.00108236647748,
+   "check": "bd2b5bc1208ccdc7"
+  },
+  {
+   "case": "lz4:encode",
+   "lib": "oc",
+   "ms": 79.57634329795837,
+   "n": 6,
+   "cpu": 0.999247077029284,
+   "bytes": 33556499,
+   "check": "lossless"
+  },
+  {
+   "case": "lzma:decode",
+   "lib": "oc",
+   "ms": 201.4982644468546,
+   "n": 5,
+   "cpu": 0.9989830080095298,
+   "check": "6c0d74d9608f6773"
+  },
+  {
+   "case": "webp:decode",
+   "lib": "oc",
+   "ms": 111.61981336772442,
+   "n": 5,
+   "cpu": 0.9993544841234026,
+   "check": "491156c91eb0fb5auint8(2048, 2048, 3)"
+  },
+  {
+   "case": "jxl_lossy:decode",
+   "lib": "ic",
+   "ms": 130.40010072290897,
+   "n": 5,
+   "cpu": 0.9995855359318049,
+   "check": "6d2072454ecb48f3uint8(2048, 2048, 3)"
+  },
+  {
+   "case": "snappy:decode",
+   "lib": "ic",
+   "ms": 22.83431775867939,
+   "n": 18,
+   "cpu": 0.9992863496552946,
    "check": "545c8753b23bcc7a"
   },
   {
    "case": "packints12:decode",
    "lib": "oc",
-   "ms": 31.99375420808792,
-   "n": 13,
-   "cpu": 0.9990492049461412,
+   "ms": 36.88211925327778,
+   "n": 11,
+   "cpu": 0.9998022477460935,
    "check": "e3c8f4983a69a69duint16(16777216,)"
   },
   {
    "case": "jpegls:encode",
    "lib": "ic",
-   "ms": 102.48919203877449,
+   "ms": 121.82506360113621,
    "n": 5,
-   "cpu": 0.9990547305191794,
+   "cpu": 0.9978372789126817,
    "bytes": 5639796,
    "check": "lossless"
   },
   {
    "case": "brotli:decode",
    "lib": "ic",
-   "ms": 189.95380401611328,
+   "ms": 182.30496533215046,
    "n": 5,
-   "cpu": 0.9989522582669695,
+   "cpu": 0.99893666536215,
    "check": "545c8753b23bcc7a"
   },
   {
    "case": "jpegls:encode",
    "lib": "oc",
-   "ms": 105.2763070911169,
+   "ms": 121.8243408948183,
    "n": 5,
-   "cpu": 0.9991159292265254,
+   "cpu": 0.9992094140278972,
    "bytes": 5639752,
    "check": "lossless"
   },
   {
    "case": "jxl_lossless:encode",
    "lib": "ic",
-   "ms": 269.0150272101164,
+   "ms": 258.88553261756897,
    "n": 5,
-   "cpu": 0.9990381533832037,
+   "cpu": 0.9990620288008597,
    "bytes": 5629900,
    "check": "lossless"
   },
   {
    "case": "bc7:decode",
    "lib": "ic",
-   "ms": 42.52935107797384,
-   "n": 10,
-   "cpu": 0.999286544747017,
+   "ms": 45.487215742468834,
+   "n": 9,
+   "cpu": 0.9998781167229821,
    "check": "3ac07035613bdca6uint8(2048, 2048, 4)"
   },
   {
    "case": "webp:decode",
    "lib": "ic",
-   "ms": 115.39738066494465,
+   "ms": 111.41809076070786,
    "n": 5,
-   "cpu": 0.999389575549524,
+   "cpu": 0.9995903857501436,
    "check": "491156c91eb0fb5auint8(2048, 2048, 3)"
   },
   {
    "case": "blosc2:encode",
    "lib": "ic",
-   "ms": 486.16382479667664,
+   "ms": 471.09012119472027,
    "n": 5,
-   "cpu": 0.9991987975372154,
+   "cpu": 0.9992690099221196,
    "bytes": 25395545,
    "check": "lossless"
   },
   {
    "case": "zstd:encode",
    "lib": "oc",
-   "ms": 108.12312178313732,
+   "ms": 97.07934036850929,
    "n": 5,
-   "cpu": 0.9991403169706068,
-   "bytes": 30509764,
+   "cpu": 0.9995536213848073,
+   "bytes": 30476820,
    "check": "lossless"
   },
   {
    "case": "jxl_lossy:encode",
    "lib": "oc",
-   "ms": 245.25370635092258,
+   "ms": 340.57282842695713,
    "n": 5,
-   "cpu": 25.877646872859483,
+   "cpu": 4.96499016548393,
    "bytes": 2150106,
    "check": "lossy"
   },
   {
    "case": "xor_u16:decode",
    "lib": "ic",
-   "ms": 14.024995267391205,
-   "n": 29,
-   "cpu": 0.9991836800428788,
+   "ms": 11.655064299702644,
+   "n": 35,
+   "cpu": 0.999743706866294,
    "check": "545c8753b23bcc7auint16(4096, 4096)"
   },
   {
    "case": "zstd:decode",
    "lib": "oc",
-   "ms": 67.9671261459589,
-   "n": 6,
-   "cpu": 0.9993465646117862,
+   "ms": 56.50917813181877,
+   "n": 8,
+   "cpu": 0.9996390226865238,
    "check": "545c8753b23bcc7a"
   },
   {
    "case": "lzw:decode",
    "lib": "ic",
-   "ms": 94.6712028235197,
-   "n": 5,
-   "cpu": 0.9995431223495873,
+   "ms": 76.22955087572336,
+   "n": 6,
+   "cpu": 0.9994843655705693,
    "check": "bd2b5bc1208ccdc7"
   },
   {
    "case": "blosc2:encode",
    "lib": "oc",
-   "ms": 589.6749757230282,
+   "ms": 487.8031965345144,
    "n": 5,
-   "cpu": 0.9991526737880672,
+   "cpu": 0.9991120054508059,
    "bytes": 24962982,
    "check": "lossless"
   },
   {
    "case": "jxl_lossless:encode",
    "lib": "oc",
-   "ms": 76.08384266495705,
-   "n": 6,
-   "cpu": 10.843670217111027,
+   "ms": 106.10646940767765,
+   "n": 5,
+   "cpu": 4.160862577092495,
    "bytes": 5615519,
    "check": "lossless"
   }

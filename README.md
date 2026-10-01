@@ -285,25 +285,26 @@ z = zarr.create_array(
 ### TIFF against tifffile
 
 Reading the same files, all written by tifffile, and requiring identical
-pixels from both. "1 reader" is each library's default call; "1 thread"
-forces both to a single thread (`numthreads=1`, `maxworkers=1`); "8
-readers" is eight threads each reading at once, both on defaults. Each
+pixels from both. "1 reader" is each library's default call, made from
+the main thread as a script makes it; "1 thread" forces both to a single
+thread (`numthreads=1`, `maxworkers=1`); "8 readers" is eight threads each
+reading at once, both on defaults. Each
 number is how many times faster opencodecs is, the median over fresh
 processes alternating the two libraries, on a 20-core Apple silicon Mac
 (tifffile 2026.3.3) and a 64-core x86-64 Linux workstation (tifffile
-2026.5.2), with opencodecs 0.5.0 as its CI wheels ship it.
+2026.5.2), with opencodecs 0.5.0 built as its CI wheels are.
 
 | 4096 x 4096 uint16 | Mac, 1 reader | Mac, 1 thread | Mac, 8 readers | Linux, 1 reader | Linux, 1 thread | Linux, 8 readers |
 |---|---:|---:|---:|---:|---:|---:|
-| Tiled, deflate + predictor | 3.0x | 1.1x | 3.8x | 4.6x | 1.1x | 9.1x |
-| Tiled, zstd | 4.3x | 1.1x | 5.0x | 6.4x | 1.4x | 8.8x |
-| Tiled, LZW + predictor | 4.0x | 2.2x | 4.5x | 5.4x | 2.3x | 9.0x |
-| Strips, deflate + predictor | 2.3x | 1.0x | 1.9x | 4.7x | 1.2x | 4.8x |
-| Strips, uncompressed | 2.9x | 2.5x | 1.6x | 2.8x | 1.0x | 1.1x |
-| 3072 x 3072 uint8, 144 tiles, deflate | 2.2x | 1.0x | 4.6x | 3.4x | 0.93x (slower) | 11.6x |
+| Tiled, deflate + predictor | 3.3x | 1.1x | 3.9x | 4.2x | 1.4x | 10.0x |
+| Tiled, zstd | 4.1x | 1.1x | 5.0x | 4.9x | 1.7x | 9.3x |
+| Tiled, LZW + predictor | 3.9x | 2.2x | 4.7x | 4.0x | 2.4x | 9.6x |
+| Strips, deflate + predictor | 2.0x | 1.0x | 1.9x | 2.9x | 1.4x | 5.0x |
+| Strips, uncompressed | 3.2x | 2.3x | 1.5x | 3.6x | 0.95x (slower) | 0.93x (slower) |
+| 3072 x 3072 uint8, 144 tiles, deflate | 2.2x | 1.0x | 4.6x | 4.4x | 1.3x | 13.2x |
 
-A tiled deflate image with the predictor takes 6.9 ms against 20.5 ms on
-the Mac and 11.8 ms against 54.2 ms on Linux. Most of the gap is how the
+A tiled deflate image with the predictor takes 6.1 ms against 20.0 ms on
+the Mac and 10.0 ms against 42.4 ms on Linux. Most of the gap is how the
 work is spread: a batch of tiles decompresses, has its predictor undone
 and lands in the output in one native call that releases the GIL once,
 so threads spend their time decoding rather than queuing for it, and
@@ -311,15 +312,22 @@ concurrent readers share the machine instead of each taking all of it.
 Uncompressed strips are a copy for both libraries; opencodecs splits it
 into positioned reads on several threads, and for one thread's worth
 does whichever its kernel does faster: macOS copies out of the file
-mapping, Linux reads. One cell is below 1x: one thread reading the
-144-tile uint8 image on Linux, 32.1 ms against 29.8 ms.
+mapping, Linux reads. The two Linux cells below 1x are that copy, and a
+tie: alternating in one process, one thread reads the 32 MB in 9.27 ms
+with opencodecs and 9.32 ms with tifffile, against 8.84 ms for a bare
+`readinto` of a new array, so neither library has anything left to
+gain there; across separate processes each cell's interval reaches 1.0.
 
 ### Codecs against imagecodecs
 
 Each row is one codec operation at the same settings in both packages:
 opencodecs 0.5.0 against imagecodecs 2026.8.16, each otherwise called with
 its defaults, on a 20-core Apple silicon Mac, a 64-core x86-64 Linux
-workstation and a 4-core x86-64 Windows laptop. Each cell is how many times
+workstation and a 4-core x86-64 Windows laptop. On Linux every process is
+pinned to one of the processor's 16 core groups (4 cores, 8 hardware
+threads, one L3 cache): unpinned, a process lands on a different group
+from run to run and one-thread timings move by up to 20% with it. The
+threaded rows on Linux therefore use at most 8 hardware threads. Each cell is how many times
 faster opencodecs is (imagecodecs' time over opencodecs'), the median over
 fresh processes that alternate the two packages; below 1.00x, imagecodecs
 is faster. Both decoders read the same bitstream and must return identical
@@ -333,55 +341,55 @@ threads where imagecodecs' ran on one.
 | Codec | Settings | Operation | Mac | Linux | Windows |
 |---|---|---|---:|---:|---:|
 | **Compression** | | | | | |
-| zstd | level 3 | encode | 0.95x | 0.95x | 0.99x |
-| zstd | level 3 | decode | 0.96x | 0.82x | 0.81x |
+| zstd | level 3 | encode | 0.95x | 0.99x | 0.99x |
+| zstd | level 3 | decode | 0.96x | 1.18x | 0.81x |
 | deflate | zlib stream, level 6 | encode | 2.69x | 2.58x | 2.61x |
-| deflate | zlib stream, level 6 | decode | 1.90x | 1.25x | 1.67x |
-| lz4 | frame format, default level | encode | 0.99x | 0.87x | 1.02x |
-| lz4 | frame format, default level | decode | 1.25x | 0.91x | 1.00x |
-| brotli | level 4 | encode | 0.93x | 0.87x | 1.02x |
-| brotli | level 4 | decode | 1.02x | 0.85x | 0.94x |
-| blosc2 | zstd, level 5, byte shuffle | encode | 0.89x | 0.95x | 0.87x |
-| blosc2 | zstd, level 5, byte shuffle | decode | 0.87x | 0.98x | 0.87x |
-| lzma | level 6 | encode | 0.93x | 1.04x | 1.05x |
-| lzma | level 6 | decode | 0.97x | 0.95x | 0.85x |
-| bz2 | level 9 | encode | 1.00x | 1.02x | 1.00x |
+| deflate | zlib stream, level 6 | decode | 1.90x | 1.54x | 1.67x |
+| lz4 | frame format, default level | encode | 0.99x | 1.00x | 1.02x |
+| lz4 | frame format, default level | decode | 1.25x | 1.00x | 1.00x |
+| brotli | level 4 | encode | 0.93x | 0.85x | 1.02x |
+| brotli | level 4 | decode | 1.02x | 0.97x | 0.94x |
+| blosc2 | zstd, level 5, byte shuffle | encode | 0.89x | 0.96x | 0.87x |
+| blosc2 | zstd, level 5, byte shuffle | decode | 0.87x | 1.02x | 0.87x |
+| lzma | level 6 | encode | 0.93x | 0.98x | 1.05x |
+| lzma | level 6 | decode | 0.97x | 0.98x | 0.85x |
+| bz2 | level 9 | encode | 1.00x | 1.00x | 1.00x |
 | bz2 | level 9 | decode | 1.00x | 1.00x | 0.99x |
-| snappy |  | encode | 1.00x | 1.02x | 1.01x |
-| snappy |  | decode | 1.26x | 0.96x | 1.01x |
+| snappy |  | encode | 1.00x | 1.00x | 1.01x |
+| snappy |  | decode | 1.26x | 1.00x | 1.01x |
 | **TIFF compression** | | | | | |
-| LZW | TIFF flavor | encode | 1.33x | 1.39x | 1.49x |
-| LZW | TIFF flavor | decode | 3.33x | 2.73x | 2.94x |
-| PackBits |  | decode | 3.32x | 2.76x | 1.52x |
+| LZW | TIFF flavor | encode | 1.33x | 1.32x | 1.49x |
+| LZW | TIFF flavor | decode | 3.33x | 3.07x | 2.94x |
+| PackBits |  | decode | 3.32x | 2.81x | 1.52x |
 | **Filters** | | | | | |
-| delta | uint16, distance 1 | decode | 1.09x | 1.11x | 1.05x |
-| XOR | uint16, distance 1 | decode | 1.08x | 1.27x | 0.93x |
-| bitshuffle | 2-byte items | encode | 1.00x | 0.89x | 1.91x |
-| bitshuffle | 2-byte items | decode | 1.00x | 0.98x | 1.75x |
+| delta | uint16, distance 1 | decode | 1.09x | 1.17x | 1.05x |
+| XOR | uint16, distance 1 | decode | 1.08x | 1.28x | 0.93x |
+| bitshuffle | 2-byte items | encode | 1.00x | 0.99x | 1.91x |
+| bitshuffle | 2-byte items | decode | 1.00x | 0.99x | 1.75x |
 | packed integers | 12-bit into uint16 | decode | 1.20x | 0.82x | 2.61x |
 | **Image formats** | | | | | |
-| PNG | RGB uint8, level 6 | encode | 3.45x | 3.64x | 1.12x |
-| PNG | RGB uint8, level 6 | decode | 1.69x | 0.91x | 0.80x |
-| JPEG | RGB uint8, quality 90 | encode | 2.68x | 4.33x | 0.97x |
-| JPEG | RGB uint8, quality 90 | decode | 1.56x | 1.89x | 1.01x |
-| WebP | RGB uint8, lossy quality 75, method 4 | encode | 0.92x | 0.89x | 0.98x |
-| WebP | RGB uint8, lossy quality 75, method 4 | decode | 0.98x | 0.87x | 1.00x |
+| PNG | RGB uint8, level 6 | encode | 3.45x | 3.68x | 1.12x |
+| PNG | RGB uint8, level 6 | decode | 1.69x | 0.99x | 0.80x |
+| JPEG | RGB uint8, quality 90 | encode | 2.68x | 3.91x | 0.97x |
+| JPEG | RGB uint8, quality 90 | decode | 1.56x | 1.80x | 1.01x |
+| WebP | RGB uint8, lossy quality 75, method 4 | encode | 0.92x | 1.03x | 0.98x |
+| WebP | RGB uint8, lossy quality 75, method 4 | decode | 0.98x | 1.00x | 1.00x |
 | QOI | RGB uint8 | encode | 0.99x | 1.00x | 1.02x |
-| QOI | RGB uint8 | decode | 1.01x | 1.16x | 0.96x |
-| JPEG 2000 | uint16, lossless | encode | 8.05x (opencodecs threaded) | 19x (opencodecs threaded) | 2.73x (opencodecs threaded) |
-| JPEG 2000 | uint16, lossless | decode | 7.64x (opencodecs threaded) | 17x (opencodecs threaded) | 2.71x (opencodecs threaded) |
-| JPEG-LS | uint16, lossless | encode | 0.95x | 0.98x | 1.08x |
+| QOI | RGB uint8 | decode | 1.01x | 1.00x | 0.96x |
+| JPEG 2000 | uint16, lossless | encode | 8.05x (opencodecs threaded) | 4.66x (opencodecs threaded) | 2.73x (opencodecs threaded) |
+| JPEG 2000 | uint16, lossless | decode | 7.64x (opencodecs threaded) | 4.57x (opencodecs threaded) | 2.71x (opencodecs threaded) |
+| JPEG-LS | uint16, lossless | encode | 0.95x | 1.00x | 1.08x |
 | JPEG-LS | uint16, lossless | decode | 0.97x | 1.01x | 1.01x |
-| JPEG XL | RGB uint8, distance 1, effort 5 | encode | 5.68x (opencodecs threaded) | 3.40x (opencodecs threaded) | 3.42x (opencodecs threaded) |
-| JPEG XL | RGB uint8, distance 1, effort 5 | decode | 5.10x (opencodecs threaded) | 3.61x (opencodecs threaded) * | 3.81x (opencodecs threaded) |
-| JPEG XL | uint16, lossless, effort 3 | encode | 10x (opencodecs threaded) | 3.64x (opencodecs threaded) | 3.03x (opencodecs threaded) |
-| JPEG XL | uint16, lossless, effort 3 | decode | 6.44x (opencodecs threaded) | 11x (opencodecs threaded) | 3.79x (opencodecs threaded) |
-| LERC | uint16, lossless | encode | 1.29x | 1.30x | 1.07x |
-| LERC | uint16, lossless | decode | 0.92x | 0.83x | 0.95x |
-| ZFP | float32, reversible | encode | 0.72x | 1.12x | 0.70x |
-| ZFP | float32, reversible | decode | 0.95x | 0.99x | 1.03x |
-| BC1 | 2048 x 2048, decode to RGBA | decode | 4.45x (opencodecs threaded) | 1.66x (opencodecs threaded) | 2.27x (opencodecs threaded) |
-| BC7 | 2048 x 2048, decode to RGBA | decode | 11x (opencodecs threaded) | 13x (opencodecs threaded) | 4.09x (opencodecs threaded) |
+| JPEG XL | RGB uint8, distance 1, effort 5 | encode | 5.68x (opencodecs threaded) | 2.30x (opencodecs threaded) | 3.42x (opencodecs threaded) |
+| JPEG XL | RGB uint8, distance 1, effort 5 | decode | 5.10x (opencodecs threaded) | 2.68x (opencodecs threaded) * | 3.81x (opencodecs threaded) |
+| JPEG XL | uint16, lossless, effort 3 | encode | 10x (opencodecs threaded) | 2.46x (opencodecs threaded) | 3.03x (opencodecs threaded) |
+| JPEG XL | uint16, lossless, effort 3 | decode | 6.44x (opencodecs threaded) | 4.11x (opencodecs threaded) | 3.79x (opencodecs threaded) |
+| LERC | uint16, lossless | encode | 1.29x | 1.78x | 1.07x |
+| LERC | uint16, lossless | decode | 0.92x | 0.96x | 0.95x |
+| ZFP | float32, reversible | encode | 0.72x | 0.99x | 0.70x |
+| ZFP | float32, reversible | decode | 0.95x | 1.07x | 1.03x |
+| BC1 | 2048 x 2048, decode to RGBA | decode | 4.45x (opencodecs threaded) | 1.79x (opencodecs threaded) | 2.27x (opencodecs threaded) |
+| BC7 | 2048 x 2048, decode to RGBA | decode | 11x (opencodecs threaded) | 5.47x (opencodecs threaded) | 4.09x (opencodecs threaded) |
 
 \* Both packages use libjxl 0.12.0, but on Linux their lossy decodes of
 the same file differ by 1 in about a third of the output values (never
@@ -391,10 +399,9 @@ everywhere.
 opencodecs is ahead where it runs its own kernels (LZW, PackBits, BC1 and
 BC7, and bitshuffle on Windows), builds PNG and deflate on libdeflate, and
 decodes JPEG 2000 and JPEG XL on several threads by default. Where both
-packages wrap the same library, some rows trail by more than 9%: zstd
-decode on Linux and Windows, blosc2 and ZFP encode on the Mac and
-Windows, LZ4 encode, brotli, WebP, bitshuffle encode and LERC decode on
-Linux, and lzma and PNG decode on Windows. Packed-integer decode, our own
+packages wrap the same library, some rows trail by more than 9%: blosc2
+and ZFP encode on the Mac and Windows, zstd, lzma and PNG decode on
+Windows, and brotli encode on Linux. Packed-integer decode, our own
 kernel, trails on Linux. No other row is more than 9% behind. Regenerate the table with
 `bench/bench_vs_imagecodecs.py`; the per-run medians are in
 `bench/results/vs_imagecodecs/`.
