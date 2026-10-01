@@ -10,6 +10,7 @@
 #include <openjph/ojph_file.h>
 #include <openjph/ojph_params.h>
 #include <openjph/ojph_message.h>
+#include <openjph/ojph_version.h>
 
 #include <cstdarg>
 #include <cstdint>
@@ -272,6 +273,15 @@ int opencodecs_htj2k_encode(
         set_error("the component transform needs at least 3 components");
         return 2;
     }
+#if OPENJPH_VERSION_MAJOR == 0 && OPENJPH_VERSION_MINOR < 31
+    // param_qcd::set_qfactor arrived after 0.27 (0.31.0 is what the wheels
+    // build); an older system OpenJPH still builds, and a quality factor
+    // is refused rather than silently ignored.
+    if (p->reversible == 0 && p->qfactor > 0) {
+        set_error("an HTJ2K quality factor (level 1 to 100) needs OpenJPH 0.31 or later");
+        return 2;
+    }
+#endif
     *out_buf = nullptr;
     *out_size = 0;
 
@@ -320,9 +330,12 @@ int opencodecs_htj2k_encode(
 
         if (p->reversible == 0) {
             ojph::param_qcd qcd = cs.access_qcd();
+#if !(OPENJPH_VERSION_MAJOR == 0 && OPENJPH_VERSION_MINOR < 31)
             if (p->qfactor > 0)
                 qcd.set_qfactor(static_cast<ojph::ui8>(p->qfactor));
-            else if (p->irrev_delta > 0.0f)
+            else
+#endif
+            if (p->irrev_delta > 0.0f)
                 qcd.set_irrev_quant(p->irrev_delta);
         }
         if (p->nlt_binary_complement) {
