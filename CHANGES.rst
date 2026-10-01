@@ -13,18 +13,34 @@ release because most of it has shipped continuously to ``main``.
 0.4.1 (2026-09-30)
 ------------------
 
-Speed on Windows, where much of 0.4.0's work had arrived only in part,
-and in several codecs on every platform. The speed work adds no API;
-the "Fix" bullets below name the API their fixes add. The speed
-changes are the same code on every operating system and compiler, in a
-form each compiler measured builds well, except two below: bitshuffle's
-build guard, which now lets MSVC take the SSE2 path, and how uncompressed
-strips are read among other reads. Figures compare the
-published 0.4.0 wheels with 0.4.1's, each version's CI build: fresh
+Two things: speed, above all on Windows, where much of 0.4.0's work had
+arrived only in part; and a pass over every codec opencodecs shares with
+imagecodecs, which found and fixed formats and conventions that did not
+agree. The rule applied throughout: a published specification wins;
+a library's own format (pcodec, SZ3, SPERR, libaec, Rice, LZ4, Snappy)
+is written bare, with no header of opencodecs' own, and files earlier
+versions wrote still read; where no specification decides, opencodecs
+matches imagecodecs; and no parameter imagecodecs defines is silently
+ignored, and no data is silently lost: each is implemented or raises.
+
+Several fixes change the bytes opencodecs writes (each says so): the
+``floatpred`` codec, ``delta`` on floats, the five codecs that wrapped a
+library's stream in a header of their own, and some defaults. Data the
+old codecs wrote still decodes where the old form can be told apart;
+where it cannot (float ``delta``), the bullet says how to read it.
+
+Speed
+~~~~~
+
+The speed changes are the same code on every operating system and
+compiler, in a form each compiler measured builds well, except two
+below: bitshuffle's build guard, which now lets MSVC take the SSE2 path,
+and how uncompressed strips are read among other reads. Figures compare
+the published 0.4.0 wheels with 0.4.1's, each version's CI build: fresh
 processes, both versions alternating in shuffled order with 0.4.0 run a
-second time as a control, identical output required, on a 20-core
-Apple silicon Mac, a 64-core x86-64 Linux workstation (pinned to one
-core) and a 4-core x86-64 Windows laptop.
+second time as a control, identical output required, on a 20-core Apple
+silicon Mac, a 64-core x86-64 Linux workstation (pinned to one core) and
+a 4-core x86-64 Windows laptop.
 
 - **Delta and XOR decode keep their running values in registers**, and
   distances 2, 3 and 4 (gray and alpha, RGB, RGBA) walk every chain in
@@ -67,6 +83,9 @@ core) and a 4-core x86-64 Windows laptop.
   0.97x on the Mac, uncompressed strips 0.97x with one thread on Windows,
   and RGBA and uint32 predictor reads and 2-byte unshuffle 0.99x on some
   of the three.
+Compatibility and correctness
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
 - Fix: the ``floatpred`` codec (``get_codec("floatpred")``) did not
   implement TIFF predictor 3, though it said it did: it put each float's
   least significant byte plane first and restarted the difference at every
