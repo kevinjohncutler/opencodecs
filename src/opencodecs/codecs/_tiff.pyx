@@ -800,7 +800,11 @@ def lzw_decode(data, expected_size: int = -1) -> bytes:
 # Predictor 1 = no predictor (identity).
 # Predictor 2 = horizontal differencing: each sample (after the first
 #   in a row) was stored as (sample - sample_to_left). Inverse is a
-#   prefix-sum along the last axis (within each row, per channel).
+#   prefix-sum along the last axis (within each row, per channel). As in
+#   libtiff (horAcc8/16/32/64), the sum runs on the unsigned 8, 16, 32 or
+#   64-bit storage word with wraparound, whatever the SampleFormat, so
+#   signed and floating-point samples take the unsigned kernel of their
+#   width.
 # Predictor 3 = floating-point predictor (TIFF Tech Note 3): the float
 #   bytes are byte-rearranged + horizontal-differenced. Reverse that.
 
@@ -808,6 +812,7 @@ ctypedef fused _uint_t:
     uint8_t
     uint16_t
     uint32_t
+    uint64_t
 
 
 cdef void _undo_rows(_uint_t* p0, Py_ssize_t rows, Py_ssize_t cols,
@@ -821,7 +826,8 @@ cdef void _undo_rows(_uint_t* p0, Py_ssize_t rows, Py_ssize_t cols,
 
     Written so that no compiler has to guess. With one sample the running
     sum lives in a register wider than the sample, 32 bits for uint8 and
-    uint16 and 64 for uint32; only its low bits are stored, and the wide
+    uint16 and 64 for uint32 (uint64 has no wider type and sums in its
+    own width); only its low bits are stored, and the wide
     sum agrees with the sample's own wraparound there, so the output is
     the same. A sum no wider than the sample is truncated on every step
     of a loop that cannot run in parallel, and MSVC compiled it as an add
@@ -875,7 +881,7 @@ cdef void _undo_rows(_uint_t* p0, Py_ssize_t rows, Py_ssize_t cols,
     cdef _uint_t* p
     for r in range(rows):
         p = p0 + r * row_elems
-        if samples == 1 and _uint_t is uint32_t:
+        if samples == 1 and (_uint_t is uint32_t or _uint_t is uint64_t):
             w0 = p[0]
             c = 1
             while c + 4 <= cols:
@@ -888,17 +894,21 @@ cdef void _undo_rows(_uint_t* p0, Py_ssize_t rows, Py_ssize_t cols,
                 w0 = w0 + p[c]; p[c] = <_uint_t> w0
                 c += 1
         elif samples == 1:
-            s0 = p[0]
-            c = 1
-            while c + 4 <= cols:
-                s0 = s0 + p[c]; p[c] = <_uint_t> s0
-                s0 = s0 + p[c + 1]; p[c + 1] = <_uint_t> s0
-                s0 = s0 + p[c + 2]; p[c + 2] = <_uint_t> s0
-                s0 = s0 + p[c + 3]; p[c + 3] = <_uint_t> s0
-                c += 4
-            while c < cols:
-                s0 = s0 + p[c]; p[c] = <_uint_t> s0
-                c += 1
+            # Fused-type tests are resolved at compile time, so the 32 and
+            # 64-bit specializations (handled above) carry no narrowing
+            # 32-bit sum here.
+            if _uint_t is uint8_t or _uint_t is uint16_t:
+                s0 = p[0]
+                c = 1
+                while c + 4 <= cols:
+                    s0 = s0 + p[c]; p[c] = <_uint_t> s0
+                    s0 = s0 + p[c + 1]; p[c + 1] = <_uint_t> s0
+                    s0 = s0 + p[c + 2]; p[c + 2] = <_uint_t> s0
+                    s0 = s0 + p[c + 3]; p[c + 3] = <_uint_t> s0
+                    c += 4
+                while c < cols:
+                    s0 = s0 + p[c]; p[c] = <_uint_t> s0
+                    c += 1
         elif samples == 2:
             t0 = p[0]; t1 = p[1]
             for c in range(1, cols):
@@ -925,7 +935,7 @@ cdef void _undo_rows(_uint_t* p0, Py_ssize_t rows, Py_ssize_t cols,
             # One chain per sample, each walked with its sum in a register
             # wider than the sample, as for one sample.
             for k in range(samples):
-                if _uint_t is uint32_t:
+                if _uint_t is uint32_t or _uint_t is uint64_t:
                     w0 = p[k]
                     for c in range(1, cols):
                         w0 = w0 + p[c * samples + k]
@@ -955,6 +965,14 @@ def undo_horizontal_u16(uint16_t[:, :, ::1] arr not None):
 
 def undo_horizontal_u32(uint32_t[:, :, ::1] arr not None):
     """In-place undo of predictor 2 on a (rows, cols, samples) uint32 array."""
+    if arr.shape[0] and arr.shape[1] > 1:
+        with nogil:
+            _undo_rows(&arr[0, 0, 0], arr.shape[0], arr.shape[1], arr.shape[2],
+                       arr.shape[1] * arr.shape[2])
+
+
+def undo_horizontal_u64(uint64_t[:, :, ::1] arr not None):
+    """In-place undo of predictor 2 on a (rows, cols, samples) uint64 array."""
     if arr.shape[0] and arr.shape[1] > 1:
         with nogil:
             _undo_rows(&arr[0, 0, 0], arr.shape[0], arr.shape[1], arr.shape[2],
@@ -1099,8 +1117,10 @@ cdef void _undo_horizontal(uint8_t* buf, Py_ssize_t rows, Py_ssize_t cols,
         _undo_rows(<uint8_t*> buf, rows, cols, samples, row_bytes)
     elif itemsize == 2:
         _undo_rows(<uint16_t*> buf, rows, cols, samples, row_bytes // 2)
-    else:
+    elif itemsize == 4:
         _undo_rows(<uint32_t*> buf, rows, cols, samples, row_bytes // 4)
+    else:
+        _undo_rows(<uint64_t*> buf, rows, cols, samples, row_bytes // 8)
 
 
 cdef void _undo_float(uint8_t* buf, Py_ssize_t rows, Py_ssize_t cols,
@@ -1170,8 +1190,8 @@ def decode_segments_into(segments, out, const Py_ssize_t[:, ::1] geometry, *,
                          f"({geometry.shape[0]}, {geometry.shape[1]})")
     if samples < 1 or segment_cols < 1:
         raise ValueError("samples and segment_cols must be positive")
-    if predictor == 2 and itemsize not in (1, 2, 4):
-        raise ValueError(f"predictor 2 takes 1, 2 or 4 byte samples, not {itemsize}")
+    if predictor == 2 and itemsize not in (1, 2, 4, 8):
+        raise ValueError(f"predictor 2 takes 1, 2, 4 or 8 byte samples, not {itemsize}")
     if predictor == 3 and itemsize not in (2, 4, 8):
         raise ValueError(f"predictor 3 takes 2, 4 or 8 byte samples, not {itemsize}")
     if predictor not in (1, 2, 3):

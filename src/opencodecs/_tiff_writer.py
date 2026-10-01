@@ -5,14 +5,17 @@ classic (32-bit offset) TIFF files that round-trip cleanly through
 both our reader and ``tifffile``. Supports:
 
 * All standard integer + float dtypes (uint/int 8/16/32/64, float
-  16/32/64); grayscale + multi-channel chunky (contig) layout.
+  16/32/64); grayscale and multi-channel images, with the samples of
+  each pixel together (PlanarConfiguration 1) or each sample's plane
+  stored as its own strips or tiles (PlanarConfiguration 2).
 * Strip layout (default) or tile layout.
 * Per-tile / per-strip compression via
-  :mod:`opencodecs.core.segment_compression` —
-  ``none / deflate / zstd / lzw / packbits / jpeg / jpeg2000 / jxl
-  / webp / lerc``.
+  :mod:`opencodecs.core.segment_compression`:
+  ``none / deflate / zstd / lzw / jpeg / jpeg2000 / jxl / webp / lerc``.
+  PackBits has a decoder but no encoder, so it cannot be written.
 * Horizontal predictor (tag 317 = 2) and floating-point predictor
-  (tag 317 = 3) for byte-stream codecs.
+  (tag 317 = 3) with LZW, Deflate or Zstandard compression only; any
+  other compression with a predictor raises ``TiffWriterError``.
 * Multi-page IFD chain so callers can write pyramidal COG-style TIFFs
   by issuing ``write_page`` once per resolution level.
 
@@ -129,17 +132,26 @@ def _apply_horizontal_predictor(seg: np.ndarray) -> np.ndarray:
 
     Matches the inverse used in opencodecs/codecs/_tiff.pyx
     (undo_horizontal_*): each sample (after column 0) becomes
-    ``sample - sample_to_left`` per channel, with modular wrap for
-    integer dtypes. Predictor 2 applies row-by-row, so the operation
-    is reversible regardless of byte order.
+    ``sample - sample_to_left`` per channel. Predictor 2 applies
+    row-by-row, so the operation is reversible regardless of byte order.
+
+    As in libtiff (horDiff8/16/32/64), the difference is taken on the
+    sample's storage word as an unsigned integer of the same width, with
+    modular wraparound, whatever the SampleFormat. Signed samples give
+    the same bits either way; floating-point samples must not be
+    subtracted as floats, which rounds and makes files that libtiff,
+    tifffile and our own reader decode to different values.
 
     ``seg`` must be C-contiguous (rows, cols, samples) or (rows, cols);
-    a 2D input is treated as (rows, cols, 1).
+    a 2D input is treated as (rows, cols, 1). Its dtype may be in either
+    byte order; the differences are stored in that same order.
     """
     if seg.ndim == 2:
         view = seg.reshape(seg.shape[0], seg.shape[1], 1)
     else:
         view = seg
+    word = np.dtype(f"u{seg.dtype.itemsize}").newbyteorder(seg.dtype.byteorder)
+    view = view.view(word)
     cols = view.shape[1]
     if cols < 2:
         return seg
@@ -439,17 +451,25 @@ class TiffWriter(Writer):
             Rows per strip (default: ~8 KiB worth of pixels, rounded).
         compression : name or int
             ``"none"``, ``"deflate"``, ``"zstd"``, ``"lzw"``,
-            ``"packbits"``, ``"jpeg"``, ``"jpeg2000"``, ``"webp"``,
-            ``"jxl"``, ``"lerc"``. LZW/packbits encode is not yet
-            implemented (decoders exist; encoders need to be vendored).
+            ``"jpeg"``, ``"jpeg2000"``, ``"webp"``, ``"jxl"``,
+            ``"lerc"``. ``"packbits"`` has a decoder but no encoder, so
+            writing it raises.
         compression_level : int or None
             Passed through to deflate/zstd/jxl etc.
-        predictor : 1, 2, or 3
+        predictor : 1, 2, 3, bool, 0 or None
             TIFF tag 317: 1 stores unchanged samples, 2 differences
             neighboring samples, and 3 shuffles/differences float16/32/64
-            bytes. Predictor 3 requires chunky samples and deflate,
-            zstd, or lzw compression. Image-format codecs
-            use their own internal prediction.
+            bytes. Predictor 2 differences each sample's storage word as
+            an unsigned integer of its width, as libtiff does, so float
+            samples round-trip exactly; predictor 3 usually compresses
+            float data better. Predictors 2 and 3 require deflate, zstd or
+            lzw compression, and predictor 3 also chunky samples; other
+            combinations raise TiffWriterError. libtiff ignores a Predictor
+            tag on uncompressed data, and image-format codecs use their own
+            internal prediction. ``True`` picks 3 for float and 2 for
+            integer samples, as tifffile does (tifffile refuses ``True``
+            for 64-bit integers, where this writer uses 2), and ``False``,
+            ``None`` and ``0`` mean 1.
         verify : bool
             Decode each encoded segment, undo its predictor, and compare exact
             original pixel bits before emitting it. Defaults to False. Workers
@@ -464,6 +484,10 @@ class TiffWriter(Writer):
         photometric : "auto" | "minisblack" | "rgb" | int
             Photometric interpretation. ``"auto"`` picks MinIsBlack for
             single-channel and RGB for 3 channels.
+        planar_config : 1 or 2
+            PlanarConfiguration (tag 284) for (H, W, C) input: 1 stores the
+            samples of each pixel together, 2 stores each sample's plane as
+            its own strips or tiles, one plane after another.
         metadata : str or None
             Optional ImageDescription (tag 270). Free-form ASCII.
         software : str or None
@@ -524,6 +548,12 @@ class TiffWriter(Writer):
         else:
             h, w, samples_per_pixel = arr.shape
         bps, sample_format = _bps_and_sample_format(arr.dtype)
+        predictor, planar_config = _check_layout_options(
+            predictor, cmp_code, arr.dtype, samples_per_pixel, planar_config)
+        # PlanarConfiguration 2 stores each sample's plane as its own run of
+        # strips or tiles, plane after plane (TIFF 6.0 section 8).
+        n_planes = samples_per_pixel if planar_config == 2 else 1
+        segment_spp = 1 if n_planes > 1 else samples_per_pixel
 
         # Default photometric.
         if photometric == "auto":
@@ -554,18 +584,18 @@ class TiffWriter(Writer):
                 )
             n_tiles_y = (h + tile_h - 1) // tile_h
             n_tiles_x = (w + tile_w - 1) // tile_w
-            segments = self._iter_tile_segments(
-                arr_le, h, w, tile_h, tile_w, samples_per_pixel,
-                n_tiles_y, n_tiles_x,
-            )
-            n_segments = n_tiles_y * n_tiles_x
+            segments = self._iter_plane_segments(
+                arr_le, n_planes, lambda plane: self._iter_tile_segments(
+                    plane, h, w, tile_h, tile_w, segment_spp,
+                    n_tiles_y, n_tiles_x))
+            n_segments = n_tiles_y * n_tiles_x * n_planes
             strip_h_for_tag = None
         else:
             tile_h = tile_w = 0  # unused
             if rows_per_strip is None:
                 # Default: aim for ~8 KiB per strip (TIFF 6 spec
                 # recommendation), but at least 1 row.
-                bytes_per_row = w * samples_per_pixel * arr.dtype.itemsize
+                bytes_per_row = w * segment_spp * arr.dtype.itemsize
                 rows_per_strip = max(1, 8192 // max(1, bytes_per_row))
                 rows_per_strip = min(rows_per_strip, h)
             else:
@@ -575,34 +605,17 @@ class TiffWriter(Writer):
                         f"rows_per_strip must be > 0; got {rows_per_strip}"
                     )
             n_strips = (h + rows_per_strip - 1) // rows_per_strip
-            segments = self._iter_strip_segments(
-                arr_le, h, w, rows_per_strip, samples_per_pixel, n_strips,
-            )
-            n_segments = n_strips
+            segments = self._iter_plane_segments(
+                arr_le, n_planes, lambda plane: self._iter_strip_segments(
+                    plane, h, w, rows_per_strip, segment_spp, n_strips))
+            n_segments = n_strips * n_planes
             strip_h_for_tag = rows_per_strip
-
-        # Validate predictor + compression combo.
-        if predictor not in (1, 2, 3):
-            raise TiffWriterError(
-                f"writer supports predictor 1 (none), 2 (horizontal), or 3 (float); "
-                f"got predictor={predictor}"
-            )
-        is_byte_stream = cmp_code in _BYTE_STREAM_CMP
-        if predictor == 3 and (arr.dtype.kind != "f" or arr.dtype.itemsize not in (2, 4, 8)
-                               or not is_byte_stream or cmp_is_none or planar_config != 1):
-            raise TiffWriterError(
-                "predictor 3 requires float16/32/64, chunky samples, and a byte-stream compressor")
-        if predictor == 2 and not is_byte_stream:
-            # Image-format codecs (jpeg, jpeg2000, webp, jxl, lerc) do
-            # their own internal prediction; a TIFF predictor on top
-            # would be incorrect/lossy. Silently downgrade to 1.
-            predictor = 1
 
         # Seekable layout places pixels before the directory. Only offsets
         # and byte counts are needed later, so emit bounded batches now.
         offsets: list[int] = []
         byte_counts: list[int] = []
-        if cmp_is_none and predictor == 1 and not is_tiled and not verify:
+        if cmp_is_none and predictor == 1 and not is_tiled and not verify and n_planes == 1:
             row_bytes = w * samples_per_pixel * arr.dtype.itemsize
             flat = arr_le.reshape(-1).view(np.uint8)
             encoded_segments = []
@@ -618,7 +631,7 @@ class TiffWriter(Writer):
             self._writev(encoded_segments)
         else:
             segment_pixels = tile_h * tile_w if is_tiled else rows_per_strip * w
-            segment_bytes = segment_pixels * samples_per_pixel * arr.dtype.itemsize
+            segment_bytes = segment_pixels * segment_spp * arr.dtype.itemsize
             from contextlib import closing
             with closing(self._encoded_batches(
                     segments, cmp_code, compression_level, predictor,
@@ -896,6 +909,12 @@ class TiffWriter(Writer):
         else:
             h, w, samples_per_pixel = arr.shape
         bps, sample_format = _bps_and_sample_format(arr.dtype)
+        predictor, planar_config = _check_layout_options(
+            predictor, cmp_code, arr.dtype, samples_per_pixel, planar_config)
+        # PlanarConfiguration 2 stores each sample's plane as its own run of
+        # strips or tiles, plane after plane (TIFF 6.0 section 8).
+        n_planes = samples_per_pixel if planar_config == 2 else 1
+        segment_spp = 1 if n_planes > 1 else samples_per_pixel
 
         if photometric == "auto":
             photometric_code = (
@@ -919,43 +938,33 @@ class TiffWriter(Writer):
                 )
             n_tiles_y = (h + tile_h - 1) // tile_h
             n_tiles_x = (w + tile_w - 1) // tile_w
-            segments = self._iter_tile_segments(
-                arr_le, h, w, tile_h, tile_w, samples_per_pixel,
-                n_tiles_y, n_tiles_x,
-            )
-            n_segments = n_tiles_y * n_tiles_x
+            segments = self._iter_plane_segments(
+                arr_le, n_planes, lambda plane: self._iter_tile_segments(
+                    plane, h, w, tile_h, tile_w, segment_spp,
+                    n_tiles_y, n_tiles_x))
+            n_segments = n_tiles_y * n_tiles_x * n_planes
             strip_h_for_tag = None
         else:
             tile_h = tile_w = 0
             if rows_per_strip is None:
-                bytes_per_row = w * samples_per_pixel * arr.dtype.itemsize
+                bytes_per_row = w * segment_spp * arr.dtype.itemsize
                 rows_per_strip = max(1, 8192 // max(1, bytes_per_row))
                 rows_per_strip = min(rows_per_strip, h)
             else:
                 rows_per_strip = int(rows_per_strip)
             n_strips = (h + rows_per_strip - 1) // rows_per_strip
-            segments = self._iter_strip_segments(
-                arr_le, h, w, rows_per_strip, samples_per_pixel, n_strips,
-            )
-            n_segments = n_strips
+            segments = self._iter_plane_segments(
+                arr_le, n_planes, lambda plane: self._iter_strip_segments(
+                    plane, h, w, rows_per_strip, segment_spp, n_strips))
+            n_segments = n_strips * n_planes
             strip_h_for_tag = rows_per_strip
-
-        if predictor not in (1, 2, 3):
-            raise TiffWriterError(f"unsupported predictor {predictor}")
-        is_byte_stream = cmp_code in _BYTE_STREAM_CMP
-        if predictor == 3 and (arr.dtype.kind != "f" or arr.dtype.itemsize not in (2, 4, 8)
-                               or not is_byte_stream or cmp_is_none or planar_config != 1):
-            raise TiffWriterError(
-                "predictor 3 requires float16/32/64, chunky samples, and a byte-stream compressor")
-        if predictor == 2 and not is_byte_stream:
-            predictor = 1
 
         # Forward-only layout needs counts before its directory. Retain the
         # encoded page, but bound raw tiles and encode tasks as for write_page.
         byte_counts: list[int] = []
         encoded_segments: list[bytes | memoryview | np.ndarray] = []
         segment_pixels = tile_h * tile_w if is_tiled else rows_per_strip * w
-        segment_bytes = segment_pixels * samples_per_pixel * arr.dtype.itemsize
+        segment_bytes = segment_pixels * segment_spp * arr.dtype.itemsize
         from contextlib import closing
         with closing(self._encoded_batches(
                 segments, cmp_code, compression_level, predictor,
@@ -1439,6 +1448,16 @@ class TiffWriter(Writer):
             return arr
         return arr.byteswap()
 
+    @staticmethod
+    def _iter_plane_segments(arr_le, n_planes, iterate):
+        """Yield the segments of a chunky image, or of each sample plane
+        in turn for PlanarConfiguration 2."""
+        if n_planes == 1:
+            yield from iterate(arr_le)
+            return
+        for c in range(n_planes):
+            yield from iterate(arr_le[:, :, c])
+
     def _iter_strip_segments(
         self, arr_le, h, w, rps, spp, n_strips,
     ):
@@ -1541,7 +1560,10 @@ class TiffWriter(Writer):
         page = TiffPage(SimpleNamespace(_byte_order=self._byte_order), -1,
                         {tag: (0, 1, value) for tag, value in values.items()})
         try:
-            decoded = page._decode_segment_pixels(encoded, 0, 0)
+            # A read-only view: an uncompressed segment is decoded straight
+            # from this buffer, and undoing a predictor in place would change
+            # the bytes that are then written.
+            decoded = page._decode_segment_pixels(memoryview(encoded).toreadonly(), 0, 0)
         except Exception as exc:
             raise LosslessVerificationError(
                 f"Lossless verification failed for TIFF compression {cmp_code}: "
@@ -1560,6 +1582,19 @@ class TiffWriter(Writer):
         if cmp_code in (JPEG, JPEG2000, JXL, WEBP, LERC, LERC_LEGACY):
             # Image-format codecs want the array (they encode shape +
             # bit-depth internally); they reject raw bytes.
+            if (cmp_code in (LERC, LERC_LEGACY) and seg.dtype.kind == "f"
+                    and seg.dtype.isnative
+                    and (self._byte_order == "<") != (sys.byteorder == "little")
+                    and np.isnan(seg).any()):
+                # LERC stores each sample word in the file's byte order, so
+                # here it is handed byte-swapped floats. Some of those are
+                # NaN patterns, which LERC does not store exactly: the file
+                # would hold other values than the ones written.
+                raise TiffWriterError(
+                    "lerc cannot store these float samples exactly in a file "
+                    f"with byte_order={self._byte_order!r}: some byte-swapped "
+                    "samples are NaN patterns, which LERC does not keep; use "
+                    "the machine's byte order or another compression")
             return encode_segment(seg, cmp_code, level=level)
         # Byte-stream codecs: hand them the raw buffer via memoryview.
         buf = memoryview(np.ascontiguousarray(seg)).cast("B")
@@ -1751,15 +1786,61 @@ _PHOTOMETRIC_NAMES = {
 }
 
 
-# Codecs whose decoder returns a flat byte buffer (predictor-eligible).
-_BYTE_STREAM_CMP = {
-    1,       # NONE
+# Compressions a TIFF predictor may be written with. TIFF 6.0 section 14
+# defines Predictor for LZW; libtiff also applies it to Deflate and
+# Zstandard. libtiff ignores the tag on uncompressed and PackBits data while
+# tifffile applies it, so a predictor there would mean different things to
+# different readers. Image codecs (JPEG, JPEG 2000, WebP, JPEG XL, LERC)
+# predict internally and take no TIFF predictor.
+_PREDICTOR_CMP = {
     5,       # LZW
     8,       # DEFLATE
-    32773,   # PACKBITS
     32946,   # ADOBE_DEFLATE
     50000,   # ZSTD
 }
+
+
+def _check_layout_options(predictor, cmp_code, dtype, samples_per_pixel, planar_config):
+    """Refuse predictor and planar configuration combinations that cannot
+    be written as asked, rather than writing something else.
+
+    Returns ``(predictor, planar_config)`` as plain ints. ``predictor=True``
+    picks 3 for float and 2 for integer samples, as tifffile does, and
+    ``predictor=False``, ``None`` and ``0`` mean 1. A bool is checked
+    before the integer tests because ``True == 1`` would otherwise pass as
+    "no predictor". ``planar_config`` takes no bool.
+    """
+    if isinstance(planar_config, (bool, np.bool_)):
+        raise TiffWriterError(
+            f"planar_config must be 1 (chunky) or 2 (separate), not a bool; "
+            f"got {planar_config!r}")
+    if planar_config not in (1, 2):
+        raise TiffWriterError(
+            f"planar_config must be 1 (chunky) or 2 (separate); got {planar_config}")
+    planar_config = int(planar_config)
+    if isinstance(predictor, (bool, np.bool_)):
+        predictor = (3 if dtype.kind == "f" else 2) if predictor else 1
+    elif predictor is None or (isinstance(predictor, (int, np.integer)) and predictor == 0):
+        predictor = 1   # tifffile also takes None and 0 as no predictor
+    if planar_config == 2 and samples_per_pixel > 1 and cmp_code == 50001:
+        raise TiffWriterError(
+            "planar_config=2 cannot be written with webp compression: WebP "
+            "stores RGB or RGBA pixels, not a single sample plane")
+    if predictor not in (1, 2, 3):
+        raise TiffWriterError(
+            f"writer supports predictor 1 (none), 2 (horizontal), or 3 (float); "
+            f"got predictor={predictor}")
+    if predictor == 3 and (dtype.kind != "f" or dtype.itemsize not in (2, 4, 8)
+                           or cmp_code not in _PREDICTOR_CMP
+                           or (planar_config == 2 and samples_per_pixel > 1)):
+        raise TiffWriterError(
+            "predictor 3 requires float16/32/64, chunky samples, and lzw, "
+            "deflate or zstd compression")
+    if predictor == 2 and cmp_code not in _PREDICTOR_CMP:
+        raise TiffWriterError(
+            f"cannot use predictor 2 with compression {cmp_code}: a TIFF "
+            f"predictor is written only with lzw, deflate or zstd compression")
+    return int(predictor), planar_config
 
 
 __all__ = ["TiffWriter", "TiffWriterError", "imwrite"]

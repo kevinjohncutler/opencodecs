@@ -177,6 +177,89 @@ core) and a 4-core x86-64 Windows laptop.
   the identity, but an unknown ``mode``, or an ``nsd`` encode would
   reject, passed to it now raises instead of being ignored.
 
+- Fix: the TIFF writer accepted ``predictor=2`` for float16, float32 and
+  float64 and subtracted neighboring samples as floats. TIFF 6.0 defines
+  Predictor 2 as horizontal differencing, and libtiff applies it to each
+  sample's storage word as an unsigned integer of the same width, so
+  libtiff and tifffile decoded those files to wrong values, and this
+  package's reader refused them. The writer now differences the bit
+  patterns as libtiff does, which is lossless. This changes the bytes
+  written for float data with predictor 2; integer data is unchanged.
+  Files written by earlier versions with float data and predictor 2 hold
+  rounded float differences that no reader decodes to the original
+  values, and have no tag that marks them, so they should be written
+  again from their source. This package's reader used to refuse such
+  files with ``NotImplementedError``. It now reads the LZW, Deflate and
+  Zstandard ones as libtiff and tifffile do, to the same wrong values.
+  For the uncompressed ones libtiff ignores the predictor and returns
+  the stored differences, while this reader undoes the predictor on the
+  storage word, as tifffile does for tiled files (it refuses the striped
+  ones); neither result is the original data.
+- Fix: the TIFF reader could not undo predictor 2 on 64-bit integer or
+  floating-point samples and raised ``NotImplementedError``. libtiff and
+  GDAL write predictor 2 for 8, 16, 32 and 64-bit samples of every
+  sample format, tifffile for 64-bit integers, and this package's writer
+  for all of them. The reader now undoes predictor 2 on the unsigned
+  storage word for 8, 16, 32 and 64-bit samples of any sample format, on
+  the fused native path as well as the general one.
+- Fix: the TIFF writer accepted ``predictor=2`` with ``compression="none"``
+  and wrote differenced samples under a Predictor tag. TIFF 6.0 defines
+  Predictor alongside LZW, and libtiff ignores it on uncompressed data,
+  so libtiff returned the raw differences while tifffile undid them.
+  With ``verify=True`` the same call wrote the samples undifferenced
+  under the Predictor tag, and every reader returned wrong values. For
+  image codecs (JPEG, JPEG 2000, WebP, JPEG XL, LERC) the writer dropped
+  ``predictor=2`` without saying so. Both now raise ``TiffWriterError``:
+  a predictor is written only with LZW, Deflate or Zstandard. tifffile
+  raises ``ValueError`` for the same calls except LERC, where it applies
+  the predictor before encoding; this writer does not implement that.
+  Uncompressed integer predictor 2 files written by earlier versions
+  read back exactly.
+- Fix: the TIFF writer took ``predictor=True`` as the integer 1 and wrote
+  no predictor without saying so. It now picks 3 for float and 2 for
+  integer samples, as tifffile does (tifffile refuses ``True`` for
+  64-bit integers, where this writer uses 2), and ``predictor=False``
+  means 1. This changes the bytes written for ``predictor=True``; with a
+  compression that takes no predictor it now raises, as above.
+  ``predictor=0`` and ``predictor=None`` raised and now mean 1, as in
+  tifffile. ``planar_config`` now refuses a bool rather than taking
+  ``True`` as 1.
+- Fix: the TIFF writer wrote ``planar_config=2`` into the
+  PlanarConfiguration tag but stored the samples interleaved, in one run
+  of strips or tiles. libtiff refuses those files, tifffile raises or
+  reads them to wrong values, and this package's reader raised or, for
+  single-strip and single-tile LZW pages, returned wrong values. The
+  writer now stores each sample's plane as its own strips or tiles, one
+  plane after another, as TIFF 6.0 defines; this changes the bytes
+  written for multi-sample images with ``planar_config=2``. Values other
+  than 1 and 2, and ``planar_config=2`` with WebP, which cannot store a
+  one-sample plane, now raise ``TiffWriterError``. The reader now reads a
+  PlanarConfiguration=2 page that holds a single run of strips or tiles,
+  which can only be that earlier layout, as interleaved samples, so
+  those files read back as they were written (for float predictor 2
+  files, see above). A full-page read of a separate-plane page with
+  fewer strips or tiles than its planes need read the later planes from
+  the wrong segments; it now raises ``ValueError``.
+- Fix: the TIFF reader took the samples of a LERC segment in a big-endian
+  file as native values and returned wrong values for 16, 32 and 64-bit
+  samples. The writer stores each sample in the file's byte order before
+  LERC encodes it, and tifffile swaps the decoded samples back; the
+  reader now does too, so big-endian LERC files with integer samples
+  that earlier versions wrote read back exactly. Byte-swapped floats can
+  be NaN patterns, which LERC does not store exactly, so in a file whose
+  byte order differs from the machine's (big-endian, on the usual
+  little-endian machines) the writer could store other values than it
+  was given without saying so. It now raises ``TiffWriterError`` when a
+  float segment it would hand to LERC for such a file holds such a
+  pattern.
+- Fix: the TIFF reader returned complex samples (SampleFormat 6) as
+  unsigned integers holding their bits. It now returns ``complex64`` and
+  ``complex128``, swapping each component in a big-endian file as
+  libtiff and tifffile do, and undoes predictor 2 on ``complex64`` as
+  libtiff does, on the 64-bit sample word. Predictor 2 on ``complex128``
+  raises ``NotImplementedError``; libtiff has no predictor 2 for 128-bit
+  samples either.
+
 0.4.0 (2026-09-29)
 ------------------
 

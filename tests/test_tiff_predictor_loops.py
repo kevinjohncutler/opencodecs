@@ -15,10 +15,10 @@ import pytest
 from opencodecs.codecs import _tiff
 
 UNDO = {np.uint8: _tiff.undo_horizontal_u8, np.uint16: _tiff.undo_horizontal_u16,
-        np.uint32: _tiff.undo_horizontal_u32}
+        np.uint32: _tiff.undo_horizontal_u32, np.uint64: _tiff.undo_horizontal_u64}
 
 
-@pytest.mark.parametrize("dtype", [np.uint8, np.uint16, np.uint32])
+@pytest.mark.parametrize("dtype", [np.uint8, np.uint16, np.uint32, np.uint64])
 @pytest.mark.parametrize("spp", [1, 2, 3, 4, 5])
 @pytest.mark.parametrize("cols", [1, 2, 7, 64])
 def test_predictor_2_is_a_wrapping_running_sum(dtype, spp, cols):
@@ -26,7 +26,9 @@ def test_predictor_2_is_a_wrapping_running_sum(dtype, spp, cols):
     info = np.iinfo(dtype)
     # Deltas near the top of the range make every row wrap many times.
     diff = rng.integers(info.max - 50, info.max, (5, cols, spp), dtype=dtype, endpoint=True)
-    expected = np.cumsum(diff.astype(np.uint64), axis=1) % (int(info.max) + 1)
+    # A uint64 running sum wraps modulo 2**64; truncating it to the sample
+    # width is the same as wrapping modulo the sample's own range.
+    expected = np.cumsum(diff.astype(np.uint64), axis=1, dtype=np.uint64)
     got = diff.copy()
     UNDO[dtype](got)
     np.testing.assert_array_equal(got, expected.astype(dtype))
