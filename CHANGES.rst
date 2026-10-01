@@ -86,6 +86,96 @@ core) and a 4-core x86-64 Windows laptop.
   crashed the interpreter; it now raises ``ValueError``. Delta and XOR
   decode with a distance near ``sys.maxsize`` wrote at a negative index,
   and an empty predictor axis raised on decode; both now work.
+- Fix: the ``delta`` codec on float arrays subtracted float values, which
+  rounds: it did not even round-trip its own output (1.0 after 1e8 came
+  back as 0.0), and neither it nor imagecodecs could read the other's
+  stream. Delta and XOR now work on each sample's bit pattern as an
+  unsigned integer of the same width, modulo 2**bits, which is TIFF
+  predictor 2 as libtiff applies it and what imagecodecs does. Integer
+  output is unchanged; float delta output changes (a format change).
+  A float stream the old codec wrote carries no header to tell it apart
+  and decodes to wrong values with the default decode; pass
+  ``legacy_float=True`` to ``delta`` decode to sum it as floats, which
+  returns the values 0.4.0's decoder returned, bit for bit (in the
+  requested byte order, where 0.4.0 returned native order for a
+  big-endian dtype). ``xor`` on floats, which raised ``TypeError``, now
+  works the same way.
+  Output from both is byte-identical to imagecodecs for every dtype and
+  byte order at distance 1, the only distance imagecodecs implements. A
+  0-d array, which came back unchanged, now raises ``ValueError`` for
+  its missing axis, as imagecodecs does. So does a bool array, as in
+  imagecodecs: ``xor`` encoded and decoded one as bytes, and ``delta``
+  decode summed one as logical or.
+- Fix: ``delta`` and ``xor`` decode of big-endian integers without
+  ``out=`` raised "Big-endian buffer not supported"; decode now returns
+  the requested dtype, byte order included. Given an ndarray (the form
+  imagecodecs returns) and no ``dtype``, ``delta``, ``xor`` and
+  ``bitshuffle`` decoded it as flat bytes and returned wrong values
+  without an error; they now take the dtype, shape and element size from
+  the array, and ``bitshuffle`` and ``byteshuffle`` return an array of
+  that dtype and shape for array input. ``delta`` and ``xor`` encode of
+  bytes, which raised, now treats them as uint8.
+- Fix: ``packints`` accepted imagecodecs' ``runlen=`` and ``bitorder=``
+  and ignored them, returning a different stream. ``runlen`` now starts
+  each run of samples on a byte boundary, as TIFF stores rows;
+  ``bitorder="<"`` packs least significant bit first (GenICam
+  ``Mono12p`` and siblings) and ``bitorder=">"`` packs pairs of 10 or 12
+  bit samples into three bytes (GigE Vision ``Mono12Packed``), matching
+  imagecodecs byte for byte. Calls that passed these keywords now write
+  different bytes. A sample count that is not a whole number of runs
+  raises in encode and decode rather than dropping the last run, as
+  imagecodecs does. A sample too large for ``bitspersample`` (4096 at 12
+  bits) was masked to its low bits, as imagecodecs also does, and so
+  written as a different value; it now raises ``ValueError``. Whole
+  byte widths (16, 32, 64 bits) stay big endian, as the most significant
+  bit first stream the codec is defined as; imagecodecs copies them in
+  memory order instead, and the docstring now says so. Decode to a float
+  dtype, which returned the sample values as floats, or to an integer
+  dtype narrower than ``bitspersample``, which kept their low bits, now
+  raises ``ValueError`` as imagecodecs does; bool stays accepted for one
+  bit samples.
+- Fix: the filter codecs (``delta``, ``xor``, ``floatpred``,
+  ``packints``, ``bitshuffle``, ``byteshuffle``, ``quantize``) accepted
+  any keyword and ignored the ones they did not implement; they now raise
+  ``TypeError``. ``byteshuffle`` is the whole-buffer HDF5 and Blosc
+  shuffle, as before, and names imagecodecs' per-row ``axis``, ``dist``,
+  ``delta`` and ``reorder`` keywords in that error rather than returning
+  a stream imagecodecs would not read.
+- Fix: ``quantize`` mode ``"nsd"`` multiplied by a scale of
+  ``10**(nsd - 1 - floor(log10|x|))``, which is inexact once it is a
+  negative power of ten, and for float32 input computed it in float32:
+  1234.5678 (float32) at one digit came out 999.99994, 1175103902.8858647
+  (float64) came out 999999999.9999999, and 4 to 7 percent of values
+  missed the correctly rounded decimal. It now rounds each value to
+  ``nsd`` significant digits (ties to even) and returns the value of the
+  input type nearest that decimal, by dividing or multiplying by an exact
+  power of ten and rounding the few values near a half, or outside the
+  range of exact powers, from their decimal digits; a float32 or float16
+  whose float64 result lies halfway between two values of its type is
+  decided from the decimal rather than rounded a second time.
+  Infinities, which became NaN, are now kept, as is a value whose rounding would overflow
+  its type. These change the bytes ``"nsd"`` writes (a format change).
+  Its docstring claimed both modes matched imagecodecs, and ``"nsd"`` has
+  no imagecodecs counterpart. imagecodecs' modes ``"bitgroom"``,
+  ``"granularbr"`` (``"gbr"``) and ``"scale"`` are now implemented, bit
+  identical to imagecodecs for float32 and float64 at every ``nsd``
+  netCDF-C accepts, except for the zeros, NaN and infinities imagecodecs
+  alters, and ``mode`` and ``nsd`` may be passed by position as in
+  ``imagecodecs.quantize_encode``. As netCDF-C does in all three of its
+  modes, BitRound, BitGroom and Granular BitRound leave netCDF's fill
+  value (9.9692099683868690e+36), ``+0.0``, ``-0.0`` and NaN unchanged;
+  BitRound used to round the fill value and NaN, so a NaN whose payload
+  was only in its low bits became an infinity, and these change the bytes
+  written for data holding such values (a format change). Infinities are
+  kept too: netCDF-C's BitGroom turns an odd-indexed infinity into NaN,
+  and its Granular BitRound has undefined behavior for one. ``nsd`` is
+  checked as netCDF-C's ``nc_def_var_quantize`` checks it: at least 1, at
+  most the mantissa bits for BitRound, and at most 6 (float32), 15
+  (float64) or 2 (float16) digits for BitGroom and Granular BitRound, so
+  ``bitspersample=0``, which BitRound accepted, now raises; a fractional
+  ``nsd``, which was truncated, raises too. ``quantize`` decode is still
+  the identity, but an unknown ``mode``, or an ``nsd`` encode would
+  reject, passed to it now raises instead of being ignored.
 
 0.4.0 (2026-09-29)
 ------------------

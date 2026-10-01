@@ -14,6 +14,17 @@ scientific arrays. Bitshuffle (a finer-grained sibling — see
 ``BitshuffleCodec``) often beats it on noisy data; byteshuffle is
 cheaper to encode/decode and frequently wins on smooth data.
 
+This is the whole-buffer shuffle of the HDF5 shuffle filter
+(H5Z_FILTER_SHUFFLE), Blosc's ``BLOSC_SHUFFLE`` and
+``numcodecs.Shuffle``, byte for byte, and the layout this package's
+HDF5, FITS ``GZIP_2`` and CZI readers undo. It is not imagecodecs'
+``byteshuffle_encode``, which shuffles each row along an ``axis``
+separately (the byte-plane step of TIFF predictor 3; see the
+``floatpred`` codec here). The two agree only for 1-D input. That
+function's ``axis``, ``dist``, ``delta`` and ``reorder`` keywords have
+no meaning for a whole-buffer shuffle and raise ``TypeError`` here
+rather than being ignored.
+
 Composes with any byte-level compressor:
 
     byteshuffled = oc.get_codec("byteshuffle").encode(arr.tobytes(), itemsize=2)
@@ -32,6 +43,7 @@ import numpy as np
 from .core.codec import Codec
 from .core.buffers import byte_output
 from .core._io_helpers import read_src as _read_src, write_dest as _write_dest
+from ._filter_args import reject_unknown
 from .codecs._bytetools import (
     byteshuffle_encode as _bs_encode,
     byteshuffle_decode as _bs_decode,
@@ -77,6 +89,7 @@ class ByteshuffleCodec(Codec):
         ``data`` may be a numpy array (itemsize inferred from dtype) or
         a bytes-like; for bytes-like input, ``itemsize`` is required.
         """
+        _reject(opts, "encode")
         if isinstance(data, np.ndarray):
             if itemsize is None:
                 itemsize = data.dtype.itemsize
@@ -100,17 +113,27 @@ class ByteshuffleCodec(Codec):
         self,
         src: Any,
         *,
-        itemsize: int,
+        itemsize: int | None = None,
         n_elements: int | None = None,
         out=None,
         **opts,
-    ) -> bytes:
+    ) -> bytes | np.ndarray:
         """Reverse a byteshuffle.
 
-        ``itemsize`` is required (the codec can't infer it from the
-        byteshuffled bytes alone). ``n_elements`` defaults to
+        The shuffled bytes do not record the element size: it comes from
+        ``itemsize``, or, by default, from an ndarray ``src``'s dtype, which
+        then also gives the result's dtype and shape. Bytes-like input
+        needs ``itemsize``. ``n_elements`` defaults to
         ``len(src) // itemsize``.
         """
+        _reject(opts, "decode")
+        array_src = src if isinstance(src, np.ndarray) else None
+        if itemsize is None:
+            if array_src is None:
+                raise ValueError(
+                    "byteshuffle decode: itemsize= is required for "
+                    "non-ndarray input")
+            itemsize = array_src.dtype.itemsize
         buf = _read_src(src)
         if n_elements is None:
             if len(buf) % itemsize != 0:
@@ -118,7 +141,26 @@ class ByteshuffleCodec(Codec):
                     f"byteshuffle decode: data length {len(buf)} is not "
                     f"a multiple of itemsize {itemsize}")
             n_elements = len(buf) // itemsize
-        return _bs_decode(buf, int(itemsize), int(n_elements), out=out if out is None else byte_output(out))
+        if out is not None:
+            return _bs_decode(buf, int(itemsize), int(n_elements),
+                              out=byte_output(out))
+        result = _bs_decode(buf, int(itemsize), int(n_elements))
+        if array_src is None or len(result) != array_src.nbytes:
+            return result
+        return np.frombuffer(result, dtype=array_src.dtype).reshape(array_src.shape).copy()
+
+
+_PER_ROW_KEYWORDS = ("axis", "dist", "delta", "reorder")
+
+
+def _reject(opts: dict, which: str) -> None:
+    hint = ""
+    if any(name in opts for name in _PER_ROW_KEYWORDS):
+        hint = ("this codec is the whole-buffer HDF5/Blosc shuffle; "
+                "imagecodecs' per-row byteshuffle with axis, dist, delta "
+                "and reorder is TIFF predictor 3's byte-plane step, the "
+                "floatpred codec here")
+    reject_unknown(f"byteshuffle {which}", opts, hint)
 
 
 __all__ = ["ByteshuffleCodec"]

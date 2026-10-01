@@ -29,6 +29,7 @@ from .core.codec import Codec
 from .core.buffers import byte_output
 from .core._io_helpers import read_src as _read_src, write_dest as _write_dest
 from .core._optional_backend import import_or_stubs
+from ._filter_args import reject_unknown
 
 (
     _bs_encode, _bs_decode, _bs_check_signature, _bs_default_blocksize,
@@ -69,6 +70,8 @@ class BitshuffleCodec(Codec):
                itemsize: int | None = None,
                blocksize: int = 0,
                **opts) -> bytes | None:
+        """Bit-transpose ``data``; an ndarray gives ``itemsize`` by default."""
+        reject_unknown("bitshuffle encode", opts)
         if isinstance(data, np.ndarray):
             if itemsize is None:
                 itemsize = int(data.dtype.itemsize)
@@ -81,13 +84,30 @@ class BitshuffleCodec(Codec):
         return _write_dest(out, dest)
 
     def decode(self, src: Any, *,
-               itemsize: int = 1,
+               itemsize: int | None = None,
                blocksize: int = 0, out=None,
-               **opts) -> bytes | memoryview:
-        if out is None:
-            return _bs_decode(_read_src(src), itemsize=int(itemsize), blocksize=int(blocksize))
-        return _bs_decode(_read_src(src), itemsize=int(itemsize),
-                          blocksize=int(blocksize), out=byte_output(out))
+               **opts) -> bytes | memoryview | np.ndarray:
+        """Undo the transpose.
+
+        Bitshuffle streams carry no element size, so it comes from
+        ``itemsize``, or, by default, from an ndarray ``src``'s dtype (the
+        form imagecodecs' encoder returns); bytes default to 1. An ndarray
+        ``src`` decodes to an ndarray of its dtype and shape, as in
+        imagecodecs. It used to decode at ``itemsize=1`` and return wrong
+        bytes.
+        """
+        reject_unknown("bitshuffle decode", opts)
+        array_src = src if isinstance(src, np.ndarray) else None
+        if itemsize is None:
+            itemsize = array_src.dtype.itemsize if array_src is not None else 1
+        if out is not None:
+            return _bs_decode(_read_src(src), itemsize=int(itemsize),
+                              blocksize=int(blocksize), out=byte_output(out))
+        result = _bs_decode(_read_src(src), itemsize=int(itemsize),
+                            blocksize=int(blocksize))
+        if array_src is None:
+            return result
+        return np.frombuffer(result, dtype=array_src.dtype).reshape(array_src.shape).copy()
 
 
 __all__ = ["BitshuffleCodec"]
