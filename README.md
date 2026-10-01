@@ -148,7 +148,7 @@ Quick guidance:
 | --- | :-: | :-: | --- | --- | --- |
 | `qoi` | ✓ | ✓ | RGB / RGBA | vendored qoi.h | `.qoi` |
 | `bmp` | ✓ | ✓ | gray / RGB / RGBA | pure Python+numpy | `.bmp`, `.dib` |
-| `gif` | ✓ | ✓ | 8-bit palette → RGB / RGBA; **animated** (decodes to a frame stack); encode takes palette indices | system giflib + vendored LZW decoder | `.gif` |
+| `gif` | ✓ | ✓ | 8-bit palette → RGB, or the palette indices; **animated** (decodes to a frame stack); encode takes palette indices | system giflib + vendored LZW decoder | `.gif` |
 | `png` | ✓ | ✓ | gray / RGB / RGBA, 8/16-bit | vendored libspng + libdeflate | `.png` |
 | `jpeg` | ✓ | ✓ | gray / RGB / CMYK (YCCK), 8/12-bit lossy, 2-16 bit lossless | libjpeg-turbo (TJ v3) | `.jpg`, `.jpeg` |
 | `mozjpeg` | ✓ | ✓ | gray / RGB, 8-bit encode; decodes what `jpeg` does (12-bit and lossless through `jpeg`) | system mozjpeg (TJ v2) | `.jpg` |

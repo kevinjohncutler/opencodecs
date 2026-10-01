@@ -235,9 +235,10 @@ def test_decode_fast_byte_equal_to_libgif(shape):
     rng = np.random.default_rng(0)
     arr = rng.integers(0, 256, shape, dtype=np.uint8)
     blob = mod.encode(arr)
-    ref = mod.decode(blob, asrgb=False)
+    ref = mod._decode_indices_libgif(blob)
     fast = mod.decode_fast(blob, asrgb=False)
     np.testing.assert_array_equal(ref, fast)
+    np.testing.assert_array_equal(mod.decode(blob, asrgb=False), ref)
 
 
 def test_decode_fast_rgb_output_matches():

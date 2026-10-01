@@ -42,10 +42,11 @@ typedef struct {
  *  output: pre-allocated buffer of `output_len` bytes (= width*height).
  *
  * Return value:
- *   0 on success.
+ *   0 on success: exactly output_len pixels were written. Codes past
+ *     the last pixel are ignored, as libgif ignores them.
  *  -1 invalid min_code_size.
- *  -2 truncated input (ran out before EOI).
- *  -3 output overrun (image had more pixels than buffer).
+ *  -2 the image data ended (end of input, or the EOI code) before
+ *     output_len pixels were decoded.
  *  -4 invalid code referenced before it was defined.
  */
 int oc_giflzw_decode_blocks(

@@ -918,6 +918,131 @@ core) and a 4-core x86-64 Windows laptop.
   with JP2-boxed tiles from 0.4.0 still read. The patch's
   ``jpeg2k_decode`` now honors ``out=`` instead of dropping it.
 
+- Fix: GIF decoding ignored the Graphic Control Extension. A frame's
+  transparent index was painted in its palette color instead of leaving
+  the pixel underneath, disposal methods 2 (restore to background) and 3
+  (restore to previous) were not applied, ``decode`` and ``open`` did
+  not deinterlace interlaced frames, and the libgif path filled the area
+  outside a single sub-rectangle frame with zeros instead of the
+  background color. Every decode path now shares one reader whose
+  compositor follows the GIF89a specification. ``decode`` also takes
+  imagecodecs' ``index`` (one frame over the background, by position or
+  keyword) and ``out`` (a C-contiguous array of the decoded shape and
+  dtype, else ``ValueError``, as in imagecodecs), and ``asrgb=False``
+  returns every frame's indices on a canvas-sized array, ``(H, W)`` or
+  ``(N, H, W)``, where it used to refuse animations and return a
+  frame-sized array. Four differences from imagecodecs remain. When the
+  first frame uses its transparent index, imagecodecs returns a fourth
+  channel that is 255 everywhere; opencodecs still returns RGB.
+  imagecodecs skips the restore of a disposal 3 frame that follows a
+  disposal 2 frame, which opencodecs applies as the specification says.
+  A frame that extends past the logical screen is clipped to it, where
+  imagecodecs enlarges the canvas. A frame of zero width or height draws
+  nothing, where imagecodecs raises ``GifError``; with ``asrgb=False``
+  such a frame used to crash the interpreter. A frame whose image data
+  ends before width times height pixels now raises ``GifError``, as
+  libgif and imagecodecs do, where ``GifCodec.decode`` and ``open``
+  returned uninitialized memory for the missing pixels; codes past the
+  last pixel are ignored, as libgif ignores them, where those two
+  raised; and an LZW code naming a table entry that was never defined
+  raises ``GifError``, where it could read outside the decoder's table
+  and crash the interpreter. Decoded pixels change; written bytes do
+  not.
+- Fix: BMP read BI_BITFIELDS color masks from after the 52- and 56-byte
+  headers, which is pixel data, so those files decoded with wrong colors
+  (or raised ``OverflowError`` at 16 bits), and after a 40-byte header
+  it took the first pixel for an alpha mask and returned a fourth
+  channel of garbage. Masks are now read where each header defines them;
+  a fourth DWORD after a 40-byte header counts as alpha only when it
+  lies before the pixel data and is disjoint from the color masks.
+  Channels of 1 to 3 bits topped out at 128, 192 or 224 (an opaque 1-bit
+  alpha read as 128); every width now scales as
+  ``round(v * 255 / (2**n - 1))``, the PNG specification's reference
+  equation, which also moves
+  some 5- and 6-bit levels by one (imagecodecs truncates, so it can be
+  one lower). Uncompressed 1-, 2- and 4-bit paletted files and
+  BI_ALPHABITFIELDS now decode, and the imagecodecs parameters ``asrgb``
+  and ``out`` (decode) and ``ppm`` (encode), which were silently
+  ignored, are implemented; ``out`` must be a C-contiguous array of the
+  decoded shape and dtype, else ``ValueError``, as in imagecodecs.
+  24-bit BI_BITFIELDS files, which Microsoft documents only for 16 and
+  32 bits and imagecodecs refuses, still decode, now through their
+  masks, which used to be ignored; one with a zero color mask now raises
+  ``BmpError``, as Pillow refuses it, where earlier versions ignored the
+  masks and decoded it as BGR. A file whose pixel data offset lies inside
+  the three masks after a 40-byte header, so that the masks would be
+  pixels, now raises ``BmpError``, where earlier versions read the first
+  pixels as masks at 16 and 32 bits (imagecodecs still does) and decoded
+  a 24-bit one as BGR; with four masks (BI_ALPHABITFIELDS, which earlier
+  versions and imagecodecs refuse) it raises too. A channel mask whose bits are not
+  contiguous, which Microsoft's header documentation forbids, and a file
+  cut short in its headers, masks, color table or uncompressed rows now
+  raise ``BmpError``, where some such files raised numpy's
+  ``IndexError`` or ``ValueError`` or ``struct.error``, and a gapped
+  mask could also decode to wrong values. An RLE stream cut short
+  between codes still decodes, leaving the pixels it never reaches at
+  index 0. A paletted file with a bitfield compression now raises
+  ``BmpError``, as imagecodecs does, where earlier versions skipped
+  three masks and decoded its palette. ``ppm`` is a format change only
+  for calls that pass it: a ``ppm`` below 1 is written as 1, as
+  imagecodecs writes it, and without ``ppm`` the bytes are unchanged.
+- Fix: the ``numpy`` codec could not encode datetime64 or timedelta64
+  arrays, wrote Fortran-ordered input in C order with ``fortran_order:
+  False``, ignored ``level``, and returned an ``NpzFile`` instead of an
+  array for ``.npz`` input. It now writes what ``numpy.save`` writes
+  (object arrays still raise ``ValueError``, where ``numpy.save`` and
+  imagecodecs pickle them). This is a format change in two places: the
+  bytes for Fortran-ordered input change (to ``fortran_order: True``, as
+  imagecodecs writes), and ``level``, which used to be ignored, writes a
+  deflate-compressed ``.npz`` holding ``arr_0.npy`` with a fixed
+  timestamp. ``decode`` returns member ``index`` (default 0) of an
+  ``.npz``, raising ``KeyError`` for a member that does not exist. As in
+  imagecodecs, ``level`` and ``index`` may be given by position,
+  ``decode`` passes other keywords to ``numpy.load`` (``allow_pickle``
+  and the like) instead of dropping them, and ``encode`` raises
+  ``TypeError`` for a keyword it does not take.
+- Fix: ``opencodecs.rgbe_encode``, ``rgbe_decode``, ``rgbe_imread`` and
+  ``rgbe_imwrite`` were a second, pure-Python RGBE implementation that
+  disagreed with the ``rgbe`` codec. It wrote a ``GAMMA=1.0`` header
+  line, which is not a Radiance header variable, and decoded ``+Y`` and
+  ``-X`` files unflipped and refused X-first (transposed) files, though
+  the resolution string defines the scan order. They now call the codec.
+  This is a format change for ``rgbe_encode`` and ``rgbe_imwrite``: no
+  ``GAMMA`` line and different RLE run choices, so the bytes are now
+  identical to imagecodecs' ``rgbe_encode``. The codec gains
+  imagecodecs' ``header`` and ``rle`` options, which it used to ignore:
+  ``header=False`` writes and, given ``out``, reads a bare pixel stream;
+  ``rle=False`` writes flat pixels, also after a header, where
+  imagecodecs writes RLE regardless, so that one combination writes
+  different bytes than imagecodecs. With the default ``header=None``, a
+  bare stream is read only when ``out`` is given and the data neither
+  starts with the ``#?`` magic nor holds a header that parses without it
+  (one with a ``FORMAT`` line). A bare stream must fill ``out`` exactly;
+  input left over raises ``ValueError``, as in imagecodecs, which also
+  catches header text with neither the magic nor a ``FORMAT`` line. The
+  codec's own bytes change only for calls that pass ``header=False`` or
+  ``rle=False``, which it used to ignore (a format change for those
+  calls). The codec now also reads a ``#?`` header with no ``FORMAT``
+  line, as Radiance's own reader and the old helpers did, and reads the
+  ``FORMAT`` value as Radiance's ``formatval`` does, skipping whitespace
+  after ``FORMAT=``; it used to refuse both. A ``FORMAT`` line naming
+  only another pixel format (not RGBE or XYZE) raises ``RgbeError``, as
+  Radiance's picture readers refuse one, where the old helpers decoded
+  those pixels as RGBE. The codec's output buffer was 4 bytes per pixel,
+  but run-length encoding a noisy scanline takes up to one more byte per
+  128 per channel, so such images raised ``RgbeError`` (imagecodecs
+  fails on them the same way); the buffer is now sized for that worst
+  case, and every image the old helpers wrote can still be written.
+- Fix: BC3 (DXT5) alpha truncated its interpolated values while BC4,
+  whose block is the same 8 bytes, rounded them, so the same bytes
+  decoded one apart. The Khronos Data Format Specification defines both
+  with the same real-valued formulas, so BC3 alpha now goes through the
+  rounding BC4 kernel. About a third of interpolated alpha samples
+  decode one higher than before and than imagecodecs, which truncates;
+  BC3 decode measured 0.94x on the Mac. BC4 and BC5 already rounded, and
+  BC6H keeps its float32 default (``fp16=True`` is bit-identical to
+  imagecodecs); both are now documented.
+
 0.4.0 (2026-09-29)
 ------------------
 

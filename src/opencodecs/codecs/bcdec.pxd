@@ -29,3 +29,12 @@ cdef extern from "bcdec.h" nogil:
     void bcdec_bc6h_half(const void* block, void* out, int pitch, int is_signed)
     void bcdec_bc6h_float(const void* block, void* out, int pitch, int is_signed)
     void bcdec_bc7(const void* block, void* out, int pitch)
+
+    # File-static helpers of the same translation unit (the header is
+    # compiled into _bcdec with BCDEC_IMPLEMENTATION). BC3 is decoded
+    # from these so its alpha block takes the rounding BC4 path; see
+    # _bc3_block in _bcdec.pyx.
+    void bcdec__color_block(const void* block, void* out, int pitch,
+                            int only_opaque_mode)
+    void bcdec__bc4_block(const void* block, void* out, int pitch,
+                          int pixel_size, int is_signed)

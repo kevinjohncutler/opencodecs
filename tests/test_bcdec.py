@@ -2,8 +2,9 @@
 
 Cross-validates our bcdec-vendored decoder against imagecodecs's
 bcn_decode (which uses the same upstream bcdec implementation but
-binds it slightly differently). Both should produce pixel-equal
-output for every supported format.
+binds it slightly differently). Both produce pixel-equal output for
+every supported format except interpolated BC3 alpha, which we round
+as the Khronos specification defines and imagecodecs truncates.
 """
 
 from __future__ import annotations
@@ -78,6 +79,13 @@ def test_decoder_matches_imagecodecs(fmt_id, fn, block_size, channels):
     # our decoder always returns RGBA. Compare just RGB.
     if ic.shape[-1] == 3 and ours.shape[-1] == 4:
         np.testing.assert_array_equal(ours[..., :3], ic)
+    elif fmt_id == imagecodecs.BCN.FORMAT.BC3:
+        # BC3 alpha rounds per the Khronos formulas where imagecodecs
+        # truncates (pinned exactly in test_bcn_rounding.py), so it is
+        # equal or one higher; the color block is identical.
+        np.testing.assert_array_equal(ours[..., :3], ic[..., :3])
+        diff = ours[..., 3].astype(int) - ic[..., 3]
+        assert diff.min() >= 0 and diff.max() <= 1
     else:
         np.testing.assert_array_equal(ours, ic)
 

@@ -16,6 +16,15 @@ BC4 → ``uint8`` / ``int8`` (single channel).
 BC5 → ``uint8`` / ``int8`` (two channels).
 BC6H → ``float32`` (or ``float16`` if ``format='half'``) RGB (HDR).
 
+Rounding differs from imagecodecs on purpose. The Khronos Data Format
+Specification defines the interpolated BC3 alpha, BC4 and BC5 values
+as real numbers (for example (6*red0 + red1)/7), so the nearest 8-bit
+value is the rounded one, which is what this codec returns for all
+three. imagecodecs truncates, so about a third of interpolated samples
+come out one lower there. BC6H is a half-float format; the float32
+default is a lossless widening, and ``fp16=True`` returns the native
+float16 values, bit-identical to imagecodecs.
+
 Encode is NOT yet implemented (BCn encoders are far more complex
 than decoders and we don't yet have a Cython BC encoder; ``imagecodecs``
 ships ``bcn_encode`` via the upstream NVTT-derived encoder which we
