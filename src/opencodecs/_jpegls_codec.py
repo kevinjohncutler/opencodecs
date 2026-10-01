@@ -9,6 +9,11 @@ Modes::
     near_lossless=0   # mathematically lossless (default)
     near_lossless=N   # bounded error: each sample within N of source
                       # (smaller files, more error; N=1..9 typical)
+    level=N           # imagecodecs' name for near_lossless
+
+The output is a bare codestream with no SPIFF header; see
+``opencodecs.codecs._charls`` for why that differs from imagecodecs'
+bytes while decoding identically.
 """
 
 from __future__ import annotations
@@ -60,15 +65,35 @@ class JpegLsCodec(Codec):
         scan = bytes(head[:64])
         return b"\xff\xf7" in scan
 
-    def encode(self, data: Any, *, dest=None, near_lossless: int = 0,
-               **opts) -> bytes | None:
+    def encode(self, data: Any, *, dest=None,
+               near_lossless: int | None = None,
+               level: int | None = None, **opts) -> bytes | None:
+        """Encode as a bare JPEG-LS codestream.
+
+        ``level`` is accepted as imagecodecs' name for ``near_lossless``
+        (the JPEG-LS NEAR bound). Any other keyword raises TypeError
+        rather than being dropped.
+        """
+        _reject_options("encode", opts)
         if not isinstance(data, np.ndarray):
             data = np.asarray(data)
-        out = _jpegls_encode(data, near_lossless=int(near_lossless))
+        out = _jpegls_encode(data, near_lossless=near_lossless, level=level)
         return _write_dest(out, dest)
 
     def decode(self, src: Any, *, out=None, **opts) -> np.ndarray:
+        """Decode to (H, W) or (H, W, C), whatever the interleave mode.
+
+        imagecodecs' jpegls_decode takes only ``out``; any other keyword
+        raises TypeError rather than being dropped.
+        """
+        _reject_options("decode", opts)
         return _jpegls_decode(_read_src(src), out=out if out is None else array_output(out))
+
+
+def _reject_options(where: str, opts: dict) -> None:
+    if opts:
+        names = ", ".join(sorted(opts))
+        raise TypeError(f"jpegls {where}: unsupported option(s) {names}")
 
 
 __all__ = ["JpegLsCodec"]

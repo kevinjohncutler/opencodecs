@@ -24,6 +24,12 @@ Example::
     blob = oc.write(None, arr, format="lerc", max_z_error=1e-3)
     back = oc.read(blob, format="lerc")
     assert (np.abs(arr - back) <= 1e-3).all()
+
+Blobs are Lerc2 codec version 4 unless ``version=`` picks another (2 to
+6); see ``opencodecs.codecs._lerc`` for why. imagecodecs' keywords
+(``level``, ``version``, ``masks``, ``planar``, ``compression``,
+``compressionargs``) mean the same here, and an unknown keyword raises
+TypeError instead of being ignored.
 """
 
 from __future__ import annotations
@@ -72,17 +78,40 @@ class LercCodec(Codec):
         return _lerc_check_signature(head)
 
     def encode(self, data: Any, *, dest=None,
-               max_z_error: float = 0.0,
+               max_z_error: float | None = None,
+               level: float | None = None,
+               version: int | None = None,
+               masks=None, planar: bool | None = None,
+               compression: str | None = None,
+               compressionargs: dict | None = None,
                **opts) -> bytes | None:
+        """Encode as a LERC blob (Lerc2 codec version 4 by default).
+
+        ``level`` is imagecodecs' name for ``max_z_error``.
+        """
+        if opts:
+            raise TypeError(
+                f"lerc encode: unsupported option(s) {', '.join(sorted(opts))}")
         if not isinstance(data, np.ndarray):
             data = np.asarray(data)
-        out = _lerc_encode(data, max_z_error=float(max_z_error))
+        out = _lerc_encode(data, max_z_error=max_z_error, level=level,
+                           version=version, masks=masks, planar=planar,
+                           compression=compression,
+                           compressionargs=compressionargs)
         return _write_dest(out, dest)
 
-    def decode(self, src: Any, *, out=None, **opts) -> np.ndarray:
+    def decode(self, src: Any, *, out=None, masks=None, **opts) -> np.ndarray:
+        """Decode a LERC blob; ``masks=True`` also returns the masks.
+
+        imagecodecs' lerc_decode takes ``masks`` and ``out``; any other
+        keyword raises TypeError rather than being dropped.
+        """
+        if opts:
+            raise TypeError(
+                f"lerc decode: unsupported option(s) {', '.join(sorted(opts))}")
         if out is None:
-            return _lerc_decode(_read_src(src))
-        return _lerc_decode(_read_src(src), out=array_output(out))
+            return _lerc_decode(_read_src(src), masks=masks)
+        return _lerc_decode(_read_src(src), out=array_output(out), masks=masks)
 
     def info(self, src: Any) -> dict:
         """Return shape, dtype, value range, version without decoding."""

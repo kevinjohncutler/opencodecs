@@ -25,9 +25,15 @@
  *   2-bit symbol (1 horz + 1 vert):  s ^= 0x03   ->  0b11
  *
  * Both constants flip exactly the MSB of each field and leave the low
- * bits alone, so the rule is width-independent and we apply it for all
- * widths. NOTE: imagecodecs applies the inversion for field widths 1 and
- * 2 but not 3 and 4; real Falcon hardware only ever emits 1 or 2, so
+ * bits alone. RELION's comment on that XOR (citing Thermo Fisher) says
+ * the field is a SIGNED 2-bit value, -2..1 (signed 1-bit for 1-bit
+ * fields). Turning a signed n-bit field into an unsigned index means
+ * adding 2^(n-1), which is flipping its top bit, at every width; so we
+ * apply that rule for all widths. Thermo Fisher's public EER format
+ * document (v3.0) defines only the tags and leaves the bitstream out of
+ * scope, so this is the only stated convention. NOTE: imagecodecs XORs
+ * each field with its WIDTH (^3, ^4), which equals the top-bit flip only
+ * at widths 1 and 2; real Falcon hardware only ever emits 1 or 2, so
  * that divergence does not affect real data. See
  * tests/test_eer.py::test_eer_subpixel_inversion_is_width_independent.
  *

@@ -570,8 +570,11 @@ class TiffPage:
           - compression 65001: skipbits=7, horzbits=2, vertbits=2
           - compression 65002: read from tags (variant per acquisition)
 
-        Output is a ``(H, W)`` uint8 array of event counts (binary
-        per-pixel when the source isn't super-resolution).
+        Output is the codec's ``(H, W)`` bool array, True where a pixel
+        saw an event (decoded without super-resolution, so at most one
+        per pixel), as imagecodecs.eer_decode returns it. The page's
+        decode path stores it in the page's own dtype: bool for
+        BitsPerSample=1, 0/1 values for a wider sample type.
         """
         from .codecs._eer import decode as _eer_decode
         cmp = self.compression

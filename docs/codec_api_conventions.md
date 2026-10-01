@@ -152,8 +152,15 @@ Any codec that can round-trip exactly does so with no arguments:
     decode(encode(x)) == x
 
 That holds for `png`, `qoi`, `jpeg2k`, `webp`, `avif`, `heif`, `jxl`,
-`lerc` and every byte compressor. A caller who wants a small file asks
-for one with `lossless=False, level=N`. `jpeg` and `mozjpeg` are the
+`lerc` and every byte compressor, with two shape caveats that follow
+imagecodecs: gray `heif` decodes to RGB(A) unless the decode passes
+`photometric='monochrome'`, and (H, W, 1) gray `avif` decodes to (H, W).
+The pixel values are exact either way. A caller who wants a small file
+asks for one with `lossless=False, level=N`. For `avif` and `heif` a
+lossy `level` alone is enough, as in imagecodecs: AVIF is lossy below
+100 and HEIF at 100 or below. One difference: imagecodecs writes gray
+(1 or 2 sample) AVIF lossless whatever `level` says, while opencodecs
+honors the level for gray too. `jpeg` and `mozjpeg` are the
 only exceptions, because the format has no lossless mode to default to.
 
 This is the convention `imagecodecs` follows too, and it is worth
@@ -177,9 +184,10 @@ in the same mode. Two ways that goes wrong, both seen in practice:
   reports us as many times slower and many times larger, and neither
   number means anything.
 * **Different effort at the same nominal setting.** At its default `sz3`
-  emits 1.9 MB where `imagecodecs` emits 3.7 MB, and `lerc` emits 3.3 MB
-  where `imagecodecs` emits 4.0 MB, which is no compression at all. We
-  are twice as thorough, so of course we take longer.
+  emits 1.9 MB where `imagecodecs` emits 3.7 MB. We are twice as
+  thorough, so of course we take longer. (`lerc` was a second example
+  while it wrote codec version 6; it now writes version 4 by default, as
+  imagecodecs does, and the two default blobs are the same bytes.)
 
 `bench/sweep.py` guards the second case: it compares output sizes first
 and prints `n/c` rather than a speed ratio when they differ by more than

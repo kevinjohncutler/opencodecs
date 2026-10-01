@@ -457,6 +457,112 @@ core) and a 4-core x86-64 Windows laptop.
   and its reference encoder do, and imagecodecs writes 1 for RGBA.
   ``srgb=False`` gives byte parity.
 
+- Fix: JPEG-LS could not decode a multi-component image coded with
+  interleave mode NONE (one scan per component, ITU-T T.87 Annex C.2.3),
+  which DICOM archives and other encoders write; it failed with "output
+  buffer too small". Such images now decode to (H, W, C) like the other
+  modes, through ``oc.read`` and DICOMweb alike.
+- Fix: JPEG-LS ignored ``level=``, imagecodecs' name for the NEAR bound,
+  and wrote a lossless file. ``level`` now sets NEAR, the same stream
+  imagecodecs writes apart from its SPIFF header, and disagreeing
+  ``level`` and ``near_lossless`` raise. Output is still a bare
+  codestream with sample interleave, both conforming choices.
+- Fix: AVIF and HEIF coded uint16 data at 10 bits with no range check,
+  so a plain ``encode`` clamped every value above 1023 and an explicit
+  ``bit_depth`` clamped too. uint16 data is now coded at 10 or 12 bits,
+  whichever holds its largest value, and data that does not fit the
+  depth (AV1 and the HEVC encoders stop at 12 bits) raises instead.
+  Files for data above 1023 change from a clamped 10-bit image to an
+  exact 12-bit one.
+- Fix: AVIF and HEIF stored gray input as three equal color planes, and
+  AVIF decoded every file, real monochrome ones included, as RGB. Gray
+  and gray with alpha are now coded monochrome (AV1 ``mono_chrome``,
+  HEVC chroma format 0). A monochrome AVIF decodes to (H, W) or
+  (H, W, 2), as imagecodecs.avif_decode returns it. A monochrome HEIF
+  still decodes to RGB(A) by default, as imagecodecs.heif_decode returns
+  it, and to (H, W) or (H, W, 2) with imagecodecs' keyword
+  ``photometric='monochrome'``, which now works on decode (it raises for
+  a color image, where imagecodecs returns the red channel). This
+  changes the bytes written for gray input, and the shape read back from
+  monochrome AVIF files. Gray AVIF is tagged with an
+  unspecified matrix (2), as imagecodecs tags it, since a single plane
+  has no chroma for a matrix to act on. Lossless gray AVIF then matches
+  imagecodecs byte for byte when both link the same libavif and libaom,
+  for images under 1024 px on the long axis; larger images are tiled
+  4x4 by default here and untiled in imagecodecs, and
+  ``tilelog2=(0, 0)`` writes them untiled.
+- Fix: AVIF and HEIF ignored ``level=`` unless ``lossless=False`` was
+  also passed, so imagecodecs-style ``encode(a, level=30)`` wrote a
+  lossless file. ``lossless`` now defaults to None: with no level, or a
+  level of 100 (AVIF) or above 100 (HEIF), the file is lossless, as in
+  imagecodecs, and a lower level is lossy; an AVIF level of -1 or lower
+  is lossy at libavif's own default quality, as imagecodecs maps it.
+  Gray (1 or 2 sample) AVIF is the one difference: imagecodecs writes it
+  lossless whatever the level, and opencodecs honors the level for it
+  as for color.
+  ``lossless=True`` with a lossy level raises. A bare
+  ``oc.get_codec("avif")`` or ``oc.get_codec("heif")`` encode is
+  unchanged (lossless). The extension functions
+  ``opencodecs.codecs._avif.encode`` and ``_heif.encode`` used to be
+  lossy by default (AVIF quality 60 at 4:2:0, HEIF quality 50); a bare
+  call to them is now lossless too. This is a format change: a level
+  alone now writes a lossy file where a lossless one was written, an
+  AVIF level of -1 or lower writes libavif's default quality where it
+  wrote quality 0, and a bare call to the extension functions writes
+  lossless, larger files.
+- Fix: lossy AVIF color was tagged with an unspecified matrix (2), which
+  leaves readers outside libavif to guess. It is now tagged BT.601 (6),
+  the matrix libavif converts with; pixels are unchanged, only that tag
+  in the ``colr`` box differs. Lossy AVIF can still decode a level or
+  two apart from imagecodecs on the same bytes: the imagecodecs build
+  converts with libyuv, this one with libavif's own converter, which
+  matches the rounded ITU-T H.273 result.
+- Fix: lossy AVIF and HEIF color was subsampled 4:2:0 by default, where
+  imagecodecs codes 4:4:4, which smears sharp color edges. Lossy color is
+  now 4:4:4 by default for both; AVIF's ``yuv_format`` (or
+  ``pixelformat``) still asks for subsampling. AVIF alpha is now coded
+  lossless at every level, as imagecodecs codes it, rather than at the
+  color quality. AVIF ``speed`` defaulted to 0, the slowest, through
+  ``oc.get_codec("avif")`` and to 6 in the extension; both now leave
+  libavif's default, as imagecodecs does, and a speed outside 0 to 10 is
+  clamped to that range, as imagecodecs clamps it, instead of being
+  ignored. This changes the bytes of lossy AVIF and HEIF files.
+- Fix: the AVIF, HEIF, JPEG-LS and LERC codecs dropped keywords they did
+  not know, on encode and decode. They now raise TypeError for them, and
+  accept imagecodecs' names: ``bitspersample``, ``pixelformat``,
+  ``tilelog2``, ``primaries``, ``transfer`` and ``matrix`` for AVIF
+  encode, ``index`` for AVIF decode (one image of a sequence, IndexError
+  past the end), ``bitspersample``, ``photometric`` and ``compression``
+  (HEVC only) for HEIF encode, by name or as libheif's integer enum
+  values as imagecodecs takes them, and ``photometric`` for HEIF
+  decode. A HEIF ``photometric`` that disagrees with the array raises.
+  The
+  AVIF wrapper also passes ``codec``, tiling, ``yuv_format`` and
+  ``codec_options`` through, which it used to drop.
+- Fix: a HEIF with an 8-bit image and a deeper alpha plane (HEIF codes
+  alpha as a separate image with its own bit depth) decoded to wrong
+  alpha values with no error, through libheif's RGBA conversion. Any
+  HEIF whose alpha depth differs from the image's now raises
+  HeifError, as a deeper image with a shallower alpha already did, since
+  one array cannot hold both planes at their own depths.
+- Fix: LERC wrote Lerc2 codec version 6, which readers built on libLerc
+  before 4.0 cannot open and which libtiff warns about in TIFF, where it
+  fixes version 4. It now writes version 4 by default, byte-identical to
+  imagecodecs, with ``version=`` (2 to 6) to choose; every version still
+  decodes. This changes the bytes of every LERC blob and LERC TIFF tile
+  written. LERC also accepts imagecodecs' ``level``, ``masks``,
+  ``planar``, ``compression`` (zstd or deflate around the blob, unwrapped
+  again on decode) and 1-D input, returns masks on request, and decodes
+  pixels a mask marks invalid as 0 rather than leaving whatever the
+  output buffer held. A deflate ``compressionargs`` level outside -1 to
+  9 is clamped to that range, as imagecodecs clamps it, rather than
+  failing inside zlib.
+- Fix: the EER codec returned uint8 for a frame while ``oc.open`` on the
+  same EER file returned bool. A frame holds at most one event per pixel
+  and Falcon files declare BitsPerSample=1, so the codec now returns bool,
+  as imagecodecs and tifffile do; ``out=`` of uint8 or uint16 still
+  accumulates counts, and a bool ``out=`` now has events OR-ed in.
+
 0.4.0 (2026-09-29)
 ------------------
 

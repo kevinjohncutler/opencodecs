@@ -333,24 +333,48 @@ def test_tiff_compressed_with_horizontal_predictor(compression):
         np.testing.assert_array_equal(page.asarray(), arr)
 
 
-@pytest.mark.skip(reason=(
-    "tifffile-emitted LERC TIFFs use a two-level compression (LERC + "
-    "secondary deflate/zstd indicated by the LercParameters tag 50674); "
-    "Tier 5 session 2 dispatcher only handles the bare-LERC variant. "
-    "Track in Tier 5 session 2 follow-up: parse LercParameters and "
-    "chain through the appropriate inner deflate/zstd before LERC."))
-def test_tiff_lerc_compression():
-    """LERC: dispatches to opencodecs._lerc."""
+_LERC_TIFF_CHILD = """
+import sys
+import numpy as np
+try:
+    import imagecodecs, tifffile
+    imagecodecs.lerc_encode
+except Exception:
+    sys.exit(77)
+path, outer = sys.argv[1], sys.argv[2]
+arr = np.arange(64 * 96, dtype=np.uint16).reshape(64, 96)
+args = {} if outer == "none" else {"compression": outer}
+tifffile.imwrite(path, arr, compression="lerc", compressionargs=args)
+with tifffile.TiffFile(path) as tif:
+    params = tif.pages[0].tags.get(50674)
+    print(list(params.value) if params is not None else None)
+"""
+
+
+@pytest.mark.parametrize("outer,code", [("none", 0), ("deflate", 1),
+                                        ("zstd", 2)])
+def test_tiff_lerc_compression(tmp_path, outer, code):
+    """LERC TIFFs from tifffile, bare and with a deflate or zstd wrapper.
+
+    The wrapper is named by the LercParameters tag (50674, [version,
+    additional compression]); the LERC codec unwraps it. tifffile writes
+    the file in a child interpreter, since its LERC is imagecodecs' and
+    two libLerc copies must not share a process.
+    """
+    import subprocess
+    import sys
     _need_tiff()
     if not oc.has_codec("lerc"):
         pytest.skip("opencodecs._lerc backend not available")
+    path = tmp_path / f"lerc_{outer}.tif"
+    proc = subprocess.run([sys.executable, "-c", _LERC_TIFF_CHILD,
+                           str(path), outer], capture_output=True, text=True)
+    if proc.returncode == 77:
+        pytest.skip("tifffile with imagecodecs LERC is not importable")
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.split() == [f"[4,", f"{code}]"]
     arr = np.arange(64 * 96, dtype=np.uint16).reshape(64, 96)
-    buf = io.BytesIO()
-    try:
-        tifffile.imwrite(buf, arr, compression="lerc")
-    except Exception as exc:
-        pytest.skip(f"tifffile cannot write LERC TIFF: {exc}")
-    with oc.get_codec("tiff").open(buf.getvalue()) as r:
+    with oc.get_codec("tiff").open(path.read_bytes()) as r:
         np.testing.assert_array_equal(r.page(0).asarray(), arr)
 
 

@@ -26,9 +26,14 @@ strip / tile.
 Output dtype
 ============
 
-If ``out`` is a uint16 array, samples accumulate as uint16 (multiple
-events on the same sub-pixel sum). Otherwise the decoder produces a
-binary uint8 count clipped to [0, 255].
+With no ``out`` the frame decodes to a bool array. One frame holds at
+most one event per output cell (the position advances past every
+event), EER TIFFs declare these pages BitsPerSample=1, and imagecodecs'
+eer_decode, tifffile and opencodecs' own TIFF/EER reader all return
+bool for them. Counts above one only arise when frames are summed, so
+that is what ``out=`` is for: a uint8 or uint16 array accumulates events
+into the caller's buffer (uint8 saturates at 255, uint16 at 65535),
+and a bool array has the frame's events OR-ed into it.
 
 Implementation
 ==============
@@ -84,14 +89,14 @@ def decode(
         Upsampling factor in bits. 0 = no upsampling (one event per
         coarse pixel, binary image), >0 = use sub-pixel offsets.
     out : ndarray, optional
-        Pre-allocated destination. If ``dtype.char == 'H'`` (uint16)
-        events accumulate as uint16 counts; otherwise a fresh
-        ``uint8`` array is allocated and written.
+        Pre-allocated ``(H, W)`` destination, not cleared first. uint8
+        or uint16 accumulates event counts; bool sets each cell an
+        event lands on. Without it a new zeroed bool array is returned.
 
     Returns
     -------
     ndarray
-        ``(H, W)`` array of event counts.
+        ``(H, W)`` bool event map, or ``out``.
     """
     cdef:
         const uint8_t[::1] src
@@ -118,34 +123,43 @@ def decode(
             f"({skipbits}, {horzbits}, {vertbits})"
         )
 
-    use_u2 = (
-        out is not None
-        and isinstance(out, np.ndarray)
-        and out.dtype.char == "H"
-    )
+    cdef object result
+    cdef object bool_out = None
     if out is None:
-        dst = np.zeros((height, width), dtype=np.uint8)
-    elif use_u2:
-        if out.shape != (height, width):
-            raise EerError(
-                f"out shape {out.shape} != expected ({height}, {width})"
-            )
-        dst = out
-        # uint16 accumulator must be zeroed; uint8 default also zeroed
-        # by np.zeros above. Don't auto-zero a user buffer — caller may
-        # want to add events into an existing frame.
+        # A fresh zeroed frame: the kernel's saturating increment can
+        # only take a cell from 0 to 1, since a frame holds at most one
+        # event per cell, so it writes valid bool bytes directly.
+        result = np.zeros((height, width), dtype=np.bool_)
+        dst = result.view(np.uint8)
+        use_u2 = False
     else:
         if not isinstance(out, np.ndarray):
             raise EerError("out must be a numpy ndarray")
-        if out.dtype.char != "B":
-            raise EerError(
-                f"out dtype must be uint8 or uint16, got {out.dtype}"
-            )
         if out.shape != (height, width):
             raise EerError(
                 f"out shape {out.shape} != expected ({height}, {width})"
             )
-        dst = out
+        if not out.flags["C_CONTIGUOUS"]:
+            raise EerError("out must be C-contiguous")
+        result = out
+        # Don't auto-zero a user buffer: the caller may be adding this
+        # frame's events into an existing image.
+        if out.dtype.char == "H":
+            dst = out
+            use_u2 = True
+        elif out.dtype.char == "B":
+            dst = out
+            use_u2 = False
+        elif out.dtype == np.bool_:
+            # A bool that already holds True must stay a valid bool, so
+            # decode into scratch and OR it in rather than incrementing.
+            bool_out = out
+            dst = np.zeros((height, width), dtype=np.uint8)
+            use_u2 = False
+        else:
+            raise EerError(
+                f"out dtype must be bool, uint8 or uint16, got {out.dtype}"
+            )
 
     cdef uint8_t* p8 = <uint8_t*> cnp.PyArray_DATA(dst)
     cdef uint16_t* p16 = <uint16_t*> cnp.PyArray_DATA(dst)
@@ -168,4 +182,6 @@ def decode(
 
     if ret < 0:
         raise EerError(f"eer_decode returned error code {ret}")
-    return dst
+    if bool_out is not None:
+        np.logical_or(bool_out, dst.view(np.bool_), out=bool_out)
+    return result

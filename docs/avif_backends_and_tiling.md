@@ -6,7 +6,10 @@ Findings behind the `codec=`, `tile_cols_log2=` / `tile_rows_log2=`,
 
 All numbers below are Apple Silicon (M-series, macOS), libavif 1.3.0,
 libaom 3.13.0, SVT-AV1 3.1.2, on a synthetic 2048x2048 RGB frame with
-photo-like statistics at `level=80`. Reproduce with
+photo-like statistics at `level=80` with 4:2:0 chroma, which was the
+lossy default when they were taken. Lossy color now defaults to 4:4:4,
+as in imagecodecs, so pass `yuv_format='420'` to reproduce them; the
+tables have not been re-measured at 4:4:4. Reproduce with
 `tests/test_heif_avif_features.py` plus your own timing loop; treat the
 absolute milliseconds as machine-specific and the ratios as the finding.
 
@@ -58,12 +61,13 @@ benchmark before reaching for any of these.
 
 ## Chroma layout
 
-`yuv_format` selects `'420'` (default for lossy), `'422'`, `'444'` or
-`'400'`. Lossless always forces 4:4:4, since chroma subsampling is lossy
-by definition. 4:2:0 is right for natural-image content, but on
+`yuv_format` selects `'444'` (the default for lossy color, as in
+imagecodecs), `'422'` or `'420'` for color; gray input is always coded
+`'400'`. Lossless color always uses 4:4:4, since chroma subsampling is
+lossy by definition. 4:2:0 saves bytes on natural-image content, but on
 sparse-bright or synthetic content with saturated adjacent hues it
 bleeds badly: on alternating red/blue columns, 4:4:4 measured 52.9 dB
-against 4:2:0's 7.6 dB.
+against 4:2:0's 7.6 dB. That is why it is opt-in.
 
 ## Known build wart: link order on dev machines
 
@@ -102,5 +106,8 @@ also ships, not just AVIF.
    Until then `codec='svt'` raises on wheel installs.
 2. Fix the link-order wart above in `setup.py` rather than documenting
    a workaround.
-3. Confirm the high-level `opencodecs.write(format='avif', ...)` path
-   forwards the new kwargs through `**opts`.
+3. ~~Confirm the high-level `opencodecs.write(format='avif', ...)` path
+   forwards the new kwargs through `**opts`.~~ Done: `AvifCodec.encode`
+   passes `codec`, the tiling keywords, `yuv_format` and
+   `codec_options` through, and raises TypeError for a keyword it does
+   not know.

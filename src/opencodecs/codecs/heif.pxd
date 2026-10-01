@@ -101,10 +101,30 @@ cdef extern from 'heif_shim.h' nogil:
     int heif_image_handle_get_height(const heif_image_handle*)
     int heif_image_handle_has_alpha_channel(const heif_image_handle*)
     int heif_image_handle_get_luma_bits_per_pixel(const heif_image_handle*)
+    # The colorspace and chroma the coded image is in (monochrome for a
+    # 4:0:0 HEVC image), read from the configuration without decoding.
+    heif_error heif_image_handle_get_preferred_decoding_colorspace(
+        const heif_image_handle*, heif_colorspace* out_colorspace,
+        heif_chroma* out_chroma)
     void heif_image_handle_release(const heif_image_handle*)
+    # Auxiliary images, the alpha plane among them. HEIF codes alpha as
+    # its own image with its own bit depth, which the main handle does
+    # not report; it is read from the alpha's auxiliary handle.
+    int LIBHEIF_AUX_IMAGE_FILTER_OMIT_ALPHA
+    int heif_image_handle_get_number_of_auxiliary_images(
+        const heif_image_handle*, int aux_filter)
+    int heif_image_handle_get_list_of_auxiliary_image_IDs(
+        const heif_image_handle*, int aux_filter, heif_item_id* ids,
+        int count)
+    heif_error heif_image_handle_get_auxiliary_image_handle(
+        const heif_image_handle*, heif_item_id, heif_image_handle**)
 
     int heif_image_get_width(const heif_image*, heif_channel channel)
     int heif_image_get_height(const heif_image*, heif_channel channel)
+    # Significant bits of one plane (10 for a 10-bit plane stored in
+    # 16-bit words).
+    int heif_image_get_bits_per_pixel_range(
+        const heif_image*, heif_channel channel)
     const uint8_t* heif_image_get_plane_readonly(
         const heif_image*, heif_channel, int* out_stride)
     uint8_t* heif_image_get_plane(

@@ -259,6 +259,7 @@ def test_eer_in_tiff_dispatch_via_tiffstream():
 def _build_multi_frame_eer_tiff(
     frames: list[bytes], shape: tuple[int, int],
     skipbits: int = 7, horzbits: int = 1, vertbits: int = 1,
+    bits_per_sample: int = 8,
 ) -> bytes:
     """Hand-roll a multi-page TIFF file where each page is one EER
     frame. Used by the EerReader tests to avoid bringing in a real
@@ -295,7 +296,7 @@ def _build_multi_frame_eer_tiff(
         entries = [
             (256, 4, 1, shape[1]),
             (257, 4, 1, shape[0]),
-            (258, 3, 1, 8),
+            (258, 3, 1, bits_per_sample),
             (259, 3, 1, 65002),         # Compression = EER v2
             (262, 3, 1, 1),
             (273, 4, 1, strip_offsets[i]),
@@ -487,10 +488,17 @@ def test_eer_subpixel_inversion_is_width_independent(horzbits):
     field and leave the low bits alone, so the rule does not depend on
     the field width and we apply it uniformly.
 
-    imagecodecs applies the inversion at widths 1 and 2 but not 3 and 4.
-    Real Falcon hardware only emits 1 or 2, so that does not affect real
-    data, but it does mean this test is deliberately NOT cross-validated
-    against imagecodecs.
+    RELION's comment on that XOR, citing Thermo Fisher, calls the field
+    a signed 2-bit value (-2..1), and signed 1-bit for 1-bit fields.
+    Mapping a signed n-bit field to an unsigned index adds 2^(n-1),
+    which is flipping its top bit at any width. Thermo Fisher's public
+    EER format document (v3.0) leaves the bitstream out of scope, so
+    that is the only stated convention.
+
+    imagecodecs XORs each field with its width (^3, ^4), which matches
+    only at widths 1 and 2. Real Falcon hardware only emits 1 or 2, so
+    that does not affect real data, but it does mean this test is
+    deliberately NOT cross-validated against imagecodecs.
     """
     cols = []
     for field in range(1 << horzbits):
@@ -531,7 +539,9 @@ def test_eer_reader_on_real_falcon4_acquisition():
 
         first = r.frame(0)
         assert first.shape == (4096, 4096)
-        assert first.dtype == np.uint8
+        # The file declares BitsPerSample=1, so a frame is bool, as
+        # tifffile and imagecodecs return it.
+        assert first.dtype == np.bool_
         # A real exposure is sparse but not empty: a few electrons per
         # thousand pixels. Both bounds matter, since a decoder that
         # silently produced zeros would pass a shape-only check.
@@ -555,3 +565,99 @@ def test_eer_reader_iteration_matches_indexed_access_on_real_data():
     with EerReader(str(_REAL_EER)) as r:
         for i, frame in enumerate(itertools.islice(r.iter_frames(), 3)):
             assert np.array_equal(frame, r.frame(i)), f"frame {i} differs"
+
+
+@pytest.mark.parametrize("nbits", [1, 2, 3, 4])
+def test_eer_subpixel_full_superres_flips_top_bit(nbits):
+    """At full super-resolution every field value lands at f ^ 2^(n-1).
+
+    superres == field width uses every bit of the field, so this pins the
+    whole mapping, not only its top bit: the low bits pass through and
+    the top bit is inverted. imagecodecs' ``f ^ n`` differs for n = 3, 4.
+    """
+    factor = 1 << nbits
+    top = 1 << (nbits - 1)
+    for field in range(factor):
+        im = decode(_one_event(field, nbits, vertbits=nbits),
+                    (2 * factor, 4 * factor), 7, nbits, nbits,
+                    superres=nbits)
+        ys, xs = np.nonzero(im)
+        assert (ys.tolist(), xs.tolist()) == ([top], [field ^ top])
+
+
+# ---------------------------------------------------------------------------
+# Output dtype: a frame is binary, so it decodes to bool
+#
+# One frame holds at most one event per cell, Falcon EER TIFFs declare
+# BitsPerSample=1, and imagecodecs.eer_decode, tifffile and our own
+# TIFF/EER reader all return bool. The codec used to return uint8.
+# ---------------------------------------------------------------------------
+
+
+def test_eer_decode_returns_bool():
+    for superres in (0, 1):
+        factor = 1 << superres
+        im = decode(SPEC_ENCODED, (20 * factor, 16 * factor), 7, 1, 1,
+                    superres=superres)
+        assert im.dtype == np.bool_
+        assert int(im.sum()) == 4
+
+
+def test_eer_decode_dtype_and_values_match_imagecodecs():
+    imagecodecs = pytest.importorskip("imagecodecs")
+    if not getattr(imagecodecs, "EER", None) or not imagecodecs.EER.available:
+        pytest.skip("imagecodecs EER backend unavailable")
+    rng = np.random.default_rng(11)
+    for sb, hb, vb in ((7, 1, 1), (7, 2, 2), (8, 2, 2)):
+        shape = (64, 64)
+        ncells = shape[0] * shape[1]
+        pos = sorted(rng.choice(ncells - 1, size=60, replace=False).tolist())
+        events = [(int(p), int(rng.integers(0, 1 << hb)),
+                   int(rng.integers(0, 1 << vb))) for p in pos]
+        data = _encode_frame(events, ncells, sb, hb, vb)
+        for superres in (0, 1):
+            factor = 1 << superres
+            big = (shape[0] * factor, shape[1] * factor)
+            ours = decode(data, big, sb, hb, vb, superres=superres)
+            theirs = imagecodecs.eer_decode(data, big, sb, hb, vb,
+                                            superres=superres)
+            assert ours.dtype == theirs.dtype == np.bool_
+            np.testing.assert_array_equal(ours, theirs)
+
+
+def test_eer_out_bool_ors_and_out_uint8_counts():
+    first = decode(SPEC_ENCODED, (20, 16), 7, 1, 1)
+    out = np.zeros((20, 16), np.bool_)
+    out[0, 0] = True
+    assert decode(SPEC_ENCODED, (20, 16), 7, 1, 1, out=out) is out
+    assert decode(SPEC_ENCODED, (20, 16), 7, 1, 1, out=out) is out
+    # Still a valid bool image: the frame's events OR-ed in, twice.
+    assert out.view(np.uint8).max() == 1
+    expected = first.copy()
+    expected[0, 0] = True
+    np.testing.assert_array_equal(out, expected)
+
+    counts = np.zeros((20, 16), np.uint8)
+    decode(SPEC_ENCODED, (20, 16), 7, 1, 1, out=counts)
+    decode(SPEC_ENCODED, (20, 16), 7, 1, 1, out=counts)
+    np.testing.assert_array_equal(counts, 2 * first.astype(np.uint8))
+
+    with pytest.raises(EerError):
+        decode(SPEC_ENCODED, (20, 16), 7, 1, 1,
+               out=np.zeros((20, 16), np.float32))
+
+
+def test_eer_codec_and_reader_agree_on_dtype(tmp_path):
+    """A BitsPerSample=1 frame is bool through decode() and oc.open()."""
+    from opencodecs._eer_reader import EerReader
+
+    shape = (20, 16)
+    path = tmp_path / "bilevel.eer"
+    path.write_bytes(_build_multi_frame_eer_tiff(
+        [SPEC_ENCODED], shape, bits_per_sample=1))
+    direct = decode(SPEC_ENCODED, shape, 7, 1, 1)
+    with EerReader(str(path)) as r:
+        assert r.dtype == np.bool_
+        frame = r.frame(0)
+    assert frame.dtype == direct.dtype == np.bool_
+    np.testing.assert_array_equal(frame, direct)

@@ -18,7 +18,7 @@ cimport numpy as cnp
 
 from heif cimport (
     heif_init, heif_context, heif_context_alloc, heif_context_free,
-    heif_error_code, heif_chroma,
+    heif_error_code, heif_chroma, heif_colorspace,
     heif_context_read_from_memory_without_copy,
     heif_reader, heif_reader_grow_status,
     heif_reader_grow_status_size_reached, heif_reader_grow_status_size_beyond_eof,
@@ -34,7 +34,15 @@ from heif cimport (
     heif_decode_image, heif_image, heif_image_release,
     heif_image_get_plane_readonly, heif_image_get_plane,
     heif_image_create, heif_image_add_plane,
-    heif_colorspace_RGB,
+    heif_colorspace_RGB, heif_colorspace_monochrome,
+    heif_chroma_monochrome,
+    heif_image_handle_get_preferred_decoding_colorspace,
+    LIBHEIF_AUX_IMAGE_FILTER_OMIT_ALPHA,
+    heif_image_handle_get_number_of_auxiliary_images,
+    heif_image_handle_get_list_of_auxiliary_image_IDs,
+    heif_image_handle_get_auxiliary_image_handle,
+    heif_image_get_bits_per_pixel_range,
+    heif_channel_Y, heif_channel_Alpha,
     heif_chroma_interleaved_RGB, heif_chroma_interleaved_RGBA,
     heif_chroma_interleaved_RRGGBB_LE, heif_chroma_interleaved_RRGGBBAA_LE,
     heif_channel_interleaved,
@@ -163,13 +171,111 @@ def frame_count(data) -> int:
         heif_context_free(ctx)
 
 
+_GRAY_NAMES = frozenset((
+    'GRAY', 'BLACKISZERO', 'MINISBLACK', 'WHITEISZERO', 'MINISWHITE',
+    'MONOCHROME'))
+
+
+def _wants_monochrome(photometric) -> bool:
+    """Read imagecodecs' ``photometric`` decode keyword.
+
+    imagecodecs.heif_decode takes a libheif colorspace (0 YCbCr, 1 RGB,
+    2 monochrome, 99 undefined) or a name, and returns one or two
+    planes only for monochrome; every other accepted value means the
+    default RGB(A) output. Anything else raises, as it does there.
+    """
+    if photometric is None:
+        return False
+    if isinstance(photometric, str):
+        name = photometric.upper()
+        if name[:3] == 'RGB' or name[:5] == 'YCBCR':
+            return False
+        if name in _GRAY_NAMES:
+            return True
+    elif not isinstance(photometric, bool):
+        try:
+            value = int(photometric)
+        except (TypeError, ValueError):
+            value = None
+        if value is not None and value == photometric:
+            if value in (0, 1, 99):
+                return False
+            if value == 2:
+                return True
+    raise ValueError(
+        f'heif decode: photometric={photometric!r} is not supported; '
+        f"use 'rgb', 'ycbcr' or 'monochrome' (or libheif's colorspace "
+        f'numbers 0, 1, 2, 99)')
+
+
+cdef int _alpha_bits(const heif_image_handle* handle) except -2:
+    """Bit depth of the image's alpha plane, or -1 if none is found.
+
+    HEIF stores alpha as an auxiliary image with a bit depth of its own,
+    which need not equal the main image's. libheif lists it among the
+    auxiliary images unless asked to omit alpha, so the alpha is the id
+    present in the full list and missing from the filtered one.
+    """
+    cdef int n_all, n_rest, i, j, bits = -1
+    cdef bint skip
+    cdef heif_item_id* all_ids = NULL
+    cdef heif_item_id* rest_ids = NULL
+    cdef heif_image_handle* aux = NULL
+    cdef heif_error err
+    n_all = heif_image_handle_get_number_of_auxiliary_images(handle, 0)
+    n_rest = heif_image_handle_get_number_of_auxiliary_images(
+        handle, LIBHEIF_AUX_IMAGE_FILTER_OMIT_ALPHA)
+    if n_all <= 0 or n_all <= n_rest:
+        return -1
+    all_ids = <heif_item_id*> malloc(n_all * sizeof(heif_item_id))
+    rest_ids = <heif_item_id*> malloc((n_rest + 1) * sizeof(heif_item_id))
+    try:
+        if all_ids == NULL or rest_ids == NULL:
+            raise MemoryError('heif: could not allocate the auxiliary id list')
+        n_all = heif_image_handle_get_list_of_auxiliary_image_IDs(
+            handle, 0, all_ids, n_all)
+        if n_rest > 0:
+            n_rest = heif_image_handle_get_list_of_auxiliary_image_IDs(
+                handle, LIBHEIF_AUX_IMAGE_FILTER_OMIT_ALPHA, rest_ids, n_rest)
+        for i in range(n_all):
+            skip = False
+            for j in range(n_rest):
+                if rest_ids[j] == all_ids[i]:
+                    skip = True
+                    break
+            if skip:
+                continue
+            err = heif_image_handle_get_auxiliary_image_handle(
+                handle, all_ids[i], &aux)
+            if err.code == 0 and aux != NULL:
+                bits = heif_image_handle_get_luma_bits_per_pixel(aux)
+                heif_image_handle_release(aux)
+                aux = NULL
+                break
+    finally:
+        free(all_ids)
+        free(rest_ids)
+    return bits
+
+
 def decode(data, *, numthreads: int | None = None, out=None,
-           index=None, _info=False) -> np.ndarray:
+           index=None, photometric=None, _info=False) -> np.ndarray:
     """Decode HEIF/HEIC bytes to a numpy array.
 
-    Returns uint8 for 8-bit HEIFs, uint16 for 10/12-bit HEIFs (values
-    left-aligned to the source bit_depth — i.e. for 10-bit the array
-    contains values 0..1023, not shifted into the upper bits).
+    Returns uint8 for 8-bit HEIFs, uint16 for 10/12-bit HEIFs (values in
+    the low bits: for 10-bit the array contains values 0..1023, not
+    shifted into the upper bits).
+
+    The shape is (H, W, 3) for RGB and (H, W, 4) for RGBA, monochrome
+    images included, as imagecodecs.heif_decode returns them (libheif
+    copies the gray plane into all three channels). With
+    ``photometric='monochrome'`` a monochrome image (HEVC
+    chroma_format_idc 0) decodes to its gray plane, (H, W), or (H, W, 2)
+    with alpha, the shape it was written from.
+
+    An alpha plane coded at a different bit depth from the image cannot
+    share one array with it, so such a file raises HeifError rather
+    than returning rescaled or truncated alpha.
 
     Parameters
     ----------
@@ -183,6 +289,13 @@ def decode(data, *, numthreads: int | None = None, out=None,
         contract. libheif allocates its own RGB plane internally and
         we copy out of it row-by-row; out= just lets the caller
         provide the destination of that copy.
+    photometric : str or int, optional
+        imagecodecs' keyword. None, 'rgb', 'ycbcr' or libheif colorspace
+        0, 1 or 99 return RGB(A). 'monochrome' (or 'gray', 'minisblack'
+        and the other names imagecodecs accepts, or colorspace 2)
+        returns the gray plane of a monochrome image. Asking for
+        monochrome from a color image raises ValueError: imagecodecs
+        hands back its red channel there, which is not a gray image.
     """
     cdef:
         const uint8_t[::1] src
@@ -193,8 +306,15 @@ def decode(data, *, numthreads: int | None = None, out=None,
         heif_error err
         int width, height, channels, has_alpha, stride
         int img_depth
+        int alpha_depth
+        int plane_depth
+        bint want_monochrome
         int dtype_bytes
         heif_chroma chroma
+        heif_colorspace colorspace
+        heif_colorspace pref_colorspace
+        heif_chroma pref_chroma
+        bint monochrome
         const uint8_t* plane
         cnp.ndarray out_arr
         cnp.npy_intp shape[3]
@@ -209,6 +329,7 @@ def decode(data, *, numthreads: int | None = None, out=None,
         heif_item_id wanted
 
     _ensure_init()
+    want_monochrome = _wants_monochrome(photometric)
 
     if hasattr(data, "read_at"):
         data.reset()
@@ -275,43 +396,80 @@ def decode(data, *, numthreads: int | None = None, out=None,
         width = heif_image_handle_get_width(handle)
         height = heif_image_handle_get_height(handle)
         has_alpha = heif_image_handle_has_alpha_channel(handle)
-        channels = 4 if has_alpha else 3
+
+        # A monochrome image (HEVC chroma_format_idc 0) has one plane.
+        # By default it is returned as RGB(A), libheif copying the plane
+        # into each channel, as imagecodecs returns it; with
+        # photometric='monochrome' it is returned as gray, (H, W), or
+        # gray plus alpha, (H, W, 2). Monochrome is the file's own
+        # declaration, read from the coded configuration.
+        err = heif_image_handle_get_preferred_decoding_colorspace(
+            handle, &pref_colorspace, &pref_chroma)
+        monochrome = (err.code == 0
+                      and pref_colorspace == heif_colorspace_monochrome)
+        if want_monochrome and not monochrome:
+            raise ValueError(
+                "heif decode: photometric='monochrome' asks for the gray "
+                "plane, but this image is color; decode it without "
+                "photometric to get RGB(A)")
+        if monochrome and want_monochrome:
+            channels = 2 if has_alpha else 1
+        else:
+            monochrome = False
+            channels = 4 if has_alpha else 3
 
         # Probe luma bit depth (libheif 1.4+).
         img_depth = heif_image_handle_get_luma_bits_per_pixel(handle)
         if img_depth <= 0:
             img_depth = 8
         dtype_bytes = 1 if img_depth <= 8 else 2
-        if _info:
-            return {"shape": (height, width, channels),
-                    "dtype": np.dtype("u1" if dtype_bytes == 1 else "u2")}
 
-        if dtype_bytes == 1:
+        # Alpha is its own coded image with its own depth. One output
+        # array has one dtype and one value range, and libheif's RGBA
+        # conversion either refuses a mismatch or, for an alpha deeper
+        # than an 8-bit image, keeps the wrong bits, so a mismatch is
+        # refused here before anything is decoded.
+        if has_alpha:
+            alpha_depth = _alpha_bits(handle)
+            if alpha_depth > 0 and alpha_depth != img_depth:
+                raise HeifError(
+                    f'heif decode: the alpha plane is {alpha_depth}-bit '
+                    f'but the image is {img_depth}-bit; one array cannot '
+                    f'hold both without rescaling one of them, which '
+                    f'this decoder does not do')
+        if channels == 1:
+            expected_shape = (height, width)
+        else:
+            expected_shape = (height, width, channels)
+        expected_dtype = np.uint8 if dtype_bytes == 1 else np.uint16
+        if _info:
+            return {"shape": expected_shape,
+                    "dtype": np.dtype(expected_dtype)}
+
+        if monochrome:
+            colorspace = heif_colorspace_monochrome
+            chroma = heif_chroma_monochrome
+        elif dtype_bytes == 1:
+            colorspace = heif_colorspace_RGB
             chroma = (heif_chroma_interleaved_RGBA if has_alpha
                       else heif_chroma_interleaved_RGB)
         else:
+            colorspace = heif_colorspace_RGB
             chroma = (heif_chroma_interleaved_RRGGBBAA_LE if has_alpha
                       else heif_chroma_interleaved_RRGGBB_LE)
 
         with nogil:
             err = heif_decode_image(
-                handle, &img, heif_colorspace_RGB, chroma, NULL,
+                handle, &img, colorspace, chroma, NULL,
             )
         if hasattr(data, "raise_error"):
             data.raise_error()
         if err.code != 0:
             raise HeifError(f'heif_decode_image: {err.message.decode()}')
 
-        plane = heif_image_get_plane_readonly(
-            img, heif_channel_interleaved, &stride)
-        if plane == NULL:
-            raise HeifError('heif_image_get_plane_readonly returned NULL')
-
         shape[0] = height
         shape[1] = width
         shape[2] = channels
-        expected_shape = (height, width, channels)
-        expected_dtype = np.uint8 if dtype_bytes == 1 else np.uint16
 
         if out is not None:
             if not isinstance(out, np.ndarray):
@@ -329,10 +487,46 @@ def decode(data, *, numthreads: int | None = None, out=None,
             if not out.flags['C_CONTIGUOUS']:
                 raise ValueError("heif decode: out= must be C-contiguous")
             out_arr = out
-        elif dtype_bytes == 1:
-            out_arr = cnp.PyArray_EMPTY(3, shape, cnp.NPY_UINT8, 0)
         else:
-            out_arr = cnp.PyArray_EMPTY(3, shape, cnp.NPY_UINT16, 0)
+            out_arr = cnp.PyArray_EMPTY(
+                2 if channels == 1 else 3, shape,
+                cnp.NPY_UINT8 if dtype_bytes == 1 else cnp.NPY_UINT16, 0)
+
+        if monochrome:
+            # Each plane is read at its own depth and checked against
+            # the output's, so a plane stored in a different word size
+            # can never be reinterpreted as the output dtype.
+            row_bytes_out = <size_t>(width * dtype_bytes)
+            for c, channel in enumerate(
+                    (heif_channel_Y, heif_channel_Alpha)[:channels]):
+                plane = heif_image_get_plane_readonly(img, channel, &stride)
+                if plane == NULL:
+                    raise HeifError(
+                        'heif_image_get_plane_readonly returned NULL')
+                plane_depth = heif_image_get_bits_per_pixel_range(
+                    img, channel)
+                if plane_depth != img_depth:
+                    raise HeifError(
+                        f'heif decode: the {"alpha" if c else "gray"} '
+                        f'plane decoded at {plane_depth} bits, but the '
+                        f'image is {img_depth}-bit')
+                if channels == 1:
+                    for y in range(height):
+                        memcpy(<uint8_t*> cnp.PyArray_DATA(out_arr)
+                               + y * row_bytes_out,
+                               plane + y * stride, row_bytes_out)
+                else:
+                    rows = np.frombuffer(
+                        (<const char*> plane)[:<Py_ssize_t> stride * height],
+                        dtype=np.uint8).reshape(height, stride)
+                    out_arr[..., c] = np.ascontiguousarray(
+                        rows[:, :row_bytes_out]).view(expected_dtype)
+            return out_arr
+
+        plane = heif_image_get_plane_readonly(
+            img, heif_channel_interleaved, &stride)
+        if plane == NULL:
+            raise HeifError('heif_image_get_plane_readonly returned NULL')
         row_bytes_out = <size_t>(width * channels * dtype_bytes)
         for y in range(height):
             memcpy(<uint8_t*> cnp.PyArray_DATA(out_arr) + y * row_bytes_out,
@@ -355,9 +549,9 @@ def decode(data, *, numthreads: int | None = None, out=None,
 # ---------------------------------------------------------------------------
 
 
-def decode_info(data, *, index=None):
+def decode_info(data, *, index=None, photometric=None):
     """Read image geometry without decoding pixels."""
-    return decode(data, index=index, _info=True)
+    return decode(data, index=index, photometric=photometric, _info=True)
 
 
 cdef struct write_buffer:
@@ -428,7 +622,7 @@ cdef heif_error _writer_cb(
 
 
 def encode(data, *, level: int | None = None,
-           lossless: bool = False, color=None,
+           lossless: bool | None = None, color=None,
            bit_depth: int | None = None,
            numthreads: int | None = None,
            iccprofile: bytes | None = None, destination=None):
@@ -437,20 +631,33 @@ def encode(data, *, level: int | None = None,
     Parameters
     ----------
     data : ndarray
-        2-D grayscale, 3-D HxWx3 (RGB), or 3-D HxWx4 (RGBA). uint8 or uint16.
+        (H, W) or (H, W, 1) gray, (H, W, 2) gray plus alpha, (H, W, 3)
+        RGB or (H, W, 4) RGBA; uint8 or uint16. Gray is coded as HEVC
+        monochrome (chroma_format_idc 0, libheif's heif_chroma_monochrome),
+        the format's own representation. ``decode`` returns it as RGB(A),
+        as imagecodecs does, and ``decode(..., photometric='monochrome')``
+        returns the same shape it was written from.
     level : int, optional
-        Quality 0-100 (default 50); ignored if ``lossless=True``.
-    lossless : bool, default False
-        If True, encode in lossless mode where the HEVC encoder supports it.
+        Quality, imagecodecs' meaning: with ``lossless`` left at None, no
+        level or a level above 100 is lossless and 0-100 is lossy at
+        that quality. With ``lossless=False`` and no level the quality
+        is 50.
+    lossless : bool, optional
+        None (default) follows ``level`` as above. True forces lossless
+        and raises if ``level`` asks for lossy output. False forces lossy.
+        Color is coded 4:4:4 either way, as imagecodecs codes it.
     color : str or ColorSpec, optional
         Color-encoding spec. Same vocabulary as the JXL/AVIF codecs accept:
         'srgb', 'display-p3', 'rec2020-pq', 'rec2020-hlg', etc. Writes an
         NCLX colr box. If None, no NCLX is written (Apple typically defaults
         to sRGB).
     bit_depth : int, optional
-        Override bit depth (8, 10, 12). Default: 8 for uint8 input, 10 for
-        uint16 input. uint16 values must be left-aligned within bit_depth's
-        range (e.g. for 10-bit: values 0..1023, not shifted to upper bits).
+        Coded bit depth, 8 for uint8 and 10 or 12 for uint16. For uint16
+        with no ``bit_depth`` the smallest of 10 and 12 that holds the
+        data's largest value is used. uint16 values are stored as they
+        are, in the low bits (10-bit means 0..1023, not shifted into the
+        upper bits). Data that does not fit raises HeifError rather than
+        being clamped; the HEVC encoders libheif drives stop at 12 bits.
     numthreads : int, optional
         Worker threads for the HEVC encoder (``threads`` parameter on the
         x265 / kvazaar plugin). ``None`` (default) leaves the encoder
@@ -458,6 +665,7 @@ def encode(data, *, level: int | None = None,
     """
     cdef:
         cnp.ndarray arr
+        cnp.ndarray plane_src
         heif_context* ctx = NULL
         heif_encoder* enc = NULL
         heif_image* img = NULL
@@ -468,6 +676,8 @@ def encode(data, *, level: int | None = None,
         heif_writer wr
         int width, height
         int has_alpha, channels
+        int monochrome
+        int quality
         int dtype_bytes
         int actual_bit_depth
         uint8_t* plane
@@ -476,52 +686,46 @@ def encode(data, *, level: int | None = None,
         unsigned int y
         size_t row_bytes_in
         heif_chroma chroma
+        heif_colorspace colorspace
 
     _ensure_init()
+    from opencodecs._avif_heif_params import (
+        resolve_bit_depth, resolve_lossless, gray_layout)
 
     if not isinstance(data, np.ndarray):
-        arr = np.ascontiguousarray(data, dtype=np.uint8)
-    else:
-        if data.dtype == np.uint8:
-            arr = np.ascontiguousarray(data)
-        elif data.dtype == np.uint16:
-            arr = np.ascontiguousarray(data)
-        else:
-            raise HeifError(
-                f'HEIF: uint8 or uint16 input supported, got {data.dtype}')
-
+        data = np.asarray(data)
+    if data.dtype != np.uint8 and data.dtype != np.uint16:
+        raise HeifError(
+            f'HEIF: uint8 or uint16 input supported, got {data.dtype}')
+    layout = gray_layout(data)
+    if layout is None:
+        raise HeifError(
+            f'HEIF encode: unsupported shape {data.shape}; expected '
+            f'(H, W), (H, W, 1), (H, W, 2), (H, W, 3) or (H, W, 4)')
+    channels, has_alpha = layout
+    monochrome = channels <= 2
+    arr = np.ascontiguousarray(data)
     dtype_bytes = 1 if arr.dtype == np.uint8 else 2
 
-    if bit_depth is None:
-        actual_bit_depth = 8 if dtype_bytes == 1 else 10
-    else:
-        actual_bit_depth = int(bit_depth)
-    if actual_bit_depth not in (8, 10, 12):
-        raise HeifError(
-            f'HEIF: bit_depth must be 8, 10, or 12 (got {actual_bit_depth})')
-    if dtype_bytes == 1 and actual_bit_depth != 8:
-        raise HeifError(
-            f'HEIF: uint8 input requires bit_depth=8 (got {actual_bit_depth})')
-
-    if arr.ndim == 2:
-        arr = np.ascontiguousarray(np.stack([arr] * 3, axis=-1))
-        has_alpha = 0
-    elif arr.ndim == 3 and arr.shape[2] == 3:
-        has_alpha = 0
-    elif arr.ndim == 3 and arr.shape[2] == 4:
-        has_alpha = 1
-    else:
-        raise HeifError(f'HEIF encode: unsupported shape ndim={arr.ndim}')
+    actual_bit_depth = resolve_bit_depth(
+        arr, bit_depth, name='HEIF', error=HeifError)
+    lossless, quality = resolve_lossless(
+        level, lossless, name='heif', lossless_from=101, default_quality=50)
 
     height = <int> arr.shape[0]
     width = <int> arr.shape[1]
-    channels = 4 if has_alpha else 3
 
-    # Chroma layout: 8-bit interleaved, or 16-bit little-endian for HDR.
-    if dtype_bytes == 1:
+    # Chroma layout: monochrome planes for gray, 8-bit interleaved or
+    # 16-bit little-endian interleaved for color.
+    if monochrome:
+        colorspace = heif_colorspace_monochrome
+        chroma = heif_chroma_monochrome
+    elif dtype_bytes == 1:
+        colorspace = heif_colorspace_RGB
         chroma = (heif_chroma_interleaved_RGBA if has_alpha
                   else heif_chroma_interleaved_RGB)
     else:
+        colorspace = heif_colorspace_RGB
         chroma = (heif_chroma_interleaved_RRGGBBAA_LE if has_alpha
                   else heif_chroma_interleaved_RRGGBB_LE)
 
@@ -540,13 +744,15 @@ def encode(data, *, level: int | None = None,
             mc = 9
         else:
             mc = 1
-    if lossless and cp < 0:
+    if lossless and cp < 0 and not monochrome:
         # In lossless mode without an explicit color spec, force NCLX
         # with matrix_coefficients=0 (identity / "GBR"). Without this,
         # libheif's default BT.709 matrix triggers an RGB→YUV→RGB
         # transform whose integer rounding introduces ±1 LSB errors
         # in 30%+ of pixels even with chroma=4:4:4. Identity matrix
         # stores R/G/B directly into the YUV planes — true lossless.
+        # Gray needs none of this: its one plane is stored as is, and
+        # HEVC allows the identity matrix only with 4:4:4 chroma.
         cp = 1     # sRGB primaries (any value works; identity matrix
                    # bypasses chromaticity transforms)
         tc = 13    # sRGB transfer (likewise — purely a tag)
@@ -569,21 +775,33 @@ def encode(data, *, level: int | None = None,
             heif_encoder_set_parameter_integer(
                 enc, b'threads', int(numthreads))
 
+        if not monochrome:
+            # x265 defaults to 4:2:0 chroma subsampling, even in
+            # lossless mode. Color is coded 4:4:4 instead, as imagecodecs
+            # codes it, lossy included: lossless needs it to keep every
+            # channel byte-exact, and lossy keeps chroma at full
+            # resolution, where 4:2:0 smears sharp color edges.
+            # Monochrome has no chroma to subsample.
+            heif_encoder_set_parameter_string(enc, b'chroma', b'444')
         if lossless:
             heif_encoder_set_lossless(enc, 1)
-            # x265 defaults to 4:2:0 chroma subsampling even in lossless
-            # mode — force 4:4:4 to preserve every channel byte-exactly.
-            heif_encoder_set_parameter_string(enc, b'chroma', b'444')
         else:
-            heif_encoder_set_lossy_quality(enc, 50 if level is None else int(level))
+            heif_encoder_set_lossy_quality(enc, quality)
 
         err = heif_image_create(
-            width, height, heif_colorspace_RGB, chroma, &img)
+            width, height, colorspace, chroma, &img)
         if err.code != 0:
             raise HeifError(f'heif_image_create: {err.message.decode()}')
 
-        err = heif_image_add_plane(
-            img, heif_channel_interleaved, width, height, actual_bit_depth)
+        if monochrome:
+            err = heif_image_add_plane(
+                img, heif_channel_Y, width, height, actual_bit_depth)
+            if err.code == 0 and has_alpha:
+                err = heif_image_add_plane(
+                    img, heif_channel_Alpha, width, height, actual_bit_depth)
+        else:
+            err = heif_image_add_plane(
+                img, heif_channel_interleaved, width, height, actual_bit_depth)
         if err.code != 0:
             raise HeifError(f'heif_image_add_plane: {err.message.decode()}')
 
@@ -630,14 +848,30 @@ def encode(data, *, level: int | None = None,
                     f'heif_image_set_raw_color_profile: '
                     f'{err.message.decode()}')
 
-        plane = heif_image_get_plane(img, heif_channel_interleaved, &stride)
-        if plane == NULL:
-            raise HeifError('heif_image_get_plane returned NULL')
-        row_bytes_in = <size_t>(width * channels * dtype_bytes)
-        for y in range(height):
-            memcpy(plane + y * stride,
-                   <const uint8_t*> cnp.PyArray_DATA(arr) + y * row_bytes_in,
-                   row_bytes_in)
+        if monochrome:
+            # One plane per sample: gray into Y, alpha into Alpha.
+            row_bytes_in = <size_t>(width * dtype_bytes)
+            for c, channel in enumerate(
+                    (heif_channel_Y, heif_channel_Alpha)[:channels]):
+                plane = heif_image_get_plane(img, channel, &stride)
+                if plane == NULL:
+                    raise HeifError('heif_image_get_plane returned NULL')
+                plane_src = np.ascontiguousarray(
+                    arr if arr.ndim == 2 else arr[..., c])
+                for y in range(height):
+                    memcpy(plane + y * stride,
+                           <const uint8_t*> cnp.PyArray_DATA(plane_src)
+                           + y * row_bytes_in,
+                           row_bytes_in)
+        else:
+            plane = heif_image_get_plane(img, heif_channel_interleaved, &stride)
+            if plane == NULL:
+                raise HeifError('heif_image_get_plane returned NULL')
+            row_bytes_in = <size_t>(width * channels * dtype_bytes)
+            for y in range(height):
+                memcpy(plane + y * stride,
+                       <const uint8_t*> cnp.PyArray_DATA(arr) + y * row_bytes_in,
+                       row_bytes_in)
 
         with nogil:
             err = heif_context_encode_image(ctx, img, enc, NULL, &handle)

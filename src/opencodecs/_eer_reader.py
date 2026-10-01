@@ -82,7 +82,12 @@ class EerReader(Reader):
         return self._stream.page(0).dtype
 
     def frame(self, i: int) -> np.ndarray:
-        """Decode frame ``i`` to a 2-D event-count image (uint8)."""
+        """Decode frame ``i`` to a 2-D event image.
+
+        bool for a page declaring BitsPerSample=1 (every Falcon file),
+        which is how tifffile and imagecodecs return it too; one frame
+        holds at most one event per pixel. ``sum`` gives counts.
+        """
         return self._stream.page(i).asarray()
 
     def iter_frames(self) -> Iterator[np.ndarray]:
@@ -174,7 +179,7 @@ class EerReader(Reader):
             if workers <= 1:
                 out = np.zeros(self.shape, dtype=dtype)
                 for i in range(start, stop):
-                    # Each .frame() returns a fresh uint8 array; add via
+                    # Each .frame() returns a fresh bool array; add via
                     # broadcasting into the accumulator dtype.
                     np.add(out, self.frame(i), out=out, casting="unsafe")
                 return out
