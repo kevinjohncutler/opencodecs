@@ -29,6 +29,14 @@ library's stream in a header of their own, and some defaults. Data the
 old codecs wrote still decodes where the old form can be told apart;
 where it cannot (float ``delta``), the bullet says how to read it.
 
+Removed: ``opencodecs.tifffile_patch``, which swapped opencodecs codecs
+into tifffile's dispatch. tifffile 2026.8.23 and later refuse codec
+functions from any module other than imagecodecs and tifffile, so the
+patch fails there with ``RuntimeError``. Read and write TIFF with
+opencodecs directly (``opencodecs.read``, ``opencodecs.tiff_imwrite``,
+``opencodecs.TiffWriter``); the README compares that reader's speed with
+tifffile's.
+
 Speed
 ~~~~~
 
@@ -455,19 +463,8 @@ Compatibility and correctness
   animation. New API: the native ``opencodecs.codecs._webp`` module's
   ``decode`` takes ``hasalpha``, it gains ``version()``, the linked
   libwebp in ``imagecodecs.webp_version()``'s format, and
-  ``opencodecs._webp_codec.decode_webp`` is the decoder ``WebpCodec`` and
-  the tifffile adapter share.
-- Fix: the ``opencodecs.tifffile_patch`` WebP encoder defaulted to
-  ``lossless=False``, so ``tifffile.imwrite(compression="webp")`` inside
-  ``patched()`` wrote lossy tiles where plain tifffile writes exact ones.
-  It now defaults to lossless like imagecodecs and forwards ``method``
-  and ``numthreads``; the WebP decoder honors ``hasalpha``, which
-  tifffile passes for four-sample images whose opaque tiles libwebp
-  stores without alpha, and ``index``; the PNG encoder forwards
-  ``strategy`` and ``filter``. Options the adapters do not implement
-  raise ``TypeError`` instead of being dropped. This is a format change
-  for WebP tiles written through the patch without an explicit setting,
-  which are now lossless instead of lossy.
+  ``opencodecs._webp_codec.decode_webp`` is the decoder ``WebpCodec``
+  uses.
 - Fix: ``QoiCodec.encode`` dropped unknown options; it now raises
   ``TypeError``. QOI output is unchanged, and how its RGBA output differs
   from imagecodecs is now documented: header byte 13 only. The QOI
@@ -795,28 +792,12 @@ Compatibility and correctness
   ``mozjpeg_encode`` and raises for those MozJPEG's TurboJPEG API fixes
   (``optimize=False``, ``notrellis``, ``quanttable``, ``smoothing``, and
   ``progressive=False``, which used to write the same progressive JPEG as
-  ``progressive=True``). The ``tifffile_patch`` JPEG adapters pass
-  tifffile's options through instead of dropping them, except the chroma
-  subsampling tifffile adds to a JPEG it stores as RGB or lossless, and
-  the YCbCr outcolorspace it adds to a lossless RGB one, which imagecodecs
-  does not apply either: for 8-bit RGB images those files are
-  byte-identical to the ones tifffile writes with imagecodecs, and a
-  lossless RGB JPEG TIFF, which 0.4.0 wrote lossy, now holds the exact
-  pixels. A tifffile write with ``photometric="ycbcr"``, whose samples
-  0.4.0 converted as if they were RGB, stores them unconverted, so the
-  file reads back like the one tifffile writes with imagecodecs (to the
-  same pixels at quality 100, and exactly with ``lossless=True``, which
-  0.4.0 also wrote lossy). The decode adapter hands imagecodecs a tile
-  TurboJPEG cannot decode as asked, instead of failing a file that reads
-  without the patch: one with a component count TurboJPEG has no
-  colorspace for (two, as in a two-sample lossless JPEG TIFF), and any
-  lossless one it raises for, such as one asked for a color conversion,
-  which TurboJPEG's lossless mode does not make (a lossless
-  ``photometric="ycbcr"`` TIFF, read as RGB). imagecodecs reads these as
-  it does without the patch, the lossless YCbCr tile as its stored
-  samples; ``jpeg`` itself raises for them. Format change: calls that
-  passed these options now get the stream they asked for; output with
-  default options is unchanged.
+  ``progressive=True``). ``jpeg`` raises for a stream with a component
+  count TurboJPEG has no colorspace for (two, as in a two-sample lossless
+  JPEG TIFF) and for a lossless one asked for a color conversion, which
+  TurboJPEG's lossless mode does not make; imagecodecs reads both.
+  Format change: calls that passed these options now get the stream
+  they asked for; output with default options is unchanged.
 - Fix: ``jpeg`` could not decode valid JPEG that imagecodecs writes and
   reads: 12-bit DCT (the T.81 extended process), lossless (SOF3) at 2 to
   16 bits, and four-component CMYK or YCCK (Adobe APP14). All decode now,
@@ -911,7 +892,7 @@ Compatibility and correctness
   then read as a compression ratio of 100/level; ``ratio=`` now asks for
   a ratio. ``lossless=True`` with a lossy level raises. This is a format
   change for lossy output. The lower-level encoder that the TIFF writer
-  and the tifffile patch call defaulted to a lossy 10:1 rate when given
+  calls defaulted to a lossy 10:1 rate when given
   no level; it is now lossless by default, like the codec. The NDTiff
   writer with ``compression="jpeg2000"`` used to drop
   ``compression_level`` and write lossless frames; a level from 1 to
@@ -922,8 +903,7 @@ Compatibility and correctness
   ``colorspace``, ``planar``, ``bitspersample``, ``resolutions``,
   ``reversible``, ``mct``, ``verbose``) are implemented, and the codec
   raises on options it does not know. Encode does not implement
-  ``out=``: the codec and the tifffile patch raise ``TypeError`` for
-  it. Encode takes up to 4095 components, as imagecodecs does, so the
+  ``out=``: the codec raises ``TypeError`` for it. Encode takes up to 4095 components, as imagecodecs does, so the
   TIFF writer now writes JPEG 2000 with more than 4 samples per pixel,
   which it used to refuse; it encodes each strip or tile as rows by
   width by samples, whatever its height.
@@ -931,17 +911,6 @@ Compatibility and correctness
   data, where imagecodecs uses it; other values raise, where
   imagecodecs ignores them. ``verbose`` sends OpenJPEG's messages to
   the ``opencodecs`` logger, at the same thresholds as imagecodecs.
-- Fix: the tifffile patch's ``jpeg2k_encode`` dropped the arguments
-  tifffile passes, including ``codecformat=0``, so tifffile's JPEG 2000
-  TIFFs got JP2-boxed tiles, lossy at a 10:1 rate. This is a format
-  change: tiles written through the patch are now raw J2K codestreams,
-  lossless unless a level asks otherwise, and in every case tested
-  (8- and 16-bit, signed and unsigned, gray and RGB, contiguous and
-  separate planes, lossless and with a level) the TIFF file is
-  byte-identical to the one tifffile writes with imagecodecs. TIFFs
-  with JP2-boxed tiles from 0.4.0 still read. The patch's
-  ``jpeg2k_decode`` now honors ``out=`` instead of dropping it.
-
 - Fix: GIF decoding ignored the Graphic Control Extension. A frame's
   transparent index was painted in its palette color instead of leaving
   the pixel underneath, disposal methods 2 (restore to background) and 3

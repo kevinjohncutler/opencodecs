@@ -20,7 +20,6 @@ import math
 
 import numpy as np
 import pytest
-from _tifffile_guard import requires_patchable_tifffile
 
 oj = pytest.importorskip("opencodecs.codecs._jpeg2k")
 imagecodecs = pytest.importorskip("imagecodecs")
@@ -296,109 +295,6 @@ def test_codec_rejects_unknown_options():
 # ---------------------------------------------------------------------------
 
 
-@requires_patchable_tifffile
-def test_tifffile_patch_defaults_to_lossless():
-    """The imagecodecs-compatible shim passed lossless=bool(None), which
-    made every tifffile JPEG 2000 write lossy."""
-    from opencodecs import tifffile_patch
-    a = _image((64, 80), np.uint16, seed=15)
-    enc = tifffile_patch.jpeg2k_encode(a)
-    np.testing.assert_array_equal(imagecodecs.jpeg2k_decode(enc), a)
-    enc = tifffile_patch.jpeg2k_encode(a, level=0, codecformat=0)
-    np.testing.assert_array_equal(imagecodecs.jpeg2k_decode(enc), a)
-
-
-def _tiff_jpeg2000(tifffile, a, patch, use_patch, **kw):
-    """A tiled JPEG 2000 TIFF written by tifffile, through the patch or
-    through imagecodecs, leaving the patch as it was found."""
-    was = patch._installed
-    (patch.install if use_patch else patch.uninstall)()
-    try:
-        buf = io.BytesIO()
-        tifffile.imwrite(buf, a, compression="jpeg2000", tile=(32, 32), **kw)
-        return buf.getvalue()
-    finally:
-        (patch.install if was else patch.uninstall)()
-
-
-def _first_tile(tifffile, data):
-    with tifffile.TiffFile(io.BytesIO(data)) as tif:
-        page = tif.pages[0]
-        off, n = page.dataoffsets[0], page.databytecounts[0]
-    return data[off:off + n]
-
-
-@pytest.mark.parametrize("dtype,shape,kw", [
-    (np.uint8, (64, 80), {}),
-    (np.uint16, (64, 80, 3), {"photometric": "rgb"}),
-    (np.int16, (64, 80), {}),
-    (np.uint16, (3, 64, 80), {"photometric": "rgb",
-                              "planarconfig": "separate"}),
-    (np.int16, (64, 80), {"compressionargs": {"level": 40}}),
-    (np.uint8, (64, 80, 3), {"photometric": "rgb",
-                             "compressionargs": {"level": 40}}),
-])
-@requires_patchable_tifffile
-def test_tifffile_patch_writes_raw_codestreams_like_imagecodecs(dtype, shape,
-                                                                kw):
-    """tifffile asks for codecformat=0 (a raw J2K codestream). 0.4.0's
-    patch dropped it and wrapped every tile in JP2 boxes; now the file is
-    the one tifffile writes with imagecodecs, byte for byte."""
-    tifffile = pytest.importorskip("tifffile")
-    from opencodecs import tifffile_patch
-    a = _image(shape, dtype, seed=31)
-    ours = _tiff_jpeg2000(tifffile, a, tifffile_patch, True, **kw)
-    ref = _tiff_jpeg2000(tifffile, a, tifffile_patch, False, **kw)
-    assert ours == ref
-    assert _first_tile(tifffile, ours)[:4] == b"\xff\x4f\xff\x51"
-
-
-@requires_patchable_tifffile
-def test_tifffile_patch_reads_jp2_tiles_written_by_040(monkeypatch):
-    """Files 0.4.0 wrote through the patch hold JP2-boxed tiles. That
-    container still reads, through the patch and through imagecodecs.
-    (0.4.0 also made them lossy by default; these tiles are lossless so
-    the samples can be compared exactly.)"""
-    tifffile = pytest.importorskip("tifffile")
-    from opencodecs import tifffile_patch
-    from opencodecs.codecs import _jpeg2k
-
-    def old_encode(data, level=None, lossless=None, out=None, **kw):
-        return _jpeg2k.encode(data, lossless=True, codec="jp2")
-
-    a = _image((64, 80, 3), np.uint16, seed=32)
-    was = tifffile_patch._installed
-    tifffile_patch.uninstall()
-    monkeypatch.setitem(tifffile_patch._OVERRIDES, "jpeg2k_encode",
-                        old_encode)
-    data = _tiff_jpeg2000(tifffile, a, tifffile_patch, True,
-                          photometric="rgb")
-    monkeypatch.undo()
-    tifffile_patch.uninstall()
-    try:
-        assert _first_tile(tifffile, data)[4:8] == b"jP  "
-        np.testing.assert_array_equal(tifffile.imread(io.BytesIO(data)), a)
-        tifffile_patch.install()
-        np.testing.assert_array_equal(tifffile.imread(io.BytesIO(data)), a)
-    finally:
-        (tifffile_patch.install if was else tifffile_patch.uninstall)()
-
-
-@requires_patchable_tifffile
-def test_tifffile_patch_out():
-    """decode(out=) fills the caller's array, as imagecodecs does;
-    encode(out=) raises instead of being dropped."""
-    from opencodecs import tifffile_patch
-    a = _image((40, 48, 3), np.uint8, seed=33)
-    enc = imagecodecs.jpeg2k_encode(a)
-    out = np.empty_like(a)
-    got = tifffile_patch.jpeg2k_decode(enc, out=out)
-    assert np.shares_memory(got, out)
-    np.testing.assert_array_equal(out, a)
-    with pytest.raises(TypeError, match="out"):
-        tifffile_patch.jpeg2k_encode(a, out=bytearray(1 << 16))
-
-
 def test_tiff_writer_jpeg2000_is_lossless():
     tifffile = pytest.importorskip("tifffile")
     a = _image((64, 80), np.uint16, seed=16)
@@ -532,24 +428,17 @@ def test_tiff_writer_short_strips_with_many_samples(tmp_path, shape, kw):
     with planar=False. tifffile decoding through imagecodecs is the
     reference."""
     tifffile = pytest.importorskip("tifffile")
-    from opencodecs import tifffile_patch
     a = _image(shape, np.uint8)
     p = tmp_path / "many_samples.tif"
     with oc.TiffWriter(p) as w:
         w.write_page(a, compression="jpeg2000", photometric="minisblack",
                      **kw)
-    was = tifffile_patch._installed
-    tifffile_patch.uninstall()
-    try:
-        with tifffile.TiffFile(p) as tif:
-            page = tif.pages[0]
-            fh = tif.filehandle
-            fh.seek(page.dataoffsets[-1])
-            last = fh.read(page.databytecounts[-1])
-            ref = page.asarray()
-    finally:
-        if was:
-            tifffile_patch.install()
+    with tifffile.TiffFile(p) as tif:
+        page = tif.pages[0]
+        fh = tif.filehandle
+        fh.seek(page.dataoffsets[-1])
+        last = fh.read(page.databytecounts[-1])
+        ref = page.asarray()
     np.testing.assert_array_equal(ref, a)
     np.testing.assert_array_equal(oc.read(p), a)
     # The last segment's SIZ: Xsiz is the image (or tile) width, and

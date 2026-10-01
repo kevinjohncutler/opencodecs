@@ -59,7 +59,7 @@ oc.has_codec("avif")
 | **Per-chunk parallel decode of CZI/OME-TIFF/NDTiff stacks** | Built-in `ThreadPoolExecutor` orchestration with nogil-released codec calls; 3–10× over single-threaded reference readers on large stacks |
 | **Modern codec coverage (JPEG XL, AVIF, HEIF, JPEG-LS, Brunsli, Ultra HDR, OME-Zarr v3 sharded)** | All shipped, all with native bindings — no `pip install ten-other-packages` |
 | **Tier-1 scientific compressors (LERC, ZFP, SZ3, SPERR, pcodec, bitshuffle, blosc2, libaec)** | All shipped, source-built with `-O3 + LTO + hidden-visibility` for Pareto wins over distro builds |
-| **Lossless drop-in replacement for `imagecodecs`** | `tifffile_patch` opt-in shim reroutes tifffile's codec dispatch through opencodecs without changing your tifffile code |
+| **Files that interoperate with `imagecodecs` and `tifffile`** | Shared codecs write the formats imagecodecs writes (a published spec first, imagecodecs where none decides); `oc.read` and `oc.tiff_imwrite` read and write TIFF natively |
 
 ## Codec capability matrix
 
@@ -641,8 +641,6 @@ build).
 - Multi-frame AVIF, animated WebP and GIF decode to a frame stack; HEIF
   exposes every top-level image
 - Compression backend auto-detect (libdeflate → zlib-ng-compat → stdlib)
-- `tifffile_patch` opt-in shim reroutes tifffile's codec dispatch through
-  opencodecs for users who want only a partial swap
 - `capabilities.toml` records what each codec actually supports, checked
   against the built extensions, with no open gaps
 

@@ -72,8 +72,8 @@ def reject_alpha(in_cs: str, colorspace, what: str) -> None:
 # photometric above 3 it does not map itself (CFA and LinearRaw in DNG,
 # CIELab, ...), and imagecodecs reads each as JCS_UNKNOWN: decode with
 # the library's default for the stream. These names keep that meaning
-# here, so a DNG-style lossless JPEG tile reads through tifffile_patch
-# as it does through imagecodecs.
+# here, so a DNG-style lossless JPEG tile decodes as it does through
+# imagecodecs.
 _PHOTOMETRIC_DEFAULT = frozenset((
     "palette", "mask", "cielab", "icclab", "itulab", "cfa", "logl",
     "logluv", "linear_raw", "depth_map", "semantic_mask",

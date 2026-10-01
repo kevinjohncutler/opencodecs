@@ -10,7 +10,6 @@ from ``pytest --cov=src/opencodecs --cov-report=term-missing``):
   * ``_hdf5_codec.py``   — Codec.decode + open() with bytes/file-like
   * ``_zarr_codecs.py``  — zarr v3 wrappers' missing branches
   * ``parallel.py``      — file-like input paths to frame_count + decode_frames_parallel
-  * ``tifffile_patch.py`` — tobytes() fallback for non-bytes-coercible inputs
   * ``core/codec.py``    — ``codec_for_path``-fallback when reading magic fails
 """
 
@@ -505,53 +504,6 @@ def test_parallel_decode_frames_from_file_like(tmp_path):
     with open(p, "rb") as f:
         frames = parallel.decode_frames_parallel(f, n_workers=1)
     assert len(frames) == 1
-
-
-# ===========================================================================
-# tifffile_patch.py — tobytes() fallback when bytes() coerce fails
-# ===========================================================================
-
-
-class _NumpyLikeNotBytesCoerceable:
-    """Simulates a numpy-array-like that fails ``bytes(obj)`` but exposes
-    ``tobytes()``. tifffile sometimes hands such objects to encode()."""
-
-    def __init__(self, payload: bytes) -> None:
-        self._payload = payload
-
-    def tobytes(self) -> bytes:
-        return self._payload
-
-    # Force bytes(obj) to fail without triggering buffer protocol.
-    def __bytes__(self):  # noqa: D401
-        raise TypeError("simulated: cannot bytes() me")
-
-
-@pytest.mark.skipif(not oc.has_codec("zstd"), reason="zstd codec not available")
-def test_tifffile_patch_zstd_encode_tobytes_fallback():
-    from opencodecs import tifffile_patch as patch
-    payload = b"zstd encode tobytes fallback" * 50
-    obj = _NumpyLikeNotBytesCoerceable(payload)
-    enc = patch.zstd_encode(obj)
-    assert patch.zstd_decode(enc) == payload
-
-
-@pytest.mark.skipif(not oc.has_codec("deflate"), reason="deflate codec not available")
-def test_tifffile_patch_deflate_encode_tobytes_fallback():
-    from opencodecs import tifffile_patch as patch
-    payload = b"deflate tobytes fallback" * 50
-    obj = _NumpyLikeNotBytesCoerceable(payload)
-    enc = patch.deflate_encode(obj)
-    assert patch.deflate_decode(enc) == payload
-
-
-@pytest.mark.skipif(not oc.has_codec("lz4"), reason="lz4 codec not available")
-def test_tifffile_patch_lz4_encode_tobytes_fallback():
-    from opencodecs import tifffile_patch as patch
-    payload = b"lz4 tobytes fallback" * 50
-    obj = _NumpyLikeNotBytesCoerceable(payload)
-    enc = patch.lz4_encode(obj)
-    assert patch.lz4_decode(enc) == payload
 
 
 # ===========================================================================
