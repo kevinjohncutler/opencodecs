@@ -9,6 +9,9 @@ import pytest
 
 import opencodecs as oc
 from opencodecs._png_codec import PngCodec
+from _ic_reference import skip_if_old_imagecodecs  # noqa: E402
+
+pytestmark = skip_if_old_imagecodecs
 
 
 @pytest.mark.parametrize("dtype", [np.uint8, np.uint16])

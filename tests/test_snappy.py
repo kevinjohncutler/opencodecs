@@ -9,6 +9,9 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
+from _ic_reference import skip_if_old_imagecodecs  # noqa: E402
+
+pytestmark = skip_if_old_imagecodecs
 
 oc = pytest.importorskip("opencodecs.codecs._snappy")
 

@@ -17,6 +17,9 @@ imagecodecs = pytest.importorskip("imagecodecs")
 
 from opencodecs._webp_codec import WebpCodec  # noqa: E402
 from opencodecs.codecs import _webp  # noqa: E402
+from _ic_reference import skip_if_old_imagecodecs  # noqa: E402
+
+pytestmark = skip_if_old_imagecodecs
 
 
 def _rgb(seed=0, shape=(12, 17)):

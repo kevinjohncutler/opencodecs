@@ -18,6 +18,9 @@ import numpy as np
 import pytest
 
 from opencodecs._n5 import N5Array, N5Error
+from _ic_reference import skip_if_old_imagecodecs  # noqa: E402
+
+pytestmark = skip_if_old_imagecodecs
 
 REAL = (pathlib.Path(__file__).resolve().parent.parent / ".test_data" / "n5"
         / "jrc_hela-2.n5")

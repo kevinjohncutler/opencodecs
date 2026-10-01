@@ -14,6 +14,9 @@ import numpy as np
 import pytest
 
 import opencodecs as oc
+from _ic_reference import skip_if_old_imagecodecs  # noqa: E402
+
+pytestmark = skip_if_old_imagecodecs
 
 
 def _np_save(arr) -> bytes:

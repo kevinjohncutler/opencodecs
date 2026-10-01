@@ -19,10 +19,11 @@ import numpy as np
 import pytest
 
 import opencodecs as oc
+from _ic_reference import skip_if_old_imagecodecs  # noqa: E402
 
 imagecodecs = pytest.importorskip("imagecodecs")
-pytestmark = pytest.mark.skipif(
-    not oc.has_codec("avif"), reason="libavif not built here")
+pytestmark = [skip_if_old_imagecodecs, pytest.mark.skipif(
+    not oc.has_codec("avif"), reason="libavif not built here")]
 
 N_FRAMES = 6
 

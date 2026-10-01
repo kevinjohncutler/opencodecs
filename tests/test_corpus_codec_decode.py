@@ -31,6 +31,7 @@ import numpy as np
 import pytest
 
 import opencodecs as oc
+from _ic_reference import skip_if_old_imagecodecs  # noqa: E402
 
 
 CORPUS_ROOT = Path(__file__).resolve().parent.parent / ".test_data"
@@ -108,7 +109,7 @@ def _psnr(a: np.ndarray, b: np.ndarray, peak: float = 255.0) -> float:
     return 20.0 * np.log10(peak) - 10.0 * np.log10(mse)
 
 
-pytestmark = pytest.mark.skipif(not _have_kodak(), reason=_HINT)
+pytestmark = [skip_if_old_imagecodecs, pytest.mark.skipif(not _have_kodak(), reason=_HINT)]
 
 
 # ---------------------------------------------------------------------------

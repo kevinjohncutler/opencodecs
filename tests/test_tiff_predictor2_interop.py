@@ -23,8 +23,9 @@ import pytest
 tifffile = pytest.importorskip("tifffile")
 from opencodecs._tiff_codec import TiffStream, _HAVE_BACKEND  # noqa: E402
 from opencodecs._tiff_writer import TiffWriter, TiffWriterError  # noqa: E402
+from _ic_reference import skip_if_old_imagecodecs  # noqa: E402
 
-pytestmark = pytest.mark.skipif(not _HAVE_BACKEND, reason="native TIFF backend not built")
+pytestmark = [skip_if_old_imagecodecs, pytest.mark.skipif(not _HAVE_BACKEND, reason="native TIFF backend not built")]
 
 DTYPES = ["u1", "i1", "u2", "i2", "u4", "i4", "u8", "i8", "f2", "f4", "f8"]
 

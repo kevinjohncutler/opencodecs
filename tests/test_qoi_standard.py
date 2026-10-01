@@ -18,6 +18,9 @@ pytest.importorskip("opencodecs.codecs._qoi")
 
 import opencodecs as oc  # noqa: E402
 from opencodecs._qoi_codec import QoiCodec  # noqa: E402
+from _ic_reference import skip_if_old_imagecodecs  # noqa: E402
+
+pytestmark = skip_if_old_imagecodecs
 
 
 def _image(channels):

@@ -24,6 +24,9 @@ import pytest
 
 mod = pytest.importorskip("opencodecs.codecs._gif")
 import opencodecs as oc
+from _ic_reference import skip_if_old_imagecodecs  # noqa: E402
+
+pytestmark = skip_if_old_imagecodecs
 
 W, H, BG = 7, 5, 9
 

@@ -25,6 +25,9 @@ oj = pytest.importorskip("opencodecs.codecs._openjph")
 imagecodecs = pytest.importorskip("imagecodecs")
 
 from opencodecs import get_codec  # noqa: E402
+from _ic_reference import skip_if_old_imagecodecs  # noqa: E402
+
+pytestmark = skip_if_old_imagecodecs
 
 try:
     imagecodecs.htj2k_encode(np.zeros((8, 8), np.uint8))

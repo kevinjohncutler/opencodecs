@@ -20,6 +20,9 @@ pytest.importorskip("opencodecs.codecs._png")
 import opencodecs as oc  # noqa: E402
 from opencodecs._png_codec import PngCodec  # noqa: E402
 from opencodecs.codecs import _png  # noqa: E402
+from _ic_reference import skip_if_old_imagecodecs  # noqa: E402
+
+pytestmark = skip_if_old_imagecodecs
 
 H, W = 5, 11  # odd width so sub-byte rows end in padding bits
 

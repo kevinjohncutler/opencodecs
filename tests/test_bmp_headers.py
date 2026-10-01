@@ -24,6 +24,9 @@ import pytest
 
 from opencodecs import get_codec
 from opencodecs._bmp_codec import BmpError
+from _ic_reference import skip_if_old_imagecodecs  # noqa: E402
+
+pytestmark = skip_if_old_imagecodecs
 
 W, H = 5, 3
 RNG = np.random.default_rng(1)

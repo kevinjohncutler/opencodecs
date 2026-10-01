@@ -8,6 +8,9 @@ import pytest
 
 import opencodecs as oc
 from opencodecs.core.buffers import array_output, byte_output
+from _ic_reference import skip_if_old_imagecodecs  # noqa: E402
+
+pytestmark = skip_if_old_imagecodecs
 
 
 BYTE_CASES = [

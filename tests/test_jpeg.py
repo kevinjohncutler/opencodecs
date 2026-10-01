@@ -20,6 +20,9 @@ import pytest
 
 import opencodecs as oc
 from _tifffile_guard import requires_patchable_tifffile
+from _ic_reference import skip_if_old_imagecodecs  # noqa: E402
+
+pytestmark = skip_if_old_imagecodecs
 
 J = pytest.importorskip("opencodecs.codecs._jpeg")
 ic = pytest.importorskip("imagecodecs")

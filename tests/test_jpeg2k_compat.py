@@ -27,6 +27,9 @@ imagecodecs = pytest.importorskip("imagecodecs")
 
 import opencodecs as oc  # noqa: E402
 from opencodecs import get_codec  # noqa: E402
+from _ic_reference import skip_if_old_imagecodecs  # noqa: E402
+
+pytestmark = skip_if_old_imagecodecs
 
 try:
     imagecodecs.jpeg2k_encode(np.zeros((8, 8), np.uint8))

@@ -560,10 +560,15 @@ Compatibility and correctness
   ``codec_options`` through, which it used to drop.
 - Fix: a HEIF with an 8-bit image and a deeper alpha plane (HEIF codes
   alpha as a separate image with its own bit depth) decoded to wrong
-  alpha values with no error, through libheif's RGBA conversion. Any
-  HEIF whose alpha depth differs from the image's now raises
-  HeifError, as a deeper image with a shallower alpha already did, since
-  one array cannot hold both planes at their own depths.
+  alpha values with no error, through libheif's RGBA conversion. A HEIF
+  whose alpha depth differs from the image's now raises HeifError, as a
+  deeper image with a shallower alpha already did, since one array
+  cannot hold both planes at their own depths. This needs libheif to
+  list the alpha as an auxiliary image, which the libheif 1.21 the
+  wheels bundle does. libheif 1.23 does not, and its own conversion
+  rescales the alpha to the image's depth (up by bit replication, down
+  by dropping low bits), so a build against it returns that instead of
+  raising.
 - Fix: LERC wrote Lerc2 codec version 6, which readers built on libLerc
   before 4.0 cannot open and which libtiff warns about in TIFF, where it
   fixes version 4. It now writes version 4 by default, byte-identical to

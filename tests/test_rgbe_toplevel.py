@@ -20,6 +20,9 @@ import pytest
 
 import opencodecs as oc
 from opencodecs.codecs import _rgbe
+from _ic_reference import skip_if_old_imagecodecs  # noqa: E402
+
+pytestmark = skip_if_old_imagecodecs
 
 H, W = 3, 9
 

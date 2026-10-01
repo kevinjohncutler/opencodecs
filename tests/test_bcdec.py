@@ -18,6 +18,9 @@ from opencodecs.codecs._bcdec import (
     decode_bc1, decode_bc2, decode_bc3, decode_bc4, decode_bc5, decode_bc7,
     decode_bc6h,
 )
+from _ic_reference import skip_if_old_imagecodecs  # noqa: E402
+
+pytestmark = skip_if_old_imagecodecs
 
 imagecodecs = pytest.importorskip("imagecodecs")
 

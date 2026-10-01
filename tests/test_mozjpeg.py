@@ -18,6 +18,9 @@ import pytest
 # the codec module isn't built and these tests skip cleanly.
 mz = pytest.importorskip("opencodecs.codecs._mozjpeg")
 from opencodecs.codecs._jpeg import encode as tj_encode, decode as tj_decode
+from _ic_reference import skip_if_old_imagecodecs  # noqa: E402
+
+pytestmark = skip_if_old_imagecodecs
 
 
 def _smooth_rgb(shape=(256, 256, 3), seed=0):

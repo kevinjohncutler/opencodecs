@@ -23,6 +23,9 @@ import numpy as np
 import pytest
 
 import opencodecs as oc
+from _ic_reference import skip_if_old_imagecodecs  # noqa: E402
+
+pytestmark = skip_if_old_imagecodecs
 
 CORPUS_ROOT = Path(__file__).resolve().parent.parent / ".test_data" / "png"
 PNGSUITE_DIR = CORPUS_ROOT / "pngsuite"

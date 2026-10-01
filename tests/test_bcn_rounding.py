@@ -18,6 +18,9 @@ import numpy as np
 import pytest
 
 from opencodecs.codecs._bcdec import decode_bc3, decode_bc4, decode_bc5
+from _ic_reference import skip_if_old_imagecodecs  # noqa: E402
+
+pytestmark = skip_if_old_imagecodecs
 
 
 def _spec_palette(a0, a1):

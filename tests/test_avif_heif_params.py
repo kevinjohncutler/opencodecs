@@ -28,6 +28,9 @@ import numpy as np
 import pytest
 
 import opencodecs as oc
+from _ic_reference import skip_if_old_imagecodecs  # noqa: E402
+
+pytestmark = skip_if_old_imagecodecs
 
 _avif = pytest.importorskip("opencodecs.codecs._avif")
 avif = oc.get_codec("avif")
@@ -492,14 +495,21 @@ def test_heif_color_alpha_at_its_own_depth(tmp_path, ybits, abits):
         pytest.skip("libheif could not write this image here")
     blob = path.read_bytes()
     if ybits != abits:
-        # Where the linked libheif would hand back the wrong bits of the
-        # alpha plane, decode refuses; where it keeps them, alpha is exact.
+        # Where libheif reports the alpha plane's depth (1.21, which the
+        # wheels bundle), decode refuses the mismatch. libheif 1.23 does
+        # not report it and rescales the alpha to the image's depth itself:
+        # up by bit replication, down by dropping low bits.
         try:
             got = heif.decode(blob)
         except _heif.HeifError as exc:
             assert "alpha plane" in str(exc)
             return
-        np.testing.assert_array_equal(got[..., 3], a)
+        if abits < ybits:
+            d = ybits - abits
+            rescaled = (a << d) | (a >> (abits - d))
+        else:
+            rescaled = a >> (abits - ybits)
+        np.testing.assert_array_equal(got[..., 3], rescaled)
         return
     np.testing.assert_array_equal(heif.decode(blob)[..., 3], a)
 

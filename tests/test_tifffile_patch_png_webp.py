@@ -25,6 +25,9 @@ pytest.importorskip("opencodecs.codecs._png")
 import opencodecs.tifffile_patch as patch  # noqa: E402
 from opencodecs.codecs import _webp  # noqa: E402
 from _tifffile_guard import requires_patchable_tifffile  # noqa: E402
+from _ic_reference import skip_if_old_imagecodecs  # noqa: E402
+
+pytestmark = skip_if_old_imagecodecs
 
 
 def _textured(shape=(64, 96), channels=3, seed=0):
