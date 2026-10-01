@@ -160,8 +160,10 @@ asks for one with `lossless=False, level=N`. For `avif` and `heif` a
 lossy `level` alone is enough, as in imagecodecs: AVIF is lossy below
 100 and HEIF at 100 or below. One difference: imagecodecs writes gray
 (1 or 2 sample) AVIF lossless whatever `level` says, while opencodecs
-honors the level for gray too. `jpeg` and `mozjpeg` are the
-only exceptions, because the format has no lossless mode to default to.
+honors the level for gray too. `jpeg` and `mozjpeg` are the only
+exceptions: readers expect the lossy DCT process, few support the
+lossless process (SOF3) that `jpeg` writes with `lossless=True`, and
+MozJPEG has no lossless mode.
 
 This is the convention `imagecodecs` follows too, and it is worth
 stating plainly because it looks wrong from the outside. Pillow,

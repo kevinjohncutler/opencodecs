@@ -36,7 +36,7 @@ class JpegCodec(Codec):
     streaming_decode = False
     parallel_decode = False
 
-    supported_dtypes = (np.uint8,)
+    supported_dtypes = (np.uint8, np.uint16)
     supports_color = True
 
     def signature(self, head: bytes) -> bool:
@@ -48,22 +48,49 @@ class JpegCodec(Codec):
         *,
         dest=None,
         level: int | None = None,
+        colorspace: int | str | None = None,
+        outcolorspace: int | str | None = None,
+        subsampling: str | tuple[int, int] | None = None,
+        optimize: bool | None = None,
+        smoothing: int | None = None,
+        lossless: bool | None = None,
+        predictor: int | None = None,
+        bitspersample: int | None = None,
+        validate: bool | None = None,
         iccprofile: bytes | None = None,
-        **opts,
     ) -> bytes | None:
         """Encode an ndarray as JPEG.
 
-        ``iccprofile`` embeds an ICC color profile in an APP2 marker.
+        The parameters are those of ``imagecodecs.jpeg8_encode`` (see
+        :func:`opencodecs.codecs._jpeg.encode`), plus ``iccprofile``,
+        which embeds an ICC color profile in APP2 markers. Every one is
+        passed to the encoder; an option this codec does not know is a
+        ``TypeError`` rather than something silently dropped.
+        ``validate`` has no effect, in imagecodecs as here; it is taken
+        for compatibility.
         """
-        if not isinstance(data, np.ndarray):
-            data = np.asarray(data)
-        encoded = _jpeg_encode(data, level=level, iccprofile=iccprofile)
+        encoded = _jpeg_encode(
+            data, level=level, colorspace=colorspace,
+            outcolorspace=outcolorspace, subsampling=subsampling,
+            optimize=optimize, smoothing=smoothing, lossless=lossless,
+            predictor=predictor, bitspersample=bitspersample,
+            validate=validate, iccprofile=iccprofile)
         return _write_dest(encoded, dest)
 
-    def decode(self, src: Any, *, out=None, scale=None,
-               scale_num=None, scale_denom=None, **opts) -> np.ndarray:
+    def decode(self, src: Any, *, out=None, tables=None, header=None,
+               colorspace=None, outcolorspace=None, fancyupsampling=None,
+               shape=None, bitspersample=None, scale=None,
+               scale_num=None, scale_denom=None) -> np.ndarray:
+        """Decode a JPEG stream; see :func:`opencodecs.codecs._jpeg.decode`.
+
+        The parameters are those of ``imagecodecs.jpeg_decode`` plus the
+        DCT-domain ``scale``.
+        """
         return _jpeg_decode(
             _read_src(src), out=out if out is None else array_output(out),
+            tables=tables, header=header, colorspace=colorspace,
+            outcolorspace=outcolorspace, fancyupsampling=fancyupsampling,
+            shape=shape, bitspersample=bitspersample,
             scale=scale, scale_num=scale_num, scale_denom=scale_denom)
 
     def decoder(self):

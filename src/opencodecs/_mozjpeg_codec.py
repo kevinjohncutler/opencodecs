@@ -7,8 +7,9 @@ standard JPEG decoder. Encode is slower (~2x); decode is identical.
 
 This codec is **encode-focused**: ``decode`` works but is no faster
 than the regular ``jpeg`` codec (same underlying libjpeg-turbo decoder
-in MozJPEG). Pair MozJPEG with the standard JPEG decoder on the read
-side for typical archive/web pipelines.
+in MozJPEG), and streams MozJPEG cannot decode (12-bit, lossless) are
+handed to the ``jpeg`` codec. Pair MozJPEG with the standard JPEG
+decoder on the read side for typical archive/web pipelines.
 """
 
 from __future__ import annotations
@@ -52,14 +53,26 @@ class MozJpegCodec(Codec):
 
     def encode(self, data: Any, *, dest=None,
                level: int | None = None,
-               subsampling: object = None,
-               progressive: bool = True,
-               **opts) -> bytes | None:
-        if not isinstance(data, np.ndarray):
-            data = np.asarray(data)
+               colorspace: int | str | None = None,
+               outcolorspace: int | str | None = None,
+               subsampling: str | tuple[int, int] | None = None,
+               optimize: bool | None = None,
+               smoothing: int | None = None,
+               notrellis: bool | None = None,
+               quanttable: int | None = None,
+               progressive: bool | None = True) -> bytes | None:
+        """Encode an ndarray as JPEG via MozJPEG.
+
+        The parameters are those of ``imagecodecs.mozjpeg_encode`` (see
+        :func:`opencodecs.codecs._mozjpeg.encode`). An option this
+        codec does not know is a ``TypeError``, and one MozJPEG's API
+        cannot honor raises, rather than either being dropped.
+        """
         out = _moz_encode(
-            data, level=level, subsampling=subsampling,
-            progressive=progressive,
+            data, level=level, colorspace=colorspace,
+            outcolorspace=outcolorspace, subsampling=subsampling,
+            optimize=optimize, smoothing=smoothing, notrellis=notrellis,
+            quanttable=quanttable, progressive=progressive,
         )
         return _write_dest(out, dest)
 
@@ -69,10 +82,20 @@ class MozJpegCodec(Codec):
         from .core.buffers import ImageDecoderContext
         return ImageDecoderContext(DecoderContext())
 
-    def decode(self, src: Any, *, out=None, scale=None,
-               scale_num=None, scale_denom=None, **opts) -> np.ndarray:
+    def decode(self, src: Any, *, out=None, tables=None, header=None,
+               colorspace=None, outcolorspace=None, fancyupsampling=None,
+               shape=None, bitspersample=None, scale=None,
+               scale_num=None, scale_denom=None) -> np.ndarray:
+        """Decode a JPEG stream; see :func:`opencodecs.codecs._mozjpeg.decode`.
+
+        12-bit and lossless streams, which MozJPEG cannot decode, are
+        decoded by the ``jpeg`` codec.
+        """
         return _moz_decode(
             _read_src(src), out=out if out is None else array_output(out),
+            tables=tables, header=header, colorspace=colorspace,
+            outcolorspace=outcolorspace, fancyupsampling=fancyupsampling,
+            shape=shape, bitspersample=bitspersample,
             scale=scale, scale_num=scale_num, scale_denom=scale_denom)
 
 

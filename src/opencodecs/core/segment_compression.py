@@ -173,8 +173,35 @@ def _lookup_fn(code: int, side: str) -> Callable:
             f"({modname}) not built on this platform: {exc}"
         ) from exc
     fn = getattr(mod, attr)
+    if code == JPEG and side != "decode":
+        fn = _tiff_jpeg_encoder(fn, mod.JpegError)
     _FN_CACHE[key] = fn
     return fn
+
+
+def _tiff_jpeg_encoder(encode: Callable, error: type) -> Callable:
+    """Wrap the JPEG encoder for the TIFF writers' segments.
+
+    The writers record BitsPerSample from the array's dtype and
+    PhotometricInterpretation from its sample count, so only an 8-bit
+    grayscale or RGB JPEG matches those tags. The jpeg codec also writes
+    uint16 arrays (as 12-bit JPEG, which a reader rejects under
+    BitsPerSample 16) and four samples (as CMYK, which a reader rejects
+    under PhotometricInterpretation RGB), so those raise here, as they
+    did before the codec wrote them.
+    """
+    import numpy as np
+
+    def encode_tiff_segment(data, **kw):
+        a = data if isinstance(data, np.ndarray) else np.asarray(data)
+        if a.dtype != np.uint8 or not (
+                a.ndim == 2 or (a.ndim == 3 and a.shape[2] in (1, 3))):
+            raise error(
+                f"TIFF JPEG compression: the TIFF writers store 8-bit "
+                f"grayscale or RGB JPEG, not {a.dtype} samples shaped "
+                f"{a.shape}")
+        return encode(data, **kw)
+    return encode_tiff_segment
 
 
 def segment_input_kind(codec: str | int) -> str:

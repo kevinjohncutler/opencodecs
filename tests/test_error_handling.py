@@ -181,12 +181,15 @@ def test_image_encode_wrong_shape_raises(fmt):
         oc.write(None, arr, format=fmt)
 
 
-def test_jpeg_encode_rgba_raises_or_drops_alpha():
-    """JPEG can't carry an alpha channel; encoder must reject (RGB only)."""
+def test_jpeg_encode_four_samples_keeps_all_four():
+    """JPEG has no alpha channel, but a frame may hold four components
+    (T.81 B.2.2). (H, W, 4) is stored as four CMYK components, as
+    imagecodecs stores it, so no sample is silently dropped."""
     _need("jpeg")
-    arr = np.ones((16, 16, 4), dtype=np.uint8)
-    with pytest.raises(Exception):
-        oc.write(None, arr, format="jpeg")
+    arr = np.full((16, 16, 4), (10, 80, 160, 240), dtype=np.uint8)
+    decoded = oc.read(oc.write(None, arr, format="jpeg"), format="jpeg")
+    assert decoded.shape == (16, 16, 4)
+    assert np.abs(decoded.astype(int) - arr).max() <= 2
 
 
 def test_png_encode_unsupported_dtype_raises():

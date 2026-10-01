@@ -707,6 +707,124 @@ core) and a 4-core x86-64 Windows laptop.
   gives that chunking (SPERR's sperr3d default), which lets the chunks
   of a large volume compress on separate threads.
 
+- Fix: the ``jpeg`` codec's ``encode`` (``get_codec("jpeg")`` and
+  ``write(..., format="jpeg")``) dropped every option except ``level`` and
+  ``iccprofile``, without an error: ``subsampling="444"`` wrote 4:2:0 and
+  ``lossless=True`` wrote a lossy baseline JPEG. It now takes the
+  parameters of imagecodecs' ``jpeg8_encode`` (``colorspace``,
+  ``outcolorspace``, ``subsampling``, also as a ``(2, 2)`` tuple,
+  ``optimize``, ``smoothing``, ``lossless``, ``predictor``,
+  ``bitspersample``, and ``validate``, which has no effect in either
+  library), honoring each as libjpeg defines it. Where imagecodecs applies
+  an option, the bytes are the ones imagecodecs writes, with three
+  differences. imagecodecs ignores ``subsampling`` for an RGB, CMYK or
+  YCCK JPEG (RGB and CMYK are never subsampled, YCCK always 4:2:0), and
+  ``jpeg`` subsamples them as asked, which T.81 allows since every
+  component has its own sampling factors; left unset, the sampling factors
+  are imagecodecs'. And the packed input orders other than RGB (``"bgr"``,
+  ``"rgbx"``, ``"bgrx"``, ``"xrgb"``, ``"xbgr"``) are libjpeg-turbo's
+  JCS_EXT_* layouts in ``jpeg``: it reads the color samples in the order
+  named and stores a three-component (or grayscale) JPEG, without the
+  padding sample of a four-sample order. imagecodecs raises for the
+  J_COLOR_SPACE integers of these orders, and reads their names as an
+  unknown colorspace, storing every sample unconverted as its own
+  component: a four-sample order keeps its fourth sample in a
+  four-component frame, and a ``"bgr"`` array becomes three components
+  that decode to other pixels. The orders with alpha (``"rgba"``,
+  ``"bgra"``, ``"argb"``, ``"abgr"``) raise in ``jpeg`` and ``mozjpeg``,
+  since a JPEG has no alpha channel and the alpha samples would be lost;
+  imagecodecs raises for ``"rgba"`` and the integers, and keeps the fourth
+  sample as a component for the other names. And YCbCr input
+  (``colorspace="ycbcr"``) is stored unconverted, as in imagecodecs, but
+  TurboJPEG converts only from RGB, so ``jpeg`` passes the samples through
+  RGB storage and then labels the components as imagecodecs and libjpeg
+  label YCbCr, with component ids 1, 2, 3 and a JFIF marker (T.871). The
+  bytes still differ from imagecodecs': Cb and Cr share the luminance
+  quantization and Huffman tables. IJG libjpeg 9 infers the colorspace
+  from the component ids before any marker, and libjpeg-turbo reads the
+  markers first; both read the two streams as YCbCr (IJG libjpeg decodes
+  no lossless JPEG), and at quality 100 they decode to the same pixels. A
+  value TurboJPEG cannot honor, such as ``smoothing``, YCCK input, or,
+  with ``lossless=True``, a subsampling, a YCbCr, YCCK or grayscale JPEG
+  of color input, or ``optimize=False`` (T.81 allows the first two;
+  TurboJPEG's lossless mode writes neither and always computes its
+  Huffman tables, and imagecodecs ignores these there), raises, and an option the codec does not know is a
+  ``TypeError``. The native ``codecs._jpeg.encode`` and
+  ``codecs._mozjpeg.encode`` no longer cast a list or other non-array
+  input to uint8: as in imagecodecs, the input keeps the dtype NumPy gives
+  it, so a list of Python ints raises; pass a uint8 (or, for ``jpeg``,
+  uint16) array. The ``jpeg`` and ``mozjpeg`` decoders take imagecodecs'
+  ``tables``, ``header``, ``colorspace``, ``outcolorspace``,
+  ``fancyupsampling``, ``shape`` and ``bitspersample``; as in libjpeg,
+  ``colorspace`` without ``outcolorspace`` returns the stored components
+  unconverted, and ``fancyupsampling=False`` takes effect (imagecodecs
+  2026.8.16 sets it before reading the header, which resets it). The
+  packed output orders are libjpeg-turbo's layouts too, so
+  ``outcolorspace="bgr"`` returns blue, green, red, as imagecodecs does
+  for the J_COLOR_SPACE integer (8); imagecodecs reads the names other
+  than ``"rgba"`` as unknown and returns RGB for ``"bgr"``. A TIFF
+  photometric name that is no JPEG colorspace (``"CFA"``,
+  ``"LINEAR_RAW"``, ``"CIELAB"`` and the like, which tifffile passes for
+  DNG and other tiles) means the library default when decoding, as in
+  imagecodecs; any other unknown colorspace raises, where imagecodecs
+  falls back to the default. ``mozjpeg`` encode takes the parameters of
+  ``mozjpeg_encode`` and raises for those MozJPEG's TurboJPEG API fixes
+  (``optimize=False``, ``notrellis``, ``quanttable``, ``smoothing``, and
+  ``progressive=False``, which used to write the same progressive JPEG as
+  ``progressive=True``). The ``tifffile_patch`` JPEG adapters pass
+  tifffile's options through instead of dropping them, except the chroma
+  subsampling tifffile adds to a JPEG it stores as RGB or lossless, and
+  the YCbCr outcolorspace it adds to a lossless RGB one, which imagecodecs
+  does not apply either: for 8-bit RGB images those files are
+  byte-identical to the ones tifffile writes with imagecodecs, and a
+  lossless RGB JPEG TIFF, which 0.4.0 wrote lossy, now holds the exact
+  pixels. A tifffile write with ``photometric="ycbcr"``, whose samples
+  0.4.0 converted as if they were RGB, stores them unconverted, so the
+  file reads back like the one tifffile writes with imagecodecs (to the
+  same pixels at quality 100, and exactly with ``lossless=True``, which
+  0.4.0 also wrote lossy). The decode adapter hands imagecodecs a tile
+  TurboJPEG cannot decode as asked, instead of failing a file that reads
+  without the patch: one with a component count TurboJPEG has no
+  colorspace for (two, as in a two-sample lossless JPEG TIFF), and any
+  lossless one it raises for, such as one asked for a color conversion,
+  which TurboJPEG's lossless mode does not make (a lossless
+  ``photometric="ycbcr"`` TIFF, read as RGB). imagecodecs reads these as
+  it does without the patch, the lossless YCbCr tile as its stored
+  samples; ``jpeg`` itself raises for them. Format change: calls that
+  passed these options now get the stream they asked for; output with
+  default options is unchanged.
+- Fix: ``jpeg`` could not decode valid JPEG that imagecodecs writes and
+  reads: 12-bit DCT (the T.81 extended process), lossless (SOF3) at 2 to
+  16 bits, and four-component CMYK or YCCK (Adobe APP14). All decode now,
+  to uint16 above 8 bits and to (H, W, 4) for four components, equal to
+  imagecodecs' output, and JPEG-in-TIFF tiles of these kinds (a CMYK JPEG
+  TIFF, for example) read through the same path. ``jpeg`` also writes
+  them: uint16 as 12-bit lossy or 9 to 16-bit lossless, byte-identical
+  to imagecodecs at the same settings, and (H, W, 4) as CMYK. For CMYK
+  the default bytes differ from imagecodecs': ``jpeg`` writes the Adobe
+  APP14 marker that declares four components CMYK (Adobe Technical Note
+  5116) and component ids C, M, Y, K, which is what imagecodecs writes
+  with ``colorspace="cmyk", outcolorspace="cmyk"`` (``colorspace="cmyk"``
+  alone raises there); imagecodecs' default writes no marker and
+  ids 0 to 3, which libjpeg also reads as CMYK, so the pixels are the
+  same. Values wider than the precision raise. imagecodecs either raises
+  or writes a 12-bit lossy stream that decodes to other values, and by
+  default it stores lossless uint16 in a 12-bit frame even when samples
+  exceed 12 bits, which T.81 does not allow (libjpeg-turbo happens to
+  decode it back exactly). ``jpeg`` stores lossless uint16 data above
+  4095 at 16 bits instead, so those bytes differ from imagecodecs'. A
+  lossless stream asked to decode at a reduced scale raises a clear
+  error. ``mozjpeg`` decodes CMYK and YCCK too, and hands 12-bit and
+  lossless streams, which MozJPEG cannot decode, to ``jpeg``. Format
+  change: ``jpeg`` writes uint16 and (H, W, 4) arrays, which it used to
+  reject. The TIFF and NDTiff writers still reject them with
+  ``compression="jpeg"``, raising ``JpegError`` as before, because the
+  BitsPerSample and PhotometricInterpretation they write would not
+  describe a 12-bit or CMYK JPEG.
+- Fix: ``jpeg`` and ``mozjpeg`` rejected a trailing singleton channel,
+  (H, W, 1). It is grayscale now, as in ``png`` and imagecodecs, and
+  writes the same bytes as the (H, W) array.
+
 0.4.0 (2026-09-29)
 ------------------
 

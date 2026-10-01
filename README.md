@@ -150,8 +150,8 @@ Quick guidance:
 | `bmp` | ✓ | ✓ | gray / RGB / RGBA | pure Python+numpy | `.bmp`, `.dib` |
 | `gif` | ✓ | ✓ | 8-bit palette → RGB / RGBA; **animated** (decodes to a frame stack); encode takes palette indices | system giflib + vendored LZW decoder | `.gif` |
 | `png` | ✓ | ✓ | gray / RGB / RGBA, 8/16-bit | vendored libspng + libdeflate | `.png` |
-| `jpeg` | ✓ | ✓ | gray / RGB | libjpeg-turbo (TJ v3) | `.jpg`, `.jpeg` |
-| `mozjpeg` | ✓ | ✓ | gray / RGB, 8/12-bit | system mozjpeg (TJ v2) | `.jpg` |
+| `jpeg` | ✓ | ✓ | gray / RGB / CMYK (YCCK), 8/12-bit lossy, 2-16 bit lossless | libjpeg-turbo (TJ v3) | `.jpg`, `.jpeg` |
+| `mozjpeg` | ✓ | ✓ | gray / RGB, 8-bit encode; decodes what `jpeg` does (12-bit and lossless through `jpeg`) | system mozjpeg (TJ v2) | `.jpg` |
 | `webp` | ✓ | ✓ | RGB / RGBA, lossy + lossless; **animated** (decodes to a frame stack, like `gif`) | system libwebp (+ libwebpdemux) | `.webp` |
 | `jpeg2k` | ✓ | ✓ | gray / RGB / RGBA, 8/16-bit, lossless + lossy | OpenJPEG | `.jp2`, `.j2k`, `.jpx`, `.jpc` |
 | `htj2k` | ✓ | ✓ | gray / RGB / RGBA, 8/16-bit, lossless + lossy | OpenJPH 0.31.0 (source-built) | `.j2c` |

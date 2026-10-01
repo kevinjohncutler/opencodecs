@@ -24,6 +24,14 @@ cdef extern from 'turbojpeg.h' nogil:
         TJPF_ARGB = 10
         TJPF_CMYK = 11
 
+    # JPEG colorspaces, as tjDecompressHeader3 reports them
+    cdef enum:
+        TJCS_RGB = 0
+        TJCS_YCbCr = 1
+        TJCS_GRAY = 2
+        TJCS_CMYK = 3
+        TJCS_YCCK = 4
+
     # Subsampling
     cdef enum:
         TJSAMP_444 = 0
@@ -35,6 +43,7 @@ cdef extern from 'turbojpeg.h' nogil:
 
     # Flags for tjCompress2 / tjDecompress2
     cdef enum:
+        TJFLAG_FASTUPSAMPLE = 256
         TJFLAG_ACCURATEDCT = 4096
         TJFLAG_PROGRESSIVE = 16384
 
