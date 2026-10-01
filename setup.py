@@ -995,6 +995,8 @@ def _find_libdeflate_prefix() -> Path | None:
       * ``OPENCODECS_LIBDEFLATE_PREFIX`` env var (explicit override —
         most useful on Windows where users typically extract the
         upstream .zip release somewhere like ``C:\\opencodecs_libs``).
+      * ``OPENCODECS_CODEC_LIBS_PREFIX``, where the wheel builds install
+        the libraries they build from source.
       * Homebrew (macOS).
       * The active ``CONDA_PREFIX`` — conda-forge has a ``libdeflate``
         package which installs to ``<prefix>/Library/include`` on
@@ -1007,9 +1009,9 @@ def _find_libdeflate_prefix() -> Path | None:
     callers fall through to zlib-ng-compat or stdlib zlib.
     """
     candidates = []
-    env_prefix = os.environ.get("OPENCODECS_LIBDEFLATE_PREFIX")
-    if env_prefix:
-        candidates.append(Path(env_prefix))
+    for env in ("OPENCODECS_LIBDEFLATE_PREFIX", "OPENCODECS_CODEC_LIBS_PREFIX"):
+        if os.environ.get(env):
+            candidates.append(Path(os.environ[env]))
     candidates.extend([
         Path("/opt/homebrew/opt/libdeflate"),
         Path("/usr/local/opt/libdeflate"),

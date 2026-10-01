@@ -162,25 +162,21 @@ before-all = [
     # `meson` is needed to build dav1d (libavif's AV1 decoder). Available
     # via pip on every Python the manylinux container ships.
     "pip install --quiet meson",
-    # Codec libs that live in EPEL 8 for AlmaLinux 8: each on its own
-    # line so any single missing package doesn't drop the whole
-    # transaction. `|| true` because EPEL contents shift over time
-    # and `optional-backend` handles a missing extension gracefully.
+    # Only zlib, libpng and snappy come from AlmaLinux 8 / EPEL. The
+    # codec libraries the wheel links (zstd, lz4, brotli, libdeflate,
+    # ISA-L, giflib, libwebp, openjpeg) are built from source below, as
+    # the macOS and Windows wheels get current builds from Homebrew and
+    # conda-forge: EPEL 8 ships zstd 1.4.4, lz4 1.8.3 and libwebp 1.0,
+    # and its libdeflate, built by GCC 8, inflated 1.2x slower than the
+    # same source built by the container's GCC 14. `|| true` because
+    # EPEL contents shift over time.
     "dnf install -y zlib-devel || true",
-    "dnf install -y libzstd-devel || true",
-    "dnf install -y lz4-devel || true",
-    "dnf install -y brotli-devel || true",
-    "dnf install -y libwebp-devel || true",
     "dnf install -y libpng-devel || true",
-    "dnf install -y openjpeg2-devel || true",
-    "dnf install -y libdeflate-devel || true",
-    # snappy-devel and giflib-devel are in PowerTools, which is not
-    # enabled by default. The repo is named `powertools` on AlmaLinux 8
-    # and `crb` from 9 on; try both so this survives a base-image bump.
+    # snappy-devel is in PowerTools, which is not enabled by default.
+    # The repo is named `powertools` on AlmaLinux 8 and `crb` from 9 on;
+    # try both so this survives a base-image bump.
     "dnf config-manager --set-enabled powertools || dnf config-manager --set-enabled crb || true",
     "dnf install -y snappy-devel || true",
-    "dnf install -y giflib-devel || true",
-    "dnf install -y isa-l-devel || true",
     # Rust toolchain for pcodec's cdylib (cargo). Use rustup so we get a
     # version newer than the AlmaLinux 8 repo's; pcodec needs edition 2021.
     "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable",
@@ -194,7 +190,7 @@ before-all = [
     # bench/build_codec_libs.sh into the cached /cibw-jxl-prefix mount.
     # Skips encoders (aom, x265) — wheel ships decode-only AVIF/HEIF to
     # keep build < 12 min cold + avoid GPL x265.
-    "bash -c 'PATH=$HOME/.cargo/bin:$PATH bash bench/build_codec_libs.sh --only=libjpeg-turbo,c-blosc2,libde265,dav1d,libavif,libheif,libaec,lerc,zfp,SZ3,pcodec,SPERR,brunsli,mozjpeg,libultrahdr,openjph,CharLS,jxrlib'",
+    "bash -c 'PATH=$HOME/.cargo/bin:$PATH bash bench/build_codec_libs.sh --only=zstd,lz4,brotli,libdeflate,isal,giflib,libwebp,openjpeg,libjpeg-turbo,c-blosc2,libde265,dav1d,libavif,libheif,libaec,lerc,zfp,SZ3,pcodec,SPERR,brunsli,mozjpeg,libultrahdr,openjph,CharLS,jxrlib'",
     "bash bench/build_libjxl.sh",
 ]
 # Don't set OPENCODECS_*_PREFIX here — build_wheels.yml's

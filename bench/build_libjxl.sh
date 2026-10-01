@@ -223,6 +223,15 @@ if [ "$USE_LTO" = "1" ]; then
     CMAKE_ARGS+=(-DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON)
 fi
 
+# A brotli already in the prefix (the wheel builds install one there with
+# build_codec_libs.sh) is the one to link: libjxl otherwise builds its
+# vendored submodule, and the wheel would carry two brotlis under one
+# soname.
+if [ -f "$PREFIX/include/brotli/decode.h" ]; then
+    CMAKE_ARGS+=(-DJPEGXL_FORCE_SYSTEM_BROTLI=ON "-DCMAKE_PREFIX_PATH=$PREFIX")
+    export PKG_CONFIG_PATH="$PREFIX/lib64/pkgconfig:$PREFIX/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
+fi
+
 # Prefer Ninja; fall back to Make.
 if command -v ninja >/dev/null 2>&1; then
     CMAKE_ARGS=(-G Ninja "${CMAKE_ARGS[@]}")

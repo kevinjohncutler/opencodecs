@@ -59,7 +59,7 @@ VERSIONS=(
     "libpng          1.6.50"
     "libjpeg-turbo   3.1.2"
     "libwebp         1.6.0"
-    "openjpeg        2.5.5"
+    "openjpeg        2.5.4"
     "openjph         0.31.0"
     "mozjpeg         4.1.5"
 
@@ -158,6 +158,19 @@ oc_cache_dir() {
         echo "${HOME}/Library/Caches/opencodecs"
     else
         echo "${XDG_CACHE_HOME:-$HOME/.cache}/opencodecs"
+    fi
+}
+
+# Where zstd, brotli and giflib install: the per-user cache, which setup.py
+# links ahead of a distribution's copy, unless OPENCODECS_LIBS_PREFIX names
+# an install root (the wheel builds). Then they go there with everything
+# else, so the libraries built after them (SZ3 against zstd, libjxl against
+# brotli) link the same copy the extensions do, and the wheel bundles one.
+own_prefix() {
+    if [ -n "${OPENCODECS_LIBS_PREFIX:-}" ]; then
+        echo "$OPENCODECS_LIBS_PREFIX"
+    else
+        echo "$(oc_cache_dir)/$1"
     fi
 }
 
@@ -411,8 +424,11 @@ build_zstd() {
     local src
     src=$(fetch_tar zstd "$v" "https://github.com/facebook/zstd/releases/download/v$v/zstd-$v.tar.gz")
     local zstd_prefix
-    zstd_prefix="$(oc_cache_dir)/zstd"
-    local cflags="-O3 -DNDEBUG -fomit-frame-pointer -flto $APPLE_SILICON_CFLAGS"
+    zstd_prefix="$(own_prefix zstd)"
+    # CFLAGS replaces the Makefile's own, so -fPIC has to be here: without it
+    # the LTO link of the shared library fails on Linux (macOS code is
+    # position-independent anyway).
+    local cflags="-O3 -DNDEBUG -fPIC -fomit-frame-pointer -flto $APPLE_SILICON_CFLAGS"
     ( cd "$src/lib" && make clean >/dev/null 2>&1 || true \
         && make -j"$JOBS" CFLAGS="$cflags" libzstd \
         && make PREFIX="$zstd_prefix" install )
@@ -441,8 +457,12 @@ build_lz4() {
 build_giflib() {
     # giflib 5.2.2 (matches what imagecodecs vendors). The 6.x branch on
     # Homebrew is API-compatible but Homebrew builds with -O2 portable
-    # flags; we want -O3 + LTO + hidden-visibility on the same source
-    # to close the encode gap vs imagecodecs.
+    # flags; we want -O3 + LTO on the same source to close the encode
+    # gap vs imagecodecs. OFLAGS goes on the make command line: the
+    # Makefile assigns its own, which overrides one from the environment.
+    # Only the library targets are built: on Linux `all` also builds the
+    # documentation, which needs ImageMagick. No -fvisibility=hidden:
+    # giflib marks no exports, so it would hide the whole API.
     local v="$(get_version giflib)"
     is_built giflib "$v" && { echo "  giflib $v already built"; return; }
     echo "==> giflib $v"
@@ -450,11 +470,13 @@ build_giflib() {
     src=$(fetch_tar giflib "$v" \
         "https://sourceforge.net/projects/giflib/files/giflib-$v.tar.gz/download")
     local prefix
-    prefix="$(oc_cache_dir)/giflib"
-    local oflags="-O3 -DNDEBUG -fomit-frame-pointer -fvisibility=hidden -flto $APPLE_SILICON_CFLAGS"
+    prefix="$(own_prefix giflib)"
+    local oflags="-O3 -DNDEBUG -fomit-frame-pointer -flto $APPLE_SILICON_CFLAGS"
+    local so=libgif.so
+    [ "$(uname)" = "Darwin" ] && so=libgif.dylib
     ( cd "$src" && make clean >/dev/null 2>&1 || true \
-        && OFLAGS="$oflags" make -j"$JOBS" all \
-        && make PREFIX="$prefix" install-include install-lib )
+        && make -j"$JOBS" OFLAGS="$oflags" "$so" libgif.a \
+        && make OFLAGS="$oflags" PREFIX="$prefix" install-include install-lib )
     if [ "$(uname)" = "Darwin" ]; then
         install_name_tool -id @rpath/libgif.7.dylib \
             "$prefix/lib/libgif.7.2.0.dylib"
@@ -469,7 +491,7 @@ build_brotli() {
     local src
     src=$(fetch_tar brotli "$v" "https://github.com/google/brotli/archive/refs/tags/v$v.tar.gz")
     local brotli_prefix
-    brotli_prefix="$(oc_cache_dir)/brotli"
+    brotli_prefix="$(own_prefix brotli)"
     local cflags="-O3 -DNDEBUG $APPLE_SILICON_CFLAGS"
     local build="$src/_build"
     rm -rf "$build"

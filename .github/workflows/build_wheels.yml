@@ -26,7 +26,7 @@ concurrency:
 # (macOS) bundle each linked .so/.dylib into the resulting wheel.
 env:
   LIBJXL_VERSION: v0.11.2
-  CACHE_VERSION: 1
+  CACHE_VERSION: 2
 
 jobs:
   build_wheels:
