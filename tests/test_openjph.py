@@ -11,11 +11,15 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
+from _ic_reference import skip_if_old_imagecodecs  # noqa: E402
+
+pytestmark = skip_if_old_imagecodecs
 
 mod = pytest.importorskip("opencodecs.codecs._openjph")
 encode = mod.encode
 decode = mod.decode
 decode_info = mod.decode_info
+OpenJphError = mod.OpenJphError
 
 
 @pytest.mark.parametrize(
@@ -103,20 +107,13 @@ def test_openjph_imagecodecs_cross_decode():
 
 
 def test_openjph_rejects_unsupported_dtype():
-    arr = np.zeros((16, 16), dtype=np.float32)
-    with pytest.raises(Exception):
-        encode(arr)
+    for dtype in (np.float64, np.float16, np.uint64, np.complex64):
+        with pytest.raises(OpenJphError):
+            encode(np.zeros((16, 16), dtype=dtype))
 
 
-def test_openjph_rejects_5_channel():
-    arr = np.zeros((16, 16, 5), dtype=np.uint8)
-    with pytest.raises(Exception):
-        encode(arr)
-
-
-def test_openjph_lossy_requires_positive_level():
-    arr = np.zeros((16, 16), dtype=np.uint8)
-    with pytest.raises(Exception):
-        encode(arr, level=0.0)
-    with pytest.raises(Exception):
-        encode(arr, level=-0.001)
+def test_openjph_level_zero_is_lossless():
+    """imagecodecs reads a level under 1e-5 as "no quantization"."""
+    arr = np.arange(16 * 16, dtype=np.uint8).reshape(16, 16)
+    for level in (0.0, -0.001, 1e-6):
+        assert encode(arr, level=level) == encode(arr)

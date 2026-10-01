@@ -152,9 +152,18 @@ Any codec that can round-trip exactly does so with no arguments:
     decode(encode(x)) == x
 
 That holds for `png`, `qoi`, `jpeg2k`, `webp`, `avif`, `heif`, `jxl`,
-`lerc` and every byte compressor. A caller who wants a small file asks
-for one with `lossless=False, level=N`. `jpeg` and `mozjpeg` are the
-only exceptions, because the format has no lossless mode to default to.
+`lerc` and every byte compressor, with two shape caveats that follow
+imagecodecs: gray `heif` decodes to RGB(A) unless the decode passes
+`photometric='monochrome'`, and (H, W, 1) gray `avif` decodes to (H, W).
+The pixel values are exact either way. A caller who wants a small file
+asks for one with `lossless=False, level=N`. For `avif` and `heif` a
+lossy `level` alone is enough, as in imagecodecs: AVIF is lossy below
+100 and HEIF at 100 or below. One difference: imagecodecs writes gray
+(1 or 2 sample) AVIF lossless whatever `level` says, while opencodecs
+honors the level for gray too. `jpeg` and `mozjpeg` are the only
+exceptions: readers expect the lossy DCT process, few support the
+lossless process (SOF3) that `jpeg` writes with `lossless=True`, and
+MozJPEG has no lossless mode.
 
 This is the convention `imagecodecs` follows too, and it is worth
 stating plainly because it looks wrong from the outside. Pillow,
@@ -176,10 +185,13 @@ in the same mode. Two ways that goes wrong, both seen in practice:
 * **Different modes.** A lossless encode against somebody's lossy one
   reports us as many times slower and many times larger, and neither
   number means anything.
-* **Different effort at the same nominal setting.** At its default `sz3`
-  emits 1.9 MB where `imagecodecs` emits 3.7 MB, and `lerc` emits 3.3 MB
-  where `imagecodecs` emits 4.0 MB, which is no compression at all. We
-  are twice as thorough, so of course we take longer.
+* **Different settings, or different effort at the same setting.** Up
+  to 0.4.0 `sz3` defaulted to an absolute error bound of 1e-3 where
+  `imagecodecs` uses 0, and emitted 1.9 MB where `imagecodecs` emitted
+  3.7 MB: the two calls asked for different error bounds. `lerc` wrote
+  codec version 6 where `imagecodecs` writes version 4. Both defaults now
+  match `imagecodecs`. Either way the two sides did different work, so
+  the times differed too.
 
 `bench/sweep.py` guards the second case: it compares output sizes first
 and prints `n/c` rather than a speed ratio when they differ by more than
@@ -236,11 +248,13 @@ formats, the upstream library's CLI for byte compressors.)
 
 **Documenting deliberate non-defaults.** A codec's docstring
 should record any case where its default *would* be slower than
-the reference and explain the win that buys (e.g. "level 6 instead
-of level 1 because it's the brotli CLI's own default and produces
-output that is unambiguously smaller-AND-faster than ic's default
-once measured end-to-end against natural-image data"). If you
-can't make that case, change the default.
+the reference and explain the win that buys, with the measurement
+behind it (input, sizes, times). If you can't make that case on
+every input class measured, use the reference's default. brotli is
+the cautionary example: its default was once set to level 3 as
+"Pareto-better than imagecodecs's level 1", but imagecodecs defaults
+to level 4, and level 3 wrote 11% larger output on a small image, so
+the default is now 4, byte-identical to imagecodecs.
 
 **Bench setpoints lock this in.** ``bench/perf_baseline.<arch>.json``
 records the current oc/ic ratio for every codec. ``bench --check``

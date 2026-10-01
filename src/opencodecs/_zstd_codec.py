@@ -8,7 +8,7 @@ from typing import Any
 import numpy as np
 
 from .core.codec import Codec
-from .core.buffers import byte_output
+from .core.buffers import encoded_output, native_decoded
 from .core._optional_backend import import_or_stubs
 from .core.pipeline import in_worker
 from .core._io_helpers import read_src as _read_src, write_dest as _write_dest
@@ -46,18 +46,16 @@ class ZstdCodec(Codec):
 
     def encode(self, data: Any, *, dest=None, level: int | None = None,
                numthreads: int | None = None,
-               **opts) -> bytes | None:
+               out=None) -> bytes | None:
         # Accept ndarrays too — flatten via tobytes(). For arrays the
         # caller is responsible for remembering shape/dtype.
         if isinstance(data, np.ndarray):
             data = data.tobytes()
         compressed = _zstd_encode(data, level=level, numthreads=0 if in_worker() else numthreads)
-        return _write_dest(compressed, dest)
+        return encoded_output(compressed, out, self.name, dest)
 
-    def decode(self, src: Any, *, out=None, **opts) -> bytes | memoryview:
-        if out is None:
-            return _zstd_decode(_read_src(src))
-        return _zstd_decode(_read_src(src), out=byte_output(out))
+    def decode(self, src: Any, *, out=None) -> bytes | memoryview:
+        return native_decoded(_zstd_decode, _read_src(src), out)
 
 
 __all__ = ["ZstdCodec"]

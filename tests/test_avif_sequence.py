@@ -19,10 +19,11 @@ import numpy as np
 import pytest
 
 import opencodecs as oc
+from _ic_reference import skip_if_old_imagecodecs  # noqa: E402
 
 imagecodecs = pytest.importorskip("imagecodecs")
-pytestmark = pytest.mark.skipif(
-    not oc.has_codec("avif"), reason="libavif not built here")
+pytestmark = [skip_if_old_imagecodecs, pytest.mark.skipif(
+    not oc.has_codec("avif"), reason="libavif not built here")]
 
 N_FRAMES = 6
 
@@ -113,6 +114,34 @@ def test_read_stacks_a_sequence_and_not_a_still(codec, sequence, frames):
     with codec.open(still) as r:
         assert r.read().shape == frames[0].shape
         assert np.array_equal(r.read(), codec.decode(still))
+
+
+def test_decode_index_picks_one_image_like_imagecodecs(codec, sequence,
+                                                     frames):
+    """imagecodecs.avif_decode(index=i) returns image i; ours used to
+    swallow ``index`` and return the whole stack (or the still)."""
+    blob, expected = sequence
+    n = len(expected)
+    # imagecodecs decoded the whole stack in the fixture; its own index=
+    # path crashed the interpreter in an older release CI installs for
+    # Python 3.10, so each image is checked against that stack instead.
+    for i in (0, 3, n - 1):
+        np.testing.assert_array_equal(codec.decode(blob, index=i), expected[i])
+    np.testing.assert_array_equal(codec.decode(blob, index=-1),
+                                  expected[n - 1])
+    out = np.empty_like(expected[2])
+    assert codec.decode(blob, index=2, out=out) is out
+    np.testing.assert_array_equal(out, expected[2])
+    for bad in (n, n + 3, -n - 1):
+        with pytest.raises(IndexError):
+            codec.decode(blob, index=bad)
+    still = codec.encode(frames[0])
+    np.testing.assert_array_equal(codec.decode(still, index=0), frames[0])
+    for bad in (1, 5):
+        with pytest.raises(IndexError):
+            codec.decode(still, index=bad)
+    with pytest.raises(TypeError):
+        codec.decode(still, bogus=1)
 
 
 def test_shape_and_dtype_without_decoding_a_frame(codec, sequence):

@@ -17,11 +17,13 @@ import numpy as np
 cimport numpy as cnp
 
 from avif cimport (
-    AVIF_QUALITY_LOSSLESS, AVIF_RESULT_OK, AVIF_RESULT_IO_ERROR,
+    AVIF_QUALITY_LOSSLESS, AVIF_QUALITY_DEFAULT, AVIF_RESULT_OK,
+    AVIF_RESULT_IO_ERROR,
     avifIO, avifROData, avifResult, avifDecoderSetIO,
     AVIF_PIXEL_FORMAT_YUV444, AVIF_PIXEL_FORMAT_YUV422,
     AVIF_PIXEL_FORMAT_YUV420, AVIF_PIXEL_FORMAT_YUV400,
     AVIF_RGB_FORMAT_RGB, AVIF_RGB_FORMAT_RGBA,
+    AVIF_RGB_FORMAT_GRAY, AVIF_RGB_FORMAT_GRAYA,
     AVIF_CODEC_CHOICE_AUTO, AVIF_CODEC_CHOICE_AOM, AVIF_CODEC_CHOICE_SVT,
     avifPixelFormat, avifCodecChoice,
     avifImage, avifImageCreate, avifImageCreateEmpty, avifImageDestroy,
@@ -60,6 +62,7 @@ cdef:
     int AVIF_MATRIX_COEFFICIENTS_IDENTITY = 0  # used for lossless
     int AVIF_MATRIX_COEFFICIENTS_BT709 = 1
     int AVIF_MATRIX_COEFFICIENTS_UNSPECIFIED = 2
+    int AVIF_MATRIX_COEFFICIENTS_BT601 = 6
     int AVIF_MATRIX_COEFFICIENTS_BT2020_NCL = 9
 
 cnp.import_array()
@@ -69,8 +72,16 @@ class AvifError(RuntimeError):
     """Raised on AVIF encode/decode failures."""
 
 
+_YUV_FORMATS = {
+    '444': AVIF_PIXEL_FORMAT_YUV444, 'yuv444': AVIF_PIXEL_FORMAT_YUV444,
+    '422': AVIF_PIXEL_FORMAT_YUV422, 'yuv422': AVIF_PIXEL_FORMAT_YUV422,
+    '420': AVIF_PIXEL_FORMAT_YUV420, 'yuv420': AVIF_PIXEL_FORMAT_YUV420,
+    '400': AVIF_PIXEL_FORMAT_YUV400, 'yuv400': AVIF_PIXEL_FORMAT_YUV400,
+}
+
+
 def encode(data, *, level: int | None = None,
-           lossless: bool = False, speed: int = 6,
+           lossless: bool | None = None, speed: int | None = None,
            color=None, bit_depth: int | None = None,
            numthreads: int | None = None,
            iccprofile: bytes | None = None,
@@ -79,28 +90,50 @@ def encode(data, *, level: int | None = None,
            tile_rows_log2: int | None = None,
            auto_tiling: bool = False,
            yuv_format: str | None = None,
-           codec_options: dict | None = None) -> bytes:
+           codec_options: dict | None = None,
+           primaries: int | None = None,
+           transfer: int | None = None,
+           matrix: int | None = None) -> bytes:
     """Encode an array as AVIF.
 
     Parameters
     ----------
     data : ndarray
-        2-D grayscale, 3-D HxWx3 (RGB), or 3-D HxWx4 (RGBA). uint8 or uint16.
+        (H, W) or (H, W, 1) gray, (H, W, 2) gray plus alpha, (H, W, 3)
+        RGB or (H, W, 4) RGBA; uint8 or uint16. Gray is coded as AV1
+        monochrome (4:0:0, ``mono_chrome=1``), which is what the format
+        provides for it, and decodes to (H, W) or (H, W, 2), so
+        (H, W, 1) input comes back as (H, W).
     level : int, optional
-        Quality 0-100 (default 60); ignored if ``lossless=True``.
-    lossless : bool, default False
-        If True, encode in mathematically lossless mode (YUV444 + identity
-        matrix). Required for fidelity-critical use; ~2-4x larger than lossy.
-    speed : int, default 6
-        Encoder speed 0-10 (lower = slower / smaller files).
+        Quality 0-100, imagecodecs' meaning: with ``lossless`` left at
+        None, no level or a level of 100 is lossless and anything lower
+        is lossy at that quality. A level of -1 or lower is lossy at
+        libavif's own default quality (AVIF_QUALITY_DEFAULT), as in
+        imagecodecs. With ``lossless=False`` and no level the quality is
+        60. Unlike imagecodecs, which codes gray (1 or 2 sample) input
+        lossless whatever the level, the level applies to gray too.
+    lossless : bool, optional
+        None (default) follows ``level`` as above. True forces lossless
+        (YUV 4:4:4 with the identity matrix for color, 4:0:0 for gray)
+        and raises if ``level`` asks for less. False forces lossy.
+        ``level`` sets the quality of the color planes only; an alpha
+        channel is always coded lossless, as imagecodecs does.
+    speed : int, optional
+        Encoder speed 0-10 (lower = slower / smaller files). None
+        (default) leaves libavif's own default, as imagecodecs does;
+        values outside 0-10 are clamped to that range, also as
+        imagecodecs does.
     color : str or ColorSpec, optional
         Color-encoding spec. Same vocabulary as the JXL codec accepts:
         'srgb', 'display-p3', 'rec2020-pq', 'rec2020-hlg', etc. If None,
-        libavif's defaults are used (typically BT.709 sRGB).
+        the primaries and transfer stay unspecified (CICP 2).
     bit_depth : int, optional
-        Override bit depth (8, 10, 12). Default: 8 for uint8 input, 10 for
-        uint16 input. uint16 with bit_depth=10 means values 0..1023 are
-        stored in the low bits; values >1023 are clamped.
+        Coded bit depth, 8 for uint8 and 10 or 12 for uint16. For uint16
+        with no ``bit_depth`` the smallest of 10 and 12 that holds the
+        data's largest value is used. uint16 values are stored as they
+        are, in the low bits (10-bit means 0..1023). Data that does not
+        fit raises AvifError rather than being clamped: AV1 stores at
+        most 12 bits, so full-range uint16 cannot be written.
     codec : {'aom', 'svt', 'auto', None}, optional
         AV1 encoder backend. ``'aom'`` = libaom (the reference encoder
         and the right default). ``'svt'`` = SVT-AV1 (Intel/Netflix).
@@ -111,7 +144,7 @@ def encode(data, *, level: int | None = None,
         SVT is exposed as an escape hatch, not as a faster path. On
         Apple Silicon (M-series, libavif 1.3.0 + SVT-AV1 3.1.2) it
         measured ~7x SLOWER than aom and produced much larger files
-        (speed=10, 2048x2048: 262 ms / 659 KiB vs aom's 34 ms /
+        (speed=10, 2048x2048, 4:2:0: 262 ms / 659 KiB vs aom's 34 ms /
         78 KiB). libavif drives SVT in its video configuration rather
         than single-image mode, which is the likely cause. Benchmark
         on your own hardware before selecting it.
@@ -121,10 +154,12 @@ def encode(data, *, level: int | None = None,
         16 tiles encoded by independent threads. Default: ``2`` for
         images >= 1024 px on the long axis, ``0`` otherwise (small
         images don't benefit and pay the per-tile header overhead).
-        Pass an explicit integer to override.
+        Pass an explicit integer to override. imagecodecs does not tile
+        by default, so for images of 1024 px or more pass 0 for both to
+        write the bytes it writes.
 
-        Measured on a 2048x2048 RGB frame (level=80, speed=6, Apple
-        Silicon): 186 ms untiled, 109 ms at 2x2, 92 ms at 4x4, 90 ms
+        Measured on a 2048x2048 RGB frame (level=80, speed=6, 4:2:0
+        chroma, Apple Silicon): 186 ms untiled, 109 ms at 2x2, 92 ms at 4x4, 90 ms
         at 8x8; so 4x4 is ~2x faster than untiled and 8x8 buys nothing
         further. Size cost is +1.2% at 2x2, +4.4% at 4x4 and +8.7% at
         8x8, with PSNR unchanged, which is why 4x4 is the ceiling
@@ -132,6 +167,22 @@ def encode(data, *, level: int | None = None,
     auto_tiling : bool, default False
         If True, let libavif pick tile counts based on image dimensions.
         Overrides ``tile_cols_log2`` / ``tile_rows_log2``.
+    yuv_format : {'420', '422', '444', '400'}, optional
+        Chroma layout for lossy color input; default '444', imagecodecs'
+        default, which keeps chroma at full resolution. Lossless color
+        is always 4:4:4 and gray always 4:0:0, so any other value there
+        raises instead of being ignored.
+    primaries, transfer, matrix : int, optional
+        CICP code points (ITU-T H.273) written to the file, overriding
+        ``color``. ``matrix`` cannot be combined with lossless color
+        input, which needs the identity matrix.
+
+    Lossy color output is tagged with matrix coefficients 6 (BT.601),
+    the matrix libavif converts with; an unspecified matrix (2) would
+    leave a reader outside libavif to guess. BT.2020 primaries get the
+    BT.2020 non-constant-luminance matrix (9). Gray (4:0:0) has no
+    chroma, so no matrix applies to it and it is tagged unspecified
+    (2), as imagecodecs tags it.
     """
     cdef:
         cnp.ndarray arr
@@ -142,6 +193,7 @@ def encode(data, *, level: int | None = None,
         int rc
         bytes out
         int has_alpha
+        int monochrome
         int quality
         int channels
         int dtype_bytes  # 1 for uint8, 2 for uint16
@@ -149,41 +201,29 @@ def encode(data, *, level: int | None = None,
         size_t row_bytes_in
         unsigned int y
 
-    # Accept uint8 or uint16 input.
-    if not isinstance(data, np.ndarray):
-        arr = np.ascontiguousarray(data, dtype=np.uint8)
-    else:
-        if data.dtype == np.uint8:
-            arr = np.ascontiguousarray(data)
-        elif data.dtype == np.uint16:
-            arr = np.ascontiguousarray(data)
-        else:
-            raise AvifError(
-                f'AVIF: uint8 or uint16 input supported, got {data.dtype}')
+    from opencodecs._avif_heif_params import (
+        resolve_bit_depth, resolve_lossless, gray_layout)
 
+    if not isinstance(data, np.ndarray):
+        data = np.asarray(data)
+    if data.dtype != np.uint8 and data.dtype != np.uint16:
+        raise AvifError(
+            f'AVIF: uint8 or uint16 input supported, got {data.dtype}')
+    layout = gray_layout(data)
+    if layout is None:
+        raise AvifError(
+            f'AVIF encode: unsupported shape {data.shape}; expected '
+            f'(H, W), (H, W, 1), (H, W, 2), (H, W, 3) or (H, W, 4)')
+    channels, has_alpha = layout
+    monochrome = channels <= 2
+    arr = np.ascontiguousarray(data)
     dtype_bytes = 1 if arr.dtype == np.uint8 else 2
 
-    # Default bit_depth from dtype.
-    if bit_depth is None:
-        actual_bit_depth = 8 if dtype_bytes == 1 else 10
-    else:
-        actual_bit_depth = int(bit_depth)
-    if actual_bit_depth not in (8, 10, 12):
-        raise AvifError(
-            f'AVIF: bit_depth must be 8, 10, or 12 (got {actual_bit_depth})')
-    if dtype_bytes == 1 and actual_bit_depth != 8:
-        raise AvifError(
-            f'AVIF: uint8 input requires bit_depth=8 (got {actual_bit_depth})')
-
-    if arr.ndim == 2:
-        arr = np.ascontiguousarray(np.stack([arr] * 3, axis=-1))
-        has_alpha = 0
-    elif arr.ndim == 3 and arr.shape[2] == 3:
-        has_alpha = 0
-    elif arr.ndim == 3 and arr.shape[2] == 4:
-        has_alpha = 1
-    else:
-        raise AvifError(f'AVIF encode: unsupported shape ndim={arr.ndim}')
+    actual_bit_depth = resolve_bit_depth(
+        arr, bit_depth, name='AVIF', error=AvifError)
+    lossless, quality = resolve_lossless(
+        level, lossless, name='avif', lossless_from=AVIF_QUALITY_LOSSLESS,
+        default_quality=60, library_default_at=AVIF_QUALITY_DEFAULT)
 
     # Tile defaults: ``log2=2`` (4×4 = 16 tiles) auto-enables for images
     # with the long axis >= 1024 px. Measured 3-4× wall-clock speedup
@@ -202,7 +242,7 @@ def encode(data, *, level: int | None = None,
     # Resolve color spec to CICP values.
     cdef int cp = AVIF_COLOR_PRIMARIES_UNSPECIFIED
     cdef int tc = AVIF_TRANSFER_CHARACTERISTICS_UNSPECIFIED
-    cdef int mc = AVIF_MATRIX_COEFFICIENTS_UNSPECIFIED
+    cdef int mc = AVIF_MATRIX_COEFFICIENTS_BT601
     if color is not None:
         from opencodecs.core.color import parse_color
         spec = parse_color(color)
@@ -210,33 +250,58 @@ def encode(data, *, level: int | None = None,
         # JXL primary 11 = P3 -> AVIF SMPTE_RP_431_2 (also 11).
         cp = int(spec.primaries)
         tc = int(spec.transfer)
+    if primaries is not None:
+        cp = int(primaries)
+    if transfer is not None:
+        tc = int(transfer)
 
-    quality = AVIF_QUALITY_LOSSLESS if lossless else (60 if level is None else int(level))
-    if quality < 0: quality = 0
-    if quality > 100: quality = 100
-
-    # Chroma layout. Default 4:2:0 for lossy (web-photo norm — half the
-    # chroma bytes, invisible on natural-image content), 4:4:4 for
-    # lossless (required — chroma subsampling is by definition lossy).
-    # Override via yuv_format kwarg. 4:4:4 keeps chroma at full luma
-    # resolution — relevant for sparse-bright content (fluorescence
-    # dye spots, scientific plots) where 4:2:0 visibly bleeds at edges.
+    # Chroma layout. Gray is always 4:0:0 (AV1 mono_chrome); there is
+    # no chroma to lay out. Color is 4:4:4 unless the caller asks for
+    # subsampling: always for lossless (subsampling is lossy by
+    # definition), and by default for lossy too, imagecodecs' default.
+    # 4:4:4 keeps chroma at full luma resolution, which matters for
+    # sharp edges and sparse-bright content (fluorescence dye spots,
+    # scientific plots) where 4:2:0 visibly bleeds.
     cdef avifPixelFormat _yuv
-    if lossless:
-        _yuv = AVIF_PIXEL_FORMAT_YUV444
-    elif yuv_format is None:
-        _yuv = AVIF_PIXEL_FORMAT_YUV420
-    elif yuv_format == '420':
-        _yuv = AVIF_PIXEL_FORMAT_YUV420
-    elif yuv_format == '422':
-        _yuv = AVIF_PIXEL_FORMAT_YUV422
-    elif yuv_format == '444':
-        _yuv = AVIF_PIXEL_FORMAT_YUV444
-    elif yuv_format == '400':
-        _yuv = AVIF_PIXEL_FORMAT_YUV400
-    else:
+    if yuv_format is not None and str(yuv_format).lower() not in _YUV_FORMATS:
         raise AvifError(
             f"yuv_format must be '420'/'422'/'444'/'400' (got {yuv_format!r})")
+    if monochrome:
+        if yuv_format is not None and _YUV_FORMATS[str(yuv_format).lower()] != AVIF_PIXEL_FORMAT_YUV400:
+            raise AvifError(
+                f"AVIF encode: gray input is coded as 4:0:0; "
+                f"yuv_format={yuv_format!r} applies to color input only")
+        _yuv = AVIF_PIXEL_FORMAT_YUV400
+    elif lossless:
+        if yuv_format is not None and _YUV_FORMATS[str(yuv_format).lower()] != AVIF_PIXEL_FORMAT_YUV444:
+            raise AvifError(
+                f"AVIF encode: lossless color is coded as 4:4:4; "
+                f"yuv_format={yuv_format!r} would subsample it")
+        _yuv = AVIF_PIXEL_FORMAT_YUV444
+    elif yuv_format is None:
+        _yuv = AVIF_PIXEL_FORMAT_YUV444
+    else:
+        _yuv = _YUV_FORMATS[str(yuv_format).lower()]
+
+    # Matrix. Identity is REQUIRED for byte-perfect lossless color (YUV
+    # planes equal RGB planes); the primaries and transfer still tag the
+    # colorimetry of those values. AV1 allows the identity matrix only
+    # with 4:4:4, so gray (4:0:0) is tagged unspecified: its single
+    # plane has no chroma for a matrix to act on, and imagecodecs tags
+    # it the same way. Lossy color is tagged with the matrix libavif
+    # converts with.
+    if monochrome and matrix is None:
+        mc = AVIF_MATRIX_COEFFICIENTS_UNSPECIFIED
+    elif lossless and not monochrome:
+        if matrix is not None and int(matrix) != AVIF_MATRIX_COEFFICIENTS_IDENTITY:
+            raise AvifError(
+                f"AVIF encode: lossless color needs the identity matrix "
+                f"(0); matrix={matrix} would make it lossy")
+        mc = AVIF_MATRIX_COEFFICIENTS_IDENTITY
+    elif matrix is not None:
+        mc = int(matrix)
+    elif cp == AVIF_COLOR_PRIMARIES_BT2020:
+        mc = AVIF_MATRIX_COEFFICIENTS_BT2020_NCL
 
     image = avifImageCreate(<unsigned int> arr.shape[1],
                             <unsigned int> arr.shape[0],
@@ -244,13 +309,6 @@ def encode(data, *, level: int | None = None,
     if image == NULL:
         raise AvifError('avifImageCreate failed')
 
-    # Set color encoding. Identity matrix is REQUIRED for byte-perfect
-    # lossless (YUV planes equal RGB planes); the colorPrimaries and
-    # transferCharacteristics still tag the colorimetry of those values.
-    if lossless:
-        mc = AVIF_MATRIX_COEFFICIENTS_IDENTITY
-    elif cp == AVIF_COLOR_PRIMARIES_BT2020:
-        mc = AVIF_MATRIX_COEFFICIENTS_BT2020_NCL
     image.colorPrimaries = <unsigned int> cp
     image.transferCharacteristics = <unsigned int> tc
     image.matrixCoefficients = <unsigned int> mc
@@ -265,7 +323,10 @@ def encode(data, *, level: int | None = None,
 
     try:
         avifRGBImageSetDefaults(&rgb, image)
-        rgb.format = AVIF_RGB_FORMAT_RGBA if has_alpha else AVIF_RGB_FORMAT_RGB
+        if monochrome:
+            rgb.format = AVIF_RGB_FORMAT_GRAYA if has_alpha else AVIF_RGB_FORMAT_GRAY
+        else:
+            rgb.format = AVIF_RGB_FORMAT_RGBA if has_alpha else AVIF_RGB_FORMAT_RGB
         rgb.depth = <unsigned int> actual_bit_depth
 
         rc = avifRGBImageAllocatePixels(&rgb)
@@ -274,13 +335,10 @@ def encode(data, *, level: int | None = None,
                 f'avifRGBImageAllocatePixels: '
                 f'{avifResultToString(rc).decode()}')
         try:
-            channels = 4 if has_alpha else 3
-            # uint16 input = 2 bytes per sample; uint8 = 1 byte.
+            # uint16 input = 2 bytes per sample; uint8 = 1 byte. Values
+            # sit in the low bits of each sample (10-bit is 0..1023),
+            # which resolve_bit_depth has already checked.
             row_bytes_in = <size_t>(<int> arr.shape[1] * channels * dtype_bytes)
-            # Sanity: for uint16 input, libavif expects values left-aligned to
-            # bit_depth's range (e.g. for 10-bit, values 0..1023). We DON'T
-            # auto-shift here — caller is responsible for ensuring values are
-            # in [0, 2^bit_depth - 1].
             for y in range(<int> arr.shape[0]):
                 memcpy(rgb.pixels + y * rgb.rowBytes,
                        <const uint8_t*> cnp.PyArray_DATA(arr) + y * row_bytes_in,
@@ -294,9 +352,14 @@ def encode(data, *, level: int | None = None,
             avifRGBImageFreePixels(&rgb)
 
         encoder.quality = quality
-        encoder.qualityAlpha = quality
-        if speed >= 0 and speed <= 10:
-            encoder.speed = speed
+        # Alpha is coded lossless whatever the color quality, as
+        # imagecodecs codes it: level trades color fidelity for size,
+        # and a mask or transparency channel is not color.
+        encoder.qualityAlpha = AVIF_QUALITY_LOSSLESS
+        if speed is not None:
+            # imagecodecs clamps an out-of-range speed rather than
+            # dropping it; None keeps libavif's default.
+            encoder.speed = max(0, min(10, int(speed)))
         if numthreads is None or numthreads <= 0:
             import os as _os
             encoder.maxThreads = _os.cpu_count() or 4
@@ -386,18 +449,45 @@ def _decode_threads(numthreads):
     return auto_threads(numthreads, max_threads=_AVIF_DECODE_MAX_THREADS)
 
 
+cdef int _rgb_layout(avifImage* image, avifRGBImage* rgb) noexcept:
+    """Pick the output format for ``image``; return its sample count.
+
+    A 4:0:0 image (AV1 ``mono_chrome=1``) has a single plane, and it is
+    returned as gray, (H, W), or gray plus alpha, (H, W, 2), not as three
+    copies of the same plane. libavif's GRAY formats apply the file's
+    range, so a limited-range gray file still decodes to full range.
+    """
+    cdef bint alpha = image.alphaPlane != NULL
+    if image.yuvFormat == AVIF_PIXEL_FORMAT_YUV400:
+        rgb.format = AVIF_RGB_FORMAT_GRAYA if alpha else AVIF_RGB_FORMAT_GRAY
+        return 2 if alpha else 1
+    rgb.format = AVIF_RGB_FORMAT_RGBA if alpha else AVIF_RGB_FORMAT_RGB
+    return 4 if alpha else 3
+
+
 def decode(data, *, numthreads: int | None = None, out=None) -> np.ndarray:
     """Decode AVIF bytes to a numpy array.
 
-    Returns uint8 for 8-bit AVIFs, uint16 for 10/12-bit AVIFs (values
-    left-aligned to bit_depth — i.e. for 10-bit the array contains values
-    0..1023, not shifted into the upper bits).
+    Returns uint8 for 8-bit AVIFs, uint16 for 10/12-bit AVIFs (values in
+    the low bits: for 10-bit the array contains values 0..1023, not
+    shifted into the upper bits).
 
-    ``out=`` is a preallocated ``(H, W, 3) | (H, W, 4)`` ndarray of the
-    right dtype (uint8 / uint16). libavif allocates its own RGB buffer
-    internally; out= skips the second allocation that the default path
-    does (we still pay the libavif internal one). See ``_png.decode``
-    for the full contract.
+    The shape is (H, W, 3) for RGB, (H, W, 4) for RGBA, and for a
+    monochrome (4:0:0) file (H, W), or (H, W, 2) with alpha, as
+    imagecodecs returns them.
+
+    Lossy files can decode a level or two apart from imagecodecs on the
+    same bytes. The AV1 decode is bit-exact; the difference is the YUV
+    to RGB step, where this build uses libavif's built-in converter and
+    the imagecodecs build uses libyuv. ITU-T H.273 gives that step as
+    real-valued equations, and libavif's converter matches their
+    rounded result. Lossless files decode identically.
+
+    ``out=`` is a preallocated ndarray of the decoded shape and dtype
+    (uint8 / uint16). libavif allocates its own RGB buffer internally;
+    out= skips the second allocation that the default path does (we
+    still pay the libavif internal one). See ``_png.decode`` for the
+    full contract.
     """
     cdef:
         const uint8_t[::1] src
@@ -445,9 +535,7 @@ def decode(data, *, numthreads: int | None = None, out=None) -> np.ndarray:
         dtype_bytes = 1 if img_depth <= 8 else 2
 
         avifRGBImageSetDefaults(&rgb, image)
-        has_alpha = 1 if image.alphaPlane != NULL else 0
-        channels = 4 if has_alpha else 3
-        rgb.format = AVIF_RGB_FORMAT_RGBA if has_alpha else AVIF_RGB_FORMAT_RGB
+        channels = _rgb_layout(image, &rgb)
         rgb.depth = <unsigned int> img_depth
 
         rc = avifRGBImageAllocatePixels(&rgb)
@@ -466,7 +554,10 @@ def decode(data, *, numthreads: int | None = None, out=None) -> np.ndarray:
             shape[0] = image.height
             shape[1] = image.width
             shape[2] = channels
-            expected_shape = (int(image.height), int(image.width), channels)
+            if channels == 1:
+                expected_shape = (int(image.height), int(image.width))
+            else:
+                expected_shape = (int(image.height), int(image.width), channels)
             expected_dtype = np.uint8 if dtype_bytes == 1 else np.uint16
 
             if out is not None:
@@ -485,10 +576,10 @@ def decode(data, *, numthreads: int | None = None, out=None) -> np.ndarray:
                 if not out.flags['C_CONTIGUOUS']:
                     raise ValueError("avif decode: out= must be C-contiguous")
                 out_arr = out
-            elif dtype_bytes == 1:
-                out_arr = cnp.PyArray_EMPTY(3, shape, cnp.NPY_UINT8, 0)
             else:
-                out_arr = cnp.PyArray_EMPTY(3, shape, cnp.NPY_UINT16, 0)
+                out_arr = cnp.PyArray_EMPTY(
+                    2 if channels == 1 else 3, shape,
+                    cnp.NPY_UINT8 if dtype_bytes == 1 else cnp.NPY_UINT16, 0)
             row_bytes_out = <size_t>(image.width * channels * dtype_bytes)
             for y in range(image.height):
                 memcpy(<uint8_t*> cnp.PyArray_DATA(out_arr) + y * row_bytes_out,
@@ -555,6 +646,7 @@ cdef class AvifSequence:
     cdef readonly int height
     cdef readonly int depth
     cdef readonly bint has_alpha
+    cdef readonly bint monochrome
     cdef readonly double duration
 
     def __cinit__(self, data, numthreads: int | None = None):
@@ -606,6 +698,10 @@ cdef class AvifSequence:
         # alphaPresent is the field to read before any frame is
         # decoded; image.alphaPlane does not exist yet at this point.
         self.has_alpha = self._decoder.alphaPresent != 0
+        # The parse fills yuvFormat from the av1C box, so a monochrome
+        # file is known before any frame is decoded.
+        self.monochrome = (
+            self._decoder.image.yuvFormat == AVIF_PIXEL_FORMAT_YUV400)
         self.duration = (
             <double> self._decoder.durationInTimescales
             / <double> self._decoder.timescale
@@ -648,9 +744,7 @@ cdef class AvifSequence:
         image = self._decoder.image
         dtype_bytes = 1 if image.depth <= 8 else 2
         avifRGBImageSetDefaults(&rgb, image)
-        channels = 4 if image.alphaPlane != NULL else 3
-        rgb.format = (AVIF_RGB_FORMAT_RGBA if channels == 4
-                      else AVIF_RGB_FORMAT_RGB)
+        channels = _rgb_layout(image, &rgb)
         rgb.depth = <unsigned int> image.depth
         rc = avifRGBImageAllocatePixels(&rgb)
         if rc != AVIF_RESULT_OK:
@@ -667,7 +761,7 @@ cdef class AvifSequence:
             shape[1] = image.width
             shape[2] = channels
             out_arr = cnp.PyArray_EMPTY(
-                3, shape,
+                2 if channels == 1 else 3, shape,
                 cnp.NPY_UINT8 if dtype_bytes == 1 else cnp.NPY_UINT16, 0)
             row_bytes_out = <size_t>(image.width * channels * dtype_bytes)
             for y in range(image.height):

@@ -21,6 +21,15 @@ cdef extern from 'turbojpeg.h' nogil:
         TJPF_BGRA
         TJPF_ABGR
         TJPF_ARGB
+        TJPF_CMYK
+
+    # JPEG colorspaces (TJPARAM_COLORSPACE).
+    cdef enum:
+        TJCS_RGB
+        TJCS_YCbCr
+        TJCS_GRAY
+        TJCS_CMYK
+        TJCS_YCCK
 
     cdef enum:
         TJSAMP_444
@@ -40,6 +49,8 @@ cdef extern from 'turbojpeg.h' nogil:
         TJPARAM_LOSSLESS
         TJPARAM_LOSSLESSPSV
         TJPARAM_LOSSLESSPT
+        TJPARAM_OPTIMIZE
+        TJPARAM_FASTUPSAMPLE
 
     tjhandle tj3Init(int initType)
     void tj3Destroy(tjhandle handle)
@@ -56,6 +67,20 @@ cdef extern from 'turbojpeg.h' nogil:
         unsigned char** jpegBuf, size_t* jpegSize,
     )
 
+    # 9- to 12-bit samples (lossy 12-bit, lossless 9 to 12) and 13- to
+    # 16-bit samples (lossless only). ``pitch`` counts samples, not bytes;
+    # 0 means width * samples per pixel.
+    int tj3Compress12(
+        tjhandle handle, const short* srcBuf,
+        int width, int pitch, int height, int pixelFormat,
+        unsigned char** jpegBuf, size_t* jpegSize,
+    )
+    int tj3Compress16(
+        tjhandle handle, const unsigned short* srcBuf,
+        int width, int pitch, int height, int pixelFormat,
+        unsigned char** jpegBuf, size_t* jpegSize,
+    )
+
     int tj3DecompressHeader(
         tjhandle handle,
         const unsigned char* jpegBuf, size_t jpegSize,
@@ -64,6 +89,15 @@ cdef extern from 'turbojpeg.h' nogil:
     int tj3Decompress8(
         tjhandle handle, const unsigned char* jpegBuf, size_t jpegSize,
         unsigned char* dstBuf, int pitch, int pixelFormat,
+    )
+
+    int tj3Decompress12(
+        tjhandle handle, const unsigned char* jpegBuf, size_t jpegSize,
+        short* dstBuf, int pitch, int pixelFormat,
+    )
+    int tj3Decompress16(
+        tjhandle handle, const unsigned char* jpegBuf, size_t jpegSize,
+        unsigned short* dstBuf, int pitch, int pixelFormat,
     )
 
     # ICC profile attach/retrieve. tj3SetICCProfile takes the bytes

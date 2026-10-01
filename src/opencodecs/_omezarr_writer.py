@@ -11,7 +11,7 @@ Scope of v1
     - none / raw
     - zstd via opencodecs native ``_zstd``
     - blosc2 via opencodecs native ``_blosc2`` (v2 + v3)
-    - gzip via stdlib (v2 + v3)
+    - gzip via the gzip codec's encoder (v2 + v3), fixed header
 * C-order arrays only (zarr-python's default).
 * Optional ``shards=`` (Zarr v3 sharding_indexed codec) — outer chunks
   on disk are shards holding many inner sub-chunks plus a trailing
@@ -79,8 +79,10 @@ def _encode_chunk(raw: bytes, codec: str, level: int | None) -> bytes:
         from .codecs._blosc2 import encode as b2_encode
         return b2_encode(raw, level=level if level is not None else 5)
     if codec == "gzip":
-        import gzip
-        return gzip.compress(raw, compresslevel=level if level is not None else 6)
+        # The gzip codec's encoder, not the stdlib's: gzip.compress stamps
+        # the current time and the platform's OS byte into every chunk.
+        from ._gzip_codec import gzip_encode
+        return gzip_encode(raw, level=level if level is not None else 6)
     # numcodecs fallback (v2 'blosc' etc.)
     import numcodecs
     codec_obj = numcodecs.get_codec({"id": codec})

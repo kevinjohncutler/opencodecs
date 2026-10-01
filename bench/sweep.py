@@ -125,9 +125,13 @@ def _builtin_codecs() -> dict:
         "rgbe":      {"kind": "float_rgb", "params": [{}]},
         # arrays
         "zfp":       {"kind": "float", "params": [{}]},
-        "sz3":       {"kind": "float", "params": [{}]},
+        # sz3 and pcodec streams record no dtype / no shape; the
+        # decode side is told, as with imagecodecs.
+        "sz3":       {"kind": "float", "params": [{}],
+                      "decode": lambda a: {"dtype": a.dtype, "shape": a.shape}},
         "sperr":     {"kind": "float2d", "params": [{}]},
-        "pcodec":    {"kind": "float", "params": [{}]},
+        "pcodec":    {"kind": "float", "params": [{}],
+                      "decode": lambda a: {"shape": a.shape}},
         "aec":       {"kind": "bytes", "params": [{"bits_per_sample": 8}]},
         "lerc":      {"kind": "float2d", "params": [{}]},
     }
@@ -194,9 +198,11 @@ def sweep(names, payloads, compare: bool, quick: bool) -> list[dict]:
                 row["ratio"] = round(nbytes / len(blob), 4)
                 row["encode_ms"] = round(
                     measure(lambda: codec.encode(payload, **p)) * 1e3, 4)
+                dkw = spec.get("decode", lambda _a: {})(payload)
                 try:
-                    back = codec.decode(blob)
-                    row["decode_ms"] = round(measure(lambda: codec.decode(blob)) * 1e3, 4)
+                    back = codec.decode(blob, **dkw)
+                    row["decode_ms"] = round(
+                        measure(lambda: codec.decode(blob, **dkw)) * 1e3, 4)
                     if isinstance(payload, np.ndarray):
                         row["fidelity"] = fidelity(payload, back)
                 except Exception as exc:                      # noqa: BLE001
@@ -208,10 +214,10 @@ def sweep(names, payloads, compare: bool, quick: bool) -> list[dict]:
                             theirs = bytes(ie(payload, **p))
                             # A speed ratio only means something when both
                             # sides did comparable work. Defaults differ:
-                            # at sz3's, we emit 1.9 MB where imagecodecs
-                            # emits 3.7 MB, so "we are 5x slower" is really
-                            # "we compress twice as hard". Report the sizes
-                            # and withhold the ratio rather than mislead.
+                            # at lerc's, we emit 3.3 MB where imagecodecs
+                            # emits 4.0 MB, so "we are 2x slower" is really
+                            # "we compress harder". Report the sizes and
+                            # withhold the ratio rather than mislead.
                             row["their_bytes"] = len(theirs)
                             # Mode first: a lossless encode raced against
                             # somebody's lossy one is meaningless in both

@@ -8,10 +8,15 @@ JPEG-2000 ecosystem (same wavelet basis, same image model).
 Used in DICOM medical imaging (transfer syntax 1.2.840.10008.1.2.4.201)
 and increasingly in the broadcast / cinema pipeline.
 
-Modes::
+Modes (the meaning of ``level`` is imagecodecs.htj2k_encode's)::
 
-    level=None     # reversible — mathematically lossless (default)
-    level=0.1      # irreversible (lossy) — smaller files, more loss
+    level=None     # reversible, mathematically lossless (default)
+    level=0.01     # irreversible, quantization step below 1
+    level=75       # irreversible, quality factor from 1 to 100
+
+RGB and RGBA input use the component transform (RCT/ICT) by default,
+as imagecodecs and OpenJPH's own ojph_compress do; ``rgb=False`` turns
+it off.
 """
 
 from __future__ import annotations
@@ -47,7 +52,8 @@ class Htj2kCodec(Codec):
     streaming_decode = False
     parallel_decode = False
 
-    supported_dtypes = (np.uint8, np.uint16, np.int8, np.int16)
+    supported_dtypes = (np.uint8, np.uint16, np.int8, np.int16,
+                        np.uint32, np.int32, np.float32)
     supports_color = True
 
     def signature(self, head: bytes) -> bool:
@@ -64,19 +70,46 @@ class Htj2kCodec(Codec):
             b"\x00\x00\x00\x0Cjp2 \r\n\x87\n"
         )
 
+    # imagecodecs.htj2k_encode's keywords, all implemented by the native
+    # encoder. Anything else raises rather than being dropped.
+    _ENCODE_OPTIONS = ("rgb", "planar", "tile", "resolutions", "reversible",
+                       "tlm", "tilepart", "block_size", "prog_order",
+                       "profile", "num_decomp")
+
     def encode(self, data: Any, *, dest=None,
                level: float | None = None,
-               num_decomp: int = 5,
                **opts) -> bytes | None:
+        """Encode as HTJ2K; keywords follow ``imagecodecs.htj2k_encode``.
+
+        ``level=None`` is lossless. See
+        :func:`opencodecs.codecs._openjph.encode` for every option.
+        """
+        unknown = sorted(set(opts) - set(self._ENCODE_OPTIONS))
+        if unknown:
+            raise TypeError(f"htj2k encode: unsupported options {unknown}")
         if not isinstance(data, np.ndarray):
             data = np.asarray(data)
-        out = _htj2k_encode(data, level=level, num_decomp=int(num_decomp))
+        out = _htj2k_encode(data, level, **opts)
         return _write_dest(out, dest)
 
     def decode(self, src: Any, *, reduce: int = 0,
-               ignore_unsupported: bool = False, **opts) -> np.ndarray:
+               ignore_unsupported: bool = False,
+               planar: bool | None = None,
+               skipres: Any = None,
+               resilient: bool = False, out=None,
+               **opts) -> np.ndarray:
+        """Decode HTJ2K; keywords follow ``imagecodecs.htj2k_decode``.
+
+        ``out=`` receives the image in place; see
+        :func:`opencodecs.codecs._openjph.decode`.
+        """
+        if opts:
+            raise TypeError(
+                f"htj2k decode: unsupported options {sorted(opts)}")
         return _htj2k_decode(_read_src(src), reduce=reduce,
-                             ignore_unsupported=ignore_unsupported)
+                             ignore_unsupported=ignore_unsupported,
+                             planar=planar, skipres=skipres,
+                             resilient=resilient, out=out)
 
 
 __all__ = ["Htj2kCodec"]

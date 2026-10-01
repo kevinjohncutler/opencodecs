@@ -1,15 +1,22 @@
-"""GzipCodec — gzip-format compression via the stdlib gzip module.
+"""GzipCodec: gzip-format compression (RFC 1952).
 
 The gzip format wraps a raw deflate stream with a 10-byte header (RFC
 1952: magic, compression method, flags, mtime, XFL, OS) plus an 8-byte
 trailer (CRC32 + original size). It is the canonical interchange format
 for ``.gz`` archives and the HTTP ``Content-Encoding: gzip`` transport.
 
-The compressor is the same deflate engine used by :class:`DeflateCodec`,
-so encode/decode throughput is governed by the underlying zlib (or
-zlib-ng-compat, when linked). The stdlib ``gzip`` module is a thin
-wrapper over zlib — overhead vs raw deflate is dominated by the
-wrapper bytes, not Python.
+Encode uses the same deflate engine as :class:`DeflateCodec`
+(libdeflate when linked, as imagecodecs does) and writes a fixed header:
+MTIME 0, OS 255 ("unknown"), XFL from the level. The bytes are then the
+same on every platform and Python version, and match imagecodecs's
+``gzip_encode``. Encoding through the stdlib ``gzip`` module instead let
+zlib write its own OS byte, 19 on macOS or 3 on Linux under Python 3.12
+and 255 under 3.13, so identical input gave different files. A build
+without the ``_deflate`` extension encodes with the stdlib ``zlib``
+module and writes the same header, as the extension's own zlib fallback
+does, so gzip encode works on every build.
+
+Decode uses the stdlib, which reads every member of a multi-member file.
 """
 
 from __future__ import annotations
@@ -21,16 +28,51 @@ from typing import Any
 import numpy as np
 
 from .core.codec import Codec
+from .core.buffers import decoded_output, encoded_output
 from .core._io_helpers import read_src as _read_src, write_dest as _write_dest
+from .core._optional_backend import import_or_stubs
+
+_native_gzip_encode, _HAVE_BACKEND = import_or_stubs(
+    "opencodecs.codecs._deflate", "gzip_encode",
+)
+
+
+def _zlib_gzip_encode(data, level=None) -> bytes:
+    """One gzip member from the stdlib ``zlib`` module, header fixed.
+
+    For builds without the ``_deflate`` extension. The header is the one
+    ``_deflate.gzip_encode`` writes (MTIME 0, XFL from the level, OS
+    255); the level is clamped to zlib's 0 to 9, 6 by default.
+    """
+    lvl = 6 if level is None else min(max(int(level), 0), 9)
+    view = memoryview(data).cast("B")
+    compressor = zlib.compressobj(lvl, zlib.DEFLATED, -15)
+    body = compressor.compress(view) + compressor.flush()
+    xfl = 4 if lvl < 2 else (2 if lvl >= 8 else 0)
+    header = bytes((0x1F, 0x8B, 8, 0, 0, 0, 0, 0, xfl, 255))
+    trailer = ((zlib.crc32(view) & 0xFFFFFFFF).to_bytes(4, "little")
+               + (len(view) & 0xFFFFFFFF).to_bytes(4, "little"))
+    return header + body + trailer
+
+
+def gzip_encode(data, level=None) -> bytes:
+    """Encode bytes-like ``data`` as one gzip member with a fixed header.
+
+    ``_deflate.gzip_encode`` when the extension is built, otherwise the
+    stdlib ``zlib`` with the same header.
+    """
+    if _HAVE_BACKEND:
+        return _native_gzip_encode(data, level=level)
+    return _zlib_gzip_encode(data, level)
 
 
 class GzipCodec(Codec):
-    """gzip via the stdlib ``gzip`` module."""
+    """gzip: native deflate engine to encode, the stdlib to decode."""
 
     name = "gzip"
     file_extensions = (".gz", ".gzip")
 
-    has_native = True   # stdlib gzip always present
+    has_native = True   # encode falls back to the stdlib zlib; decode is the stdlib
     has_delegate = False
     can_encode = True
     can_decode = True
@@ -47,19 +89,20 @@ class GzipCodec(Codec):
 
     def encode(self, data: Any, *, dest=None,
                level: int | None = None,
-               **opts) -> bytes | None:
+               out=None) -> bytes | None:
         if isinstance(data, np.ndarray):
             data = data.tobytes()
-        clevel = 6 if level is None else int(level)
-        if clevel < 0:
-            clevel = 0
-        if clevel > 9:
-            clevel = 9
-        out = gzip.compress(data, compresslevel=clevel, mtime=0)
-        return _write_dest(out, dest)
+        # Level 6 by default, clamped to 0..12 (libdeflate's range; the
+        # zlib fallbacks top out at 9), as imagecodecs.gzip_encode does.
+        return encoded_output(
+            gzip_encode(data, level=level), out, self.name, dest)
 
-    def decode(self, src: Any, **opts) -> bytes:
+    def decode(self, src: Any, *, out=None) -> bytes | memoryview:
         """Inflate a gzip stream, allocating the output once.
+
+        ``out`` follows imagecodecs.gzip_decode's contract (an int
+        capacity or a writable buffer); the inflated bytes are copied
+        into a given buffer, and a result that does not fit raises.
 
         ``gzip.decompress`` discovers the output size by growing a
         buffer and joining the pieces, which peaks at over twice the
@@ -75,11 +118,13 @@ class GzipCodec(Codec):
         one instead still peaked at 134 MB.
         """
         data = _read_src(src)
-        out = self._decode_single_member(data)
+        decoded = self._decode_single_member(data)
         # Concatenated members are legal gzip and zlib stops after the
         # first, so anything not provably single-member goes to the
         # stdlib, which handles them.
-        return gzip.decompress(data) if out is None else out
+        if decoded is None:
+            decoded = gzip.decompress(data)
+        return decoded_output(decoded, out, self.name)
 
     @staticmethod
     def _decode_single_member(data) -> bytes | None:
@@ -114,4 +159,4 @@ class GzipCodec(Codec):
         return out
 
 
-__all__ = ["GzipCodec"]
+__all__ = ["GzipCodec", "gzip_encode"]

@@ -104,34 +104,128 @@ def lz4_encode(data, level=None, out=None, **kw):
     return _encode(data, level=level)
 
 
-def png_decode(data, out=None, **kw):
+def _no_encode_out(name, out):
+    """Encoders here return new bytes; refuse an output buffer loudly."""
+    if out is not None:
+        raise TypeError(f"{name}: out= is not supported, the encoded "
+                        f"bytes are returned")
+
+
+def png_decode(data, out=None):
+    """``imagecodecs.png_decode(data, *, out=None)``."""
     from .codecs._png import decode as _decode
-    return _decode(bytes(data) if not isinstance(data, (bytes, bytearray)) else data)
+    data = bytes(data) if not isinstance(data, (bytes, bytearray)) else data
+    if out is None or isinstance(out, int):
+        return _decode(data)        # an int is only a size hint
+    return _decode(data, out=out)
 
 
-def png_encode(data, level=None, out=None, **kw):
+def png_encode(data, level=None, strategy=None, filter=None, out=None, **kw):
+    """``imagecodecs.png_encode``: ``level``, ``strategy`` and ``filter``
+    are forwarded with imagecodecs' meanings. Options opencodecs does
+    not implement raise ``TypeError`` rather than being dropped."""
     from .codecs._png import encode as _encode
-    return _encode(data, level=level)
+    _no_encode_out("png_encode", out)
+    return _encode(data, level=level, strategy=strategy, filter=filter, **kw)
 
 
-def webp_decode(data, hasalpha=None, out=None, **kw):
-    from .codecs._webp import decode as _decode
-    return _decode(bytes(data) if not isinstance(data, (bytes, bytearray)) else data)
+def webp_decode(data, index=None, hasalpha=None, out=None):
+    """``imagecodecs.webp_decode(data, index=None, *, hasalpha=None,
+    out=None)``. tifffile passes ``hasalpha=True`` for four-sample
+    images, whose all-opaque tiles libwebp stores without alpha."""
+    from ._webp_codec import decode_webp
+    data = bytes(data) if not isinstance(data, (bytes, bytearray)) else data
+    if isinstance(out, int):
+        out = None                  # an int is only a size hint
+    return decode_webp(data, index=index, hasalpha=hasalpha, out=out)
 
 
-def webp_encode(data, level=None, lossless=False, out=None, **kw):
+def webp_encode(data, level=None, lossless=None, method=None,
+                numthreads=None, out=None):
+    """``imagecodecs.webp_encode``: lossless by default, as imagecodecs
+    and therefore plain tifffile are; ``level``, ``lossless``, ``method``
+    and ``numthreads`` keep imagecodecs' meanings."""
     from .codecs._webp import encode as _encode
-    return _encode(data, level=level, lossless=lossless)
+    _no_encode_out("webp_encode", out)
+    return _encode(data, level=level, lossless=lossless, method=method,
+                   numthreads=numthreads)
+
+
+def _jpeg_decode(name, data, out, kw):
+    # tifffile passes tables (JPEGTables), header, colorspace and
+    # outcolorspace (from PhotometricInterpretation), shape and
+    # bitspersample; the native decoder takes all of them, with
+    # imagecodecs' meanings, and raises on any it does not know.
+    from .codecs._jpeg import JpegError, decode as _decode
+    stream = bytes(data) if not isinstance(data, (bytes, bytearray)) \
+        else data
+    try:
+        return _decode(stream, **kw)
+    except (JpegError, NotImplementedError):
+        fallback = getattr(_original, name, None)
+        if fallback is None or not _turbojpeg_cannot_decode(stream, kw):
+            raise
+    # A JPEG with a component count TurboJPEG has no colorspace for
+    # (2, as in a DNG-style lossless tile with two samples per pixel),
+    # or a lossless JPEG the decoder raises for, such as one asked for
+    # a color conversion TurboJPEG's lossless mode does not make (a
+    # tile of a lossless TIFF whose PhotometricInterpretation is YCbCr,
+    # read as RGB), is valid T.81 that imagecodecs reads (the YCbCr
+    # tile as its stored samples), so the patch hands it the call
+    # rather than fail a file that reads without the patch.
+    return fallback(data, out=out, **kw)
+
+
+def _turbojpeg_cannot_decode(stream, kw) -> bool:
+    from .codecs._jpeg_common import frame_header, splice_stream
+    try:
+        fh = frame_header(splice_stream(stream, kw.get("tables"),
+                                        kw.get("header")))
+    except ValueError:
+        return False
+    return fh is not None and (fh.components not in (1, 3, 4)
+                               or fh.lossless)
 
 
 def jpeg_decode(data, out=None, **kw):
-    from .codecs._jpeg import decode as _decode
-    return _decode(bytes(data) if not isinstance(data, (bytes, bytearray)) else data)
+    return _jpeg_decode("jpeg_decode", data, out, kw)
+
+
+def jpeg8_decode(data, out=None, **kw):
+    return _jpeg_decode("jpeg8_decode", data, out, kw)
 
 
 def jpeg_encode(data, level=None, out=None, **kw):
+    # colorspace, outcolorspace, subsampling, bitspersample, lossless...
+    # decide what tifffile records in the TIFF tags, so they must reach
+    # the encoder rather than be dropped.
     from .codecs._jpeg import encode as _encode
-    return _encode(data, level=level)
+    if kw.get("subsampling") is not None or kw.get("lossless"):
+        kw = _tifffile_jpeg_args(kw)
+    return _encode(data, level=level, **kw)
+
+
+def _tifffile_jpeg_args(kw):
+    # tifffile's subsampling is the YCbCrSubSampling tag (TIFF 6.0
+    # section 21), chroma subsampling, and for every contiguous RGB JPEG
+    # it writes it passes subsampling, (2, 2) by default, with
+    # colorspace "RGB" and outcolorspace "YCBCR", also when
+    # compressionargs ask for something else. imagecodecs applies
+    # neither where the JPEG it writes has no chroma: an RGB JPEG, and a
+    # lossless one, which libjpeg-turbo stores unconverted and 1x1. The
+    # jpeg codec would honor or refuse them, so the adapter leaves them
+    # out there and writes the bytes imagecodecs writes.
+    from .codecs._jpeg_common import colorspace_name
+    kw = dict(kw)
+    out_cs = colorspace_name(kw.get("outcolorspace"), "outcolorspace")
+    if kw.get("lossless"):
+        kw["subsampling"] = None
+        if out_cs == "ycbcr" and colorspace_name(
+                kw.get("colorspace"), "colorspace") != "ycbcr":
+            kw["outcolorspace"] = None
+    elif out_cs not in (None, "ycbcr"):
+        kw["subsampling"] = None
+    return kw
 
 
 def jpegxl_decode(data, out=None, **kw):
@@ -151,12 +245,18 @@ def jpegxl_encode(data, level=None, distance=None, effort=None, lossless=None,
 
 def jpeg2k_decode(data, out=None, **kw):
     from .codecs._jpeg2k import decode as _decode
-    return _decode(bytes(data) if not isinstance(data, (bytes, bytearray)) else data)
+    return _decode(bytes(data) if not isinstance(data, (bytes, bytearray)) else data,
+                   out=out, **kw)
 
 
 def jpeg2k_encode(data, level=None, lossless=None, out=None, **kw):
+    # imagecodecs semantics: lossless unless level (a PSNR target) asks
+    # otherwise. bool(None) used to make every tifffile write lossy.
+    # tifffile never passes out= here; refuse it rather than drop it.
+    if out is not None:
+        raise TypeError("jpeg2k_encode: out= is not supported")
     from .codecs._jpeg2k import encode as _encode
-    return _encode(data, level=level, lossless=bool(lossless))
+    return _encode(data, level=level, lossless=lossless, **kw)
 
 
 # ---------------------------------------------------------------------------
@@ -181,7 +281,7 @@ _OVERRIDES = {
     "webp_encode": webp_encode,
     "jpeg_decode": jpeg_decode,
     "jpeg_encode": jpeg_encode,
-    "jpeg8_decode": jpeg_decode,
+    "jpeg8_decode": jpeg8_decode,
     "jpeg8_encode": jpeg_encode,
     "jpegxl_decode": jpegxl_decode,
     "jpegxl_encode": jpegxl_encode,

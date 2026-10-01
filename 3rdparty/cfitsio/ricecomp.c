@@ -892,6 +892,19 @@ done_outputing_bits(Buffer *buffer)
 */
 
 /*---------------------------------------------------------------------------*/
+/* Every input byte the decoders below read goes through this check
+   first (an opencodecs change). cfitsio checks for the end of the
+   input only once per block, which lets a corrupt or truncated stream
+   read past the buffer within a block: the run of leading zeros in a
+   Rice code has no length limit, so the overrun is unbounded. A valid
+   stream never reads past its last byte, so the check does not change
+   what one decodes to. */
+#define RICE_NEED_BYTE() \
+    do { \
+        if (c >= cend) \
+            return RCOMP_ERROR_EOS; \
+    } while (0)
+
 /* this routine used to be called 'rdecomp'  (WDP) */
 
 int
@@ -979,12 +992,14 @@ rdecomp_int(
     c += 4;
     cend = c + clen - 4;
 
+    RICE_NEED_BYTE();
     b = *c++;  /* bit buffer */
     nbits = 8; /* number of bits remaining in b */
     for (i = 0; i < nx;) {
         /* get the FS value from first fsbits */
         nbits -= fsbits;
         while (nbits < 0) {
+            RICE_NEED_BYTE();
             b = (b << 8) | (*c++);
             nbits += 8;
         }
@@ -1004,10 +1019,12 @@ rdecomp_int(
                 k = bbits - nbits;
                 diff = b << k;
                 for (k -= 8; k >= 0; k -= 8) {
+                    RICE_NEED_BYTE();
                     b = *c++;
                     diff |= b << k;
                 }
                 if (nbits > 0) {
+                    RICE_NEED_BYTE();
                     b = *c++;
                     diff |= b >> (-k);
                     b &= (1 << nbits) - 1;
@@ -1034,6 +1051,7 @@ rdecomp_int(
                 /* count number of leading zeros */
                 while (b == 0) {
                     nbits += 8;
+                    RICE_NEED_BYTE();
                     b = *c++;
                 }
                 nzero = nbits - nonzero_count[b];
@@ -1043,6 +1061,7 @@ rdecomp_int(
                 /* get the FS trailing bits */
                 nbits -= fs;
                 while (nbits < 0) {
+                    RICE_NEED_BYTE();
                     b = (b << 8) | (*c++);
                     nbits += 8;
                 }
@@ -1154,12 +1173,14 @@ rdecomp_short(
     c += 2;
     cend = c + clen - 2;
 
+    RICE_NEED_BYTE();
     b = *c++;  /* bit buffer */
     nbits = 8; /* number of bits remaining in b */
     for (i = 0; i < nx;) {
         /* get the FS value from first fsbits */
         nbits -= fsbits;
         while (nbits < 0) {
+            RICE_NEED_BYTE();
             b = (b << 8) | (*c++);
             nbits += 8;
         }
@@ -1179,10 +1200,12 @@ rdecomp_short(
                 k = bbits - nbits;
                 diff = b << k;
                 for (k -= 8; k >= 0; k -= 8) {
+                    RICE_NEED_BYTE();
                     b = *c++;
                     diff |= b << k;
                 }
                 if (nbits > 0) {
+                    RICE_NEED_BYTE();
                     b = *c++;
                     diff |= b >> (-k);
                     b &= (1 << nbits) - 1;
@@ -1210,6 +1233,7 @@ rdecomp_short(
                 /* count number of leading zeros */
                 while (b == 0) {
                     nbits += 8;
+                    RICE_NEED_BYTE();
                     b = *c++;
                 }
                 nzero = nbits - nonzero_count[b];
@@ -1219,6 +1243,7 @@ rdecomp_short(
                 /* get the FS trailing bits */
                 nbits -= fs;
                 while (nbits < 0) {
+                    RICE_NEED_BYTE();
                     b = (b << 8) | (*c++);
                     nbits += 8;
                 }
@@ -1325,12 +1350,14 @@ rdecomp_byte(
     c += 1;
     cend = c + clen - 1;
 
+    RICE_NEED_BYTE();
     b = *c++;  /* bit buffer */
     nbits = 8; /* number of bits remaining in b */
     for (i = 0; i < nx;) {
         /* get the FS value from first fsbits */
         nbits -= fsbits;
         while (nbits < 0) {
+            RICE_NEED_BYTE();
             b = (b << 8) | (*c++);
             nbits += 8;
         }
@@ -1350,10 +1377,12 @@ rdecomp_byte(
                 k = bbits - nbits;
                 diff = b << k;
                 for (k -= 8; k >= 0; k -= 8) {
+                    RICE_NEED_BYTE();
                     b = *c++;
                     diff |= b << k;
                 }
                 if (nbits > 0) {
+                    RICE_NEED_BYTE();
                     b = *c++;
                     diff |= b >> (-k);
                     b &= (1 << nbits) - 1;
@@ -1381,6 +1410,7 @@ rdecomp_byte(
                 /* count number of leading zeros */
                 while (b == 0) {
                     nbits += 8;
+                    RICE_NEED_BYTE();
                     b = *c++;
                 }
                 nzero = nbits - nonzero_count[b];
@@ -1390,6 +1420,7 @@ rdecomp_byte(
                 /* get the FS trailing bits */
                 nbits -= fs;
                 while (nbits < 0) {
+                    RICE_NEED_BYTE();
                     b = (b << 8) | (*c++);
                     nbits += 8;
                 }

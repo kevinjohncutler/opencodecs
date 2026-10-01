@@ -8,7 +8,7 @@ from typing import Any
 import numpy as np
 
 from .core.codec import Codec
-from .core.buffers import byte_output
+from .core.buffers import encoded_output, native_decoded
 from .core._io_helpers import read_src as _read_src, write_dest as _write_dest
 from .core._optional_backend import import_or_stubs
 
@@ -44,16 +44,21 @@ class Lz4Codec(Codec):
         return _lz4_check_signature(head)
 
     def encode(self, data: Any, *, dest=None, level: int | None = None,
-               **opts) -> bytes | None:
+               blocksizeid: int | None = None,
+               contentchecksum: bool | None = None,
+               blockchecksum: bool | None = None,
+               out=None) -> bytes | None:
+        """Encode one LZ4 frame; the keywords are imagecodecs.lz4f_encode's
+        (see ``opencodecs.codecs._lz4.encode``)."""
         if isinstance(data, np.ndarray):
             data = data.tobytes()
-        compressed = _lz4_encode(data, level=level)
-        return _write_dest(compressed, dest)
+        compressed = _lz4_encode(
+            data, level=level, blocksizeid=blocksizeid,
+            contentchecksum=contentchecksum, blockchecksum=blockchecksum)
+        return encoded_output(compressed, out, self.name, dest)
 
-    def decode(self, src: Any, *, out=None, **opts) -> bytes | memoryview:
-        if out is None:
-            return _lz4_decode(_read_src(src))
-        return _lz4_decode(_read_src(src), out=byte_output(out))
+    def decode(self, src: Any, *, out=None) -> bytes | memoryview:
+        return native_decoded(_lz4_decode, _read_src(src), out)
 
 
 

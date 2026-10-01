@@ -55,4 +55,5 @@ def test_roundtrip_still_works():
     import numpy as np
     codec = oc.get_codec("rcomp")
     a = np.arange(1024, dtype=np.int32) % 517
-    assert np.array_equal(codec.decode(codec.encode(a)), a)
+    assert np.array_equal(codec.decode(codec.encode(a), shape=a.shape,
+                                       dtype=a.dtype), a)

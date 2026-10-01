@@ -9,7 +9,8 @@ data behind them:
 * **bmp** - the bmpsuite conformance set. Its ``g/`` files must decode and
   match the suite's own reference renderings; its ``b/`` files are
   deliberately malformed and must be refused with a ``BmpError`` rather
-  than a crash or a numpy exception from deep inside the parser. Adding
+  than a crash or a numpy exception from deep inside the parser (except
+  one whose only fault is a field BI_RGB does not need). Adding
   these is what showed that BI_RLE8 and BI_RLE4 were unimplemented.
 * **bcn** - BC1 through BC7 textures from the bcdec reference project,
   including signed BC6H, where the sign extension only shows up on HDR
@@ -100,9 +101,27 @@ def test_bmpsuite_rle8_equals_uncompressed():
     assert np.array_equal(plain, rle)
 
 
+def test_bmpsuite_bad_image_size_field_is_ignored_like_pillow():
+    """b/badbitssize.bmp is a complete 1-bit image whose biSizeImage
+    claims gigabytes. For BI_RGB that field is informational (Microsoft:
+    it "may be set to zero for BI_RGB bitmaps"), the pixel layout is
+    fixed by width, height and depth, and bmpsuite allows a decoder to
+    display such a file. Pillow does; so do we, pixel for pixel."""
+    data = _need(BMP_DIR / "b_badbitssize.bmp")
+    got = get_codec("bmp").decode(data)
+    assert got.shape == (64, 127, 3)
+    assert set(np.unique(got)) <= {0, 255}
+    try:
+        import io
+        from PIL import Image
+    except ImportError:
+        return
+    want = np.asarray(Image.open(io.BytesIO(data)).convert("RGB"))
+    np.testing.assert_array_equal(got, want)
+
+
 @pytest.mark.parametrize("name", [
     "b_badbitcount.bmp",     # bit depth that no BMP variant defines
-    "b_badbitssize.bmp",
     "b_reallybig.bmp",       # header claims far more pixels than it carries
     "b_rletopdown.bmp",      # RLE bitmaps cannot be top-down
 ])

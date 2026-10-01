@@ -44,7 +44,7 @@ class Jpeg2kCodec(Codec):
     # on 2048x2048 going from one thread to eight.
     parallel_decode = True
 
-    supported_dtypes = (np.uint8, np.uint16)
+    supported_dtypes = (np.uint8, np.uint16, np.int8, np.int16)
     supports_color = True
 
     def decode_region(self, src: Any, y0: int, y1: int, x0: int, x1: int,
@@ -76,42 +76,53 @@ class Jpeg2kCodec(Codec):
     def signature(self, head: bytes) -> bool:
         return _jp2_check_signature(head)
 
-    def encode(self, data: Any, *, dest=None, level: int | None = None,
-               lossless: bool = True, codec: str = "jp2",
+    # imagecodecs.jpeg2k_encode's keywords (plus lossless and ratio),
+    # all implemented by the native encoder. Anything else raises rather
+    # than being dropped.
+    _ENCODE_OPTIONS = ("lossless", "ratio", "codec", "codecformat",
+                       "colorspace", "planar", "tile", "bitspersample",
+                       "resolutions", "reversible", "mct", "verbose")
+
+    def encode(self, data: Any, *, dest=None, level: float | None = None,
                numthreads: int | None = None,
                **opts) -> bytes | None:
-        # ``lossless=True`` by default to match
-        # ``imagecodecs.jpeg2k_encode`` — see
-        # docs/codec_api_conventions.md "Default settings: Pareto-better
-        # than the reference, no cheating."
+        """Encode as JPEG 2000; keywords follow ``imagecodecs.jpeg2k_encode``.
+
+        With no arguments the result is lossless (5/3 wavelet), as in
+        imagecodecs and per docs/codec_api_conventions.md. ``level``
+        from 1 to 1000 is a PSNR target in dB, imagecodecs' meaning, and
+        makes the encode lossy unless ``lossless=True`` is also passed,
+        which raises instead of ignoring the level. ``ratio=`` asks for
+        a compression ratio. See :func:`opencodecs.codecs._jpeg2k.encode`.
+        """
+        unknown = sorted(set(opts) - set(self._ENCODE_OPTIONS))
+        if unknown:
+            raise TypeError(f"jpeg2k encode: unsupported options {unknown}")
         if not isinstance(data, np.ndarray):
             data = np.asarray(data)
+        kw = dict(opts, level=level, numthreads=native_workers(numthreads))
         if dest is not None:
             with binary_destination(dest) as stream:
                 if hasattr(stream, "seek") and hasattr(stream, "tell") and (
                     not hasattr(stream, "seekable") or stream.seekable()
                 ):
-                    return _jp2_encode(data, level=level, lossless=lossless, codec=codec,
-                                       numthreads=native_workers(numthreads),
-                                       destination=SeekableDestination(stream))
-                encoded = _jp2_encode(data, level=level, lossless=lossless, codec=codec,
-                                       numthreads=native_workers(numthreads))
-                write_all(stream, encoded)
+                    return _jp2_encode(data, destination=SeekableDestination(stream),
+                                       **kw)
+                write_all(stream, _jp2_encode(data, **kw))
                 return None
-        encoded = _jp2_encode(
-            data, level=level, lossless=lossless, codec=codec,
-            numthreads=native_workers(numthreads),
-        )
-        return _write_dest(encoded, dest)
+        return _write_dest(_jp2_encode(data, **kw), dest)
 
     def decode(self, src: Any, *, numthreads: int | None = None,
-               out=None, reduce: int = 0, **opts) -> np.ndarray:
-        if out is None:
-            return _jp2_decode(_read_src(src), numthreads=native_workers(numthreads),
-                               reduce=reduce)
-        return _jp2_decode(_read_src(src), numthreads=native_workers(numthreads),
-                           out=array_output(out), reduce=reduce)
-
+               out=None, reduce: int = 0, planar: bool | None = None,
+               verbose: Any = None, **opts) -> np.ndarray:
+        if opts:
+            raise TypeError(
+                f"jpeg2k decode: unsupported options {sorted(opts)}")
+        kw = dict(numthreads=native_workers(numthreads), reduce=reduce,
+                  planar=planar, verbose=verbose)
+        if out is not None:
+            kw["out"] = array_output(out)
+        return _jp2_decode(_read_src(src), **kw)
 
 
 __all__ = ["Jpeg2kCodec"]

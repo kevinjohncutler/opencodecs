@@ -15,8 +15,15 @@ For 8/16/32-bit integer data with predictable runs, ratios are usually
 
 Wire format
 -----------
-A small 16-byte opencodecs preamble is prepended to libaec's raw stream
-so a self-describing blob can be decoded without out-of-band parameters::
+``encode`` writes the bare CCSDS 121.0-B-2 coded bitstream libaec
+produces, with nothing in front of it: the stream GRIB2 (template
+5.42) stores in section 7 and ``imagecodecs.aec_encode`` writes. The
+standard defines no container, so the coding parameters (bits per
+sample, block size, reference sample interval, flags) and the sample
+count travel out of band and ``decode_raw`` takes them as arguments.
+
+Releases up to 0.4.0 wrote a private 16-byte preamble in front of the
+stream instead::
 
     bytes  0..7   uint64 LE  - original payload size (bytes)
     byte   8      uint8       - bits_per_sample (1..32)
@@ -24,11 +31,10 @@ so a self-describing blob can be decoded without out-of-band parameters::
     bytes 10..11  uint16 LE  - rsi (1..4096)
     byte   12     uint8       - flags (AEC_DATA_*)
     bytes 13..15              - reserved (zero)
-    bytes 16..              - libaec compressed stream
 
-This makes ``opencodecs.read(blob, format='aec')`` work without
-threading parameters through the API. Pass the same parameter values
-during ``encode()`` to recover them.
+``decode_framed`` still reads those blobs, and ``read_framed_header``
+says whether a buffer can be one. The preamble has no magic, so that
+check is every field holding a value the old encoder could write.
 """
 
 from cpython.bytes cimport PyBytes_FromStringAndSize, PyBytes_AsString
@@ -39,8 +45,10 @@ from libaec cimport (
     aec_stream,
     aec_buffer_decode,
     aec_encode_init, aec_encode, aec_encode_end,
+    aec_decode_init, aec_decode, aec_decode_end,
     AEC_OK, AEC_FLUSH,
     AEC_DATA_SIGNED, AEC_DATA_PREPROCESS, AEC_DATA_MSB, AEC_DATA_3BYTE,
+    AEC_RESTRICTED, AEC_PAD_RSI, AEC_NOT_ENFORCE,
 )
 
 import struct as _struct
@@ -48,6 +56,18 @@ import struct as _struct
 
 DEF _HEADER_LEN = 16   # compile-time constant — usable in C pointer arithmetic
 _HEADER_FMT = '<QBBHB3x'  # uint64 size, u8 bps, u8 block, u16 rsi, u8 flags, 3 pad
+
+# The libaec flag bits, for the Python codec layer.
+FLAG_SIGNED = AEC_DATA_SIGNED
+FLAG_3BYTE = AEC_DATA_3BYTE
+FLAG_MSB = AEC_DATA_MSB
+FLAG_PREPROCESS = AEC_DATA_PREPROCESS
+FLAG_RESTRICTED = AEC_RESTRICTED
+FLAG_PAD_RSI = AEC_PAD_RSI
+FLAG_NOT_ENFORCE = AEC_NOT_ENFORCE
+_KNOWN_FLAGS = (AEC_DATA_SIGNED | AEC_DATA_3BYTE | AEC_DATA_MSB
+                | AEC_DATA_PREPROCESS | AEC_RESTRICTED | AEC_PAD_RSI
+                | AEC_NOT_ENFORCE)
 
 
 class AecError(RuntimeError):
@@ -67,85 +87,56 @@ def _err(func, code):
     return AecError(f'{func} returned {_RC_NAMES.get(int(code), int(code))}')
 
 
-def _build_flags(is_signed, msb, preprocess, three_byte):
-    # Cython 3 reserves `signed` as a C type keyword in annotated args;
-    # use a different name here.
-    f = 0
-    if is_signed: f |= AEC_DATA_SIGNED
-    if msb:       f |= AEC_DATA_MSB
-    if preprocess: f |= AEC_DATA_PREPROCESS
-    if three_byte: f |= AEC_DATA_3BYTE
-    return f
+def sample_bytes(int bits_per_sample, int flags):
+    """Bytes libaec reads or writes per sample for these parameters."""
+    if bits_per_sample <= 8:
+        return 1
+    if bits_per_sample <= 16:
+        return 2
+    if bits_per_sample <= 24 and flags & AEC_DATA_3BYTE:
+        return 3
+    return 4
 
 
-def _pack_header(orig_size, bits_per_sample, block_size, rsi, flags):
-    return _struct.pack(_HEADER_FMT,
-                        int(orig_size), int(bits_per_sample) & 0xff,
-                        int(block_size) & 0xff, int(rsi) & 0xffff,
-                        int(flags) & 0xff)
-
-
-cdef inline void _write_header(
-    unsigned char* dst,
-    Py_ssize_t orig_size,
-    unsigned int bps,
-    unsigned int block,
-    unsigned int rsi,
-    unsigned int flags,
-) noexcept nogil:
-    """Encode the 16-byte preamble directly to ``dst`` — same wire
-    format as ``_pack_header`` but skips the Python/struct.pack
-    round-trip (~5 us saved per encode)."""
-    cdef unsigned long long s = <unsigned long long> orig_size
-    cdef int i
-    # uint64 LE size at bytes 0..7
-    for i in range(8):
-        dst[i] = <unsigned char> ((s >> (8 * i)) & 0xff)
-    dst[8]  = <unsigned char> (bps & 0xff)
-    dst[9]  = <unsigned char> (block & 0xff)
-    # uint16 LE rsi at bytes 10..11
-    dst[10] = <unsigned char> (rsi & 0xff)
-    dst[11] = <unsigned char> ((rsi >> 8) & 0xff)
-    dst[12] = <unsigned char> (flags & 0xff)
-    dst[13] = 0
-    dst[14] = 0
-    dst[15] = 0
-
-
-def _unpack_header(buf):
-    if len(buf) < _HEADER_LEN:
-        raise AecError("aec blob too short to contain header")
-    return _struct.unpack(_HEADER_FMT, bytes(buf[:_HEADER_LEN]))
+def _check_params(int bits_per_sample, int block_size, int rsi, int flags):
+    if not (1 <= bits_per_sample <= 32):
+        raise ValueError(f"bits_per_sample must be 1..32, got {bits_per_sample}")
+    if flags & ~_KNOWN_FLAGS:
+        raise ValueError(f"aec flags {flags:#x} has bits libaec does not define")
+    if (not (flags & AEC_NOT_ENFORCE) and block_size != 8 and block_size != 16
+            and block_size != 32 and block_size != 64):
+        raise ValueError(f"block_size must be 8/16/32/64, got {block_size}")
+    if block_size <= 0:
+        raise ValueError(f"block_size must be positive, got {block_size}")
+    if not (1 <= rsi <= 4096):
+        raise ValueError(f"rsi must be 1..4096, got {rsi}")
 
 
 def encode(data, *,
            int bits_per_sample,
-           int block_size=32,
-           int rsi=128,
-           bint is_signed=False,
-           bint msb=False,
-           bint preprocess=True,
-           bint three_byte=False):
-    """AEC-compress a typed integer buffer.
+           int block_size=8,
+           int rsi=2,
+           int flags=AEC_DATA_PREPROCESS):
+    """AEC-compress a typed integer buffer into a bare libaec stream.
 
     Parameters
     ----------
     data : bytes-like
-        Input data, layout matching ``bits_per_sample``.
+        Input samples, ``sample_bytes(bits_per_sample, flags)`` bytes
+        each.
     bits_per_sample : int
-        1..32. Use multiples of 8 for byte-aligned data; for n=24 set
-        ``three_byte=True``.
+        1..32.
     block_size : int
-        8, 16, 32, or 64. Larger blocks compress better, encode slower.
+        8, 16, 32, or 64 (any even size with ``AEC_NOT_ENFORCE``).
     rsi : int
-        Reference-sample interval (1..4096). 128 is a good default.
-    signed, msb, preprocess, three_byte
-        Sample-format flags (AEC_DATA_* in libaec.h).
+        Reference sample interval in blocks (1..4096).
+    flags : int
+        ``AEC_DATA_*`` bits from libaec.h.
 
     Returns
     -------
     bytes
-        16-byte header + libaec-compressed stream.
+        The CCSDS 121.0-B-2 coded stream, with no header.
     """
     cdef:
         const uint8_t[::1] src
@@ -153,10 +144,8 @@ def encode(data, *,
         Py_ssize_t cap
         bytes payload
         unsigned char* out_ptr
-        unsigned char* buf_ptr
         aec_stream strm
         int rc
-        int flags
         Py_ssize_t out_len = 0
         bint init_ok = False
         bint out_too_small = False
@@ -170,25 +159,13 @@ def encode(data, *,
     except (TypeError, ValueError, BufferError):
         src = bytes(data)
     srcsize = src.shape[0]
+    _check_params(bits_per_sample, block_size, rsi, flags)
     if srcsize == 0:
-        return _pack_header(0, bits_per_sample, block_size, rsi,
-                            _build_flags(is_signed, msb, preprocess, three_byte))
-
-    if not (1 <= bits_per_sample <= 32):
-        raise ValueError(f"bits_per_sample must be 1..32, got {bits_per_sample}")
-    if block_size != 8 and block_size != 16 and block_size != 32 and block_size != 64:
-        raise ValueError(f"block_size must be 8/16/32/64, got {block_size}")
-    if not (1 <= rsi <= 4096):
-        raise ValueError(f"rsi must be 1..4096, got {rsi}")
-
-    # Inline _build_flags (was a Python call). Each option is a hot
-    # boolean check; the extra function-frame churn dominates on the
-    # 200 KB workload that bench/bench_codecs.py exercises.
-    flags = 0
-    if is_signed: flags |= AEC_DATA_SIGNED
-    if msb:       flags |= AEC_DATA_MSB
-    if preprocess: flags |= AEC_DATA_PREPROCESS
-    if three_byte: flags |= AEC_DATA_3BYTE
+        return b''
+    if srcsize % sample_bytes(bits_per_sample, flags):
+        raise ValueError(
+            f"aec encode: {srcsize} bytes is not a whole number of "
+            f"{sample_bytes(bits_per_sample, flags)}-byte samples")
 
     # libaec worst-case output bound (from upstream docs / tests):
     # ``srcsize * 67/64 + 256 + 1`` bytes — covers incompressible
@@ -197,26 +174,15 @@ def encode(data, *,
     # inputs when using the streaming aec_encode path because libaec
     # returns AEC_OK even when avail_out runs out mid-stream — only
     # checkable by re-reading avail_out, not the return code.
-    #
-    # Allocate `_HEADER_LEN + cap` up front and encode directly into
-    # the slot after the header — saves the extra slice + concat
-    # copies the naïve `header + payload[:n]` return would do
-    # (~70 us per 200 KB copy at memcpy speeds, half the remaining
-    # vs-ic gap).
     cap = (srcsize * 67) // 64 + 257
-    payload = PyBytes_FromStringAndSize(NULL, _HEADER_LEN + cap)
-    buf_ptr = <unsigned char*> PyBytes_AsString(payload)
-    out_ptr = buf_ptr + _HEADER_LEN
+    payload = PyBytes_FromStringAndSize(NULL, cap)
+    out_ptr = <unsigned char*> PyBytes_AsString(payload)
 
     # Streaming init/encode/end at the C level is the same work as
-    # ``aec_buffer_encode`` — the buffer wrapper just trios them. The
-    # real speedup over the old code was fixing the worst-case cap
-    # (above): the old ``srcsize + 1024`` ceiling tripped
-    # ``aec_buffer_encode``'s internal retry path on incompressible
-    # input, doubling the runtime on the random-uint16 bench
-    # workload. We expose the streaming trio here because it lets us
-    # detect "output too small" via ``total_in != srcsize`` and raise
-    # a precise error rather than silently truncating.
+    # ``aec_buffer_encode``: the buffer wrapper just trios them. We
+    # expose the streaming trio here because it lets us detect "output
+    # too small" via ``total_in != srcsize`` and raise a precise error
+    # rather than silently truncating.
     c_bps = <unsigned int> bits_per_sample
     c_block = <unsigned int> block_size
     c_rsi = <unsigned int> rsi
@@ -253,23 +219,190 @@ def encode(data, *,
         if init_ok:
             aec_encode_end(&strm)
 
-    # Write header in place over the first 16 bytes of the pre-allocated
-    # output (cheaper than ``struct.pack`` + Python-level concat — the
-    # whole header is 16 bytes of little-endian C scalars).
-    _write_header(buf_ptr, srcsize, c_bps, c_block, c_rsi, c_flags)
-    return payload[: _HEADER_LEN + out_len]
+    return payload[:out_len]
 
 
-def decode(data, *, out=None):
-    """Decode a self-describing AEC blob (header + libaec stream).
+cdef inline int _decode_step(aec_stream* strm, unsigned char* dst,
+                             size_t cap) noexcept nogil:
+    strm.next_out = dst
+    strm.avail_out = cap
+    return aec_decode(strm, AEC_FLUSH)
 
-    Parameters
-    ----------
-    out : int | bytearray | memoryview | None, optional
-        See ``_zstd.decode`` for the full ``out=`` contract. The AEC
-        header is self-describing so ``out=None`` already allocates the
-        exact uncompressed size; ``out=`` is mainly useful for reusing
-        a buffer across many tile decodes.
+
+def decode_raw(data, *,
+               int bits_per_sample,
+               int block_size=8,
+               int rsi=2,
+               int flags=AEC_DATA_PREPROCESS,
+               out=None,
+               Py_ssize_t size=-1):
+    """Decode a bare libaec stream with out-of-band parameters.
+
+    The stream does not record how many samples it holds, so the
+    output size comes from the caller when known:
+
+    * ``out`` (a writable contiguous byte buffer): decode into it and
+      return ``out[:n]``, ``n`` the bytes the stream decoded to.
+    * ``size >= 0``: return exactly ``size`` bytes, raising if the
+      stream holds fewer.
+    * neither: decode the whole stream, which can run past the data
+      (see below), as ``imagecodecs.aec_decode`` does.
+
+    A stream can decode to more samples than were encoded: libaec pads
+    the last block, and codes trailing all-zero blocks as "zero blocks
+    to the end of the segment", a segment being 64 blocks or the
+    reference sample interval if shorter (the whole interval with
+    ``AEC_PAD_RSI``). With ``out`` or ``size``, a stream that holds more
+    samples than fit, beyond that much padding, raises rather than
+    being cut short.
+    """
+    cdef:
+        const uint8_t[::1] src
+        uint8_t[::1] dst_view
+        Py_ssize_t srcsize
+        Py_ssize_t sb
+        Py_ssize_t cap
+        Py_ssize_t total
+        Py_ssize_t allowed
+        unsigned char* dst_ptr
+        unsigned char* scratch_ptr
+        bytes out_bytes = None
+        bytes scratch
+        bytearray grow
+        aec_stream strm
+        int rc
+        bint init_ok = False
+
+    _check_params(bits_per_sample, block_size, rsi, flags)
+    try:
+        src = data
+    except (TypeError, ValueError, BufferError):
+        src = bytes(data)
+    srcsize = src.shape[0]
+    sb = sample_bytes(bits_per_sample, flags)
+
+    memset(<void*> &strm, 0, sizeof(aec_stream))
+    if srcsize > 0:
+        strm.next_in = <const unsigned char*> &src[0]
+    strm.avail_in = <size_t> srcsize
+    strm.bits_per_sample = <unsigned int> bits_per_sample
+    strm.block_size = <unsigned int> block_size
+    strm.rsi = <unsigned int> rsi
+    strm.flags = <unsigned int> flags
+
+    rc = aec_decode_init(&strm)
+    if rc != AEC_OK:
+        raise _err('aec_decode_init', rc)
+    init_ok = True
+    try:
+        if out is not None or size >= 0:
+            if out is not None:
+                try:
+                    dst_view = out
+                except (TypeError, ValueError, BufferError) as e:
+                    raise TypeError(
+                        f"aec decode: out= must be a writable buffer, "
+                        f"got {type(out).__name__}") from e
+                cap = dst_view.shape[0]
+                dst_ptr = &dst_view[0] if cap > 0 else NULL
+            else:
+                cap = size
+                out_bytes = PyBytes_FromStringAndSize(NULL, cap)
+                dst_ptr = <unsigned char*> PyBytes_AsString(out_bytes)
+            # Whole samples only, so a short final sample is never cut.
+            cap -= cap % sb
+            if cap > 0:
+                with nogil:
+                    rc = _decode_step(&strm, dst_ptr, <size_t> cap)
+                if rc != AEC_OK:
+                    raise _err('aec_decode', rc)
+            total = <Py_ssize_t> strm.total_out
+            if total == cap and srcsize > 0:
+                # Full: decode what is left into a scratch buffer. Up to
+                # a segment of padding (see the docstring) can follow
+                # the data; anything past that did not fit.
+                if flags & AEC_PAD_RSI:
+                    allowed = (<Py_ssize_t> block_size * rsi - 1) * sb
+                else:
+                    allowed = (<Py_ssize_t> block_size * min(rsi, 64) - 1) * sb
+                scratch = PyBytes_FromStringAndSize(NULL, allowed + sb)
+                scratch_ptr = <unsigned char*> PyBytes_AsString(scratch)
+                with nogil:
+                    rc = _decode_step(&strm, scratch_ptr,
+                                      <size_t> (allowed + sb))
+                if rc != AEC_OK:
+                    raise _err('aec_decode', rc)
+                if <Py_ssize_t> strm.total_out - total > allowed:
+                    raise AecError(
+                        f"aec decode: the output holds {cap} bytes but the "
+                        f"stream decodes to more than {total + allowed} bytes")
+            if out is not None:
+                dst_view = None
+                return out[:total]
+            if total != size:
+                raise AecError(
+                    f"aec decode: the stream decoded to {total} bytes, "
+                    f"expected {size}")
+            return out_bytes
+
+        # Unknown size: grow until libaec stops with room to spare,
+        # which means the input is used up.
+        cap = max(srcsize * 4, 4096)
+        cap += sb - cap % sb if cap % sb else 0
+        grow = bytearray(cap)
+        total = 0
+        while True:
+            dst_view = grow
+            with nogil:
+                rc = _decode_step(&strm, &dst_view[total],
+                                  <size_t> (cap - total))
+            dst_view = None
+            if rc != AEC_OK:
+                raise _err('aec_decode', rc)
+            total = <Py_ssize_t> strm.total_out
+            if total < cap:
+                break
+            grow.extend(bytes(cap))
+            cap *= 2
+        del grow[total:]
+        return bytes(grow)
+    finally:
+        if init_ok:
+            aec_decode_end(&strm)
+
+
+def read_framed_header(data):
+    """Return ``(size, bits_per_sample, block_size, rsi, flags)`` from
+    the preamble releases up to 0.4.0 wrote, or None if ``data`` cannot
+    start with one."""
+    if len(data) < _HEADER_LEN:
+        return None
+    raw = bytes(data[:_HEADER_LEN])
+    if raw[13:16] != b'\x00\x00\x00':
+        return None
+    size, bps, block, rsi, flags = _struct.unpack(_HEADER_FMT, raw)
+    if size > (1 << 34):
+        return None
+    if not (1 <= bps <= 32) or block not in (8, 16, 32, 64):
+        return None
+    if not (1 <= rsi <= 4096):
+        return None
+    # The old encoder only ever set SIGNED, 3BYTE, MSB and PREPROCESS.
+    if flags & ~(AEC_DATA_SIGNED | AEC_DATA_3BYTE | AEC_DATA_MSB
+                 | AEC_DATA_PREPROCESS):
+        return None
+    if size % sample_bytes(bps, flags):
+        return None
+    if size and len(data) == _HEADER_LEN:
+        return None
+    return size, bps, block, rsi, flags
+
+
+def decode_framed(data, *, out=None):
+    """Decode a blob in the framed layout releases up to 0.4.0 wrote
+    (16-byte preamble + libaec stream).
+
+    ``out`` is an int or a writable byte buffer, as for the byte codecs.
     """
     cdef:
         const uint8_t[::1] src
@@ -289,18 +422,14 @@ def decode(data, *, out=None):
     if srcsize < _HEADER_LEN:
         raise AecError("aec blob too short to contain header")
 
-    orig_size, bps, block, rsi, flags = _unpack_header(bytes(src[:_HEADER_LEN]))
+    orig_size, bps, block, rsi, flags = _struct.unpack(
+        _HEADER_FMT, bytes(src[:_HEADER_LEN]))
     if orig_size == 0:
         if out is None or isinstance(out, int):
             return b''
         return out[:0]
-    # The header is the first 16 bytes of the input; for a corrupt or
-    # adversarial blob those bytes can encode an absurd ``orig_size``
-    # (uint64 read of random bytes -> ~10**18). Forwarding that to
-    # PyBytes_FromStringAndSize attempts a multi-exabyte malloc which
-    # aborts under ASAN and OOM-kills otherwise. Cap at 16 GiB — well
-    # above any plausible single-call decode for the scientific data
-    # libaec is used on, but small enough to bail fast on garbage.
+    # A corrupt header can encode an absurd ``orig_size``; forwarding
+    # that to PyBytes_FromStringAndSize attempts a multi-exabyte malloc.
     if orig_size > (1 << 34):
         raise AecError(
             f"aec header: orig_size {orig_size} exceeds 16 GiB sanity cap "
@@ -361,5 +490,5 @@ def decode(data, *, out=None):
 
 
 def check_signature(data) -> bool:
-    """No reliable magic bytes for libaec streams."""
+    """A CCSDS stream has no magic bytes."""
     return False

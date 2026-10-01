@@ -49,16 +49,27 @@ class RgbeCodec(Codec):
     def signature(self, head: bytes) -> bool:
         return _rgbe_check_signature(head)
 
-    def encode(self, data: Any, *, dest=None, **opts) -> bytes | None:
+    def encode(self, data: Any, *, header=None, rle=None, dest=None,
+               **opts) -> bytes | None:
+        """Encode float RGB. ``header`` (default True) and ``rle``
+        (default: same as ``header``) follow imagecodecs
+        ``rgbe_encode``, except that ``rle=False`` with a header writes
+        flat scanlines, where imagecodecs writes RLE regardless; see
+        :func:`opencodecs.codecs._rgbe.encode`."""
         arr = data if isinstance(data, np.ndarray) else np.asarray(data)
         if arr.dtype != np.float32:
             arr = arr.astype(np.float32, copy=False)
-        out = _rgbe_encode(arr)
+        out = _rgbe_encode(arr, header=header, rle=rle)
         return _write_dest(out, dest)
 
-    def decode(self, src: Any, *, out=None, **opts) -> np.ndarray:
+    def decode(self, src: Any, *, header=None, rle=None, out=None,
+               **opts) -> np.ndarray:
+        """Decode to ``(H, W, 3)`` float32, honoring the orientation the
+        resolution line states. ``header=False`` reads a bare pixel
+        stream into ``out``, as imagecodecs ``rgbe_decode`` does."""
         data = _read_src(src)
-        return _rgbe_decode(data, out=out if out is None else array_output(out))
+        return _rgbe_decode(data, header=header, rle=rle,
+                            out=out if out is None else array_output(out))
 
 
 __all__ = ["RgbeCodec"]

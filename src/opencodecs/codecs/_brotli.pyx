@@ -15,7 +15,8 @@ from libc.stdint cimport uint8_t
 
 from brotli cimport (
     BROTLI_BOOL, BROTLI_TRUE, BROTLI_FALSE,
-    BrotliEncoderMode, BROTLI_MODE_GENERIC,
+    BrotliEncoderMode, BROTLI_MODE_GENERIC, BROTLI_MODE_TEXT, BROTLI_MODE_FONT,
+    BROTLI_MIN_WINDOW_BITS, BROTLI_MAX_WINDOW_BITS,
     BROTLI_DEFAULT_WINDOW, BROTLI_MAX_QUALITY, BROTLI_MIN_QUALITY,
     BrotliEncoderMaxCompressedSize, BrotliEncoderCompress,
     BrotliDecoderState, BrotliDecoderResult,
@@ -32,8 +33,29 @@ class BrotliError(RuntimeError):
     """Raised on brotli encode/decode failures."""
 
 
-def encode(data, *, level: int | None = None) -> bytes:
-    """Encode bytes-like input as a brotli stream."""
+#: Quality used when ``level`` is None: imagecodecs.brotli_encode's default,
+#: so the two packages write the same bytes by default. (Not libbrotli's own
+#: default, 11, which is far slower.)
+DEFAULT_LEVEL = 4
+
+
+def encode(data, *, level: int | None = None, mode=None,
+           lgwin: int | None = None) -> bytes:
+    """Encode bytes-like input as a brotli stream.
+
+    The parameters are imagecodecs.brotli_encode's, with its defaults.
+
+    Parameters
+    ----------
+    level : int, optional
+        Quality 0-11 (clamped). Default 4, as in imagecodecs.
+    mode : int or str, optional
+        ``BrotliEncoderMode``: 0 or 'generic' (default), 1 or 'text',
+        2 or 'font'.
+    lgwin : int, optional
+        Base-2 log of the sliding window, 10-24 (clamped). Default 22,
+        libbrotli's ``BROTLI_DEFAULT_WINDOW``.
+    """
     cdef:
         const uint8_t[::1] src
         const uint8_t[::1] dst   # memoryview view onto the output bytes
@@ -41,6 +63,8 @@ def encode(data, *, level: int | None = None) -> bytes:
         size_t dstcap
         size_t encoded_size
         int quality
+        int window
+        BrotliEncoderMode cmode
         BROTLI_BOOL ok
         bytes out
         const uint8_t* src_ptr = NULL
@@ -51,20 +75,16 @@ def encode(data, *, level: int | None = None) -> bytes:
         src = bytes(data)
     srcsize = <size_t> src.shape[0]
 
-    if level is None:
-        # Level 3 is the Pareto-better default vs imagecodecs (which
-        # defaults to level 1). On natural-image bytes:
-        #   ic level 1:  9.7 ms,  964 KB
-        #   oc level 3:  8.7 ms,  874 KB  ← ~10% faster AND ~9% smaller
-        # Higher levels (5+) start trading time for diminishing size
-        # wins; lower levels (0–2) are even faster but lose the size
-        # advantage. See docs/codec_api_conventions.md "Default
-        # settings: Pareto-better than the reference" for the rule.
-        quality = 3
-    else:
-        quality = int(level)
+    # Default 4, imagecodecs's default. This was 3, on the belief that
+    # imagecodecs defaulted to 1; it defaults to 4, and level 3 was not
+    # reliably Pareto-better than that (11% larger on a 210 kB image).
+    quality = DEFAULT_LEVEL if level is None else int(level)
     if quality < BROTLI_MIN_QUALITY: quality = BROTLI_MIN_QUALITY
     if quality > BROTLI_MAX_QUALITY: quality = BROTLI_MAX_QUALITY
+    window = BROTLI_DEFAULT_WINDOW if lgwin is None else int(lgwin)
+    if window < BROTLI_MIN_WINDOW_BITS: window = BROTLI_MIN_WINDOW_BITS
+    if window > BROTLI_MAX_WINDOW_BITS: window = BROTLI_MAX_WINDOW_BITS
+    cmode = _mode(mode)
 
     dstcap = BrotliEncoderMaxCompressedSize(srcsize)
     if dstcap == 0:
@@ -83,7 +103,7 @@ def encode(data, *, level: int | None = None) -> bytes:
     encoded_size = dstcap
     with nogil:
         ok = BrotliEncoderCompress(
-            quality, BROTLI_DEFAULT_WINDOW, BROTLI_MODE_GENERIC,
+            quality, window, cmode,
             srcsize, src_ptr, &encoded_size,
             <uint8_t*> &dst[0],
         )
@@ -91,6 +111,24 @@ def encode(data, *, level: int | None = None) -> bytes:
         raise BrotliError('BrotliEncoderCompress failed')
     del dst
     return out[:encoded_size]
+
+
+cdef BrotliEncoderMode _mode(object mode) except *:
+    if mode is None:
+        return BROTLI_MODE_GENERIC
+    if isinstance(mode, str):
+        names = {'generic': BROTLI_MODE_GENERIC, 'text': BROTLI_MODE_TEXT,
+                 'font': BROTLI_MODE_FONT}
+        if mode.lower() in names:
+            return names[mode.lower()]
+        raise ValueError(f'unknown brotli mode={mode!r}')
+    if mode == 0:
+        return BROTLI_MODE_GENERIC
+    if mode == 1:
+        return BROTLI_MODE_TEXT
+    if mode == 2:
+        return BROTLI_MODE_FONT
+    raise ValueError(f'unknown brotli mode={mode!r}')
 
 
 def decode(data, *, out=None):
@@ -286,7 +324,7 @@ cdef class StreamEncoder:
     cdef BrotliEncoderState* _state
 
     def __cinit__(self, level=None):
-        cdef int quality = 3 if level is None else int(level)
+        cdef int quality = DEFAULT_LEVEL if level is None else int(level)
         if quality < 0 or quality > 11:
             raise ValueError("brotli level must be between 0 and 11")
         self._state = BrotliEncoderCreateInstance(NULL, NULL, NULL)

@@ -504,9 +504,9 @@ def _run_decoder(name: str, cfg: dict, data: bytes) -> bytes:
             _DECODER_CACHE["blosc2"] = fn
         return fn(data)
     if name == "gzip":
-        # Native gzip via Python stdlib. opencodecs's _deflate is raw
-        # DEFLATE; gzip adds a header + trailer. stdlib gzip is fine
-        # here — it's a thin C wrapper around zlib.
+        # Native gzip via Python stdlib, which reads every member of a
+        # multi-member stream. (opencodecs's _deflate decodes zlib
+        # streams, or bare DEFLATE with raw=True, not gzip members.)
         import gzip
         return gzip.decompress(bytes(data))
 

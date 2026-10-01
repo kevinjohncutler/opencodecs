@@ -8,23 +8,24 @@
 
 """Native PNG codec via libspng.
 
-Decode preserves PNG color/depth where practical:
-  - 8-bit grayscale       -> (H, W) uint8
-  - 8-bit grayscale+alpha -> (H, W, 2) uint8
-  - 8-bit RGB             -> (H, W, 3) uint8
-  - 8-bit RGBA            -> (H, W, 4) uint8
-  - 8-bit indexed         -> (H, W, 4) uint8 (palette expanded to RGBA)
-  - 16-bit grayscale      -> (H, W) uint16 (host-endian)
-  - 16-bit gray+alpha     -> (H, W, 2) uint16
-  - 16-bit RGB            -> (H, W, 3) uint16
-  - 16-bit RGBA           -> (H, W, 4) uint16
-  - 1/2/4-bit             -> upscaled to 8-bit grayscale or RGBA
+Decode keeps the PNG color type, the same mapping libpng gives with
+png_set_expand (and the one imagecodecs returns):
+  - grayscale             -> (H, W); 1/2/4-bit samples are scaled to 8-bit
+  - grayscale+alpha       -> (H, W, 2)
+  - RGB                   -> (H, W, 3)
+  - RGBA                  -> (H, W, 4)
+  - indexed               -> (H, W, 3) uint8, the palette applied
+  - a tRNS chunk adds the alpha channel it defines (PNG specification,
+    section 11.3.2.1): gray becomes (H, W, 2), RGB and indexed become
+    (H, W, 4). Indexed alpha comes from the tRNS palette entries.
+16-bit images decode to uint16 (host-endian), everything else to uint8.
 
 Encode picks color type / bit depth from numpy shape and dtype:
   - 2D uint8 / uint16        -> grayscale
   - (H, W, 2) uint8/uint16   -> grayscale+alpha
   - (H, W, 3) uint8/uint16   -> RGB
   - (H, W, 4) uint8/uint16   -> RGBA
+uint16 input may have either byte order; the sample values are kept.
 """
 
 from cpython.bytes cimport PyBytes_FromStringAndSize, PyBytes_AsString
@@ -43,11 +44,14 @@ from spng cimport (
     spng_decoded_image_size, spng_decode_image, spng_encode_image,
     spng_ihdr, spng_get_ihdr, spng_set_ihdr,
     spng_iccp, spng_get_iccp, spng_set_iccp,
+    spng_trns, spng_get_trns,
     spng_strerror,
     SPNG_COLOR_TYPE_GRAYSCALE, SPNG_COLOR_TYPE_TRUECOLOR,
     SPNG_COLOR_TYPE_INDEXED, SPNG_COLOR_TYPE_GRAYSCALE_ALPHA,
     SPNG_COLOR_TYPE_TRUECOLOR_ALPHA,
-    SPNG_FMT_RGBA8, SPNG_FMT_PNG,
+    SPNG_FMT_RGBA8, SPNG_FMT_RGBA16, SPNG_FMT_RGB8,
+    SPNG_FMT_G8, SPNG_FMT_GA8, SPNG_FMT_GA16, SPNG_FMT_PNG,
+    SPNG_DECODE_TRNS, SPNG_ECHUNKAVAIL,
     SPNG_CTX_ENCODER, SPNG_ENCODE_FINALIZE,
     SPNG_IMG_COMPRESSION_LEVEL, SPNG_ENCODE_TO_BUFFER,
     SPNG_FILTER_CHOICE, SPNG_IMG_COMPRESSION_STRATEGY,
@@ -67,6 +71,68 @@ class PngError(RuntimeError):
 cdef inline _check(int rc, str where):
     if rc != 0:
         raise PngError(f'{where}: {spng_strerror(rc).decode()}')
+
+
+cdef int _decode_layout(spng_ctx* ctx, spng_ihdr* ihdr, int* fmt, int* flags,
+                        int* channels, bint* wide) except? -1:
+    """Pick the libspng output format that keeps the PNG color type.
+
+    Sets the format, the decode flags, the channel count and whether
+    samples are 16-bit. Returns 0, or the libspng error from reading the
+    chunks before the image data. The rule is libpng's png_set_expand plus
+    png_set_tRNS_to_alpha, which is also what imagecodecs returns:
+    gray stays gray (sub-byte depths scaled to 8 bits), a palette becomes
+    RGB, and a tRNS chunk adds the alpha channel it describes.
+    """
+    cdef spng_trns trns
+    cdef int rc
+    cdef bint has_trns = False
+    cdef int color_type = ihdr.color_type
+    cdef int depth = ihdr.bit_depth
+    flags[0] = 0
+    wide[0] = depth == 16
+    if color_type in (SPNG_COLOR_TYPE_GRAYSCALE, SPNG_COLOR_TYPE_TRUECOLOR,
+                      SPNG_COLOR_TYPE_INDEXED):
+        rc = spng_get_trns(ctx, &trns)
+        if rc == 0:
+            has_trns = True
+        elif rc != SPNG_ECHUNKAVAIL:
+            return rc
+    if has_trns:
+        flags[0] = SPNG_DECODE_TRNS
+    if color_type == SPNG_COLOR_TYPE_INDEXED:
+        if has_trns:
+            channels[0] = 4
+            fmt[0] = SPNG_FMT_RGBA8
+            return 0
+        channels[0] = 3
+        fmt[0] = SPNG_FMT_RGB8
+        return 0
+    if color_type == SPNG_COLOR_TYPE_GRAYSCALE:
+        if has_trns:
+            channels[0] = 2
+            fmt[0] = SPNG_FMT_GA16 if depth == 16 else SPNG_FMT_GA8
+            return 0
+        channels[0] = 1
+        fmt[0] = SPNG_FMT_PNG if depth >= 8 else SPNG_FMT_G8
+        return 0
+    if color_type == SPNG_COLOR_TYPE_TRUECOLOR:
+        if has_trns:
+            channels[0] = 4
+            fmt[0] = SPNG_FMT_RGBA16 if depth == 16 else SPNG_FMT_RGBA8
+            return 0
+        channels[0] = 3
+        fmt[0] = SPNG_FMT_PNG
+        return 0
+    if color_type == SPNG_COLOR_TYPE_GRAYSCALE_ALPHA:
+        channels[0] = 2
+        fmt[0] = SPNG_FMT_PNG
+        return 0
+    if color_type == SPNG_COLOR_TYPE_TRUECOLOR_ALPHA:
+        channels[0] = 4
+        fmt[0] = SPNG_FMT_PNG
+        return 0
+    raise PngError(f'unsupported PNG color type {color_type}')
 
 
 def decode(data, *, out=None):
@@ -92,6 +158,9 @@ def decode(data, *, out=None):
         spng_ihdr ihdr
         int rc
         int fmt
+        int flags = 0
+        int channels = 0
+        bint wide = False
         size_t out_size
         cnp.ndarray out_arr
         cnp.npy_intp shape[3]
@@ -118,36 +187,14 @@ def decode(data, *, out=None):
         rc = spng_get_ihdr(ctx, &ihdr)
         _check(rc, 'spng_get_ihdr')
 
-        # Pick output fmt + numpy shape/dtype based on PNG color type/depth.
-        # SPNG_FMT_PNG returns data in host byte order matching the PNG IHDR
-        # (no scaling/conversion). For indexed and sub-byte depths, ask spng
-        # to expand to RGBA8.
-        if ihdr.color_type == SPNG_COLOR_TYPE_INDEXED or ihdr.bit_depth < 8:
-            fmt = SPNG_FMT_RGBA8
-            ndim = 3
-            shape[2] = 4
-            dtype = np.uint8
-        elif ihdr.color_type == SPNG_COLOR_TYPE_GRAYSCALE:
-            fmt = SPNG_FMT_PNG
-            ndim = 2
-            dtype = np.uint16 if ihdr.bit_depth == 16 else np.uint8
-        elif ihdr.color_type == SPNG_COLOR_TYPE_GRAYSCALE_ALPHA:
-            fmt = SPNG_FMT_PNG
-            ndim = 3
-            shape[2] = 2
-            dtype = np.uint16 if ihdr.bit_depth == 16 else np.uint8
-        elif ihdr.color_type == SPNG_COLOR_TYPE_TRUECOLOR:
-            fmt = SPNG_FMT_PNG
-            ndim = 3
-            shape[2] = 3
-            dtype = np.uint16 if ihdr.bit_depth == 16 else np.uint8
-        elif ihdr.color_type == SPNG_COLOR_TYPE_TRUECOLOR_ALPHA:
-            fmt = SPNG_FMT_PNG
-            ndim = 3
-            shape[2] = 4
-            dtype = np.uint16 if ihdr.bit_depth == 16 else np.uint8
-        else:
-            raise PngError(f'unsupported PNG color type {ihdr.color_type}')
+        # Pick the output format + numpy shape/dtype from the color
+        # type, bit depth and tRNS (see _decode_layout). All formats
+        # used return host byte order.
+        rc = _decode_layout(ctx, &ihdr, &fmt, &flags, &channels, &wide)
+        _check(rc, 'spng_get_trns')
+        ndim = 2 if channels == 1 else 3
+        shape[2] = channels
+        dtype = np.uint16 if wide else np.uint8
 
         rc = spng_decoded_image_size(ctx, fmt, &out_size)
         _check(rc, 'spng_decoded_image_size')
@@ -193,7 +240,7 @@ def decode(data, *, out=None):
 
         with nogil:
             rc = spng_decode_image(
-                ctx, cnp.PyArray_DATA(out_arr), out_size, fmt, 0,
+                ctx, cnp.PyArray_DATA(out_arr), out_size, fmt, flags,
             )
         _check(rc, 'spng_decode_image')
 
@@ -256,15 +303,111 @@ _FILTER_CHOICE_MAP = {
     "fast":   SPNG_FILTER_CHOICE_NONE | SPNG_FILTER_CHOICE_SUB
               | SPNG_FILTER_CHOICE_UP,
     "off":    SPNG_DISABLE_FILTERING,
+    # imagecodecs' name for the same: PNG.FILTER.NO.
+    "no":     SPNG_DISABLE_FILTERING,
+}
+
+# Marks a filter_choice the caller did not pass, so that the
+# imagecodecs-style ``filter=`` alias can be told apart from it.
+_UNSET = object()
+
+
+class PngOptionError(PngError, ValueError):
+    """An invalid PNG encode option.
+
+    A ``PngError`` as the whole-image encoder raised before, and a
+    ``ValueError`` as the row encoder raised, so either ``except`` works.
+    """
+
+
+# imagecodecs' PNG.STRATEGY names for the zlib strategies.
+_STRATEGY_MAP = {
+    "default": 0,
+    "filtered": 1,
+    "huffman_only": 2,
+    "rle": 3,
+    "fixed": 4,
 }
 
 
-def encode(data, *, level: int | None = None,
-           filter_choice: object = "fast",
-           strategy: int | None = None,
+def _strategy_option(strategy):
+    """Resolve strategy= to a zlib strategy 0-4, or None.
+
+    Accepts the numbers and imagecodecs' PNG.STRATEGY names; anything
+    else raises, as in imagecodecs, instead of reaching zlib.
+    """
+    if strategy is None:
+        return None
+    if isinstance(strategy, str):
+        key = strategy.lower().strip()
+        if key not in _STRATEGY_MAP:
+            raise PngOptionError(
+                f'PNG encode: unknown strategy {strategy!r}'
+                f'; expected one of {sorted(_STRATEGY_MAP)}')
+        return _STRATEGY_MAP[key]
+    value = int(strategy)
+    if not 0 <= value <= 4:
+        raise PngOptionError(
+            f'PNG encode: strategy {value} is not a zlib strategy (0-4)')
+    return value
+
+
+def _filter_option(filter_choice, filter):
+    """Resolve filter_choice / filter= to a libspng bitmask, or None.
+
+    ``filter`` is the imagecodecs name for the same setting. Its
+    PNG.FILTER values (NO=0, NONE=8, SUB=16, UP=32, AVG=64, PAETH=128,
+    FAST=56, ALL=248) are the libpng PNG_FILTER_* bits, which are also
+    the libspng SPNG_FILTER_CHOICE bits, so they pass straight through;
+    0 writes every row unfiltered in both libraries. Its member names
+    work as strings too. None means libspng's own default (try all
+    five filters).
+    """
+    if filter is not None:
+        if filter_choice is not _UNSET:
+            raise TypeError("PNG encode: pass filter= or filter_choice=, not both")
+        filter_choice = filter
+    elif filter_choice is _UNSET:
+        filter_choice = "fast"
+    if filter_choice is None:
+        return None
+    if isinstance(filter_choice, str):
+        key = filter_choice.lower().strip()
+        if key not in _FILTER_CHOICE_MAP:
+            raise PngOptionError(
+                f'PNG encode: unknown filter_choice {filter_choice!r}'
+                f'; expected one of {sorted(_FILTER_CHOICE_MAP)}')
+        return _FILTER_CHOICE_MAP[key]
+    choice = int(filter_choice)
+    if choice < 0 or choice & ~SPNG_FILTER_CHOICE_ALL:
+        raise PngOptionError(
+            f'PNG encode: filter bitmask {choice} has bits outside '
+            f'{int(SPNG_FILTER_CHOICE_ALL)} (NONE|SUB|UP|AVG|PAETH)')
+    return choice
+
+
+def _native_samples(arr):
+    """Return ``arr`` with native byte order, keeping the sample values.
+
+    A big-endian uint16 array holding 1 must be written as the PNG
+    sample 1 (PNG specification section 7.1: samples are stored most
+    significant byte first). Reinterpreting its bytes would write 256.
+    """
+    if arr.dtype.kind == 'u' and arr.dtype.itemsize > 1 and not arr.dtype.isnative:
+        return arr.astype(arr.dtype.newbyteorder('='))
+    return arr
+
+
+def encode(data, *, level=None,
+           filter_choice: object = _UNSET,
+           strategy=None,
            iccprofile: bytes | None = None,
-           iccprofile_name: str = "ICC profile") -> bytes:
+           iccprofile_name: str = "ICC profile",
+           filter: object = None) -> bytes:
     """Encode a numpy array as a PNG byte string.
+
+    uint16 input of either byte order is accepted; the sample values are
+    what gets stored.
 
     ``filter_choice`` controls which of the 5 PNG row filters libspng
     considers when picking the best per scanline. Accepted values:
@@ -285,14 +428,21 @@ def encode(data, *, level: int | None = None,
       * ``"none"`` / ``"sub"`` / ``"up"`` / ``"avg"`` / ``"paeth"`` —
         restrict to a single filter.
       * any int — passed through as the raw bitmask.
+      * ``None``: libspng's own default, all five filters.
 
-    ``strategy`` overrides the zlib compression strategy
+    ``filter`` is the imagecodecs spelling of the same setting and takes
+    imagecodecs' ``PNG.FILTER`` values or names; pass one or the other.
+    An invalid filter or strategy raises ``PngOptionError``, both a
+    ``PngError`` and a ``ValueError``.
+
+    ``strategy`` sets the zlib compression strategy
     (``Z_DEFAULT_STRATEGY=0``, ``Z_FILTERED=1``, ``Z_HUFFMAN_ONLY=2``,
-    ``Z_RLE=3``, ``Z_FIXED=4``). libspng's default is ``Z_FILTERED``.
-    Set ``2`` for a 1.5-2× additional encode speedup on photo-like
-    data, but beware: on smooth gradients or low-contrast data this
-    can dramatically *hurt* compression (LZ77 was finding long
-    repeating runs that Huffman alone can't).
+    ``Z_RLE=3``, ``Z_FIXED=4``, or imagecodecs' ``PNG.STRATEGY`` names),
+    as imagecodecs' ``strategy=`` does.
+    ``None`` (default) compresses with the fastest backend the build
+    has (libdeflate when available, which has no strategy setting);
+    any explicit value compresses the image data through zlib with
+    that strategy, so the setting is always honored.
     """
     cdef:
         spng_ctx* ctx = NULL
@@ -311,10 +461,9 @@ def encode(data, *, level: int | None = None,
         int compression
         bint need_byteswap = False
 
-    if not isinstance(data, np.ndarray):
-        arr = np.ascontiguousarray(data)
-    else:
-        arr = np.ascontiguousarray(data)
+    arr = _native_samples(np.ascontiguousarray(data))
+    fc = _filter_option(filter_choice, filter)
+    strategy = _strategy_option(strategy)
 
     if arr.dtype not in (np.uint8, np.uint16):
         raise PngError(f'PNG encode: unsupported dtype {arr.dtype}')
@@ -389,23 +538,13 @@ def encode(data, *, level: int | None = None,
         # speedup is ~1.5x. For incompressible (random RGB) data
         # disabling filtering entirely is ~2x faster with identical
         # output size.
-        if filter_choice is not None:
-            if isinstance(filter_choice, str):
-                key = filter_choice.lower().strip()
-                if key not in _FILTER_CHOICE_MAP:
-                    raise PngError(
-                        f'PNG encode: unknown filter_choice {filter_choice!r}'
-                        f'; expected one of {sorted(_FILTER_CHOICE_MAP)}'
-                    )
-                fc = <int> _FILTER_CHOICE_MAP[key]
-            else:
-                fc = <int> int(filter_choice)
-            rc = spng_set_option(ctx, SPNG_FILTER_CHOICE, fc)
+        if fc is not None:
+            rc = spng_set_option(ctx, SPNG_FILTER_CHOICE, <int> fc)
             _check(rc, 'spng_set_option(filter_choice)')
 
         if strategy is not None:
             rc = spng_set_option(
-                ctx, SPNG_IMG_COMPRESSION_STRATEGY, int(strategy))
+                ctx, SPNG_IMG_COMPRESSION_STRATEGY, strategy)
             _check(rc, 'spng_set_option(compression_strategy)')
 
         # Embed iCCP chunk if the caller provided an ICC profile.
@@ -511,6 +650,9 @@ cdef class RowDecoder:
         cdef spng_ihdr header
         cdef int status
         cdef int fmt = SPNG_FMT_PNG
+        cdef int flags = 0
+        cdef int channels = 0
+        cdef bint wide = False
         self._bridge = bridge
         self._ctx = spng_ctx_new(0)
         if self._ctx == NULL:
@@ -525,23 +667,14 @@ cdef class RowDecoder:
         self._width = header.width
         self._height = header.height
         self._interlaced = header.interlace_method != 0
-        self._dtype = np.dtype(np.uint16 if header.bit_depth == 16 else np.uint8)
-        if header.color_type == SPNG_COLOR_TYPE_INDEXED or header.bit_depth < 8:
-            fmt = SPNG_FMT_RGBA8
-            self._channels = 4
-            self._dtype = np.dtype(np.uint8)
-        elif header.color_type == SPNG_COLOR_TYPE_GRAYSCALE:
-            self._channels = 1
-        elif header.color_type == SPNG_COLOR_TYPE_GRAYSCALE_ALPHA:
-            self._channels = 2
-        elif header.color_type == SPNG_COLOR_TYPE_TRUECOLOR:
-            self._channels = 3
-        elif header.color_type == SPNG_COLOR_TYPE_TRUECOLOR_ALPHA:
-            self._channels = 4
-        else:
-            raise PngError("unsupported PNG color type")
+        # Same color-type rule as decode(), so rows and whole images agree.
+        status = _decode_layout(self._ctx, &header, &fmt, &flags, &channels, &wide)
+        self._check_status(status)
+        self._channels = channels
+        self._dtype = np.dtype(np.uint16 if wide else np.uint8)
         with nogil:
-            status = spng_decode_image(self._ctx, NULL, 0, fmt, SPNG_DECODE_PROGRESSIVE)
+            status = spng_decode_image(self._ctx, NULL, 0, fmt,
+                                       flags | SPNG_DECODE_PROGRESSIVE)
         self._check_status(status)
 
     cdef _check_status(self, int status):
@@ -611,17 +744,21 @@ cdef class RowEncoder:
     cdef unsigned _height
     cdef unsigned _written
 
-    def __init__(self, bridge, shape, dtype, *, level=None, filter_choice="fast",
-                 strategy=None, iccprofile=None, iccprofile_name="ICC profile"):
+    def __init__(self, bridge, shape, dtype, *, level=None, filter_choice=_UNSET,
+                 strategy=None, iccprofile=None, iccprofile_name="ICC profile",
+                 filter=None):
         cdef spng_ihdr header
         cdef spng_iccp profile
         cdef int channels
         cdef int status
-        cdef int choice
         cdef bytes profile_data
         cdef bytes profile_name
+        choice = _filter_option(filter_choice, filter)
         self._bridge = bridge
+        # Rows of either byte order are accepted; samples are stored by value.
         self._dtype = np.dtype(dtype)
+        if self._dtype.kind == 'u' and not self._dtype.isnative:
+            self._dtype = self._dtype.newbyteorder('=')
         shape = tuple(shape)
         if len(shape) not in (2, 3) or any(int(n) != n or n <= 0 for n in shape):
             raise ValueError("PNG row shape must have positive height, width and optional channels")
@@ -631,7 +768,7 @@ cdef class RowEncoder:
         if channels not in (1, 2, 3, 4):
             raise ValueError("PNG rows need 1, 2, 3 or 4 channels")
         if self._dtype not in (np.dtype(np.uint8), np.dtype(np.uint16)):
-            raise ValueError("PNG rows need native uint8 or uint16 samples")
+            raise ValueError("PNG rows need uint8 or uint16 samples")
         self._height = shape[0]
         self._row_shape = shape[1:]
         self._ctx = spng_ctx_new(SPNG_CTX_ENCODER)
@@ -653,17 +790,12 @@ cdef class RowEncoder:
         if level is not None:
             _check(spng_set_option(self._ctx, SPNG_IMG_COMPRESSION_LEVEL,
                                    max(0, min(9, int(level)))), "PNG compression level")
-        if filter_choice is not None:
-            if isinstance(filter_choice, str):
-                key = filter_choice.lower().strip()
-                if key not in _FILTER_CHOICE_MAP:
-                    raise ValueError("unknown PNG filter choice")
-                choice = _FILTER_CHOICE_MAP[key]
-            else:
-                choice = int(filter_choice)
-            _check(spng_set_option(self._ctx, SPNG_FILTER_CHOICE, choice), "PNG filter choice")
+        if choice is not None:
+            _check(spng_set_option(self._ctx, SPNG_FILTER_CHOICE, <int> choice),
+                   "PNG filter choice")
+        strategy = _strategy_option(strategy)
         if strategy is not None:
-            _check(spng_set_option(self._ctx, SPNG_IMG_COMPRESSION_STRATEGY, int(strategy)),
+            _check(spng_set_option(self._ctx, SPNG_IMG_COMPRESSION_STRATEGY, strategy),
                    "PNG compression strategy")
         if iccprofile is not None:
             profile_data = bytes(iccprofile)
@@ -692,7 +824,7 @@ cdef class RowEncoder:
             raise ValueError("PNG row encoder is closed")
         if self._written >= self._height:
             raise ValueError("too many PNG rows")
-        array = np.asarray(row)
+        array = _native_samples(np.asarray(row))
         if tuple(array.shape[i] for i in range(array.ndim)) != self._row_shape:
             raise ValueError("PNG row has the wrong shape")
         if array.dtype != self._dtype:

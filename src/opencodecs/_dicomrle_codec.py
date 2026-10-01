@@ -18,6 +18,15 @@ The number of segments depends on the source image:
 * 8-bit RGB → 3 segments (R plane, G plane, B plane).
 * 16-bit RGB → 6 segments (HR, LR, HG, LG, HB, LB).
 
+Decoded layout: :meth:`DicomRleCodec.decode` takes ``shape`` and returns
+the image as an array of that shape, ``(H, W)`` or ``(H, W, C)`` with the
+samples interleaved, which is Planar Configuration 0, the layout PS 3.5
+Annex G.2 recommends and pydicom's ``pixel_array`` returns; ``encode``
+takes the same layout. ``imagecodecs.dicomrle_decode(data, dtype)``
+instead returns the raw segment order as flat bytes, one whole plane per
+sample, ``(C, H, W)``. The bytes on the wire are the same either way: to
+compare with imagecodecs, use ``arr.transpose(2, 0, 1).ravel()``.
+
 Encode + decode are pure Python — the implementation is straightforward
 enough that the Cython speedup isn't worth the binding complexity.
 PackBits-encoded payloads tend to be small (one strip / tile at a
@@ -231,10 +240,9 @@ def _decode_dicomrle(buf: bytes, shape, dtype: np.dtype, *, out=None) -> np.ndar
     # for the last segment).
     boundaries = offsets + [len(buf)]
     # One segment is one byte plane, so its decoded length is exactly
-    # the pixel count. Passing it matters: the shared decoder sizes its
-    # output at 2x the input when told nothing, which is right for a
-    # TIFF strip and far too small for an RLE segment that compressed
-    # well -- a 3768-byte plane from a 1.4 KB segment overflowed it.
+    # the pixel count. Passing it is what lets the lenient decoder stop
+    # there: DICOM pads each segment to an even length, and the pad byte
+    # would otherwise be read as one more run header.
     plane_bytes = int(shape[0]) * int(shape[1])
     def segments():
         for i in range(n_segs):
@@ -273,6 +281,12 @@ class DicomRleCodec(Codec):
 
     def decode(self, src: Any, *, shape, dtype, out=None,
                **opts) -> np.ndarray:
+        """Decode to an ``(H, W)`` or interleaved ``(H, W, C)`` array.
+
+        ``shape`` is required because the stream does not record it.
+        imagecodecs returns planar ``(C, H, W)`` bytes instead; see the
+        module docstring.
+        """
         buf = _read_src(src)
         return _decode_dicomrle(buf, shape, np.dtype(dtype), out=out)
 

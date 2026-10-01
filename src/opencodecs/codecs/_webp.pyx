@@ -9,8 +9,10 @@
 """Native WebP codec via libwebp.
 
 Encode: 2D uint8 (gray, expanded to RGB), (H, W, 3) uint8 RGB,
-        (H, W, 4) uint8 RGBA. Set ``lossless=True`` for lossless.
-Decode: returns (H, W, 3) RGB or (H, W, 4) RGBA.
+        (H, W, 4) uint8 RGBA. Lossless and exact by default, as
+        ``imagecodecs.webp_encode``; ``lossless=False`` for lossy.
+Decode: returns (H, W, 3) RGB or (H, W, 4) RGBA; ``hasalpha`` forces
+        one or the other, as in ``imagecodecs.webp_decode``.
 """
 
 from cpython.bytes cimport PyBytes_FromStringAndSize, PyBytes_AsString
@@ -20,10 +22,7 @@ import numpy as np
 cimport numpy as cnp
 
 from webp cimport (
-    WebPEncodeRGB, WebPEncodeRGBA,
-    WebPEncodeLosslessRGB, WebPEncodeLosslessRGBA,
-    oc_webp_encode, oc_webp_free,
-    WebPFree,
+    oc_webp_encode, oc_webp_free, WebPGetEncoderVersion,
     WebPGetFeatures, WebPBitstreamFeatures,
     WebPDecodeRGBInto, WebPDecodeRGBAInto,
     VP8_STATUS_OK,
@@ -41,40 +40,66 @@ class WebpError(RuntimeError):
     """Raised on WebP encode/decode failures."""
 
 
-def encode(data, *, level: int | None = None,
-           lossless: bool = False,
-           numthreads: int | None = None,
-           method: int = -1) -> bytes:
+def version() -> str:
+    """Return the linked libwebp encoder version, e.g. ``'libwebp 1.6.0'``.
+
+    Same format as ``imagecodecs.webp_version()``.
+    """
+    cdef int v = WebPGetEncoderVersion()
+    return f'libwebp {(v >> 16) & 0xff}.{(v >> 8) & 0xff}.{v & 0xff}'
+
+
+def encode(data, *, level=None, lossless=None, numthreads=None,
+           method=None) -> bytes:
     """Encode a uint8 image as WebP.
+
+    The parameters mean what they mean in ``imagecodecs.webp_encode``.
+    For an ``(H, W, 3)`` or ``(H, W, 4)`` array that imagecodecs also
+    accepts, the same arguments give the same bytes when both link the
+    same libwebp version.
+
+    The arguments are deliberately not annotated: Cython enforces an
+    annotation as an exact type, which would refuse ``lossless=1`` or a
+    NumPy bool and truncate a fractional ``level``.
 
     Parameters
     ----------
-    level : int, optional
-        Quality 0-100 (default 75); ignored when ``lossless=True``.
-    lossless : bool
-        Use the near-lossless preset (preset level 6).
+    level : float, optional
+        ``WebPConfig.quality``, 0-100, default 75, clamped to 100. For
+        lossy encoding it is the quality factor; for lossless encoding
+        libwebp defines it as the compression effort (0 fastest, 100
+        smallest). Fractions are kept. A negative level selects lossless
+        encoding at the default effort, as in imagecodecs.
+    lossless : bool, optional
+        ``None`` (default) encodes losslessly. Any other value is read
+        as imagecodecs reads it, ``int(lossless)``, nonzero meaning
+        lossless: ``True``, ``1`` and NumPy bools select lossless,
+        ``False``, ``0`` and ``0.5`` lossy, and a string that is not an
+        integer, such as ``'no'``, raises ``ValueError``. Lossless output is exact: RGB
+        values under fully transparent pixels are kept
+        (``WebPConfig.exact=1``).
     numthreads : int, optional
         ``None`` or ``<=0`` uses the libwebp default (single-threaded).
         Any positive value enables libwebp's worker thread for entropy
         coding (``WebPConfig.thread_level=1``). libwebp's threading model
         is a binary on/off, not an N-way pool — additional workers don't
         help. Typical speedup: 1.3-1.8× on lossy RGB encode.
-    method : int
-        libwebp speed/quality tradeoff 0..6. ``-1`` (default) leaves
-        libwebp's own default (4).
+    method : int, optional
+        libwebp speed/size tradeoff 0..6, clamped to that range, so
+        ``-1`` means 0, as in imagecodecs. ``None`` (default) is
+        libwebp's default, 4.
     """
     cdef:
         cnp.ndarray arr
         const uint8_t* src_ptr
-        uint8_t* out_ptr = NULL
         uint8_t* shim_ptr = NULL
         size_t out_size = 0
         int width, height, stride
         float quality
         int thread_level
         int has_alpha_c = 0
-        int lossless_c = 1 if lossless else 0
-        int method_c = int(method)
+        int lossless_c
+        int method_c
         int rc
         bytes out
 
@@ -105,71 +130,66 @@ def encode(data, *, level: int | None = None,
     stride = <int> arr.strides[0]
     src_ptr = <const uint8_t*> cnp.PyArray_DATA(arr)
 
-    quality = 75.0 if level is None else float(level)
-    if quality < 0: quality = 0
-    if quality > 100: quality = 100
+    # imagecodecs: level None -> 75, clamped to [-1, 100]; a negative
+    # level means lossless at the default effort.
+    quality = 75.0 if level is None else min(float(level), 100.0)
+    # imagecodecs computes int(lossless is None or lossless or level < 0),
+    # so a value int() cannot read, such as the string 'no', raises.
+    lossless_v = lossless is None or lossless or quality < 0
+    try:
+        lossless_c = 1 if int(lossless_v) else 0
+    except ValueError:
+        raise ValueError(
+            f'WebP encode: lossless={lossless!r} is not a truth value or '
+            f'integer') from None
+    except TypeError:
+        raise TypeError(
+            f'WebP encode: lossless must be a truth value or integer, '
+            f'got {type(lossless).__name__}') from None
+    if quality < 0: quality = 75.0
+
+    # imagecodecs: method None -> 4, otherwise clamped to [0, 6].
+    method_c = 4 if method is None else min(max(int(method), 0), 6)
 
     if numthreads is None or int(numthreads) <= 0:
         thread_level = 0
     else:
         thread_level = 1
 
-    if thread_level or method_c >= 0:
-        # Advanced API via the shim — needed to set thread_level / method.
-        with nogil:
-            rc = oc_webp_encode(
-                src_ptr, width, height, stride,
-                has_alpha_c, lossless_c, quality,
-                thread_level, method_c,
-                &shim_ptr, &out_size,
-            )
-        if rc != 0 or shim_ptr == NULL or out_size == 0:
-            if shim_ptr != NULL:
-                oc_webp_free(shim_ptr)
-            raise WebpError(f'WebP encode failed (rc={rc})')
-        try:
-            out = PyBytes_FromStringAndSize(
-                <char*> shim_ptr, <Py_ssize_t> out_size)
-            return out
-        finally:
+    # Always the advanced API: the simple WebPEncode* helpers cannot set
+    # the lossless effort or exact=1, and taking them for some argument
+    # combinations made the bytes depend on numthreads and method.
+    with nogil:
+        rc = oc_webp_encode(
+            src_ptr, width, height, stride,
+            has_alpha_c, lossless_c, quality,
+            thread_level, method_c,
+            &shim_ptr, &out_size,
+        )
+    if rc != 0 or shim_ptr == NULL or out_size == 0:
+        if shim_ptr != NULL:
             oc_webp_free(shim_ptr)
-
-    # Simple API — minimal overhead, no advanced config available.
-    if lossless:
-        if has_alpha_c:
-            with nogil:
-                out_size = WebPEncodeLosslessRGBA(
-                    src_ptr, width, height, stride, &out_ptr)
-        else:
-            with nogil:
-                out_size = WebPEncodeLosslessRGB(
-                    src_ptr, width, height, stride, &out_ptr)
-    else:
-        if has_alpha_c:
-            with nogil:
-                out_size = WebPEncodeRGBA(
-                    src_ptr, width, height, stride, quality, &out_ptr)
-        else:
-            with nogil:
-                out_size = WebPEncodeRGB(
-                    src_ptr, width, height, stride, quality, &out_ptr)
-
-    if out_ptr == NULL or out_size == 0:
-        raise WebpError('WebP encode failed')
+        raise WebpError(f'WebP encode failed (rc={rc})')
     try:
-        out = PyBytes_FromStringAndSize(<char*> out_ptr, <Py_ssize_t> out_size)
+        out = PyBytes_FromStringAndSize(
+            <char*> shim_ptr, <Py_ssize_t> out_size)
         return out
     finally:
-        WebPFree(out_ptr)
+        oc_webp_free(shim_ptr)
 
 
-def decode(data, *, out=None) -> np.ndarray:
+def decode(data, *, hasalpha=None, out=None) -> np.ndarray:
     """Decode WebP bytes into a uint8 array.
 
+    ``hasalpha`` is imagecodecs' parameter: ``None`` (default) returns
+    ``(H, W, 4)`` RGBA when the bitstream has alpha and ``(H, W, 3)`` RGB
+    otherwise, a true value always returns RGBA (alpha 255 where the
+    image has none), and a false value always returns RGB.
+
     ``out=`` is a preallocated ``(H, W, 3) | (H, W, 4) uint8`` ndarray
-    matching the WebP file's geometry. See ``_png.decode`` for the full
-    contract. WebPDecode{RGB,RGBA}Into write directly into the buffer
-    so this is a true zero-alloc fast path.
+    matching that shape. See ``_png.decode`` for the full contract.
+    WebPDecode{RGB,RGBA}Into write directly into the buffer so this is
+    a true zero-alloc fast path.
     """
     cdef:
         const uint8_t[::1] src
@@ -199,7 +219,10 @@ def decode(data, *, out=None) -> np.ndarray:
 
     width = features.width
     height = features.height
-    has_alpha = bool(features.has_alpha)
+    if hasalpha is None:
+        has_alpha = bool(features.has_alpha)
+    else:
+        has_alpha = bool(hasalpha)
     channels = 4 if has_alpha else 3
     shape[0] = height
     shape[1] = width

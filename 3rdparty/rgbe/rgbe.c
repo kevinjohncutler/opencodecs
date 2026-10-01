@@ -46,6 +46,12 @@ Modifications by the opencodecs authors:
   the nonzero-pixel branch folds away with it.
 - Accept resolution lines in orientations other than "-Y H +X W", via
   RGBE_ReadHeaderOriented, and orient the scanlines accordingly.
+- Accept a header that starts with the "#?" magic and has no FORMAT
+  line, as Radiance's own reader (checkheader in header.c) does. A
+  FORMAT line naming only another pixel format is still an error.
+- Read the FORMAT value as Radiance's formatval (header.c) does:
+  whitespace after "FORMAT=" is skipped and the value ends at the next
+  whitespace, so "FORMAT= 32-bit_rle_rgbe" is the RGBE format.
 
 http://www.graphics.cornell.edu/online/formats/rgbe/
 
@@ -261,6 +267,33 @@ RGBE_WriteHeader(
     return RGBE_RETURN_SUCCESS;
 }
 
+/* Classify a header line the way Radiance's formatval (header.c) reads
+   it: "FORMAT=", optional whitespace, then a value that runs to the next
+   whitespace. Returns 0 when the line is not a FORMAT line or its value
+   is empty (Radiance ignores such a line), 1 for the RGBE or XYZE picture
+   formats, and 2 for any other format. */
+static int
+rgbe_format_line(const char *buf)
+{
+    const char *s;
+    const char *e;
+
+    if (strncmp(buf, "FORMAT=", 7) != 0)
+        return 0;
+    s = buf + 7;
+    while ((*s != 0) && isspace((unsigned char)*s))
+        s++;
+    if (*s == 0)
+        return 0;
+    e = s;
+    while ((*e != 0) && !isspace((unsigned char)*e))
+        e++;
+    if ((e - s == 15) && ((strncmp(s, "32-bit_rle_rgbe", 15) == 0) ||
+                          (strncmp(s, "32-bit_rle_xyze", 15) == 0)))
+        return 1;
+    return 2;
+}
+
 /* minimal header reading.  modify if you want to parse more information */
 int
 RGBE_ReadHeaderOriented(
@@ -272,10 +305,14 @@ RGBE_ReadHeaderOriented(
 {
     char buf[RGBE_HEADER_LINE_LENGTH];
     int found_format;
+    int other_format;
+    int have_magic;
+    int fmt;
     float tempf;
     ssize_t i;
 
-    found_format = 0;
+    found_format = 0;  /* a FORMAT line naming RGBE or XYZE */
+    other_format = 0;  /* a FORMAT line naming anything else */
     if (info) {
         info->valid = 0;
         info->programtype[0] = 0;
@@ -283,7 +320,8 @@ RGBE_ReadHeaderOriented(
     }
     if (rgbe_stream_gets(buf, sizeof(buf) / sizeof(buf[0]), fp) == NULL)
         return RGBE_READ_ERROR;
-    if ((buf[0] != '#') || (buf[1] != '?')) {
+    have_magic = (buf[0] == '#') && (buf[1] == '?');
+    if (!have_magic) {
         /* to require the magic token then uncomment the next line */
         /* return RGBE_FORMAT_ERROR; */ /* bad initial token */
     }
@@ -300,18 +338,22 @@ RGBE_ReadHeaderOriented(
     }
     for (;;) {
         if ((buf[0] == 0) || (buf[0] == '\n')) {
-            if (found_format == 0) {
-                return RGBE_FORMAT_ERROR; /* no FORMAT specifier found */
+            /* Radiance treats a missing FORMAT line as the default
+               picture format, so a header with the "#?" magic needs
+               none. Without the magic a FORMAT line is still required,
+               so arbitrary data is not taken for a header. */
+            if (!found_format && (other_format || !have_magic)) {
+                return RGBE_FORMAT_ERROR; /* no usable FORMAT specifier */
             }
             else {
                 break;
             }
         }
-        else if (
-            (strcmp(buf, "FORMAT=32-bit_rle_rgbe\n") == 0) ||
-            (strcmp(buf, "FORMAT=32-bit_rle_xyze\n") == 0))
-        {
+        else if ((fmt = rgbe_format_line(buf)) == 1) {
             found_format = 1;
+        }
+        else if (fmt == 2) {
+            other_format = 1; /* a pixel format this reader cannot read */
         }
         else if (info && (sscanf(buf, "GAMMA=%g", &tempf) == 1)) {
             info->gamma = tempf;

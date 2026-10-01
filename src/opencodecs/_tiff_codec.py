@@ -38,7 +38,8 @@ from .core._optional_backend import import_or_stubs
     _tiff_check_signature,
     _tiff_packbits_decode, _tiff_lzw_decode,
     _tiff_undo_horizontal_u8, _tiff_undo_horizontal_u16,
-    _tiff_undo_horizontal_u32, _tiff_undo_floating_point,
+    _tiff_undo_horizontal_u32, _tiff_undo_horizontal_u64,
+    _tiff_undo_floating_point,
     TAG_IMAGE_WIDTH, TAG_IMAGE_LENGTH, TAG_BITS_PER_SAMPLE,
     TAG_COMPRESSION, TAG_PHOTOMETRIC,
     TAG_STRIP_OFFSETS, TAG_SAMPLES_PER_PIXEL, TAG_ROWS_PER_STRIP,
@@ -58,7 +59,7 @@ from .core._optional_backend import import_or_stubs
     "copy_strips_from_buffer", "check_signature",
     "packbits_decode", "lzw_decode",
     "undo_horizontal_u8", "undo_horizontal_u16",
-    "undo_horizontal_u32", "undo_floating_point",
+    "undo_horizontal_u32", "undo_horizontal_u64", "undo_floating_point",
     "TAG_IMAGE_WIDTH", "TAG_IMAGE_LENGTH", "TAG_BITS_PER_SAMPLE",
     "TAG_COMPRESSION", "TAG_PHOTOMETRIC",
     "TAG_STRIP_OFFSETS", "TAG_SAMPLES_PER_PIXEL", "TAG_ROWS_PER_STRIP",
@@ -73,6 +74,13 @@ from .core._optional_backend import import_or_stubs
     "CMP_EER_V0", "CMP_EER_V1", "CMP_EER_V2",
     "TAG_EER_SKIPBITS", "TAG_EER_HORZBITS", "TAG_EER_VERTBITS",
 )
+
+
+# Predictor 2 kernels by sample width in bytes.
+_UNDO_HORIZONTAL = {
+    1: _tiff_undo_horizontal_u8, 2: _tiff_undo_horizontal_u16,
+    4: _tiff_undo_horizontal_u32, 8: _tiff_undo_horizontal_u64,
+}
 
 
 # Lazy imports of opencodecs's existing native codecs — only loaded
@@ -182,8 +190,18 @@ def _tag_seq(tags: dict, tag_id: int) -> tuple:
 #   2 = signed int
 #   3 = IEEE float
 #   4 = undefined
+#   6 = complex IEEE float (libtiff's SAMPLEFORMAT_COMPLEXIEEEFP; the
+#       BitsPerSample value covers both components)
 def _dtype_for(bits_per_sample: int, sample_format: int) -> np.dtype:
     """Return a numpy dtype for the given (bits, sample_format) pair."""
+    if sample_format == 6:  # complex float: real then imaginary
+        if bits_per_sample == 64:
+            return np.dtype(np.complex64)
+        if bits_per_sample == 128:
+            return np.dtype(np.complex128)
+        raise NotImplementedError(
+            f"TIFF: complex float dtype with {bits_per_sample} bps not supported"
+        )
     if sample_format == 3:  # float
         if bits_per_sample == 16:
             return np.dtype(np.float16)
@@ -327,6 +345,17 @@ class TiffPage:
         self.tiles_x = (self.width + self.tile_width - 1) // self.tile_width
         self.tiles_y = (self.height + self.tile_height - 1) // self.tile_height
 
+        # TIFF 6.0 section 8: a PlanarConfiguration=2 page stores one run of
+        # strips or tiles per sample, SamplesPerPixel runs in all. Earlier
+        # versions of this package's writer tagged pages 2 but stored the
+        # samples interleaved, with a single run. A separate-plane page with
+        # exactly one run can hold nothing else, so it is read as the
+        # interleaved data it is. A count that matches neither layout is
+        # left to the range check in asarray.
+        if (self.planar_config == 2 and self.samples_per_pixel > 1
+                and len(self.offsets) == self.tiles_x * self.tiles_y):
+            self.planar_config = 1
+
         # SubIFD offsets (TIFF tag 330) — bioformats / pyramid OME-TIFFs
         # use these to attach sub-resolution levels to a top-level IFD.
         # ``_tag`` returns a scalar for count==1 and a tuple otherwise; we
@@ -415,6 +444,20 @@ class TiffPage:
             # Predicted bytes are not floats yet. Preserve their exact bits;
             # numeric endian conversion could alter encoded NaN payloads.
             return np.frombuffer(raw_bytes, dtype=self.dtype)
+        if (self.predictor == 2 and self.dtype.kind in "fc"
+                and self.dtype.itemsize in _UNDO_HORIZONTAL):
+            # Predictor 2 differences the storage word as an unsigned
+            # integer, so these are not floats yet either. Swap them as
+            # unsigned integers, which keeps every bit, and undo the
+            # predictor on that view (see _undo_predictor). A complex64
+            # sample is one 64-bit word here, as in libtiff (swabHorAcc64);
+            # without a predictor each component is swapped on its own.
+            word = np.dtype(f"u{self.dtype.itemsize}")
+            file_word = word.newbyteorder(self._stream._byte_order)
+            arr = np.frombuffer(raw_bytes, dtype=file_word)
+            if _byteorder_differs(file_word, word):
+                arr = arr.astype(word, copy=True)
+            return arr.view(self.dtype)
         file_dtype = self.dtype.newbyteorder(self._stream._byte_order)
         arr = np.frombuffer(raw_bytes, dtype=file_dtype)
         # Only swap when the orders genuinely differ. numpy spells
@@ -485,7 +528,16 @@ class TiffPage:
         # lerc between 0.97x and 1.03x -- noise. Kept because it is
         # never worse and one less copy is one less thing to hold.
         if cmp == CMP_LERC or cmp == CMP_LERC_LEGACY:
-            return _get_decoder("opencodecs.codecs._lerc")(raw)
+            decoded = _get_decoder("opencodecs.codecs._lerc")(raw)
+            # A LERC blob holds each sample word in the file's byte order:
+            # this package's writer swaps a big-endian file's samples
+            # before encoding them, and tifffile swaps them back after
+            # decoding. Taking those words as native values returned
+            # wrong values for big-endian files.
+            file_dtype = decoded.dtype.newbyteorder(self._stream._byte_order)
+            if decoded.dtype.itemsize > 1 and _byteorder_differs(file_dtype, decoded.dtype):
+                decoded = decoded.view(file_dtype).astype(decoded.dtype)
+            return decoded
         if cmp == CMP_JXL:
             workers = native_workers(None)
             options = {} if workers is None else {"numthreads": workers}
@@ -518,8 +570,11 @@ class TiffPage:
           - compression 65001: skipbits=7, horzbits=2, vertbits=2
           - compression 65002: read from tags (variant per acquisition)
 
-        Output is a ``(H, W)`` uint8 array of event counts (binary
-        per-pixel when the source isn't super-resolution).
+        Output is the codec's ``(H, W)`` bool array, True where a pixel
+        saw an event (decoded without super-resolution, so at most one
+        per pixel), as imagecodecs.eer_decode returns it. The page's
+        decode path stores it in the page's own dtype: bool for
+        BitsPerSample=1, 0/1 values for a wider sample type.
         """
         from .codecs._eer import decode as _eer_decode
         cmp = self.compression
@@ -569,7 +624,7 @@ class TiffPage:
             return None
         kind, size = self.dtype.kind, self.dtype.itemsize
         if self.predictor == 1 or self.predictor == 2:
-            if self.predictor == 2 and (kind not in "ui" or size not in (1, 2, 4)):
+            if self.predictor == 2 and (kind not in "uifc" or size not in (1, 2, 4, 8)):
                 return None
             if _byteorder_differs(self.dtype.newbyteorder(self._stream._byte_order),
                                   self.dtype):
@@ -656,18 +711,14 @@ class TiffPage:
                 if not view.flags["WRITEABLE"]:
                     view = view.copy()
                 arr = view.reshape(arr.shape) if view is not arr else arr
-            if view.dtype == np.uint8:
-                _tiff_undo_horizontal_u8(view)
-            elif view.dtype == np.uint16:
-                _tiff_undo_horizontal_u16(view)
-            elif view.dtype == np.uint32:
-                _tiff_undo_horizontal_u32(view)
-            elif view.dtype == np.int8:
-                _tiff_undo_horizontal_u8(view.view(np.uint8))
-            elif view.dtype == np.int16:
-                _tiff_undo_horizontal_u16(view.view(np.uint16))
-            elif view.dtype == np.int32:
-                _tiff_undo_horizontal_u32(view.view(np.uint32))
+            # As in libtiff (horAcc8/16/32/64), the running sum is taken
+            # on the unsigned storage word with wraparound whatever the
+            # SampleFormat: signed, floating-point and complex samples use
+            # the unsigned kernel of their width. Floats are never summed
+            # as floats; Predictor 3 is the floating-point predictor.
+            undo = _UNDO_HORIZONTAL.get(view.dtype.itemsize)
+            if view.dtype.kind in "uifc" and view.dtype.isnative and undo is not None:
+                undo(view.view(f"u{view.dtype.itemsize}"))
             else:
                 raise NotImplementedError(
                     f"TIFF predictor 2 (horizontal) for dtype "
@@ -924,7 +975,11 @@ class TiffPage:
         # then plane 1, etc. n_planes is the outer-loop count; for
         # planar=1 (chunky) it's just 1.
         n_planes = self.samples_per_pixel if self.planar_config == 2 else 1
-        segments_per_plane = len(self.offsets) // max(n_planes, 1)
+        # Each plane's run starts after the previous plane's full grid
+        # (TIFF 6.0 section 8), whatever the offset count says; a short
+        # count then fails the range check below instead of shifting
+        # every later plane onto the wrong segments.
+        segments_per_plane = self.tiles_x * self.tiles_y
 
         # Batched fetch path: when the data source advertises read_many
         # (HTTPDataSource / FileDataSource), pull every segment's bytes

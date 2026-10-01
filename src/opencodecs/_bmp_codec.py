@@ -11,19 +11,47 @@ Encode parity with imagecodecs:
   - (H, W, 4) uint8 -> 32-bit BI_BITFIELDS BGRA via BITMAPV4HEADER
 
 Decode supports the formats we actually encounter in the wild:
-  - 8-bit paletted  (BI_RGB; grayscale-palette -> 2D, color-palette -> RGB)
-  - 24-bit BGR      (BI_RGB)
+  - 1-, 2-, 4- and 8-bit paletted (BI_RGB; grayscale-palette -> 2D,
+    color-palette -> RGB, or as ``asrgb`` asks)
+  - 24-bit BGR      (BI_RGB, and BI_BITFIELDS with explicit channel masks)
   - 32-bit BGRA/BGRX (BI_RGB and BI_BITFIELDS with explicit channel masks)
   - 16-bit RGB555/RGB565 (BI_RGB / BI_BITFIELDS)
   - bottom-up (positive height) and top-down (negative height) layouts
+
+Channel masks (BI_BITFIELDS, BI_ALPHABITFIELDS) are read where the
+header defines them: for a 40-byte BITMAPINFOHEADER, exactly three
+DWORD masks follow the header (four for BI_ALPHABITFIELDS); the 52- and
+56-byte Adobe headers and BITMAPV4HEADER/V5 carry them inside the
+header at file offset 54, with the alpha mask from 56 bytes on. A
+fourth DWORD after a 40-byte BI_BITFIELDS header is taken as an alpha
+mask only when the pixel data starts after it and it is a contiguous
+mask disjoint from the color masks, so pixel bytes are never read as a
+mask. Masks must be contiguous (Microsoft's BITMAPV4HEADER
+documentation); a gapped one raises ``BmpError``, and so do a bitfield
+compression on a paletted (1- to 8-bit) image, a pixel data offset that
+lies inside the masks after a 40-byte header (the pixels would be read
+as masks), and a 24-bit file with a zero color mask (24-bit bitfields
+are outside Microsoft's documentation, so only masks that select all
+three colors are read).
+
+A file cut short in its headers, masks, color table or uncompressed
+pixel rows raises ``BmpError``. An RLE pixel stream is different,
+because an encoder may stop it early: cut short anywhere but inside a
+delta or an absolute run (which raise ``BmpError``), it decodes, and the
+pixels it never reaches keep index 0.
+
+A channel narrower or wider than 8 bits is scaled with the PNG
+specification's reference sample-depth equation,
+``round(v * 255 / (2**n - 1))``, so every width maps 0 to 0 and its
+maximum to 255. imagecodecs truncates instead, so 5- and 6-bit
+channels can differ from it by one.
 
 Also decodes BI_RLE8 and BI_RLE4. Those were skipped as "rare" until
 the bmpsuite conformance files went into the corpus and turned out to
 contain them: they are ordinary output for paletted images, and a
 decoder that rejects them is not a BMP decoder.
 
-Not supported: BI_JPEG/BI_PNG, OS/2 BA/CI/CP variants, and uncompressed
-1- and 4-bit paletted (RLE4 carries 4-bit indices and is supported).
+Not supported: BI_JPEG/BI_PNG and the OS/2 BA/CI/CP variants.
 """
 
 from __future__ import annotations
@@ -49,6 +77,32 @@ _bmp_encode, _bmp_decode_bgr24, _bmp_decode_bgra32, _HAVE_BMP_ENCODE = import_or
 )
 
 
+def _copy_to_out(result: np.ndarray, out, name: str) -> np.ndarray:
+    """Copy ``result`` into a caller's ``out`` as imagecodecs does: the
+    dtype must match, ``out`` must be C-contiguous, and its shape must
+    equal the result's apart from length-1 axes (the returned array is
+    then ``out`` reshaped). Anything else raises ``ValueError`` rather
+    than broadcasting or casting into ``out``."""
+    if out is None:
+        return result
+    if not isinstance(out, np.ndarray):
+        raise TypeError(f"{name} decode: out must be an ndarray")
+    if out.dtype != result.dtype:
+        raise ValueError(f"{name} decode: out dtype {out.dtype} is not "
+                         f"the image's {result.dtype}")
+    if not out.flags.c_contiguous:
+        raise ValueError(f"{name} decode: out is not C-contiguous")
+    view = out
+    if out.shape != result.shape:
+        if ([d for d in out.shape if d != 1]
+                != [d for d in result.shape if d != 1]):
+            raise ValueError(f"{name} decode: out shape {out.shape} does "
+                             f"not hold the image's {result.shape}")
+        view = out.reshape(result.shape)
+    view[...] = result
+    return view
+
+
 class BmpError(RuntimeError):
     """Raised on malformed or unsupported BMP files."""
 
@@ -57,6 +111,7 @@ _BI_RGB = 0
 _BI_RLE8 = 1
 _BI_RLE4 = 2
 _BI_BITFIELDS = 3
+_BI_ALPHABITFIELDS = 6
 
 
 def _row_stride(width: int, bits_per_pixel: int) -> int:
@@ -182,20 +237,31 @@ def _encode_bgra32(arr: np.ndarray) -> bytes:
     return bytes(out)
 
 
-def _apply_palette(idx: np.ndarray, palette: np.ndarray) -> np.ndarray:
+def _apply_palette(idx: np.ndarray, palette: np.ndarray,
+                   asrgb: bool | None = None) -> np.ndarray:
     """Map palette indices to RGB, or return 2D when the palette is gray.
 
     Shared by the uncompressed and RLE paths so both agree on when a
-    paletted file is really a grayscale one.
+    paletted file is really a grayscale one. ``asrgb`` follows
+    imagecodecs: None decides from the palette, True always expands to
+    RGB, False returns the palette indices.
     """
+    if asrgb is not None and not asrgb:
+        return np.ascontiguousarray(idx)
     bgr = palette[:, :3]
     is_gray = (
         np.array_equal(bgr[:, 0], np.arange(len(bgr), dtype=np.uint8))
         and np.array_equal(bgr[:, 1], bgr[:, 0])
         and np.array_equal(bgr[:, 2], bgr[:, 0])
     )
-    if is_gray:
+    if is_gray and asrgb is None:
         return np.ascontiguousarray(idx)
+    if idx.size and int(idx.max()) >= len(palette):
+        # An index past a short color table shows as black rather than
+        # failing the whole decode.
+        padded = np.zeros((256, 4), dtype=np.uint8)
+        padded[:len(palette)] = palette
+        palette = padded
     rgb = np.empty(idx.shape + (3,), dtype=np.uint8)
     rgb[..., 0] = palette[idx, 2]           # R lives in the palette's B slot
     rgb[..., 1] = palette[idx, 1]
@@ -267,7 +333,18 @@ def _decode_rle(data, start, stop, width, height, four_bit):
     return out[::-1]                        # RLE bitmaps are always bottom-up
 
 
-def _decode(data: bytes) -> np.ndarray:
+def _unpack_indices(rows: np.ndarray, width: int, bpp: int) -> np.ndarray:
+    """Split packed 1-, 2- or 4-bit palette indices, most significant
+    bits first (the leftmost pixel is in the high bits of each byte)."""
+    if bpp == 1:
+        return np.unpackbits(rows, axis=1)[:, :width]
+    per_byte = 8 // bpp
+    mask = (1 << bpp) - 1
+    planes = [(rows >> (8 - bpp * (k + 1))) & mask for k in range(per_byte)]
+    return np.stack(planes, axis=-1).reshape(rows.shape[0], -1)[:, :width]
+
+
+def _decode(data: bytes, asrgb: bool | None = None) -> np.ndarray:
     if len(data) < 14 or data[:2] != b'BM':
         raise BmpError('not a BMP file (missing BM magic)')
     bf_size, _, _, pix_offset = struct.unpack('<IHHI', data[2:14])
@@ -286,7 +363,8 @@ def _decode(data: bytes) -> np.ndarray:
     ) = struct.unpack('<IiiHHIIiiII', data[14:54])
     del _info_size, planes, _xppm, _yppm, _clr_important
 
-    if compression not in (_BI_RGB, _BI_RLE8, _BI_RLE4, _BI_BITFIELDS):
+    if compression not in (_BI_RGB, _BI_RLE8, _BI_RLE4, _BI_BITFIELDS,
+                           _BI_ALPHABITFIELDS):
         raise BmpError(f'unsupported BMP compression {compression}')
     if bpp not in (1, 2, 4, 8, 16, 24, 32):
         # Validate before anything derives a stride from it. A bogus
@@ -309,29 +387,87 @@ def _decode(data: bytes) -> np.ndarray:
     if width <= 0 or height <= 0:
         raise BmpError(f'invalid BMP dimensions {width}x{height}')
 
-    # Pull channel masks (either from BITMAPV4HEADER region or from the
-    # 12 bytes that follow a BITMAPINFOHEADER when compression == BI_BITFIELDS).
+    # Channel masks. Every header from the 52-byte BITMAPV2INFOHEADER on
+    # (V2 and V3 are Adobe's, V4 and V5 Microsoft's) carries R, G, B at
+    # file offset 54, and from 56 bytes on also the alpha mask at 66.
+    # A 40-byte BITMAPINFOHEADER has none in the header: BI_BITFIELDS
+    # appends exactly three DWORD masks (Microsoft's BITMAPINFOHEADER
+    # documentation), BI_ALPHABITFIELDS four. A fourth DWORD after a
+    # 40-byte BI_BITFIELDS header is normally pixel data, so it is read
+    # as alpha only under the narrow leniency below.
     masks = None
     alpha_mask = 0
-    if compression == _BI_BITFIELDS:
-        if info_size >= 108:
-            r, g, b, a = struct.unpack('<IIII', data[54:70])
-            masks = (r, g, b)
-            alpha_mask = a
+    n_trailing_masks = 0
+    if compression in (_BI_BITFIELDS, _BI_ALPHABITFIELDS):
+        # Microsoft documents BI_BITFIELDS for 16 and 32 bpp only; 24 bpp
+        # is accepted too, as earlier versions and Pillow read it. A
+        # paletted image has no channels for masks to select, so one with
+        # a bitfield compression is refused.
+        if bpp not in (16, 24, 32):
+            raise BmpError(
+                f'bitfield compression requires 16, 24 or 32 bpp, got {bpp}')
+        if info_size >= 52:
+            masks = struct.unpack('<III', data[54:66])
+            if info_size >= 56:
+                alpha_mask = struct.unpack('<I', data[66:70])[0]
         else:
-            mask_off = 14 + info_size
-            r, g, b = struct.unpack('<III', data[mask_off:mask_off + 12])
-            masks = (r, g, b)
-            # Some 32-bit BI_BITFIELDS files include a 4th alpha mask after.
-            if bpp == 32 and len(data) >= mask_off + 16:
-                alpha_mask = struct.unpack('<I', data[mask_off + 12:mask_off + 16])[0]
+            n_trailing_masks = 4 if compression == _BI_ALPHABITFIELDS else 3
+            mask_end = 14 + info_size + 4 * n_trailing_masks
+            if len(data) < mask_end:
+                raise BmpError('truncated BMP color masks')
+            if pix_offset < mask_end:
+                # The masks sit between the header and the pixel data
+                # (Microsoft's BITMAPINFOHEADER documentation), so an
+                # offset inside them means the file has no masks, and
+                # what would be read as masks are pixels.
+                raise BmpError(
+                    f'BMP pixel data offset {pix_offset} lies inside the '
+                    f'color masks, which end at {mask_end}')
+            fields = struct.unpack(f'<{n_trailing_masks}I',
+                                   data[14 + info_size:mask_end])
+            masks = fields[:3]
+            if n_trailing_masks == 4:
+                alpha_mask = fields[3]
+            elif pix_offset >= mask_end + 4 and len(data) >= mask_end + 4:
+                # Leniency for writers that put an alpha mask after the
+                # three: honor a fourth DWORD only when it lies wholly
+                # before the pixel data (and inside the file) and is a
+                # contiguous mask selecting bits the color masks do not,
+                # so it can never be a pixel misread as a mask.
+                extra = struct.unpack('<I', data[mask_end:mask_end + 4])[0]
+                if (extra and not extra >> bpp and _contiguous(extra)
+                        and not extra & (masks[0] | masks[1] | masks[2])):
+                    alpha_mask = extra
+        if bpp == 24:
+            if not all(masks):
+                # No specification covers 24-bit bitfields, imagecodecs
+                # refuses them, and Pillow refuses any layout but its
+                # known ones, so only masks that select every color are
+                # read: a zero mask would turn real pixels black.
+                raise BmpError(
+                    f'24-bit BMP bitfields need a nonzero mask for each '
+                    f'color, got {tuple(hex(m) for m in masks)}')
+            if not alpha_mask & 0xFFFFFF:
+                # A V4/V5 header's alpha mask selects the high byte of a
+                # DWORD, which a 24-bit pixel does not have: no alpha.
+                alpha_mask = 0
+        for mask in masks + (alpha_mask,):
+            if mask >> bpp:
+                raise BmpError(
+                    f'BMP channel mask {mask:#x} does not fit in {bpp} bits')
+            # Microsoft's BITMAPV4HEADER and BITMAPV5HEADER documentation:
+            # "The bits in the masks must be contiguous". A gapped mask
+            # has no single bit width to scale from.
+            if not _contiguous(mask):
+                raise BmpError(
+                    f'BMP channel mask {mask:#x} is not contiguous')
 
     palette = None
     if bpp <= 8:
-        n_colors = clr_used or (1 << bpp)
-        pal_off = 14 + info_size
-        if compression == _BI_BITFIELDS:  # pragma: no cover - paletted+BI_BITFIELDS rare in wild
-            pal_off += 16 if bpp == 32 else 12
+        n_colors = min(clr_used or (1 << bpp), 1 << bpp)
+        pal_off = 14 + info_size + 4 * n_trailing_masks
+        if pal_off + n_colors * 4 > len(data):
+            raise BmpError('truncated BMP color table')
         palette = np.frombuffer(
             data, dtype=np.uint8, count=n_colors * 4, offset=pal_off,
         ).reshape(n_colors, 4)
@@ -340,7 +476,7 @@ def _decode(data: bytes) -> np.ndarray:
         end = pix_offset + size_image if size_image else len(data)
         idx = _decode_rle(memoryview(data), pix_offset, min(end, len(data)),
                           width, height, compression == _BI_RLE4)
-        return _apply_palette(idx, palette)
+        return _apply_palette(idx, palette, asrgb)
 
     stride = _row_stride(width, bpp)
     # Use a memoryview slice (zero-copy view) instead of a bytes
@@ -350,20 +486,33 @@ def _decode(data: bytes) -> np.ndarray:
     data_mv = memoryview(data)
     pix_end = pix_offset + stride * height
     if pix_end > len(data):
-        if size_image and len(data) - pix_offset >= size_image:  # pragma: no cover - rare encoder bug recovery
-            pix_end = pix_offset + size_image
-        if pix_end > len(data):
-            raise BmpError('truncated BMP pixel data')
+        # The rows need stride * height bytes whatever biSizeImage says,
+        # so a shorter file is truncated. (A recovery branch here used to
+        # trust biSizeImage and then failed in numpy's reshape.)
+        raise BmpError('truncated BMP pixel data')
     pix_data = data_mv[pix_offset:pix_end]
 
     rows = np.frombuffer(pix_data, dtype=np.uint8).reshape(height, stride)
 
-    if bpp == 8:
-        idx = rows[:, :width]
+    if bpp <= 8:
+        if bpp == 8:
+            idx = rows[:, :width]
+        else:
+            idx = _unpack_indices(rows, width, bpp)
         # Flip vertically unless top-down.
         if not top_down:
             idx = idx[::-1]
-        return _apply_palette(idx, palette)
+        return _apply_palette(idx, palette, asrgb)
+
+    if bpp == 24 and masks is not None and (
+            masks != (0xFF0000, 0xFF00, 0xFF) or alpha_mask):
+        # Masks other than the plain BGR layout: widen each pixel to a
+        # DWORD (high byte zero) and unpack it like a 32-bit one.
+        px = np.zeros((height, width, 4), dtype=np.uint8)
+        px[..., :3] = rows[:, :3 * width].reshape(height, width, 3)
+        if not top_down:
+            px = px[::-1]
+        return _unpack_32_bitfields(px, masks, alpha_mask)
 
     if bpp == 24:
         # Cython fast path — beats pure-Python+numpy ~14x on a Kodak
@@ -384,7 +533,7 @@ def _decode(data: bytes) -> np.ndarray:
     if bpp == 32:
         # 32-bit BI_RGB / BI_BITFIELDS BGRA. Same Cython fast path
         # benefit as bpp==24.
-        if compression == _BI_BITFIELDS and masks is not None:
+        if masks is not None:
             # Custom channel masks need the slow path — they may not
             # be the canonical RR GG BB AA layout. Rare in practice.
             px = rows[:, :4 * width].reshape(height, width, 4)
@@ -414,13 +563,18 @@ def _decode(data: bytes) -> np.ndarray:
             height, width)
         if not top_down:
             px = px[::-1]
-        if compression == _BI_BITFIELDS and masks is not None:
+        if masks is not None:
             return _unpack_16_bitfields(px, masks, alpha_mask)
         # BI_RGB 16-bit is RGB555 by spec.
         return _unpack_16_bitfields(
             px, (0x7C00, 0x03E0, 0x001F), 0)
 
     raise BmpError(f'unsupported BMP bpp={bpp}')
+
+
+def _contiguous(mask: int) -> bool:
+    """True for zero or a mask whose set bits form one run."""
+    return not (mask + (mask & -mask)) & mask
 
 
 def _shift_for_mask(mask: int) -> tuple[int, int]:
@@ -440,13 +594,25 @@ def _shift_for_mask(mask: int) -> tuple[int, int]:
 
 
 def _expand_channel(value: np.ndarray, width: int) -> np.ndarray:
-    """Expand a `width`-bit channel to 8 bits via top-bit replication."""
-    if width >= 8:
-        return (value >> (width - 8)).astype(np.uint8)
-    # Bit replication: 5-bit -> 8-bit by repeating top bits.
-    out = (value << (8 - width)).astype(np.uint8)
-    out |= (value >> (2 * width - 8)).astype(np.uint8) if 2 * width >= 8 else 0
-    return out
+    """Scale a ``width``-bit channel to 8 bits as ``round(v*255/max)``.
+
+    This is the PNG specification's reference sample-depth equation
+    (PNG section 12.4, "Sample depth scaling"); BMP itself does not say
+    how to scale. It maps 0 to 0 and the channel maximum to 255 at every
+    width, which the old single bit replication did not do for widths 1
+    to 3 (an opaque 1-bit alpha came out as 128).
+    """
+    if width == 0:
+        return np.zeros(value.shape, dtype=np.uint8)
+    if width == 8:
+        return value.astype(np.uint8)
+    maxv = (1 << width) - 1
+    if width <= 16:
+        levels = np.arange(maxv + 1, dtype=np.uint64)
+        lut = ((levels * 510 + maxv) // (2 * maxv)).astype(np.uint8)
+        return lut[value]
+    v = value.astype(np.uint64)
+    return ((v * 510 + maxv) // (2 * maxv)).astype(np.uint8)
 
 
 def _unpack_32_bitfields(
@@ -502,7 +668,13 @@ class BmpCodec(Codec):
     def signature(self, head: bytes) -> bool:
         return len(head) >= 2 and head[:2] == b'BM'
 
-    def encode(self, data: Any, *, dest=None, **opts) -> bytes | None:
+    def encode(self, data: Any, *, dest=None, ppm=None,
+               **opts) -> bytes | None:
+        """Encode uint8 2-D (8-bit gray paletted), RGB (24-bit) or RGBA
+        (32-bit BITMAPV4HEADER). ``ppm`` sets the horizontal and
+        vertical resolution in pixels per meter (an int, or an
+        ``(x, y)`` pair); the default is 3780 (96 DPI), and a value
+        below 1 is written as 1, as in imagecodecs."""
         if not isinstance(data, np.ndarray):
             data = np.asarray(data)
         try:
@@ -515,10 +687,36 @@ class BmpCodec(Codec):
             if type(e).__name__ == "BmpEncodeError":
                 raise BmpError(str(e)) from e
             raise
+        if ppm is not None:
+            encoded = _set_ppm(encoded, ppm)
         return _write_dest(encoded, dest)
 
-    def decode(self, src: Any, **opts) -> np.ndarray:
-        return _decode(_read_src(src))
+    def decode(self, src: Any, *, asrgb: bool | None = None, out=None,
+               **opts) -> np.ndarray:
+        """Decode a BMP. ``asrgb`` follows imagecodecs for paletted
+        images: None (default) returns 2-D for a grayscale palette and
+        RGB otherwise, True always returns RGB, False returns the
+        palette indices. Direct-color images ignore it. ``out`` must
+        be a C-contiguous uint8 array of the decoded shape (length-1
+        axes aside), else ``ValueError``, as in imagecodecs."""
+        return _copy_to_out(_decode(_read_src(src), asrgb), out, "bmp")
+
+
+def _set_ppm(encoded: bytes, ppm) -> bytes:
+    """Write the resolution fields (BITMAPINFOHEADER offsets 24 and 28)."""
+    if np.ndim(ppm) == 0:
+        xppm = yppm = int(ppm)
+    else:
+        xppm, yppm = (int(v) for v in ppm)
+    for v in (xppm, yppm):
+        if not -2**31 <= v < 2**31:
+            raise BmpError(f'ppm {v} does not fit a signed 32-bit field')
+    # BMP gives no meaning to a resolution below one pixel per meter;
+    # imagecodecs writes 1 for any such value, and so does this.
+    xppm, yppm = max(xppm, 1), max(yppm, 1)
+    out = bytearray(encoded)
+    struct.pack_into('<ii', out, 14 + 24, xppm, yppm)
+    return bytes(out)
 
 
 

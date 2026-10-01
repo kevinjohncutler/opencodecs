@@ -251,7 +251,8 @@ register_codec(Bz2Codec())
 
 
 # ---------------------------------------------------------------------------
-# gzip — stdlib (always available); same engine as deflate, gzip-framed
+# gzip: always available. The deflate engine encodes (the stdlib zlib
+# on a build without _deflate) and the stdlib decodes
 # ---------------------------------------------------------------------------
 
 from .._gzip_codec import GzipCodec
@@ -429,8 +430,9 @@ if "opencodecs.codecs._gif" in sys.modules:
 # ---------------------------------------------------------------------------
 
 if "opencodecs.codecs._snappy" in sys.modules:
-    from .._snappy_codec import SnappyCodec
+    from .._snappy_codec import SnappyCodec, SnappyFramedCodec
     register_codec(SnappyCodec())
+    register_codec(SnappyFramedCodec())
 
 
 # ---------------------------------------------------------------------------

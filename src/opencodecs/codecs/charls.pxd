@@ -34,8 +34,12 @@ cdef extern from "charls/charls.h" nogil:
         charls_jpegls_encoder* enc, int32_t near_lossless)
     charls_jpegls_errc charls_jpegls_encoder_set_interleave_mode(
         charls_jpegls_encoder* enc, int mode)
+    # charls_interleave_mode is a C enum in C and a scoped enum in C++.
+    # Declaring the pointer as the header's own type (rather than int*)
+    # keeps the call well-typed under both; read it through an int cast.
+    ctypedef int charls_interleave_mode
     charls_jpegls_errc charls_jpegls_decoder_get_interleave_mode(
-        const charls_jpegls_decoder* dec, int* mode)
+        const charls_jpegls_decoder* dec, charls_interleave_mode* mode)
     charls_jpegls_errc charls_jpegls_encoder_get_estimated_destination_size(
         const charls_jpegls_encoder* enc, size_t* size)
     charls_jpegls_errc charls_jpegls_encoder_set_destination_buffer(

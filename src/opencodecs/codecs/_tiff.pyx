@@ -613,15 +613,18 @@ def copy_strips_from_buffer(
 #   n in 0..127      → copy next n+1 input bytes literally
 #   n == -128 (0x80) → no-op
 #   n in -127..-1    → replicate next byte (1 - n) times
-# All TIFF writers fit into < 256 KB output per strip in practice, but
-# we still bound-check on every emit.
+# The format has no length field (TIFF 6.0 section 9): a stream decodes
+# until its input is used up. We still bound-check on every emit.
 
 def packbits_decode(data, expected_size: int = -1) -> bytes:
     """Decode a PackBits-compressed strip / tile to bytes.
 
-    `expected_size` (when known from tile_h * tile_w * itemsize) is used
-    as the output capacity. Pass -1 to size at 2x source (works for
-    typical TIFF strip RLE; raises if the encoded data overruns).
+    `expected_size` (when known from tile_h * tile_w * itemsize) is the
+    output capacity, and a stream that would decode to more raises. Pass
+    -1 (or 0) when the size is not known: the run headers are then summed
+    first and the output is sized exactly, however well the data
+    compressed, as imagecodecs.packbits_decode(data) does. (This used to
+    cap the output at 2x the input and raise past it.)
     """
     cdef:
         const uint8_t[::1] src
@@ -641,7 +644,23 @@ def packbits_decode(data, expected_size: int = -1) -> bytes:
     except (TypeError, ValueError, BufferError):
         src = bytes(data)
     srcsize = src.shape[0]
-    out_cap = expected_size if expected_size > 0 else max(srcsize * 2, 64)
+    if expected_size > 0:
+        out_cap = expected_size
+    else:
+        # Sizing pass over the run headers only: the format carries no
+        # length, but every header states how many bytes it yields.
+        out_cap = 0
+        with nogil:
+            while i < srcsize:
+                n = <int8_t> src[i]
+                i += 1
+                if n >= 0:
+                    out_cap += n + 1
+                    i += n + 1
+                elif n != -128:
+                    out_cap += 1 - n
+                    i += 1
+        i = 0
     out = PyBytes_FromStringAndSize(NULL, out_cap)
     dst = <uint8_t*> PyBytes_AsString(out)
 
@@ -751,18 +770,21 @@ def lzw_decode(data, expected_size: int = -1) -> bytes:
     than the previous pure-Cython per-string-malloc implementation and
     faster than imagecodecs.lzw_decode.
 
-    ``expected_size`` is the exact uncompressed byte count (from the
-    TIFF strip / tile size). Must be > 0 — pass it from the calling
-    side; we don't have a sensible default because LZW doesn't carry
-    the uncompressed size in-band.
+    ``expected_size`` is the uncompressed byte count (from the TIFF
+    strip / tile size) and caps the output. Pass -1 (or 0) when it is
+    not known: a TIFF LZW stream ends itself with the EndOfInformation
+    code (TIFF 6.0 section 13), so the output buffer is grown until the
+    whole stream fits, as imagecodecs.lzw_decode(data) does. (This used
+    to guess 8x the input and fail on anything that compressed better.)
     """
     cdef:
         const uint8_t[::1] src
         Py_ssize_t srcsize
         bytes out
         uint8_t* dst
-        Py_ssize_t out_cap
+        Py_ssize_t out_cap, limit
         Py_ssize_t n_written
+        bint grow
 
     try:
         src = data
@@ -770,21 +792,36 @@ def lzw_decode(data, expected_size: int = -1) -> bytes:
         src = bytes(data)
     srcsize = src.shape[0]
 
-    if expected_size <= 0:
-        # Best-effort: most TIFF strips compress 2-6x; 8x covers most
-        # cases. Callers should pass expected_size for correctness.
-        out_cap = max(srcsize * 8, 256)
+    if srcsize == 0:
+        return b""      # as imagecodecs.lzw_decode(b"") does
+    # The most one code can emit is a full dictionary string, 4096
+    # bytes, and every code takes at least 9 bits, so no stream decodes
+    # to more than this; growing past it cannot help.
+    limit = (srcsize * 8 // 9 + 1) * 4096
+    grow = expected_size <= 0
+    if grow:
+        # Most TIFF strips compress 2-6x; start at 8x and double.
+        out_cap = min(max(srcsize * 8, 256), limit)
     else:
         out_cap = expected_size
 
-    out = PyBytes_FromStringAndSize(NULL, out_cap)
-    dst = <uint8_t*> PyBytes_AsString(out)
-
-    with nogil:
-        n_written = oc_tifflzw_decode(
-            &src[0], <size_t> srcsize,
-            dst, <size_t> out_cap,
-        )
+    while True:
+        out = PyBytes_FromStringAndSize(NULL, out_cap)
+        dst = <uint8_t*> PyBytes_AsString(out)
+        with nogil:
+            n_written = oc_tifflzw_decode(
+                &src[0], <size_t> srcsize,
+                dst, <size_t> out_cap,
+            )
+        # The decoder also stops, successfully, when the buffer is
+        # exactly full, so with a guessed size a full buffer may hold
+        # only part of the stream: grow and decode again in that case
+        # too, rather than return a silently truncated result.
+        if grow and (n_written == -3 or n_written == out_cap) \
+                and out_cap < limit:
+            out_cap = min(out_cap * 2, limit)
+            continue
+        break
     if n_written < 0:
         raise TiffError(
             f"oc_tifflzw_decode failed: rc={n_written} "
@@ -800,7 +837,11 @@ def lzw_decode(data, expected_size: int = -1) -> bytes:
 # Predictor 1 = no predictor (identity).
 # Predictor 2 = horizontal differencing: each sample (after the first
 #   in a row) was stored as (sample - sample_to_left). Inverse is a
-#   prefix-sum along the last axis (within each row, per channel).
+#   prefix-sum along the last axis (within each row, per channel). As in
+#   libtiff (horAcc8/16/32/64), the sum runs on the unsigned 8, 16, 32 or
+#   64-bit storage word with wraparound, whatever the SampleFormat, so
+#   signed and floating-point samples take the unsigned kernel of their
+#   width.
 # Predictor 3 = floating-point predictor (TIFF Tech Note 3): the float
 #   bytes are byte-rearranged + horizontal-differenced. Reverse that.
 
@@ -808,6 +849,7 @@ ctypedef fused _uint_t:
     uint8_t
     uint16_t
     uint32_t
+    uint64_t
 
 
 cdef void _undo_rows(_uint_t* p0, Py_ssize_t rows, Py_ssize_t cols,
@@ -821,7 +863,8 @@ cdef void _undo_rows(_uint_t* p0, Py_ssize_t rows, Py_ssize_t cols,
 
     Written so that no compiler has to guess. With one sample the running
     sum lives in a register wider than the sample, 32 bits for uint8 and
-    uint16 and 64 for uint32; only its low bits are stored, and the wide
+    uint16 and 64 for uint32 (uint64 has no wider type and sums in its
+    own width); only its low bits are stored, and the wide
     sum agrees with the sample's own wraparound there, so the output is
     the same. A sum no wider than the sample is truncated on every step
     of a loop that cannot run in parallel, and MSVC compiled it as an add
@@ -875,7 +918,7 @@ cdef void _undo_rows(_uint_t* p0, Py_ssize_t rows, Py_ssize_t cols,
     cdef _uint_t* p
     for r in range(rows):
         p = p0 + r * row_elems
-        if samples == 1 and _uint_t is uint32_t:
+        if samples == 1 and (_uint_t is uint32_t or _uint_t is uint64_t):
             w0 = p[0]
             c = 1
             while c + 4 <= cols:
@@ -888,17 +931,21 @@ cdef void _undo_rows(_uint_t* p0, Py_ssize_t rows, Py_ssize_t cols,
                 w0 = w0 + p[c]; p[c] = <_uint_t> w0
                 c += 1
         elif samples == 1:
-            s0 = p[0]
-            c = 1
-            while c + 4 <= cols:
-                s0 = s0 + p[c]; p[c] = <_uint_t> s0
-                s0 = s0 + p[c + 1]; p[c + 1] = <_uint_t> s0
-                s0 = s0 + p[c + 2]; p[c + 2] = <_uint_t> s0
-                s0 = s0 + p[c + 3]; p[c + 3] = <_uint_t> s0
-                c += 4
-            while c < cols:
-                s0 = s0 + p[c]; p[c] = <_uint_t> s0
-                c += 1
+            # Fused-type tests are resolved at compile time, so the 32 and
+            # 64-bit specializations (handled above) carry no narrowing
+            # 32-bit sum here.
+            if _uint_t is uint8_t or _uint_t is uint16_t:
+                s0 = p[0]
+                c = 1
+                while c + 4 <= cols:
+                    s0 = s0 + p[c]; p[c] = <_uint_t> s0
+                    s0 = s0 + p[c + 1]; p[c + 1] = <_uint_t> s0
+                    s0 = s0 + p[c + 2]; p[c + 2] = <_uint_t> s0
+                    s0 = s0 + p[c + 3]; p[c + 3] = <_uint_t> s0
+                    c += 4
+                while c < cols:
+                    s0 = s0 + p[c]; p[c] = <_uint_t> s0
+                    c += 1
         elif samples == 2:
             t0 = p[0]; t1 = p[1]
             for c in range(1, cols):
@@ -925,7 +972,7 @@ cdef void _undo_rows(_uint_t* p0, Py_ssize_t rows, Py_ssize_t cols,
             # One chain per sample, each walked with its sum in a register
             # wider than the sample, as for one sample.
             for k in range(samples):
-                if _uint_t is uint32_t:
+                if _uint_t is uint32_t or _uint_t is uint64_t:
                     w0 = p[k]
                     for c in range(1, cols):
                         w0 = w0 + p[c * samples + k]
@@ -955,6 +1002,14 @@ def undo_horizontal_u16(uint16_t[:, :, ::1] arr not None):
 
 def undo_horizontal_u32(uint32_t[:, :, ::1] arr not None):
     """In-place undo of predictor 2 on a (rows, cols, samples) uint32 array."""
+    if arr.shape[0] and arr.shape[1] > 1:
+        with nogil:
+            _undo_rows(&arr[0, 0, 0], arr.shape[0], arr.shape[1], arr.shape[2],
+                       arr.shape[1] * arr.shape[2])
+
+
+def undo_horizontal_u64(uint64_t[:, :, ::1] arr not None):
+    """In-place undo of predictor 2 on a (rows, cols, samples) uint64 array."""
     if arr.shape[0] and arr.shape[1] > 1:
         with nogil:
             _undo_rows(&arr[0, 0, 0], arr.shape[0], arr.shape[1], arr.shape[2],
@@ -1099,8 +1154,10 @@ cdef void _undo_horizontal(uint8_t* buf, Py_ssize_t rows, Py_ssize_t cols,
         _undo_rows(<uint8_t*> buf, rows, cols, samples, row_bytes)
     elif itemsize == 2:
         _undo_rows(<uint16_t*> buf, rows, cols, samples, row_bytes // 2)
-    else:
+    elif itemsize == 4:
         _undo_rows(<uint32_t*> buf, rows, cols, samples, row_bytes // 4)
+    else:
+        _undo_rows(<uint64_t*> buf, rows, cols, samples, row_bytes // 8)
 
 
 cdef void _undo_float(uint8_t* buf, Py_ssize_t rows, Py_ssize_t cols,
@@ -1170,8 +1227,8 @@ def decode_segments_into(segments, out, const Py_ssize_t[:, ::1] geometry, *,
                          f"({geometry.shape[0]}, {geometry.shape[1]})")
     if samples < 1 or segment_cols < 1:
         raise ValueError("samples and segment_cols must be positive")
-    if predictor == 2 and itemsize not in (1, 2, 4):
-        raise ValueError(f"predictor 2 takes 1, 2 or 4 byte samples, not {itemsize}")
+    if predictor == 2 and itemsize not in (1, 2, 4, 8):
+        raise ValueError(f"predictor 2 takes 1, 2, 4 or 8 byte samples, not {itemsize}")
     if predictor == 3 and itemsize not in (2, 4, 8):
         raise ValueError(f"predictor 3 takes 2, 4 or 8 byte samples, not {itemsize}")
     if predictor not in (1, 2, 3):

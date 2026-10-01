@@ -4,6 +4,7 @@ from libc.stdint cimport uint8_t, uint16_t, uint32_t, uint64_t
 
 cdef extern from 'avif/avif.h' nogil:
     int AVIF_QUALITY_LOSSLESS
+    int AVIF_QUALITY_DEFAULT
     int AVIF_RESULT_OK
     int AVIF_RESULT_IO_ERROR
 

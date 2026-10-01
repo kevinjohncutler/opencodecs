@@ -15,6 +15,7 @@ editors. Each format compresses 4x4 pixel blocks at a fixed rate:
   * BC1 (DXT1)  — RGB or RGB+1-bit alpha, 8 bytes/block (4 bpp)
   * BC2 (DXT3)  — RGB + 4-bit explicit alpha, 16 bytes/block (8 bpp)
   * BC3 (DXT5)  — RGB + interpolated alpha, 16 bytes/block (8 bpp)
+    (alpha decodes through the rounding BC4 kernel, as below)
   * BC4 (ATI1N) — single-channel (R), 8 bytes/block (4 bpp)
   * BC5 (ATI2N) — two-channel (RG), 16 bytes/block (8 bpp)
   * BC6H        — HDR RGB, half/float, 16 bytes/block (8 bpp)
@@ -57,6 +58,7 @@ from bcdec cimport (
     bcdec_bc4, bcdec_bc5,
     bcdec_bc6h_half, bcdec_bc6h_float,
     bcdec_bc7,
+    bcdec__color_block, bcdec__bc4_block,
 )
 
 cnp.import_array()
@@ -64,6 +66,23 @@ cnp.import_array()
 
 class BcdecError(RuntimeError):
     """Raised on malformed BC input."""
+
+
+cdef inline void _bc3_block(const uint8_t* block, uint8_t* out,
+                            int pitch) noexcept nogil:
+    """One BC3 (DXT5) block: BC1 color in the high 8 bytes, and an
+    alpha block in the low 8 that has exactly the BC4 layout.
+
+    The Khronos Data Format Specification defines the BC3 alpha
+    interpolants (section 18.4) with the same real-valued formulas as
+    BC4 (section 19.1), e.g. (6*alpha0 + alpha1)/7 scaled by 1/255, so
+    the nearest UNORM8 value is the rounded one. bcdec_bc3 truncates
+    (its integer smooth-alpha path); routing the alpha through the
+    precise BC4 kernel rounds it, so BC3 alpha and BC4 agree on the
+    same 8 bytes.
+    """
+    bcdec__color_block(block + 8, out, pitch, 1)
+    bcdec__bc4_block(block, out + 3, pitch, 4, 0)
 
 
 # Each BC format's compressed block is 8 or 16 bytes. ``width`` /
@@ -163,7 +182,7 @@ cdef _decode_rgba_blocks(
                     tile_p += 16
             elif fmt_id == 3:
                 for bx in range(n_blocks_x):
-                    bcdec_bc3(block_p, tile_p, pitch)
+                    _bc3_block(block_p, tile_p, pitch)
                     block_p += block_bytes
                     tile_p += 16
             else:  # fmt_id == 7

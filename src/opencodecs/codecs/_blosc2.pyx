@@ -14,6 +14,9 @@ from libc.string cimport memset
 
 from blosc2 cimport (
     BLOSC2_MAX_OVERHEAD, BLOSC_SHUFFLE, BLOSC_NOSHUFFLE, BLOSC2_MAX_FILTERS,
+    BLOSC_BITSHUFFLE, BLOSC_DELTA, BLOSC_TRUNC_PREC,
+    BLOSC_ALWAYS_SPLIT, BLOSC_NEVER_SPLIT, BLOSC_AUTO_SPLIT,
+    BLOSC_FORWARD_COMPAT_SPLIT,
     blosc2_cbuffer_sizes, blosc2_compname_to_compcode,
     blosc2_context, blosc2_dparams, blosc2_cparams, BLOSC2_CPARAMS_DEFAULTS,
     blosc2_create_dctx, blosc2_create_cctx, blosc2_free_ctx,
@@ -26,15 +29,97 @@ class Blosc2Error(RuntimeError):
     """Raised on blosc2 encode/decode failures."""
 
 
+def shuffle_code(shuffle) -> int:
+    """The c-blosc2 filter code for a ``shuffle=`` argument.
+
+    Accepts c-blosc2's own codes (blosc2.h: ``BLOSC_NOSHUFFLE`` 0,
+    ``BLOSC_SHUFFLE`` 1, ``BLOSC_BITSHUFFLE`` 2, ``BLOSC_DELTA`` 3,
+    ``BLOSC_TRUNC_PREC`` 4, the values the chunk header stores), their
+    names as imagecodecs.blosc2_encode takes them ('noshuffle' or any
+    name starting 'no', 'shuffle', 'bitshuffle', 'delta', 'trunc_prec'),
+    the short names 'none', 'byte' and 'bit', and True / False for byte
+    shuffle / none. ``None`` means byte shuffle, the default of both
+    c-blosc2 and imagecodecs.
+    """
+    if shuffle is None or shuffle is True:
+        return BLOSC_SHUFFLE
+    if shuffle is False:
+        return BLOSC_NOSHUFFLE
+    if isinstance(shuffle, str):
+        name = shuffle.lower()
+        if name[:2] == 'no':
+            return BLOSC_NOSHUFFLE
+        codes = {'shuffle': BLOSC_SHUFFLE, 'byte': BLOSC_SHUFFLE,
+                 'bitshuffle': BLOSC_BITSHUFFLE, 'bit': BLOSC_BITSHUFFLE,
+                 'delta': BLOSC_DELTA, 'trunc_prec': BLOSC_TRUNC_PREC}
+        if name in codes:
+            return codes[name]
+        raise ValueError(f'unknown blosc2 shuffle={shuffle!r}')
+    try:
+        code = int(shuffle)
+    except (TypeError, ValueError):
+        raise ValueError(f'unknown blosc2 shuffle={shuffle!r}') from None
+    if code not in (BLOSC_NOSHUFFLE, BLOSC_SHUFFLE, BLOSC_BITSHUFFLE,
+                    BLOSC_DELTA, BLOSC_TRUNC_PREC):
+        raise ValueError(f'unknown blosc2 shuffle={shuffle!r}')
+    return code
+
+
+def split_code(splitmode) -> int:
+    """The c-blosc2 split mode for a ``splitmode=`` argument.
+
+    c-blosc2's codes (``BLOSC_ALWAYS_SPLIT`` 1, ``BLOSC_NEVER_SPLIT`` 2,
+    ``BLOSC_AUTO_SPLIT`` 3, ``BLOSC_FORWARD_COMPAT_SPLIT`` 4) or the
+    names 'always', 'never', 'auto', 'forward', as imagecodecs takes
+    them; a false value means never. ``None`` means always, the
+    imagecodecs default, so equal settings give equal chunks.
+    """
+    if splitmode is None:
+        return BLOSC_ALWAYS_SPLIT
+    if isinstance(splitmode, str):
+        codes = {'always': BLOSC_ALWAYS_SPLIT, 'never': BLOSC_NEVER_SPLIT,
+                 'auto': BLOSC_AUTO_SPLIT,
+                 'forward': BLOSC_FORWARD_COMPAT_SPLIT}
+        name = splitmode.lower()
+        if name in codes:
+            return codes[name]
+        raise ValueError(f'unknown blosc2 splitmode={splitmode!r}')
+    if not splitmode:
+        return BLOSC_NEVER_SPLIT
+    code = int(splitmode)
+    if code not in (BLOSC_ALWAYS_SPLIT, BLOSC_NEVER_SPLIT, BLOSC_AUTO_SPLIT,
+                    BLOSC_FORWARD_COMPAT_SPLIT):
+        raise ValueError(f'unknown blosc2 splitmode={splitmode!r}')
+    return code
+
+
 def encode(data, *, level: int | None = None,
            compressor: str | None = None,
            typesize: int | None = None,
-           shuffle: bool | None = None) -> bytes:
+           shuffle=None,
+           splitmode=None,
+           blocksize: int | None = None,
+           numthreads: int | None = None) -> bytes:
     """Encode bytes-like input as a blosc2 chunk.
 
+    The parameters are imagecodecs.blosc2_encode's, with its defaults,
+    so equal settings write equal chunks.
+
     ``compressor`` selects the inner codec ("blosclz", "lz4", "lz4hc",
-    "zlib", "zstd"). Default is blosc2's compile-time default (zstd as
-    of c-blosc2 2.x).
+    "zlib", "zstd"); the default is zstd, as in blosc2 2.x and
+    imagecodecs. ``shuffle`` is a filter code or name (see
+    :func:`shuffle_code`; default byte shuffle). ``splitmode`` is a
+    split mode code or name (see :func:`split_code`; default always).
+    ``typesize`` is the item width the shuffle works over. Its default
+    is imagecodecs': 8 for a flat run of unsigned bytes (``bytes``,
+    ``bytearray``, a contiguous 1-D uint8 or bool array), otherwise the
+    buffer's own item size (2 for a uint16 array, 1 for a 2-D uint8 or
+    an int8 array).
+    ``blocksize`` is the block size in bytes, 0 or ``None`` letting
+    blosc2 choose. ``numthreads`` compresses blocks on that many threads
+    (default 1). Threads can store the blocks in a different order, so
+    the bytes are reproducible only single-threaded; any blosc2 decoder
+    reads either.
     """
     cdef:
         const uint8_t[::1] src
@@ -43,7 +128,11 @@ def encode(data, *, level: int | None = None,
         int ret
         int clevel
         int do_shuffle
+        int do_split
         int32_t tsize
+        int32_t block_bytes = 0
+        int nthreads = 1
+        Py_ssize_t default_typesize = 8
         bytes out
         const void* src_ptr = NULL
         void* dst_ptr
@@ -54,7 +143,22 @@ def encode(data, *, level: int | None = None,
     try:
         src = data
     except (TypeError, ValueError, BufferError):
-        src = bytes(data)
+        try:
+            view = memoryview(data)
+        except TypeError:
+            src = bytes(data)
+        else:
+            # A buffer that is not a flat run of unsigned bytes defaults
+            # to its own item size, as imagecodecs does (measured against
+            # 2026.8.16: 1 for a 2-D uint8, an int8 or a strided array).
+            default_typesize = view.itemsize
+            try:
+                src = view.cast('B') if view.c_contiguous else view.tobytes()
+            except (TypeError, ValueError):
+                # cast() takes single-character formats only ('Zd', '>H').
+                src = view.tobytes()
+    if src.shape[0] > 0x7FFFFFFF - BLOSC2_MAX_OVERHEAD:
+        raise Blosc2Error('blosc2: input larger than 2 GB')
     srcsize = <int32_t> src.shape[0]
 
     # The compressor goes on a context of this call's own. It used to be
@@ -73,7 +177,16 @@ def encode(data, *, level: int | None = None,
     if clevel < 0: clevel = 0
     if clevel > 9: clevel = 9
 
-    do_shuffle = BLOSC_SHUFFLE if (shuffle is None or shuffle) else BLOSC_NOSHUFFLE
+    do_shuffle = shuffle_code(shuffle)
+    do_split = split_code(splitmode)
+    if blocksize is not None:
+        block_bytes = int(blocksize)
+        if block_bytes < 0:
+            raise ValueError(f'blosc2 blocksize must be >= 0, got {blocksize}')
+    if numthreads is not None:
+        nthreads = int(numthreads)
+        if nthreads < 1:
+            nthreads = 1
 
     # Default typesize=8 — matches ic.blosc2_encode for bytes input.
     # The shuffle filter rearranges bytes within typesize-byte groups
@@ -86,7 +199,11 @@ def encode(data, *, level: int | None = None,
     # See docs/codec_api_conventions.md "Default settings" — Pareto
     # default trades size parity for speed parity since most callers
     # use blosc2 for throughput, not for the size-tightest path.
-    tsize = 8 if typesize is None else int(typesize)
+    # Any other buffer's own item size comes first, as in imagecodecs.
+    if typesize is not None:
+        tsize = int(typesize)
+    else:
+        tsize = <int32_t> default_typesize
     if tsize < 1: tsize = 1
 
     dstcap = srcsize + BLOSC2_MAX_OVERHEAD
@@ -99,7 +216,9 @@ def encode(data, *, level: int | None = None,
     cparams.compcode = <uint8_t> compcode
     cparams.clevel = <uint8_t> clevel
     cparams.typesize = tsize
-    cparams.nthreads = 1
+    cparams.nthreads = <int16_t> nthreads
+    cparams.blocksize = block_bytes
+    cparams.splitmode = do_split
     cparams.filters[BLOSC2_MAX_FILTERS - 1] = <uint8_t> do_shuffle
     cctx = blosc2_create_cctx(cparams)
     if cctx == NULL:

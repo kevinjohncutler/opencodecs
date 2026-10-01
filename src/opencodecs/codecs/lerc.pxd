@@ -38,6 +38,38 @@ cdef extern from "Lerc_c_api.h" nogil:
         unsigned int* nBytesWritten,
     )
 
+    # Encode to a chosen Lerc2 codec version ([2 .. 6] for [v2.2 ..
+    # v2.6], or -1 for the latest). lerc_encode always writes the latest.
+    lerc_status lerc_computeCompressedSizeForVersion(
+        const void* pData,
+        int codecVersion,
+        unsigned int dataType,
+        int nDepth,
+        int nCols,
+        int nRows,
+        int nBands,
+        int nMasks,
+        const unsigned char* pValidBytes,
+        double maxZErr,
+        unsigned int* numBytes,
+    )
+
+    lerc_status lerc_encodeForVersion(
+        const void* pData,
+        int codecVersion,
+        unsigned int dataType,
+        int nDepth,
+        int nCols,
+        int nRows,
+        int nBands,
+        int nMasks,
+        const unsigned char* pValidBytes,
+        double maxZErr,
+        unsigned char* pOutBuffer,
+        unsigned int outBufferSize,
+        unsigned int* nBytesWritten,
+    )
+
     lerc_status lerc_getBlobInfo(
         const unsigned char* pLercBlob,
         unsigned int blobSize,

@@ -88,7 +88,9 @@ def test_rice_owned_destination(dtype):
 
 
 def test_rice_header_validation():
+    """The 12-byte header of 0.4.0 blobs, still read by decode_framed."""
     native=pytest.importorskip('opencodecs.codecs._rcomp')
     for nbytes,block,bpp in [(10,32,0),(10,32,3),(3,32,2),(8,0,2),(8,2**31,2)]:
         with pytest.raises((ValueError,RuntimeError)):
-            native.decode(struct.pack('<IIi',nbytes,block,bpp)+bytes(16))
+            native.decode_framed(struct.pack('<IIi',nbytes,block,bpp)+bytes(16))
+        assert native.read_framed_header(struct.pack('<IIi',nbytes,block,bpp)+bytes(16)) is None

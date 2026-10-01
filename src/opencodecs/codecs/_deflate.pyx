@@ -8,9 +8,12 @@
 
 """Native zlib / deflate codec — bytes-in / bytes-out compression.
 
-Produces and consumes zlib-format streams (deflate + 2-byte header +
-4-byte adler32). Matches imagecodecs's ``zlib_encode`` /
-``zlib_decode`` bit-for-bit on encode-with-fixed-level workloads.
+Produces and consumes zlib-format streams (RFC 1950: deflate + 2-byte
+header + 4-byte adler32) by default, bare DEFLATE streams (RFC 1951)
+with ``raw=True``, and gzip members (RFC 1952) through
+:func:`gzip_encode`. Matches imagecodecs's ``deflate_encode`` /
+``deflate_decode`` (including ``raw=``) and ``gzip_encode``
+bit-for-bit when linked to libdeflate, as imagecodecs is.
 
 Three backends, picked at compile time by setup.py probes:
 
@@ -30,6 +33,7 @@ API; libdeflate has a different API and lives behind the macro.
 from cpython.bytes cimport PyBytes_FromStringAndSize
 from libc.stdint cimport uint8_t
 from libc.stdlib cimport realloc, free
+from libc.string cimport memcpy
 from libc.stddef cimport size_t
 
 from zlib_h cimport (
@@ -99,7 +103,59 @@ cdef extern from *:
           (void)d; (void)a; (void)b; (void)o; (void)oa; (void)actual;
           return 1;
       }
+      static inline size_t
+      libdeflate_deflate_compress(libdeflate_compressor* c,
+                                  const void* a, size_t b,
+                                  void* d, size_t e) {
+          (void)c; (void)a; (void)b; (void)d; (void)e; return 0;
+      }
+      static inline size_t
+      libdeflate_deflate_compress_bound(libdeflate_compressor* c, size_t b) {
+          (void)c; (void)b; return 0;
+      }
+      static inline size_t
+      libdeflate_gzip_compress(libdeflate_compressor* c,
+                               const void* a, size_t b,
+                               void* d, size_t e) {
+          (void)c; (void)a; (void)b; (void)d; (void)e; return 0;
+      }
+      static inline size_t
+      libdeflate_gzip_compress_bound(libdeflate_compressor* c, size_t b) {
+          (void)c; (void)b; return 0;
+      }
+      static inline libdeflate_result
+      libdeflate_deflate_decompress(libdeflate_decompressor* d,
+                                    const void* a, size_t b,
+                                    void* o, size_t oa,
+                                    size_t* actual) {
+          (void)d; (void)a; (void)b; (void)o; (void)oa; (void)actual;
+          return 1;
+      }
     #endif
+
+    /* One entry point per wrapper, so the encode and decode loops below
+       stay single: 0 = zlib (RFC 1950), 1 = raw DEFLATE (RFC 1951),
+       2 = gzip (RFC 1952, encode only). */
+    static inline size_t
+    oc_ld_compress(int fmt, libdeflate_compressor* c, const void* a,
+                   size_t b, void* d, size_t e) {
+        if (fmt == 1) return libdeflate_deflate_compress(c, a, b, d, e);
+        if (fmt == 2) return libdeflate_gzip_compress(c, a, b, d, e);
+        return libdeflate_zlib_compress(c, a, b, d, e);
+    }
+    static inline size_t
+    oc_ld_compress_bound(int fmt, libdeflate_compressor* c, size_t b) {
+        if (fmt == 1) return libdeflate_deflate_compress_bound(c, b);
+        if (fmt == 2) return libdeflate_gzip_compress_bound(c, b);
+        return libdeflate_zlib_compress_bound(c, b);
+    }
+    static inline libdeflate_result
+    oc_ld_decompress(int fmt, libdeflate_decompressor* d, const void* a,
+                     size_t b, void* o, size_t oa, size_t* actual) {
+        if (fmt == 1)
+            return libdeflate_deflate_decompress(d, a, b, o, oa, actual);
+        return libdeflate_zlib_decompress(d, a, b, o, oa, actual);
+    }
     """
     int OPENCODECS_HAVE_LIBDEFLATE
     int LIBDEFLATE_SUCCESS
@@ -127,6 +183,28 @@ cdef extern from *:
         void* outdata, size_t out_nbytes_avail,
         size_t* actual_out_nbytes_ret,
     ) nogil
+    size_t oc_ld_compress(
+        int fmt, libdeflate_compressor* c,
+        const void* indata, size_t in_nbytes,
+        void* outdata, size_t out_nbytes_avail,
+    ) nogil
+    size_t oc_ld_compress_bound(
+        int fmt, libdeflate_compressor* c, size_t in_nbytes,
+    ) nogil
+    libdeflate_result oc_ld_decompress(
+        int fmt, libdeflate_decompressor* d,
+        const void* indata, size_t in_nbytes,
+        void* outdata, size_t out_nbytes_avail,
+        size_t* actual_out_nbytes_ret,
+    ) nogil
+
+
+import zlib as _stdlib_zlib
+
+cdef enum:
+    _FMT_ZLIB = 0
+    _FMT_RAW = 1
+    _FMT_GZIP = 2
 
 
 def backend() -> str:
@@ -142,8 +220,66 @@ class ZlibError(RuntimeError):
     """Raised on zlib encode/decode failures."""
 
 
-def encode(data, *, level: int | None = None) -> bytes:
-    """Encode bytes-like input as a zlib stream."""
+def encode(data, *, level: int | None = None, bint raw=False) -> bytes:
+    """Encode bytes-like input as a zlib stream (RFC 1950).
+
+    ``raw=True`` writes a bare DEFLATE stream (RFC 1951) with no zlib
+    header or Adler-32 trailer, as ZIP members and ``wbits=-15`` expect;
+    this is imagecodecs's ``deflate_encode(raw=True)``.
+    """
+    return _encode(data, level, _FMT_RAW if raw else _FMT_ZLIB)
+
+
+def gzip_encode(data, *, level: int | None = None) -> bytes:
+    """Encode bytes-like input as one gzip member (RFC 1952).
+
+    The header is fixed, so the output depends only on the input and the
+    level, on every platform: MTIME 0, no name, OS 255 ("unknown", the
+    value libdeflate, CPython 3.13+ and imagecodecs write) and XFL 4 for
+    the fastest levels (below 2) or 2 for the slowest (8 and up), as RFC
+    1952 section 2.3.1 defines it. With libdeflate linked the member is
+    byte-identical to imagecodecs's ``gzip_encode``.
+    """
+    return _encode(data, level, _FMT_GZIP)
+
+
+def _fallback_encode(data, int lvl, int fmt) -> bytes:
+    """The zlib-library path for a raw DEFLATE stream or a gzip member.
+
+    Used only when libdeflate is not linked. Python's zlib is the same
+    zlib this module links in that case. The gzip header is assembled
+    here rather than by zlib, because zlib writes its own OS_CODE (3 on
+    Unix, 10 on Windows, 19 on macOS), which would make the bytes depend
+    on the platform.
+    """
+    cdef bytes body
+    view = memoryview(data).cast('B')
+    if lvl > 9:
+        lvl = 9
+    compressor = _stdlib_zlib.compressobj(lvl, _stdlib_zlib.DEFLATED, -15)
+    body = compressor.compress(view) + compressor.flush()
+    if fmt == _FMT_RAW:
+        return body
+    xfl = 4 if lvl < 2 else (2 if lvl >= 8 else 0)
+    header = bytes((0x1F, 0x8B, 8, 0, 0, 0, 0, 0, xfl, 255))
+    trailer = ((_stdlib_zlib.crc32(view) & 0xFFFFFFFF).to_bytes(4, 'little')
+               + (len(view) & 0xFFFFFFFF).to_bytes(4, 'little'))
+    return header + body + trailer
+
+
+def _fallback_raw_decode(data) -> bytes:
+    """Inflate one bare DEFLATE stream with the zlib library."""
+    inflater = _stdlib_zlib.decompressobj(-15)
+    try:
+        result = inflater.decompress(data)
+    except _stdlib_zlib.error as exc:
+        raise ZlibError(f"raw deflate decode failed: {exc}") from None
+    if not inflater.eof:
+        raise ZlibError("raw deflate decode failed: truncated stream")
+    return result
+
+
+cdef object _encode(object data, object level, int fmt):
     cdef:
         const uint8_t[::1] src
         const uint8_t[::1] dst_mv    # memoryview cast for output bytes
@@ -184,19 +320,19 @@ def encode(data, *, level: int | None = None) -> bytes:
                 f"(invalid level {lvl}?)"
             )
         try:
-            dstcap_s = libdeflate_zlib_compress_bound(compressor, srcsize_s)
+            dstcap_s = oc_ld_compress_bound(fmt, compressor, srcsize_s)
             out = PyBytes_FromStringAndSize(NULL, <Py_ssize_t> dstcap_s)
             # memoryview-cast + slice pattern (see _zstd.encode for the
             # empirical rationale — faster than PyBytes_AsString +
             # _PyBytes_Resize for multi-MB blobs).
             dst_mv = out
             with nogil:
-                written = libdeflate_zlib_compress(
-                    compressor, src_ptr, srcsize_s,
+                written = oc_ld_compress(
+                    fmt, compressor, src_ptr, srcsize_s,
                     <void*> &dst_mv[0], dstcap_s,
                 )
             if written == 0:
-                raise ZlibError("libdeflate_zlib_compress returned 0")
+                raise ZlibError("libdeflate compress returned 0")
             del dst_mv
             return out[:written]
         finally:
@@ -204,6 +340,8 @@ def encode(data, *, level: int | None = None) -> bytes:
                 libdeflate_free_compressor(compressor)
 
     # zlib (system / zlib-ng-compat) fallback.
+    if fmt != _FMT_ZLIB:
+        return _fallback_encode(src, lvl, fmt)
     srcsize_z = <uLong> srcsize_s
     if level is None:
         lvl = Z_DEFAULT_COMPRESSION
@@ -220,14 +358,18 @@ def encode(data, *, level: int | None = None) -> bytes:
     return out[:dstsize_z]
 
 
-def decode(data, *, out=None):
-    """Decode a zlib stream.
+def decode(data, *, out=None, bint raw=False):
+    """Decode a zlib stream (RFC 1950), or with ``raw=True`` a bare
+    DEFLATE stream (RFC 1951), as imagecodecs's ``deflate_decode`` does.
 
     Parameters
     ----------
     out : int | bytearray | memoryview | None, optional
         See ``_zstd.decode`` for the full ``out=`` contract.
+    raw : bool
+        The input is a bare DEFLATE stream with no zlib wrapper.
     """
+    cdef int fmt = _FMT_RAW if raw else _FMT_ZLIB
     cdef:
         const uint8_t[::1] src
         uint8_t[::1] out_view             # writable view of caller buffer
@@ -268,8 +410,8 @@ def decode(data, *, out=None):
                 raise MemoryError("libdeflate_alloc_decompressor returned NULL")
             try:
                 with nogil:
-                    ld_rc = libdeflate_zlib_decompress(
-                        decompressor,
+                    ld_rc = oc_ld_decompress(
+                        fmt, decompressor,
                         <const void*> &src[0], srcsize_s,
                         <void*> &out_view[0], dstcap_s, &written,
                     )
@@ -278,13 +420,21 @@ def decode(data, *, out=None):
                         "deflate decode: out= buffer too small")
                 if ld_rc != LIBDEFLATE_SUCCESS:
                     raise ZlibError(
-                        f"libdeflate_zlib_decompress failed: rc={ld_rc}")
+                        f"libdeflate decompress failed: rc={ld_rc}")
                 del out_view
                 return out[:written]
             finally:
                 with nogil:
                     libdeflate_free_decompressor(decompressor)
         # zlib fallback path with out= buffer
+        if fmt == _FMT_RAW:
+            result = <bytes> _fallback_raw_decode(src)
+            if len(result) > <Py_ssize_t> dstcap_s:
+                raise ZlibError("deflate decode: out= buffer too small")
+            if len(result):
+                memcpy(&out_view[0], <const char*> result, len(result))
+            del out_view
+            return out[:len(result)]
         srcsize_z = <uLong> srcsize_s
         dstsize_z = <uLongf> dstcap_s
         with nogil:
@@ -317,8 +467,8 @@ def decode(data, *, out=None):
                 if buf == NULL:
                     raise MemoryError()
                 with nogil:
-                    ld_rc = libdeflate_zlib_decompress(
-                        decompressor,
+                    ld_rc = oc_ld_decompress(
+                        fmt, decompressor,
                         <const void*> &src[0], srcsize_s,
                         <void*> buf, dstcap_s, &written,
                     )
@@ -338,13 +488,18 @@ def decode(data, *, out=None):
                     raise ZlibError(
                         "deflate decode: out= int hint too small")
                 raise ZlibError(
-                    f"libdeflate_zlib_decompress failed: rc={ld_rc}"
+                    f"libdeflate decompress failed: rc={ld_rc}"
                 )
         finally:
             with nogil:
                 libdeflate_free_decompressor(decompressor)
 
     # zlib fallback.
+    if fmt == _FMT_RAW:
+        result = _fallback_raw_decode(src)
+        if not can_grow and len(result) > <Py_ssize_t> dstcap_s:
+            raise ZlibError("deflate decode: out= int hint too small")
+        return result
     srcsize_z = <uLong> srcsize_s
     dstcap_z = <uLong> dstcap_s
     while True:

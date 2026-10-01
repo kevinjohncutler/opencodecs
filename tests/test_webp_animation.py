@@ -25,10 +25,11 @@ import numpy as np
 import pytest
 
 import opencodecs as oc
+from _ic_reference import skip_if_old_imagecodecs  # noqa: E402
 
 imagecodecs = pytest.importorskip("imagecodecs")
-pytestmark = pytest.mark.skipif(
-    not oc.has_codec("webp"), reason="libwebp not built here")
+pytestmark = [skip_if_old_imagecodecs, pytest.mark.skipif(
+    not oc.has_codec("webp"), reason="libwebp not built here")]
 
 N = 5
 
@@ -137,8 +138,12 @@ def test_decode_returns_every_frame_of_an_animation(codec, animation):
     blob, ref = animation
     got = codec.decode(blob)
     assert got.ndim == 4 and got.shape[0] == len(ref)
+    # Every canvas is opaque, so decode gives RGB like imagecodecs;
+    # the reader's frames are the RGBA canvas libwebp composes.
+    assert got.shape == ref.shape and got.shape[-1] == 3
+    assert np.array_equal(got, ref)
     with codec.open(blob) as r:
-        assert np.array_equal(got, np.stack(list(r.iter_frames())))
+        assert np.array_equal(_as_rgba(got), np.stack(list(r.iter_frames())))
 
 
 def test_decode_of_a_still_is_unchanged(codec, frames):

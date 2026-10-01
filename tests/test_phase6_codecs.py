@@ -93,7 +93,8 @@ def test_rcomp_signed_roundtrip(dtype):
     arr = rng.integers(max(info.min, -1000), min(info.max, 1000),
                         size=4096, dtype=dtype)
     blob = c.encode(arr)
-    back = c.decode(blob).astype(arr.dtype)
+    # A bare Rice stream (FITS RICE_1) records neither size nor type.
+    back = c.decode(blob, shape=arr.shape, dtype=arr.dtype)
     np.testing.assert_array_equal(back, arr)
 
 
@@ -102,8 +103,8 @@ def test_rcomp_constant_compresses_well():
     c = oc.get_codec("rcomp")
     arr = np.zeros(8192, dtype=np.int16)
     blob = c.encode(arr)
-    # Header (12 bytes) + a few bytes per block (8192/32 = 256 blocks
-    # × ~1.5 bytes each). Should be well under 10% of raw.
+    # The first pixel (2 bytes) + 4 bits per 32-pixel block. Should be
+    # well under 10% of raw.
     assert len(blob) * 10 < arr.nbytes, (
         f"rcomp on zeros: {len(blob)} bytes for {arr.nbytes} raw "
         "(expected <10%)")
@@ -114,7 +115,7 @@ def test_rcomp_unsigned_roundtrip_via_dtype_kwarg():
     arr = np.random.default_rng(1).integers(
         0, 1000, size=2048, dtype=np.uint16)
     blob = c.encode(arr)
-    back = c.decode(blob, dtype=np.uint16)
+    back = c.decode(blob, dtype=np.uint16, shape=arr.shape)
     np.testing.assert_array_equal(back, arr)
 
 

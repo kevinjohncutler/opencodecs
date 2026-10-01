@@ -24,6 +24,7 @@ cdef extern from 'zstd.h' nogil:
 
     size_t ZSTD_compressBound(size_t srcSize)
     unsigned long long ZSTD_getFrameContentSize(const void* src, size_t srcSize)
+    size_t ZSTD_findFrameCompressedSize(const void* src, size_t srcSize)
 
     int ZSTD_minCLevel()
     int ZSTD_maxCLevel()

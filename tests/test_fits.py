@@ -270,15 +270,15 @@ def test_rice_decode_rejects_truncated_payload(dtype, bytes_per_pixel):
     vendored copy predated it. The short and byte decoders read 2 and 1
     bytes the same way, so they are guarded too.
 
-    Not reachable through opencodecs.rcomp_decode, whose 12-byte framing
-    header rejects short blobs first, but decode_raw is public and the
-    FITS tile path calls into the same C.
+    The rcomp codec reaches the same C: it writes and reads the bare
+    stream, as the FITS tile path does.
     """
     rcomp = pytest.importorskip("opencodecs.codecs._rcomp")
     arr = np.arange(64, dtype=dtype)
-    blob = rcomp.encode(arr)
-    assert np.array_equal(rcomp.decode(blob).astype(dtype), arr)
-    payload = blob[12:]
+    payload = rcomp.encode(arr)
+    back = rcomp.decode_raw(payload, nelements=64, blocksize=32,
+                            bytes_per_pixel=bytes_per_pixel)
+    assert np.array_equal(back.view(np.dtype(dtype).newbyteorder("=")), arr)
     for clen in range(bytes_per_pixel):
         with pytest.raises(rcomp.RcompError):
             rcomp.decode_raw(payload[:clen], nelements=64, blocksize=32,

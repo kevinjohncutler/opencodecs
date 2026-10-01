@@ -173,8 +173,35 @@ def _lookup_fn(code: int, side: str) -> Callable:
             f"({modname}) not built on this platform: {exc}"
         ) from exc
     fn = getattr(mod, attr)
+    if code == JPEG and side != "decode":
+        fn = _tiff_jpeg_encoder(fn, mod.JpegError)
     _FN_CACHE[key] = fn
     return fn
+
+
+def _tiff_jpeg_encoder(encode: Callable, error: type) -> Callable:
+    """Wrap the JPEG encoder for the TIFF writers' segments.
+
+    The writers record BitsPerSample from the array's dtype and
+    PhotometricInterpretation from its sample count, so only an 8-bit
+    grayscale or RGB JPEG matches those tags. The jpeg codec also writes
+    uint16 arrays (as 12-bit JPEG, which a reader rejects under
+    BitsPerSample 16) and four samples (as CMYK, which a reader rejects
+    under PhotometricInterpretation RGB), so those raise here, as they
+    did before the codec wrote them.
+    """
+    import numpy as np
+
+    def encode_tiff_segment(data, **kw):
+        a = data if isinstance(data, np.ndarray) else np.asarray(data)
+        if a.dtype != np.uint8 or not (
+                a.ndim == 2 or (a.ndim == 3 and a.shape[2] in (1, 3))):
+            raise error(
+                f"TIFF JPEG compression: the TIFF writers store 8-bit "
+                f"grayscale or RGB JPEG, not {a.dtype} samples shaped "
+                f"{a.shape}")
+        return encode(data, **kw)
+    return encode_tiff_segment
 
 
 def segment_input_kind(codec: str | int) -> str:
@@ -212,6 +239,11 @@ def encode_segment(data, codec: str | int, *, level: int | None = None,
     extras can be passed via ``codec_kwargs``. ``owned_output=True`` may return
     a read-only view retaining its encoded allocation, avoiding a final copy.
     The caller must retain that view until the destination consumes it.
+
+    A TIFF segment is always ``(rows, width[, samples])``, so JPEG 2000
+    is called with ``planar=False`` unless the caller says otherwise:
+    the codec's ``planar=None`` rule (imagecodecs') would read a strip
+    of 4 or fewer rows with more than 4 samples as ``(C, H, W)``.
     """
     code = codec_name_to_code(codec)
     if code == NONE:
@@ -220,6 +252,8 @@ def encode_segment(data, codec: str | int, *, level: int | None = None,
     kw: dict[str, Any] = dict(codec_kwargs)
     if level is not None and "level" not in kw:
         kw["level"] = level
+    if code == JPEG2000:
+        kw.setdefault("planar", False)
     if code in (ZSTD, JPEG2000, JXL):
         from .pipeline import native_workers, in_worker
         # Zstandard counts background workers: zero means inline serial.
@@ -256,6 +290,8 @@ def bind_segment_encoder(codec: str | int, *, level=None, owned_output=False,
     options = dict(codec_kwargs)
     if level is not None:
         options.setdefault("level", level)
+    if code == JPEG2000:
+        options.setdefault("planar", False)
     eager = partial(fn, **options)
     if code not in (ZSTD, JPEG2000, JXL):
         return eager

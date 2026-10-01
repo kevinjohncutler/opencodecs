@@ -14,10 +14,12 @@ across all frames; ``encode`` takes a uint8 palette-index array and
 writes a single-frame GIF with a caller-supplied (or grayscale)
 palette.
 
-We bind giflib (libgif 6.x) directly via ``gif_lib.h``. The
-``DGifSlurp`` / ``EGifPut*`` pair handles all the format's quirks
-(palette resolution, interlaced rows, extension blocks, multi-frame
-disposal) so this wrapper stays small.
+We bind giflib (libgif 6.x) directly via ``gif_lib.h`` for the record
+walk and the encoder, and decode LZW with opencodecs's own
+``oc_giflzw``. Frame compositing (background fill, transparency index,
+disposal methods 2 and 3, deinterlacing) follows the GIF89a
+specification and lives in :class:`GifReader`, which every decode path
+shares, palette indices included.
 """
 
 from cpython.bytes cimport PyBytes_FromStringAndSize
@@ -110,222 +112,108 @@ def check_signature(data) -> bool:
 
 
 def decode_fast(data, *, asrgb: bool = True) -> 'np.ndarray':
-    """Fast single-frame decode via custom LZW.
+    """Decode the first frame through opencodecs's own LZW decoder.
 
-    Uses libgif for the outer record walk + image-descriptor parsing,
-    but pulls raw LZW sub-blocks via ``DGifGetCode`` / ``DGifGetCodeNext``
-    and runs them through opencodecs's own ``oc_giflzw_decode`` — which
-    benchmarks ~30% faster than libgif's reference LZW (matches Pillow).
+    Walks the records with libgif but pulls raw LZW sub-blocks via
+    ``DGifGetCode`` / ``DGifGetCodeNext`` and runs them through
+    ``oc_giflzw_decode`` (about 30% faster than libgif's reference LZW).
+    This is the :class:`GifReader` walk stopped after one frame, so it
+    honors the Graphic Control Extension transparency index and undoes
+    interlacing exactly as the reader does.
 
-    Currently single-frame only; ``decode()`` is still the right entry
-    point for animated GIFs. Multi-frame fast-path is a straightforward
-    extension once we collect transparency / disposal info from
-    extension blocks during the record walk.
+    ``asrgb=True`` returns the ``(H, W, 3)`` RGB canvas (background
+    color where the frame does not cover it). ``asrgb=False`` returns
+    the ``(H, W)`` palette indices placed on a zero canvas, the same
+    layout as :func:`decode` with ``asrgb=False``.
     """
-    cdef:
-        const uint8_t[::1] src
-        _MemBuf mem
-        GifFileType* gif = NULL
-        SavedImage* img
-        int err = 0
-        int rc
-        GifRecordType rec_type
-        int lzw_min_code_size = 0
-        int blk_len
-        Py_ssize_t fw, fh
-        Py_ssize_t W, H
-        GifByteType* code_block
-        GifByteType* ext_block
-        int code_byte = 0
-        cnp.ndarray out
-        cnp.ndarray palette_arr
-        uint8_t* palette_indices_buf
-        uint8_t* rgb_p
-        size_t lzw_buf_cap = 0
-        size_t lzw_buf_len = 0
-        uint8_t* lzw_buf = NULL
-        int got_image = 0
-        Py_ssize_t pix_count
-        GifColorType color
-        uint8_t bg_r = 0, bg_g = 0, bg_b = 0
-
+    r = GifReader(data, _max_frames=1)
     try:
-        src = data
-    except (TypeError, ValueError, BufferError):
-        src = bytes(data)
-    if src.shape[0] < 6:
-        raise GifError("input too short to be a GIF")
-
-    mem.data = <GifByteType*> &src[0]
-    mem.size = <size_t> src.shape[0]
-    mem.offset = 0
-    mem.capacity = mem.size
-    mem.owns = 0
-
-    gif = DGifOpen(<void*> &mem, _read_cb, &err)
-    if gif == NULL:
-        raise GifError(
-            f"DGifOpen failed: {GifErrorString(err).decode()}"
-        )
-
-    try:
-        # Walk records until we find an image (single-frame fast path).
-        while True:
-            if DGifGetRecordType(gif, &rec_type) != GIF_OK:
-                raise GifError(
-                    f"DGifGetRecordType: "
-                    f"{GifErrorString(gif.Error).decode()}"
-                )
-            if rec_type == UNDEFINED_RECORD_TYPE:
-                continue
-            if rec_type == TERMINATE_RECORD_TYPE:
-                break
-            if rec_type == SCREEN_DESC_RECORD_TYPE:
-                continue
-            if rec_type == EXTENSION_RECORD_TYPE:
-                # Drain extension blocks without parsing — fast path is
-                # single-frame, we don't need GCE delay/transparency.
-                if DGifGetExtension(gif, &code_byte, &ext_block) != GIF_OK:
-                    raise GifError("DGifGetExtension failed")
-                while ext_block != NULL:
-                    if DGifGetExtensionNext(gif, &ext_block) != GIF_OK:
-                        raise GifError("DGifGetExtensionNext failed")
-                continue
-            if rec_type != IMAGE_DESC_RECORD_TYPE:
-                continue
-
-            # IMAGE_DESC: read geometry + local palette.
-            if DGifGetImageDesc(gif) != GIF_OK:
-                raise GifError(
-                    f"DGifGetImageDesc: "
-                    f"{GifErrorString(gif.Error).decode()}"
-                )
-            got_image = 1
-            break
-
-        if not got_image:
-            raise GifError("no image found in GIF")
-
-        # Geometry from the most recently parsed ImageDesc — giflib
-        # stores it in gif.SavedImages[gif.ImageCount-1].
-        img = &gif.SavedImages[gif.ImageCount - 1]
-        fw = <Py_ssize_t> img.ImageDesc.Width
-        fh = <Py_ssize_t> img.ImageDesc.Height
-        W = <Py_ssize_t> gif.SWidth
-        H = <Py_ssize_t> gif.SHeight
-
-        # Accumulate raw LZW sub-blocks into a contiguous buffer.
-        if DGifGetCode(gif, &lzw_min_code_size, &code_block) != GIF_OK:
-            raise GifError(
-                f"DGifGetCode: {GifErrorString(gif.Error).decode()}"
-            )
-        # Start with a reasonable capacity (most images <100 KB compressed).
-        lzw_buf_cap = 65536
-        lzw_buf = <uint8_t*> malloc(lzw_buf_cap)
-        if lzw_buf == NULL:
-            raise MemoryError("oom for LZW buffer")
-        while code_block != NULL:
-            # code_block[0] is the sub-block length byte; data follows.
-            blk_len = <int> code_block[0]
-            if lzw_buf_len + <size_t> blk_len > lzw_buf_cap:
-                while lzw_buf_len + <size_t> blk_len > lzw_buf_cap:
-                    lzw_buf_cap *= 2
-                lzw_buf = <uint8_t*> realloc(lzw_buf, lzw_buf_cap)
-                if lzw_buf == NULL:
-                    raise MemoryError("oom growing LZW buffer")
-            memcpy(lzw_buf + lzw_buf_len, code_block + 1, <size_t> blk_len)
-            lzw_buf_len += <size_t> blk_len
-            if DGifGetCodeNext(gif, &code_block) != GIF_OK:
-                raise GifError(
-                    f"DGifGetCodeNext: "
-                    f"{GifErrorString(gif.Error).decode()}"
-                )
-
-        # Decode to palette indices using our custom LZW.
-        pix_count = fw * fh
-        palette_arr = np.empty(pix_count, dtype=np.uint8)
-        palette_indices_buf = <uint8_t*> cnp.PyArray_DATA(palette_arr)
-        with nogil:
-            rc = oc_giflzw_decode(
-                lzw_min_code_size,
-                lzw_buf, lzw_buf_len,
-                palette_indices_buf, <size_t> pix_count,
-            )
-        if rc != 0:
-            raise GifError(f"oc_giflzw_decode failed: rc={rc}")
-
-        # Stash the decoded raster into giflib's SavedImage so the
-        # existing _paint_frame helper can run unchanged.
-        if img.RasterBits == NULL:
-            img.RasterBits = <GifByteType*> malloc(<size_t> pix_count)
-            if img.RasterBits == NULL:
-                raise MemoryError("oom for RasterBits")
-        memcpy(img.RasterBits, palette_indices_buf, <size_t> pix_count)
-
-        if not asrgb:
-            out = palette_arr.reshape(<int>fh, <int>fw)
-            return out
-
-        # Composite to RGB on a global-screen-sized canvas.
-        out = np.zeros((H, W, 3), dtype=np.uint8)
-        rgb_p = <uint8_t*> cnp.PyArray_DATA(out)
-        if gif.SColorMap != NULL and gif.SBackGroundColor < gif.SColorMap.ColorCount:
-            color = gif.SColorMap.Colors[gif.SBackGroundColor]
-            bg_r, bg_g, bg_b = color.Red, color.Green, color.Blue
-        _paint_frame(rgb_p, W, H, img, gif.SColorMap,
-                     bg_r, bg_g, bg_b, 1)
-        return out
+        if asrgb:
+            return r._render_isolated(0)
+        return r._indices(0)
     finally:
-        if lzw_buf != NULL:
-            free(lzw_buf)
-        DGifCloseFile(gif, &err)
+        r.close()
 
 
-def decode(data, *, asrgb: bool = True) -> 'np.ndarray':
+def decode(data, index=None, *, asrgb: bool = True) -> 'np.ndarray':
     """Decode a GIF blob to a numpy array.
+
+    The signature follows imagecodecs ``gif_decode(data, index=None, *,
+    asrgb=True, out=None)``: ``index`` may be given by position.
 
     Parameters
     ----------
     data : bytes-like
         GIF87a or GIF89a bytestream.
+    index : int, optional
+        Decode only this frame. As in imagecodecs, the frame is drawn
+        on its own over the background (RGB) or zero (indices) canvas,
+        without the frames before it and without disposal.
     asrgb : bool
-        ``True`` (default) returns RGB uint8 (composited across all
-        frames for animations; transparent pixels get the background
-        color). ``False`` returns raw palette indices (uint8 per pixel)
-        — single-frame only, no composition.
+        ``True`` (default) returns RGB uint8 frames composited per the
+        GIF89a specification: the canvas starts as the logical screen
+        background color, a frame's transparent index leaves the pixel
+        underneath unchanged, and each frame's disposal method (restore
+        to background, restore to previous) is applied before the next
+        frame. ``False`` returns raw palette indices placed on a
+        canvas-sized zero array, one plane per frame.
 
     Returns
     -------
     ndarray
-        Single-frame: ``(H, W, 3)`` RGB uint8 (or ``(H, W)`` palette
-        indices if ``asrgb=False``).
-        Multi-frame: ``(N, H, W, 3)`` RGB uint8.
+        ``(H, W, 3)`` RGB uint8 for a single frame or ``index``, else
+        ``(N, H, W, 3)``. With ``asrgb=False``: ``(H, W)`` or
+        ``(N, H, W)`` uint8 palette indices. imagecodecs instead returns
+        four channels, the fourth 255 everywhere, when the first frame
+        uses its transparent index; this always returns three.
+        imagecodecs 2026.8.16 also skips the restore of a disposal 3
+        frame that follows a disposal 2 frame, which this applies. A
+        frame that extends past the logical screen is clipped to it,
+        the display area GIF89a positions images in, where imagecodecs
+        enlarges the canvas to hold the frame, so its output can be
+        larger. A frame of zero width or height draws nothing, where
+        imagecodecs raises ``GifError``.
+    """
+    with GifReader(data) as r:
+        if asrgb:
+            if index is None:
+                return r.read()
+            return r._render_isolated(_frame_index(index, r.n_frames))
+        if index is not None:
+            return r._indices(_frame_index(index, r.n_frames))
+        if r.n_frames == 1:
+            return r._indices(0)
+        return np.stack([r._indices(i) for i in range(r.n_frames)])
+
+
+def _decode_indices_libgif(data) -> 'np.ndarray':
+    """Every frame's palette indices through libgif's own reference LZW
+    (``DGifSlurp``), placed as :func:`decode` places them with
+    ``asrgb=False``. Kept as an independent decoder that the tests hold
+    the fast path to.
+
+    libgif writes past its raster for a frame of zero width or height,
+    so such a file raises ``GifError`` here before libgif sees it.
     """
     cdef:
         const uint8_t[::1] src
         _MemBuf mem
         GifFileType* gif = NULL
-        SavedImage* img
-        ColorMapObject* cmap
         int err = 0
         int rc
-        Py_ssize_t i, y, x, p, frame, n_frames
-        Py_ssize_t W, H, fw, fh, fl, ft
-        Py_ssize_t canvas_stride, frame_stride
+        Py_ssize_t frame, n_frames
+        Py_ssize_t W, H
         cnp.ndarray out
-        uint8_t* out_p
-        uint8_t* canvas
-        GifByteType* raster
-        GifColorType color
-        int idx, trans_idx
-        uint8_t bg_r = 0, bg_g = 0, bg_b = 0
 
+    with GifReader(data) as r:
+        for frame in range(r.n_frames):
+            rows, cols = r._rect(frame)
+            if rows.stop == rows.start or cols.stop == cols.start:
+                raise GifError(f"frame {frame} has zero width or height")
     try:
         src = data
     except (TypeError, ValueError, BufferError):
         src = bytes(data)
-    if src.shape[0] < 6:
-        raise GifError("input too short to be a GIF")
 
     mem.data = <GifByteType*> &src[0]
     mem.size = <size_t> src.shape[0]
@@ -344,77 +232,90 @@ def decode(data, *, asrgb: bool = True) -> 'np.ndarray':
             raise GifError(
                 f"DGifSlurp failed: {GifErrorString(gif.Error).decode()}"
             )
-
         W = <Py_ssize_t> gif.SWidth
         H = <Py_ssize_t> gif.SHeight
         n_frames = <Py_ssize_t> gif.ImageCount
-
-        if not asrgb:
-            if n_frames != 1:
-                raise GifError(
-                    f"asrgb=False only supports single-frame GIFs; "
-                    f"got {n_frames} frames"
-                )
-            img = &gif.SavedImages[0]
-            shape = (int(img.ImageDesc.Height), int(img.ImageDesc.Width))
-            out = np.empty(shape, dtype=np.uint8)
-            memcpy(<void*> cnp.PyArray_DATA(out),
-                   <const void*> img.RasterBits,
-                   <size_t>(shape[0] * shape[1]))
-            return out
-
-        # RGB output. Composite frames onto a canvas. We use the
-        # global palette unless a frame defines its own.
-        if n_frames == 1:
-            shape3 = (int(H), int(W), 3)
-        else:
-            shape3 = (int(n_frames), int(H), int(W), 3)
-        out = np.zeros(shape3, dtype=np.uint8)
-        out_p = <uint8_t*> cnp.PyArray_DATA(out)
-
-        # Background color from the global palette.
-        if gif.SColorMap != NULL and gif.SBackGroundColor < gif.SColorMap.ColorCount:
-            color = gif.SColorMap.Colors[gif.SBackGroundColor]
-            bg_r, bg_g, bg_b = color.Red, color.Green, color.Blue
-
-        canvas_stride = W * 3
-        frame_stride = H * canvas_stride
-
-        if n_frames == 1:
-            canvas = out_p
-            _paint_frame(canvas, W, H, &gif.SavedImages[0], gif.SColorMap,
-                         bg_r, bg_g, bg_b, 1)
-        else:
-            # Animated: composite each frame onto a working canvas.
-            for frame in range(n_frames):
-                canvas = out_p + frame * frame_stride
-                if frame == 0:
-                    # Initial fill: background.
-                    for i in range(H * W):
-                        canvas[i*3 + 0] = bg_r
-                        canvas[i*3 + 1] = bg_g
-                        canvas[i*3 + 2] = bg_b
-                else:
-                    # Start from previous frame's composited image.
-                    memcpy(canvas, canvas - frame_stride,
-                           <size_t>(frame_stride))
-                _paint_frame(canvas, W, H, &gif.SavedImages[frame],
-                             gif.SColorMap, bg_r, bg_g, bg_b, 1)
-        return out
+        out = np.zeros((n_frames, H, W), dtype=np.uint8)
+        for frame in range(n_frames):
+            _place_indices(
+                <uint8_t*> cnp.PyArray_DATA(out) + frame * H * W,
+                W, H, &gif.SavedImages[frame])
+        return out[0] if n_frames == 1 else out
     finally:
         DGifCloseFile(gif, &err)
 
 
+def _lzw_error(int rc) -> str:
+    """Describe an ``oc_giflzw_decode`` failure in libgif's words."""
+    if rc == -2:
+        # A frame must code width * height pixels (GIF89a section 22);
+        # libgif reports a short one with this message.
+        return "Image EOF detected before image complete"
+    if rc == -1:
+        return "LZW minimum code size is not 2 to 8"
+    return f"Image is defective, decoding aborted (LZW error {rc})"
+
+
+def _frame_index(index, Py_ssize_t n_frames) -> int:
+    """Validate a frame index (negative counts from the end)."""
+    cdef Py_ssize_t i = int(index)
+    if i < 0:
+        i += n_frames
+    if i < 0 or i >= n_frames:
+        raise IndexError(
+            f"GIF frame index {index} out of range for {n_frames} frames")
+    return i
+
+
+cdef void _place_indices(
+    uint8_t* canvas, Py_ssize_t W, Py_ssize_t H, SavedImage* img,
+) noexcept nogil:
+    """Copy a frame's palette indices into a ``(H, W)`` canvas at the
+    frame's position, clipped to the logical screen."""
+    cdef Py_ssize_t fl = <Py_ssize_t> img.ImageDesc.Left
+    cdef Py_ssize_t ft = <Py_ssize_t> img.ImageDesc.Top
+    cdef Py_ssize_t fw = <Py_ssize_t> img.ImageDesc.Width
+    cdef Py_ssize_t fh = <Py_ssize_t> img.ImageDesc.Height
+    cdef Py_ssize_t y, cw
+    if img.RasterBits == NULL or fl >= W or ft >= H:
+        return
+    cw = fw if fl + fw <= W else W - fl
+    for y in range(fh):
+        if ft + y >= H:
+            break
+        memcpy(canvas + (ft + y) * W + fl, img.RasterBits + y * fw,
+               <size_t> cw)
+
+
+cdef void _deinterlace(
+    const uint8_t* src, uint8_t* dst, Py_ssize_t w, Py_ssize_t h,
+) noexcept nogil:
+    """Undo GIF interlacing (GIF89a section 20 and Appendix E).
+
+    Rows are stored in four passes: every 8th row from 0, every 8th
+    from 4, every 4th from 2, then every 2nd from 1.
+    """
+    cdef int[4] start = [0, 4, 2, 1]
+    cdef int[4] step = [8, 8, 4, 2]
+    cdef Py_ssize_t row = 0, y
+    cdef int p
+    for p in range(4):
+        y = start[p]
+        while y < h:
+            memcpy(dst + y * w, src + row * w, <size_t> w)
+            row += 1
+            y += step[p]
+
+
 cdef int _paint_frame(
     uint8_t* canvas, Py_ssize_t W, Py_ssize_t H,
-    SavedImage* img, ColorMapObject* global_map,
-    uint8_t bg_r, uint8_t bg_g, uint8_t bg_b,
-    int respect_transparency,
+    SavedImage* img, ColorMapObject* global_map, int trans_idx,
 ) noexcept nogil:
     """Composite ``img.RasterBits`` onto a (W*H*3) RGB canvas at
     ``img.ImageDesc.{Left,Top}``. Uses the frame-local color map if
-    present, else the global. Honors the GIF transparency-index
-    extension (0xf9) when present."""
+    present, else the global. A pixel equal to ``trans_idx`` (the
+    Graphic Control Extension transparency index, -1 for none) leaves
+    the canvas unchanged, per GIF89a section 23."""
     cdef ColorMapObject* cmap = img.ImageDesc.ColorMap
     if cmap == NULL:
         cmap = global_map
@@ -425,20 +326,11 @@ cdef int _paint_frame(
     cdef Py_ssize_t fw = <Py_ssize_t> img.ImageDesc.Width
     cdef Py_ssize_t fh = <Py_ssize_t> img.ImageDesc.Height
     cdef GifByteType* raster = img.RasterBits
-
-    # Transparency index (-1 if none).
-    cdef int trans_idx = -1
-    cdef Py_ssize_t j
-    cdef ExtensionBlock* eb
-    for j in range(img.ExtensionBlockCount):
-        eb = &img.ExtensionBlocks[j]
-        if eb.Function == 0xf9 and eb.ByteCount >= 4 and (eb.Bytes[0] & 0x01):
-            trans_idx = <int> eb.Bytes[3]
-            break
-
     cdef Py_ssize_t y, x, dst_pos
     cdef int idx
     cdef GifColorType color
+    if raster == NULL:
+        return -1
     for y in range(fh):
         if ft + y >= H:
             break
@@ -446,7 +338,7 @@ cdef int _paint_frame(
             if fl + x >= W:
                 break
             idx = <int> raster[y * fw + x]
-            if respect_transparency and idx == trans_idx:
+            if idx == trans_idx:
                 continue
             if idx >= cmap.ColorCount:
                 continue
@@ -602,24 +494,27 @@ def encode(data, *, colormap=None) -> bytes:
 # Streaming Reader / Writer
 # ---------------------------------------------------------------------------
 #
-# Slurp the GIF once at open() time (libgif's DGifSlurp parses every frame
-# into a palette-index raster). Compositing-to-RGB then happens lazily
-# per-frame in iter_frames() / __getitem__. Memory savings vs. our
-# decode()-everything-at-once function: 3x for RGB output (we hold N
-# frames of u8 palette indices instead of N frames of u8 RGB).
-#
-# True record-by-record streaming (not even slurp the palette rasters)
-# would require giflib's lower-level API; that's a bigger refactor and
-# only matters for multi-GB animated GIFs, which are vanishingly rare.
+# Decode every frame's palette indices once at open() time (our own
+# record walk plus oc_giflzw). Compositing to RGB then happens lazily
+# per frame in iter_frames() / __getitem__, so the reader holds N frames
+# of u8 palette indices instead of N frames of u8 RGB (3x less memory).
 
 
 cdef class GifReader:
     """Streaming GIF reader — yields one composited RGB frame at a time.
 
-    Slurps frame indices on open (fast; just LZW decoding), then composites
-    each frame to RGB on demand. ``iter_frames()`` yields ``(H, W, 3)``
-    uint8 arrays; ``[i]`` random-access replays from frame 0 because GIF
-    disposal modes make seek-O(1) impossible.
+    Decodes the frame indices on open (fast; just LZW decoding), then
+    composites each frame to RGB on demand. ``iter_frames()`` yields
+    ``(H, W, 3)`` uint8 arrays; ``[i]`` random-access replays from frame
+    0 because GIF disposal modes make seek-O(1) impossible.
+
+    Compositing follows the GIF89a specification: the canvas starts as
+    the logical screen background color (section 18); each frame's
+    Graphic Control Extension (section 23) supplies a transparency index
+    whose pixels leave the canvas unchanged and a disposal method, where
+    2 restores the frame's rectangle to the background color and 3
+    restores what was there before the frame was drawn. Interlaced
+    frames are deinterlaced (section 20, Appendix E).
     """
 
     cdef GifFileType* _gif
@@ -631,18 +526,22 @@ cdef class GifReader:
     cdef public int width
     cdef public int height
     cdef uint8_t _bg_r, _bg_g, _bg_b
+    cdef list _disposal      # per-frame GCE disposal method (0..7)
+    cdef list _transparent   # per-frame GCE transparency index, -1 if none
 
-    def __cinit__(self, data):
+    def __cinit__(self, data, *args, **kwargs):
         self._gif = NULL
         self._mem.data = NULL
 
-    def __init__(self, data):
+    def __init__(self, data, *, int _max_frames=0):
         cdef:
             int err = 0
             int rc
             int lzw_min_code_size = 0
             int blk_len
             int code_byte = 0
+            int pending_disposal = 0
+            int pending_trans = -1
             GifColorType color
             GifRecordType rec_type
             GifByteType* code_block
@@ -653,6 +552,9 @@ cdef class GifReader:
             size_t lzw_buf_cap = 0
             size_t lzw_buf_len = 0
             uint8_t* raster
+            uint8_t* flat
+        self._disposal = []
+        self._transparent = []
         # Keep a bytes ref so the read callback's pointer stays valid.
         if isinstance(data, (bytes, bytearray)):
             self._src_bytes = bytes(data)
@@ -695,13 +597,21 @@ cdef class GifReader:
                         rec_type == SCREEN_DESC_RECORD_TYPE:
                     continue
                 if rec_type == EXTENSION_RECORD_TYPE:
-                    # Let giflib parse the extension blocks into the
-                    # current image's ExtensionBlocks list — we don't
-                    # touch the LZW for extensions, just walk through.
                     if DGifGetExtension(
                         self._gif, &code_byte, &ext_block,
                     ) != GIF_OK:
                         raise GifError("DGifGetExtension failed")
+                    # Graphic Control Extension (label 0xF9). giflib
+                    # hands back the sub-block with its length byte
+                    # first: [4, packed, delay lo, delay hi, index].
+                    # Its scope is the next image descriptor only.
+                    if code_byte == 0xF9 and ext_block != NULL \
+                            and ext_block[0] >= 4:
+                        pending_disposal = (ext_block[1] >> 2) & 0x07
+                        if ext_block[1] & 0x01:
+                            pending_trans = <int> ext_block[4]
+                        else:
+                            pending_trans = -1
                     while ext_block != NULL:
                         if DGifGetExtensionNext(
                             self._gif, &ext_block,
@@ -721,6 +631,10 @@ cdef class GifReader:
                 img = &self._gif.SavedImages[self._gif.ImageCount - 1]
                 pix_count = <Py_ssize_t> img.ImageDesc.Width * \
                             <Py_ssize_t> img.ImageDesc.Height
+                self._disposal.append(pending_disposal)
+                self._transparent.append(pending_trans)
+                pending_disposal = 0
+                pending_trans = -1
 
                 # Pull raw LZW sub-blocks → flat buffer.
                 if DGifGetCode(
@@ -755,7 +669,7 @@ cdef class GifReader:
 
                 # Decode into a fresh malloc'd raster — giflib's
                 # cleanup will free() it via FreeSavedImages.
-                raster = <uint8_t*> malloc(<size_t> pix_count)
+                raster = <uint8_t*> malloc(<size_t> pix_count + 1)
                 if raster == NULL:
                     raise MemoryError("oom for frame raster")
                 with nogil:
@@ -766,11 +680,23 @@ cdef class GifReader:
                     )
                 if rc != 0:
                     free(raster)
-                    raise GifError(f"oc_giflzw_decode failed: rc={rc}")
+                    raise GifError(_lzw_error(rc))
+                if img.ImageDesc.Interlace and img.ImageDesc.Height > 1:
+                    flat = raster
+                    raster = <uint8_t*> malloc(<size_t> pix_count + 1)
+                    if raster == NULL:
+                        free(flat)
+                        raise MemoryError("oom for frame raster")
+                    _deinterlace(flat, raster,
+                                 <Py_ssize_t> img.ImageDesc.Width,
+                                 <Py_ssize_t> img.ImageDesc.Height)
+                    free(flat)
                 # Hand ownership to giflib by assigning RasterBits.
                 if img.RasterBits != NULL:
                     free(img.RasterBits)
                 img.RasterBits = <GifByteType*> raster
+                if _max_frames > 0 and self._gif.ImageCount >= _max_frames:
+                    break
         finally:
             if lzw_buf != NULL:
                 free(lzw_buf)
@@ -807,6 +733,16 @@ cdef class GifReader:
             return (self.height, self.width, 3)
         return (self.n_frames, self.height, self.width, 3)
 
+    @property
+    def disposal(self):
+        """Per-frame GIF89a disposal methods (0-3; 0 when no GCE)."""
+        return tuple(self._disposal)
+
+    @property
+    def transparent_index(self):
+        """Per-frame transparency index, ``-1`` where none is set."""
+        return tuple(self._transparent)
+
     def close(self):
         cdef int err = 0
         if self._gif != NULL:
@@ -823,47 +759,80 @@ cdef class GifReader:
     def __len__(self):
         return self.n_frames
 
-    def iter_frames(self):
-        """Yield each frame composited to RGB ``(H, W, 3)`` uint8."""
-        cdef:
-            int i
-            uint8_t* canvas
-            cnp.ndarray prev = None
-            cnp.ndarray fr
-            Py_ssize_t H = self.height
-            Py_ssize_t W = self.width
-            Py_ssize_t frame_bytes = H * W * 3
-            uint8_t bg_r = self._bg_r
-            uint8_t bg_g = self._bg_g
-            uint8_t bg_b = self._bg_b
-
+    def _check_open(self):
         if self._gif == NULL:
             raise GifError("GifReader is closed")
 
+    def _background(self):
+        """A fresh ``(H, W, 3)`` canvas filled with the background color."""
+        cdef cnp.ndarray fr
+        if self._bg_r == 0 and self._bg_g == 0 and self._bg_b == 0:
+            return np.zeros((self.height, self.width, 3), dtype=np.uint8)
+        fr = np.empty((self.height, self.width, 3), dtype=np.uint8)
+        fr[..., 0] = self._bg_r
+        fr[..., 1] = self._bg_g
+        fr[..., 2] = self._bg_b
+        return fr
+
+    def _rect(self, int i):
+        """Frame ``i``'s rectangle as canvas slices (numpy clips them)."""
+        cdef SavedImage* img = &self._gif.SavedImages[i]
+        t = <Py_ssize_t> img.ImageDesc.Top
+        l = <Py_ssize_t> img.ImageDesc.Left
+        return (slice(t, t + <Py_ssize_t> img.ImageDesc.Height),
+                slice(l, l + <Py_ssize_t> img.ImageDesc.Width))
+
+    def _paint(self, cnp.ndarray canvas, int i):
+        """Draw frame ``i`` onto ``canvas``; return the pre-draw
+        snapshot that disposal method 3 needs (else None)."""
+        saved = None
+        if self._disposal[i] == 3:
+            saved = canvas[self._rect(i)].copy()
+        _paint_frame(<uint8_t*> cnp.PyArray_DATA(canvas),
+                     self.width, self.height,
+                     &self._gif.SavedImages[i], self._gif.SColorMap,
+                     <int> self._transparent[i])
+        return saved
+
+    def _dispose(self, cnp.ndarray canvas, int i, saved):
+        """Apply frame ``i``'s disposal method after it was shown."""
+        cdef int d = self._disposal[i]
+        if d == 2:
+            rect = self._rect(i)
+            canvas[rect + (0,)] = self._bg_r
+            canvas[rect + (1,)] = self._bg_g
+            canvas[rect + (2,)] = self._bg_b
+        elif d == 3:
+            canvas[self._rect(i)] = saved
+
+    def _render_isolated(self, int i):
+        """Frame ``i`` alone on the background, with no earlier frames
+        and no disposal (the imagecodecs ``index=`` convention)."""
+        self._check_open()
+        canvas = self._background()
+        _paint_frame(<uint8_t*> cnp.PyArray_DATA(canvas),
+                     self.width, self.height,
+                     &self._gif.SavedImages[i], self._gif.SColorMap,
+                     <int> self._transparent[i])
+        return canvas
+
+    def _indices(self, int i):
+        """Frame ``i``'s palette indices on a zero ``(H, W)`` canvas."""
+        self._check_open()
+        out = np.zeros((self.height, self.width), dtype=np.uint8)
+        _place_indices(<uint8_t*> cnp.PyArray_DATA(out),
+                       self.width, self.height, &self._gif.SavedImages[i])
+        return out
+
+    def iter_frames(self):
+        """Yield each frame composited to RGB ``(H, W, 3)`` uint8."""
+        cdef int i
+        self._check_open()
+        canvas = self._background()
         for i in range(self.n_frames):
-            # Pre-fill via vectorized numpy (NOT a Python-level
-            # element-by-element loop, which would be 25-30x slower on
-            # a 2 MP frame). np.zeros is essentially free for the
-            # common all-zero background; otherwise np.full broadcasts
-            # the bg triplet in one pass.
-            if bg_r == 0 and bg_g == 0 and bg_b == 0:
-                fr = np.zeros((H, W, 3), dtype=np.uint8)
-            else:
-                fr = np.empty((H, W, 3), dtype=np.uint8)
-                fr[..., 0] = bg_r
-                fr[..., 1] = bg_g
-                fr[..., 2] = bg_b
-            canvas = <uint8_t*> cnp.PyArray_DATA(fr)
-            if prev is not None:
-                # Carry previous frame forward (DISPOSE_DO_NOT default
-                # — what most decoders + browsers actually do).
-                memcpy(canvas, <const void*> cnp.PyArray_DATA(prev),
-                       <size_t> frame_bytes)
-            _paint_frame(canvas, W, H, &self._gif.SavedImages[i],
-                         self._gif.SColorMap,
-                         bg_r, bg_g, bg_b, 1)
-            prev = fr
-            yield fr
+            saved = self._paint(canvas, i)
+            yield canvas.copy()
+            self._dispose(canvas, i, saved)
 
     def __iter__(self):
         return self.iter_frames()
@@ -872,26 +841,40 @@ cdef class GifReader:
         """Random access. O(N) — replays frames 0..idx because GIF disposal
         chains forbid skipping."""
         if isinstance(idx, slice):
-            return np.stack(list(self.iter_frames()), axis=0)[idx]
+            return self.read_all()[idx]
         cdef int i = int(idx)
+        cdef int k
         if i < 0:
             i += self.n_frames
         if i < 0 or i >= self.n_frames:
             raise IndexError(idx)
-        cdef int seen = 0
-        for fr in self.iter_frames():
-            if seen == i:
-                return fr
-            seen += 1
-        raise IndexError(idx)
+        self._check_open()
+        canvas = self._background()
+        for k in range(i):
+            saved = self._paint(canvas, k)
+            self._dispose(canvas, k, saved)
+        self._paint(canvas, i)
+        return canvas
+
+    def read_all(self):
+        """All frames as ``(n_frames, H, W, 3)``, even for one frame."""
+        cdef int i
+        self._check_open()
+        out = np.empty((self.n_frames, self.height, self.width, 3),
+                       dtype=np.uint8)
+        canvas = self._background()
+        for i in range(self.n_frames):
+            saved = self._paint(canvas, i)
+            out[i] = canvas
+            self._dispose(canvas, i, saved)
+        return out
 
     def read(self):
         """Return all frames stacked as ``(n_frames, H, W, 3)`` (or ``(H, W, 3)``
-        for single-frame). Equivalent to ``np.stack(list(reader), axis=0)``
-        with a fast-path for single-frame."""
+        for single-frame)."""
         if self.n_frames == 1:
-            return next(iter(self.iter_frames()))
-        return np.stack(list(self.iter_frames()), axis=0)
+            return self[0]
+        return self.read_all()
 
 
 cdef class GifWriter:

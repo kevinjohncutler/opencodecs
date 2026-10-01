@@ -107,7 +107,11 @@ static int decode_inner(
         accum_bits -= code_size;
 
         if (OC_UNLIKELY(code == eoi_code)) {
-            return 0;
+            /* An end code before the frame is full is an error in
+             * libgif too (D_GIF_ERR_EOF_TOO_SOON, "Image EOF detected
+             * before image complete"). Returning success here left the
+             * rest of the caller's raster unwritten. */
+            return (out_p == out_end) ? 0 : -2;
         }
         if (OC_UNLIKELY(code == clear_code)) {
             code_size = min_code_size + 1;
@@ -125,8 +129,12 @@ static int decode_inner(
         if (OC_UNLIKELY(c >= next_code)) {
             /* "KwKwK" special case: the code refers to an entry we're
              * about to add. Emit the previous string + first byte of
-             * previous string. */
-            if (OC_UNLIKELY(prev_code < 0)) {
+             * previous string. Only next_code itself can be that entry;
+             * a larger code was never defined, and accepting it made
+             * it prev_code, so the next table entry pointed at an
+             * uninitialized slot and a later prefix walk read outside
+             * the table. libgif rejects it too (D_GIF_ERR_IMAGE_DEFECT). */
+            if (OC_UNLIKELY(prev_code < 0 || c > next_code)) {
                 return -4;
             }
             stack[sp++] = (uint8_t) first_byte[prev_code];
@@ -145,9 +153,16 @@ static int decode_inner(
         stack[sp++] = (uint8_t) c;
         uint8_t first = (uint8_t) c;
 
-        /* Bounds check + drain stack into output (reversed → forward). */
+        /* Bounds check + drain stack into output (reversed → forward).
+         * A stream that codes more pixels than the frame holds fills
+         * the frame and stops: libgif (DGifGetLine) decodes exactly
+         * width * height pixels and skips the rest of the data, so the
+         * surplus is ignored rather than failing the decode. */
         if (OC_UNLIKELY(out_p + sp > out_end)) {
-            return -3;
+            while (out_p < out_end) {
+                *out_p++ = stack[--sp];
+            }
+            return 0;
         }
         /* Reverse copy: stack[sp-1..0] → out_p[0..sp-1]. */
         for (int i = sp - 1; i >= 0; i--) {

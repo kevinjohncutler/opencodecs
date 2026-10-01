@@ -25,7 +25,7 @@ evidence = ["src/opencodecs/_mrc_codec.py:MrcCodec", "src/opencodecs/_numpy_code
 
 [[family]]
 id = "byte_compressors"
-members = ["deflate", "gzip", "zstd", "lz4", "brotli", "bz2", "lzma", "snappy", "blosc2", "aec", "none"]
+members = ["deflate", "gzip", "zstd", "lz4", "brotli", "bz2", "lzma", "snappy", "snappy_framed", "blosc2", "aec", "none"]
 scope = "Container blocks already supply independent units. Whole compressed streams require state across feeds; arbitrary byte cuts do not create independently decodable blocks."
 evidence = ["src/opencodecs/core/segment_compression.py:encode_segment", "src/opencodecs/codecs/_lz4.pyx:decode", "src/opencodecs/codecs/_brotli.pyx:decode"]
 
@@ -260,7 +260,7 @@ priority = 2
 state = "complete"
 pilots = ["brotli", "lz4", "gzip", "bz2", "lzma"]
 followups = ["deflate", "zstd"]
-investigate = ["aec"]
+investigate = ["aec", "snappy_framed"]
 depends_on = ["bounded_pipeline", "output_sinks"]
 current = "Seven byte codecs expose genuine stateful input/output iteration: gzip, bzip2, LZMA, deflate, Brotli, LZ4 and Zstandard. Eager paths are preserved; chunks are not falsely treated as independent frames."
 action = "Add an explicit incremental session alongside eager encode/decode, with input-consumed/output-produced, finalization, and bounded destination semantics. Use standard-library and existing native loops as distinct first implementations."

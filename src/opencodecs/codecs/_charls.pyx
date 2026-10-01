@@ -17,7 +17,23 @@ Bit depths
 ==========
 
 Supports 2-16 bits per sample, 1 / 3 / 4 components. Pixels are
-exposed as uint8 (bit_depth ≤ 8) or uint16 (bit_depth ≤ 16).
+exposed as uint8 (bit_depth <= 8) or uint16 (bit_depth <= 16).
+
+Stream layout
+=============
+
+The encoder writes a bare JPEG-LS codestream (SOI, SOF55, [LSE], SOS,
+EOI) with no SPIFF header, and sample interleave (ILV=2) for every
+multi-component image. Both are conforming choices under ITU-T T.87 |
+ISO/IEC 14495-1; SPIFF (ITU-T T.84 Annex F) is optional, and a bare
+codestream is what DICOM and TIFF embed. imagecodecs writes a SPIFF
+header with a fixed 300 dpi resolution and uses line interleave for
+four components, so the bytes differ by those segments while the
+decoded pixels are identical in both directions.
+
+The decoder reads all three interleave modes, including ILV=0 (one
+scan per component), and always returns (H, W, C) for a
+multi-component frame.
 """
 
 from cpython.bytes cimport PyBytes_FromStringAndSize
@@ -44,6 +60,8 @@ from charls cimport (
     charls_jpegls_decoder_get_frame_info,
     charls_jpegls_decoder_get_destination_size,
     charls_jpegls_decoder_decode_to_buffer,
+    charls_jpegls_decoder_get_interleave_mode,
+    charls_interleave_mode,
     charls_get_error_message,
     CHARLS_INTERLEAVE_MODE_SAMPLE,
 )
@@ -61,19 +79,48 @@ cdef _check(int errc, str where):
         raise CharlsError(f"{where}: {msg} (errc={errc})")
 
 
-def encode(data, *, near_lossless: int = 0) -> bytes:
+def _resolve_near(near_lossless, level):
+    """The JPEG-LS NEAR parameter from ``near_lossless`` and ``level``.
+
+    ``level`` is imagecodecs' name for the same thing
+    (``jpegls_encode(data, level=N)`` sets NEAR=N, None means 0), so it
+    is accepted as an alias. Passing both with different values is a
+    contradiction and raises rather than silently picking one.
+    """
+    near = 0 if near_lossless is None else int(near_lossless)
+    if level is not None:
+        lvl = max(0, int(level))
+        if near_lossless is not None and near != lvl:
+            raise ValueError(
+                f"jpegls encode: level={level} and near_lossless="
+                f"{near_lossless} disagree; pass one of them")
+        near = lvl
+    if near < 0:
+        raise ValueError(
+            f"jpegls encode: near_lossless must be >= 0 (got {near})")
+    return near
+
+
+def encode(data, *, near_lossless: int | None = None,
+           level: int | None = None) -> bytes:
     """Encode an ndarray as JPEG-LS.
 
     Parameters
     ----------
     data
         2D (H, W) or 3D (H, W, C) array of uint8 or uint16.
-    near_lossless : int
-        0 (default) = mathematically lossless. Positive integers up to
-        9 enable JPEG-LS's bounded-error mode: each decoded sample is
-        within ``near_lossless`` of the source. Larger = smaller files,
-        more error.
+    near_lossless : int, optional
+        The JPEG-LS NEAR parameter (ITU-T T.87). 0 (the default) is
+        mathematically lossless. A positive value bounds the error:
+        each decoded sample is within ``near_lossless`` of the source.
+        Larger means smaller files and more error.
+    level : int, optional
+        Alias of ``near_lossless`` under imagecodecs' name, so
+        ``encode(a, level=2)`` writes the same stream as
+        ``imagecodecs.jpegls_encode(a, level=2)`` apart from the SPIFF
+        header imagecodecs adds.
     """
+    cdef int near = _resolve_near(near_lossless, level)
     cdef:
         cnp.ndarray arr
         charls_jpegls_encoder* enc = NULL
@@ -129,8 +176,8 @@ def encode(data, *, near_lossless: int = 0) -> bytes:
     try:
         rc = charls_jpegls_encoder_set_frame_info(enc, &info)
         _check(rc, "set_frame_info")
-        if near_lossless > 0:
-            rc = charls_jpegls_encoder_set_near_lossless(enc, near_lossless)
+        if near > 0:
+            rc = charls_jpegls_encoder_set_near_lossless(enc, near)
             _check(rc, "set_near_lossless")
         # Interleaved sample layout (RGBRGB) for multi-component frames.
         # 1-component frames default to mode=NONE which is correct.
@@ -166,23 +213,31 @@ def encode(data, *, near_lossless: int = 0) -> bytes:
 def decode(data, *, out=None) -> np.ndarray:
     """Decode JPEG-LS bytes to an ndarray.
 
-    ``out=`` is a preallocated ndarray. charls's
-    charls_jpegls_decoder_decode_to_buffer writes directly into the
-    caller's buffer — true zero-alloc. See ``_png.decode`` for the
-    full contract.
+    A multi-component frame is returned as (H, W, C) whatever
+    interleave mode the stream uses. ILV=1 (line) and ILV=2 (sample)
+    decode straight into the output; ILV=0 (one scan per component,
+    ITU-T T.87 Annex C.2.3) decodes into component planes, which are
+    then interleaved into the output. imagecodecs returns the same
+    (H, W, C) layout for all three.
+
+    ``out=`` is a preallocated C-contiguous ndarray of the decoded shape
+    and dtype. For a single component or an interleaved stream CharLS
+    writes straight into it; an ILV=0 stream goes through one planar
+    scratch buffer first.
     """
     cdef:
         const uint8_t[::1] src
         size_t srcsize
         charls_jpegls_decoder* dec = NULL
         charls_frame_info info
+        charls_interleave_mode ilv_mode
         size_t dst_size = 0
         uint32_t stride
         int rc
+        int itemsize
+        bint planar
         cnp.ndarray out_arr
-        cnp.npy_intp shape[3]
-        int ndim
-        int bps
+        cnp.ndarray dst_arr
         void* dst_ptr
         size_t dst_bytes
         tuple expected_shape
@@ -193,6 +248,8 @@ def decode(data, *, out=None) -> np.ndarray:
     else:
         src = bytes(data)
     srcsize = <size_t> src.shape[0]
+    if srcsize == 0:
+        raise CharlsError("jpegls decode: empty input")
 
     dec = charls_jpegls_decoder_create()
     if dec == NULL:
@@ -205,23 +262,17 @@ def decode(data, *, out=None) -> np.ndarray:
         _check(rc, "read_header")
         rc = charls_jpegls_decoder_get_frame_info(dec, &info)
         _check(rc, "get_frame_info")
-        bps = info.bits_per_sample
+        rc = charls_jpegls_decoder_get_interleave_mode(dec, &ilv_mode)
+        _check(rc, "get_interleave_mode")
+        itemsize = 1 if info.bits_per_sample <= 8 else 2
+        expected_dtype = np.uint8 if itemsize == 1 else np.uint16
+        planar = (info.component_count > 1
+                  and <int> ilv_mode == 0)  # CHARLS_INTERLEAVE_MODE_NONE
         if info.component_count == 1:
-            ndim = 2
-            shape[0] = info.height
-            shape[1] = info.width
-            stride = info.width * (1 if bps <= 8 else 2)
             expected_shape = (int(info.height), int(info.width))
         else:
-            ndim = 3
-            shape[0] = info.height
-            shape[1] = info.width
-            shape[2] = info.component_count
-            stride = (info.width * info.component_count *
-                      (1 if bps <= 8 else 2))
             expected_shape = (int(info.height), int(info.width),
                               int(info.component_count))
-        expected_dtype = np.uint8 if bps <= 8 else np.uint16
 
         if out is not None:
             if not isinstance(out, np.ndarray):
@@ -240,16 +291,25 @@ def decode(data, *, out=None) -> np.ndarray:
                 raise CharlsError("jpegls decode: out= must be C-contiguous")
             out_arr = out
         else:
-            out_arr = cnp.PyArray_EMPTY(
-                ndim, shape,
-                cnp.NPY_UINT8 if bps <= 8 else cnp.NPY_UINT16,
-                0,
-            )
+            out_arr = np.empty(expected_shape, dtype=expected_dtype)
+
+        if planar:
+            # ILV=0: CharLS writes component planes one after another,
+            # each row ``width`` samples long, so the stride is a plane
+            # row and the destination is (C, H, W).
+            dst_arr = np.empty(
+                (int(info.component_count), int(info.height),
+                 int(info.width)), dtype=expected_dtype)
+            stride = <uint32_t> (info.width * itemsize)
+        else:
+            dst_arr = out_arr
+            stride = <uint32_t> (info.width * info.component_count * itemsize)
+
         rc = charls_jpegls_decoder_get_destination_size(dec, stride, &dst_size)
         _check(rc, "get_destination_size")
-        if <size_t> out_arr.nbytes < dst_size:
+        if <size_t> dst_arr.nbytes < dst_size:
             raise CharlsError(
-                f"output buffer too small ({out_arr.nbytes} < {dst_size})"
+                f"output buffer too small ({dst_arr.nbytes} < {dst_size})"
             )
         # The entropy decode is the expensive half and charls touches
         # nothing Python in it: the destination is a raw pointer into
@@ -257,12 +317,14 @@ def decode(data, *, out=None) -> np.ndarray:
         # over before. Holding the GIL through it made every caller
         # decoding JPEG-LS frames on threads measure 0.99x, which is a
         # thread pool paying overhead to take turns.
-        dst_ptr = <void*> cnp.PyArray_DATA(out_arr)
-        dst_bytes = <size_t> out_arr.nbytes
+        dst_ptr = <void*> cnp.PyArray_DATA(dst_arr)
+        dst_bytes = <size_t> dst_arr.nbytes
         with nogil:
             rc = charls_jpegls_decoder_decode_to_buffer(
                 dec, dst_ptr, dst_bytes, stride)
         _check(rc, "decode_to_buffer")
+        if planar:
+            out_arr[...] = np.moveaxis(dst_arr, 0, -1)
         return out_arr
     finally:
         charls_jpegls_decoder_destroy(dec)

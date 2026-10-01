@@ -18,6 +18,9 @@ import numpy as np
 import pytest
 
 from opencodecs._n5 import N5Array, N5Error
+from _ic_reference import skip_if_old_imagecodecs  # noqa: E402
+
+pytestmark = skip_if_old_imagecodecs
 
 REAL = (pathlib.Path(__file__).resolve().parent.parent / ".test_data" / "n5"
         / "jrc_hela-2.n5")
@@ -220,3 +223,120 @@ def test_real_unfetched_blocks_read_as_zero():
     """
     z = N5Array(str(REAL), REAL_ARRAY)
     assert z.read_block((3, 1, 5)) is None
+
+
+# --------------------------------------------------------------------
+# lz4: lz4-java's LZ4Block stream, which is what N5 writes
+# --------------------------------------------------------------------
+
+# One block file written by the N5 reference implementation itself (n5
+# 2.5.1 N5FSWriter, Lz4Compression(64), lz4-java 1.8.0): a 10 x 8 uint16
+# block, the N5 block header, then lz4-java's LZ4BlockOutputStream with
+# 64-byte blocks. The first 64 bytes of data are zero, so that block is
+# LZ4-compressed (method 0x20); the rest are pseudo-random, so lz4-java
+# stored those two blocks raw (method 0x10); then the end block.
+JAVA_LZ4_BLOCK_FILE = bytes.fromhex(
+    "000000020000000a000000084c5a34426c6f636b200b000000400000000499fa031f"
+    "000100275000000000004c5a34426c6f636b104000000040000000debb290b1c0d43"
+    "f0e2b8d5f2535c8f7bcb3a6438d0af302bfd70fba92961d37b7a5b552ea92e5fe461"
+    "8d5cd1077216e638c48adea7e58378dab341b94b0e7402f33008774c5a34426c6f63"
+    "6b10200000002000000067ed690a0c99e786c36048a17c5b36ae2f3211aad75f4a8f"
+    "2a020e3acc8f52dbda3602e54c5a34426c6f636b10000000000000000000000000")
+
+
+def _java_lz4_values():
+    """The samples the Java writer was given (its own generator)."""
+    values, s = [0] * 32, 12345
+    for _ in range(48):
+        s = (s * 6364136223846793005 + 1442695040888963407) % (1 << 64)
+        values.append(s >> 48)
+    # N5 lists the fastest axis first: 10 columns, 8 rows.
+    return np.array(values, dtype="<u2").reshape(8, 10)
+
+
+def _write_lz4_dataset(root, payload, shape, block_size, dtype="uint16",
+                       lz4_block_size=65536):
+    d = root / "lz4"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "attributes.json").write_text(json.dumps({
+        "dataType": dtype,
+        "compression": {"type": "lz4", "blockSize": lz4_block_size},
+        "blockSize": list(reversed(block_size)),
+        "dimensions": list(reversed(shape)),
+    }))
+    (d / "0").mkdir(exist_ok=True)
+    (d / "0" / "0").write_bytes(payload)
+
+
+def test_lz4_reads_a_block_the_java_reference_wrote(tmp_path):
+    _write_lz4_dataset(tmp_path, JAVA_LZ4_BLOCK_FILE, (8, 10), (8, 10),
+                       lz4_block_size=64)
+    z = N5Array(str(tmp_path), "lz4")
+    assert z.compression == "lz4"
+    got = np.asarray(z.asarray(), dtype="<u2")
+    assert np.array_equal(got, _java_lz4_values())
+
+
+def _lz4block_stream(data, block_size):
+    """An LZ4BlockOutputStream stream, built from lz4-java's layout.
+
+    Payloads come from imagecodecs' bare LZ4 block encoder and checksums
+    from the xxhash package, so nothing here is opencodecs' own code.
+    """
+    ic = pytest.importorskip("imagecodecs")
+    xxhash = pytest.importorskip("xxhash")
+    level = max(0, block_size.bit_length() - 1 - 10)
+    out = b""
+    for start in range(0, len(data), block_size):
+        chunk = data[start:start + block_size]
+        check = xxhash.xxh32_intdigest(chunk, 0x9747B28C) & 0x0FFFFFFF
+        packed = ic.lz4_encode(chunk)
+        if len(packed) >= len(chunk):
+            token, packed = 0x10 | level, chunk
+        else:
+            token = 0x20 | level
+        out += (b"LZ4Block" + bytes([token])
+                + struct.pack("<iii", len(packed), len(chunk), check) + packed)
+    return out + b"LZ4Block" + bytes([0x10 | level]) + bytes(12)
+
+
+def _n5_block(arr):
+    header = struct.pack(">HH", 0, arr.ndim)
+    header += struct.pack(f">{arr.ndim}I", *reversed(arr.shape))
+    return header, arr.astype(">" + arr.dtype.str[1:]).tobytes()
+
+
+def test_lz4_multi_block_stream(tmp_path):
+    rng = np.random.default_rng(5)
+    a = np.where(rng.random((96, 300)) < 0.7, 0,
+                 rng.integers(0, 65535, (96, 300))).astype("<u2")
+    header, body = _n5_block(a)
+    _write_lz4_dataset(tmp_path, header + _lz4block_stream(body, 8192),
+                       a.shape, a.shape, lz4_block_size=8192)
+    got = N5Array(str(tmp_path), "lz4").asarray()
+    assert np.array_equal(np.asarray(got, dtype="<u2"), a)
+
+
+def test_lz4_checksum_and_truncation_are_errors(tmp_path):
+    a = np.arange(40 * 50, dtype="<u2").reshape(40, 50)
+    header, body = _n5_block(a)
+    stream = bytearray(_lz4block_stream(body, 1024))
+    stream[17] ^= 0x01                     # first block's checksum
+    _write_lz4_dataset(tmp_path, header + bytes(stream), a.shape, a.shape)
+    with pytest.raises(N5Error, match="checksum"):
+        N5Array(str(tmp_path), "lz4").asarray()
+    stream[17] ^= 0x01
+    _write_lz4_dataset(tmp_path, header + bytes(stream[:-21]), a.shape,
+                       a.shape)            # no end block
+    with pytest.raises(N5Error, match="prematurely"):
+        N5Array(str(tmp_path), "lz4").asarray()
+
+
+def test_lz4_frame_payload_still_reads(tmp_path):
+    ic = pytest.importorskip("imagecodecs")
+    a = np.arange(30 * 20, dtype="<u2").reshape(30, 20)
+    header, body = _n5_block(a)
+    _write_lz4_dataset(tmp_path, header + ic.lz4f_encode(body), a.shape,
+                       a.shape)
+    got = N5Array(str(tmp_path), "lz4").asarray()
+    assert np.array_equal(np.asarray(got, dtype="<u2"), a)

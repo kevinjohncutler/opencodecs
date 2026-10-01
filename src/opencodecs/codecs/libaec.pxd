@@ -51,3 +51,10 @@ cdef extern from "libaec.h" nogil:
     int aec_encode_init(aec_stream* strm)
     int aec_encode(aec_stream* strm, int flush)
     int aec_encode_end(aec_stream* strm)
+
+    # Streaming decode, used when the output size is not known up front
+    # (a bare CCSDS stream does not record it) and to look past the end
+    # of a caller's buffer for samples that would not fit.
+    int aec_decode_init(aec_stream* strm)
+    int aec_decode(aec_stream* strm, int flush)
+    int aec_decode_end(aec_stream* strm)

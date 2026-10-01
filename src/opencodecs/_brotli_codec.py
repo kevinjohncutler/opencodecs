@@ -8,7 +8,7 @@ from typing import Any
 import numpy as np
 
 from .core.codec import Codec
-from .core.buffers import byte_output
+from .core.buffers import encoded_output, native_decoded
 from .core._io_helpers import read_src as _read_src, write_dest as _write_dest
 from .core._optional_backend import import_or_stubs
 
@@ -44,16 +44,17 @@ class BrotliCodec(Codec):
         return _brotli_check_signature(head)
 
     def encode(self, data: Any, *, dest=None, level: int | None = None,
-               **opts) -> bytes | None:
+               mode=None, lgwin: int | None = None,
+               out=None) -> bytes | None:
+        """Encode; ``level`` (default 4), ``mode`` and ``lgwin`` are
+        imagecodecs.brotli_encode's, with its defaults."""
         if isinstance(data, np.ndarray):
             data = data.tobytes()
-        compressed = _brotli_encode(data, level=level)
-        return _write_dest(compressed, dest)
+        compressed = _brotli_encode(data, level=level, mode=mode, lgwin=lgwin)
+        return encoded_output(compressed, out, self.name, dest)
 
-    def decode(self, src: Any, *, out=None, **opts) -> bytes | memoryview:
-        if out is None:
-            return _brotli_decode(_read_src(src))
-        return _brotli_decode(_read_src(src), out=byte_output(out))
+    def decode(self, src: Any, *, out=None) -> bytes | memoryview:
+        return native_decoded(_brotli_decode, _read_src(src), out)
 
 
 

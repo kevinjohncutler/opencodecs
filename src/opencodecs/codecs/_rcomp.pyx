@@ -6,14 +6,21 @@
 # cython: nonecheck = False
 # cython: language_level = 3
 
-"""Rice compression (Golomb-Rice) — Cython binding to cfitsio's
-``ricecomp.c``. Same wire format as ``imagecodecs.rcomp_encode``.
+"""Rice compression (Golomb-Rice): Cython binding to cfitsio's
+``ricecomp.c``.
 
-The pure-Python fallback used to live in ``_rcomp_codec.py``; this
-extension is a ~1000x speedup on natural int16 arrays (17 ms → 0.02 ms
-on a 4 KB-element block). Preserves the existing opencodecs framing
-(12-byte header carrying original size + blocksize + bytes-per-pixel,
-followed by the raw rice-coded payload from cfitsio).
+``encode`` writes the bare cfitsio Rice stream, the same bytes FITS
+stores for a ``RICE_1`` tile (FITS Standard 4.0, section 10.4.1) and
+the same bytes ``imagecodecs.rcomp_encode`` writes for an array in
+native byte order (a big-endian array is coded by value here, by its
+bytes there). The stream carries
+no element count, pixel size or block size; FITS keeps them in the
+table keywords (ZTILEn, BYTEPIX, BLOCKSIZE) and a codec caller passes
+them to ``decode_raw``.
+
+Releases up to 0.4.0 wrote a private 12-byte header in front of the
+stream (``<IIi``: byte count, block size, bytes per pixel).
+``decode_framed`` still reads those blobs.
 """
 
 from cpython.bytes cimport PyBytes_FromStringAndSize, PyBytes_AsString
@@ -39,13 +46,13 @@ class RcompError(RuntimeError):
     """Raised on rcomp encode/decode failures."""
 
 
-# Header carries the metadata we need at decode time. Matches the
-# pure-Python fallback's layout exactly so existing blobs roundtrip.
+# The private header releases up to 0.4.0 wrote in front of the Rice
+# stream. Only read now, by ``decode_framed``.
 _HEADER = struct.Struct("<IIi")   # nbytes, blocksize, bpp_signed
 
 
 def encode(data, *, int blocksize=32) -> bytes:
-    """Rice-encode an integer ndarray. Returns header + payload bytes.
+    """Rice-encode an integer ndarray. Returns the bare cfitsio stream.
 
     ``data`` may be int8/uint8/int16/uint16/int32/uint32. cfitsio's
     encoder is signed-only; unsigned inputs are interpreted as signed
@@ -75,6 +82,12 @@ def encode(data, *, int blocksize=32) -> bytes:
         raise RcompError(f'rcomp: too many elements ({n} > 2^31)')
     nx = <int> n
     bpp = arr.dtype.itemsize
+    if bpp not in (1, 2, 4):
+        raise RcompError(
+            f'rcomp: unsupported dtype itemsize {bpp}; expected 1/2/4 bytes'
+        )
+    if nx == 0:
+        return b''
 
     # cfitsio's bound: worst case ~3 bits per byte input + nblock-sized
     # header per block. 2x input + 1 KB is safe for natural data.
@@ -110,19 +123,31 @@ def encode(data, *, int blocksize=32) -> bytes:
     if written < 0:
         raise RcompError(f'rcomp_*: returned error {written}')
 
-    # Pack header + payload-prefix. Storing nbytes in the header lets
-    # the decoder allocate exactly the right output array even when
-    # the payload is small enough to be ambiguous.
-    header = _HEADER.pack(<unsigned int> arr.nbytes,
-                           <unsigned int> blocksize, <int> bpp)
-    return header + payload[:written]
+    return payload[:written]
 
 
-def decode(data, *, out=None):
-    """Decode an rcomp blob. Returns int8/int16/int32 ndarray sized
-    by the header. The caller can re-view as unsigned via
-    ``arr.view(arr.dtype.newbyteorder('=').kind.upper())`` or pass a
-    typed ``out=`` to the codec wrapper."""
+def read_framed_header(data):
+    """Return ``(nbytes, blocksize, bytes_per_pixel)`` from the private
+    header releases up to 0.4.0 wrote, or None if ``data`` cannot be
+    one. The header has no magic, so this checks every field for a
+    value the old encoder could have written."""
+    if len(data) < _HEADER.size:
+        return None
+    nbytes, blocksize, bpp = _HEADER.unpack(bytes(data[:_HEADER.size]))
+    if bpp not in (1, 2, 4) or nbytes % bpp:
+        return None
+    if blocksize == 0 or blocksize > 0xffff or nbytes // bpp > 0x7fffffff:
+        return None
+    if nbytes and len(data) - _HEADER.size < bpp:
+        return None
+    return nbytes, blocksize, bpp
+
+
+def decode_framed(data, *, out=None):
+    """Decode a blob in the framed layout releases up to 0.4.0 wrote
+    (12-byte header, then the Rice stream). Returns the unsigned
+    uint8/uint16/uint32 ndarray the header sizes; the codec wrapper
+    views it as the caller's dtype."""
     cdef:
         Py_ssize_t total_in
         unsigned int nbytes
@@ -208,14 +233,16 @@ def decode(data, *, out=None):
     return dst
 
 
-def decode_raw(data, *, int nelements, int blocksize, int bytes_per_pixel):
-    """Decode raw cfitsio Rice-coded bytes (no opencodecs header).
+def decode_raw(data, *, int nelements, int blocksize, int bytes_per_pixel,
+               out=None):
+    """Decode a bare cfitsio Rice stream.
 
-    Used by the FITS compressed-image reader, which stores rice-coded
-    tiles inline in a BINTABLE column without our 12-byte preamble.
-    Returns a uint8 / uint16 / uint32 ndarray of length ``nelements``;
-    the caller views it as int8 / int16 / int32 via ``arr.view(...)``
-    when the original FITS BITPIX was signed.
+    This is the format ``encode`` writes, FITS stores in a ``RICE_1``
+    tile and ``imagecodecs.rcomp_encode`` writes. Returns a uint8 /
+    uint16 / uint32 ndarray of length ``nelements``; the caller views
+    it as int8 / int16 / int32 via ``arr.view(...)`` when the data was
+    signed. ``out``, if given, must be writable contiguous native
+    unsigned storage of that dtype and size.
     """
     cdef:
         const unsigned char[::1] payload_mv
@@ -237,8 +264,23 @@ def decode_raw(data, *, int nelements, int blocksize, int bytes_per_pixel):
     else:
         payload_ptr = NULL
 
+    if bytes_per_pixel not in (1, 2, 4):
+        raise RcompError(
+            f"rcomp_raw: bytes_per_pixel must be 1/2/4, got {bytes_per_pixel}"
+        )
+    raw_dtype = np.dtype(f'u{bytes_per_pixel}')
+    if out is None:
+        dst = np.empty(nelements, dtype=raw_dtype)
+    else:
+        if not isinstance(out, np.ndarray):
+            raise TypeError('rcomp out must be an ndarray')
+        if (out.dtype != raw_dtype or out.size != nelements
+                or not out.flags.c_contiguous or not out.flags.writeable):
+            raise ValueError('rcomp out must be writable contiguous native '
+                             'unsigned storage of matching size')
+        dst = out
+
     if bytes_per_pixel == 1:
-        dst = np.empty(nelements, dtype=np.uint8)
         if nelements > 0:
             with nogil:
                 rc = rdecomp_byte(
@@ -249,7 +291,6 @@ def decode_raw(data, *, int nelements, int blocksize, int bytes_per_pixel):
         else:
             rc = 0
     elif bytes_per_pixel == 2:
-        dst = np.empty(nelements, dtype=np.uint16)
         if nelements > 0:
             with nogil:
                 rc = rdecomp_short(
@@ -259,8 +300,7 @@ def decode_raw(data, *, int nelements, int blocksize, int bytes_per_pixel):
                 )
         else:
             rc = 0
-    elif bytes_per_pixel == 4:
-        dst = np.empty(nelements, dtype=np.uint32)
+    else:
         if nelements > 0:
             with nogil:
                 rc = rdecomp_int(
@@ -270,16 +310,12 @@ def decode_raw(data, *, int nelements, int blocksize, int bytes_per_pixel):
                 )
         else:
             rc = 0
-    else:
-        raise RcompError(
-            f"rcomp_raw: bytes_per_pixel must be 1/2/4, got {bytes_per_pixel}"
-        )
     if rc < 0:
         raise RcompError(f"rdecomp_*: returned error {rc}")
     return dst
 
 
 def check_signature(head: bytes) -> bool:
-    """Rcomp blobs have no magic — return False so the registry
-    doesn't auto-route on signature alone."""
+    """A Rice stream has no magic. Return False so the registry does
+    not auto-route on signature alone."""
     return False

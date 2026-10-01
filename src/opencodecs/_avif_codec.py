@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import operator
 from pathlib import Path
 from typing import Any
 
@@ -59,33 +60,76 @@ class AvifCodec(Codec):
         return _avif_check_signature(head)
 
     def encode(self, data: Any, *, dest=None, level: int | None = None,
-               lossless: bool = True, speed: int = 0,
+               lossless: bool | None = None, speed: int | None = None,
                color=None, bit_depth: int | None = None,
                numthreads: int | None = None,
                iccprofile: bytes | None = None,
+               codec: str | None = None,
+               tile_cols_log2: int | None = None,
+               tile_rows_log2: int | None = None,
+               auto_tiling: bool = False,
+               yuv_format: str | None = None,
+               codec_options: dict | None = None,
+               primaries: int | None = None,
+               transfer: int | None = None,
+               matrix: int | None = None,
+               bitspersample: int | None = None,
+               pixelformat: str | None = None,
+               tilelog2: tuple | None = None,
                **opts) -> bytes | None:
         """Encode an array as AVIF.
 
-        ``iccprofile`` embeds an ICC color profile.
+        ``level`` and ``lossless`` follow imagecodecs.avif_encode: with
+        no level, or level=100, the file is lossless; a lower level is
+        lossy at that quality, and a level of -1 or lower is lossy at
+        libavif's own default quality. One difference: imagecodecs codes
+        gray (1 or 2 sample) input lossless whatever the level, while
+        here the level applies to gray as well. ``lossless=True`` with a
+        lower level raises rather than ignoring one of them, and
+        ``lossless=False`` with no level is lossy at quality 60. A bare
+        ``encode(a)`` is lossless, so ``decode(encode(a))`` returns
+        ``a``'s values. Gray is coded as 4:0:0 and decodes to (H, W) or
+        (H, W, 2), so (H, W, 1) input comes back as (H, W), as in
+        imagecodecs. Lossy color is coded
+        4:4:4 unless ``yuv_format`` asks for subsampling, alpha is
+        always lossless, and ``speed`` defaults to libavif's own
+        default; all three are imagecodecs' defaults.
 
-        ``lossless=True`` by default to match
-        ``imagecodecs.avif_encode``'s lossless-at-default behavior —
-        see docs/codec_api_conventions.md "Default settings:
-        Pareto-better than the reference, no cheating." For typical
-        photo-storage workloads pass ``lossless=False, level=63`` (or
-        similar) to get the smaller lossy blob.
+        uint16 data is coded at the smallest of 10 and 12 bits that
+        holds it; data needing more than 12 bits raises, since AV1
+        cannot store it. ``iccprofile`` embeds an ICC color profile.
+
+        imagecodecs' keyword names are accepted as aliases:
+        ``bitspersample`` (``bit_depth``), ``pixelformat``
+        (``yuv_format``) and ``tilelog2`` (``(tile_cols_log2,
+        tile_rows_log2)``). Any other unknown keyword raises TypeError.
         """
+        if opts:
+            raise TypeError(
+                f"avif encode: unsupported option(s) {', '.join(sorted(opts))}")
+        bit_depth = _alias("bit_depth", bit_depth, "bitspersample", bitspersample)
+        yuv_format = _alias("yuv_format", yuv_format, "pixelformat", pixelformat)
+        if tilelog2 is not None:
+            cols, rows = (int(v) for v in tilelog2)
+            tile_cols_log2 = _alias("tile_cols_log2", tile_cols_log2,
+                                    "tilelog2", cols)
+            tile_rows_log2 = _alias("tile_rows_log2", tile_rows_log2,
+                                    "tilelog2", rows)
         if not isinstance(data, np.ndarray):
             data = np.asarray(data)
         encoded = _avif_encode(
             data, level=level, lossless=lossless, speed=speed,
             color=color, bit_depth=bit_depth, numthreads=native_workers(numthreads),
-            iccprofile=iccprofile,
+            iccprofile=iccprofile, codec=codec,
+            tile_cols_log2=tile_cols_log2, tile_rows_log2=tile_rows_log2,
+            auto_tiling=auto_tiling, yuv_format=yuv_format,
+            codec_options=codec_options, primaries=primaries,
+            transfer=transfer, matrix=matrix,
         )
         return _write_dest(encoded, dest)
 
     def decode(self, src: Any, *, numthreads: int | None = None,
-               out=None, **opts) -> np.ndarray:
+               out=None, index: int | None = None, **opts) -> np.ndarray:
         """Decode a still, or every image of a sequence.
 
         A sequence decodes to a ``(frames, H, W, C)`` stack, matching
@@ -99,9 +143,40 @@ class AvifCodec(Codec):
         no meaning for a stack whose frame count is not known until the
         container is parsed, so it is refused there rather than
         silently ignored.
+
+        ``index`` (imagecodecs' keyword) decodes that one image of the
+        file, 0 for a still; an index the file does not have raises
+        IndexError. Negative values count from the end. Any other
+        unknown keyword raises TypeError.
         """
+        if opts:
+            raise TypeError(
+                f"avif decode: unsupported option(s) {', '.join(sorted(opts))}")
         data = _read_src(src)
-        if _avif_frame_count(data) <= 1:
+        n_frames = _avif_frame_count(data)
+        if index is not None:
+            i = operator.index(index)
+            if i < 0:
+                i += n_frames
+            if not 0 <= i < n_frames:
+                raise IndexError(
+                    f"avif decode: index {index} out of range for "
+                    f"{n_frames} image(s)")
+            if n_frames > 1:
+                with AvifReader(data, numthreads=native_workers(numthreads)) as r:
+                    frame = r.frame(i)
+                if out is None:
+                    return frame
+                target = array_output(out)
+                if (not isinstance(target, np.ndarray)
+                        or target.shape != frame.shape
+                        or target.dtype != frame.dtype):
+                    raise ValueError(
+                        f"avif decode: out= must be an ndarray of shape "
+                        f"{frame.shape} and dtype {frame.dtype}")
+                target[...] = frame
+                return target
+        if n_frames <= 1:
             return _avif_decode(data, numthreads=native_workers(numthreads), out=out if out is None else array_output(out))
         if out is not None:
             raise ValueError(
@@ -144,6 +219,17 @@ class AvifCodec(Codec):
 
 
 
+def _alias(name, value, alias, alias_value):
+    """Merge an imagecodecs keyword into ours; raise if they disagree."""
+    if alias_value is None:
+        return value
+    if value is not None and value != alias_value:
+        raise ValueError(
+            f"avif encode: {name}={value!r} and {alias}={alias_value!r} "
+            f"disagree; pass one of them")
+    return alias_value
+
+
 class AvifReader(Reader):
     """Frame-oriented reader over an AVIF still, sequence or grid.
 
@@ -168,7 +254,11 @@ class AvifReader(Reader):
 
     @property
     def shape(self) -> tuple:
-        """``(H, W, C)`` of one frame."""
+        """``(H, W, C)`` of one frame, or ``(H, W)`` for monochrome."""
+        if self._seq.monochrome:
+            if self._seq.has_alpha:
+                return (self._seq.height, self._seq.width, 2)
+            return (self._seq.height, self._seq.width)
         c = 4 if self._seq.has_alpha else 3
         return (self._seq.height, self._seq.width, c)
 

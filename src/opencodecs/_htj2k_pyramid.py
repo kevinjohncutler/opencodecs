@@ -37,12 +37,14 @@ class Htj2kPyramidReader(ScaledCodestreamPyramid):
             comps = d["components"]
             shape = ((d["height"], d["width"]) if comps == 1
                      else (d["height"], d["width"], comps))
-            signed = d["signed"]
-            if d["bit_depth"] <= 8:
-                dt = np.int8 if signed else np.uint8
-            else:
-                dt = np.int16 if signed else np.uint16
-            return shape, np.dtype(dt)
+            # The decoder's own choice (it covers 32-bit and NLT float
+            # codestreams), so a level's advertised dtype matches what
+            # reading it returns.
+            if d["dtype"] is None:
+                raise ValueError(
+                    "HTJ2K: the components differ in precision, sign, "
+                    "nonlinearity or subsampling; not supported")
+            return shape, np.dtype(d["dtype"])
 
         levels = probe_by_reduction(info, max_reduction=ceiling)
         if self._max_levels is not None:
@@ -51,6 +53,8 @@ class Htj2kPyramidReader(ScaledCodestreamPyramid):
 
     def _decode_level(self, reduction: int) -> np.ndarray:
         from .codecs import _openjph
+        # planar=False: the levels advertise (H, W, C), whether or not
+        # the codestream uses the component transform.
         return _openjph.decode(
-            self._data, reduce=reduction,
+            self._data, reduce=reduction, planar=False,
             ignore_unsupported=self._ignore_unsupported)

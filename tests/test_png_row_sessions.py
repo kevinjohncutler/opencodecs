@@ -9,6 +9,9 @@ import pytest
 
 import opencodecs as oc
 from opencodecs._png_codec import PngCodec
+from _ic_reference import skip_if_old_imagecodecs  # noqa: E402
+
+pytestmark = skip_if_old_imagecodecs
 
 
 @pytest.mark.parametrize("dtype", [np.uint8, np.uint16])
@@ -81,11 +84,10 @@ def test_packed_and_palette_rows_match_independent_decoder(bits, color_type):
         palette = np.arange((1 << bits) * 3, dtype="u1").reshape(-1, 3) * 5
         encoded += chunk(b"PLTE", palette.tobytes())
     encoded += chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b"")
+    # Rows keep the color type exactly as whole-image decode and libpng
+    # do: sub-byte gray stays (H, W), a palette without tRNS is RGB.
     reference = imagecodecs.png_decode(encoded)
-    if reference.ndim == 2:
-        reference = np.repeat(reference[..., None], 3, axis=2)
-    if reference.shape[-1] == 3:
-        reference = np.concatenate((reference, np.full((height, width, 1), 255, dtype="u1")), axis=2)
+    assert reference.shape == ((height, width) if color_type == 0 else (height, width, 3))
     rows = list(PngCodec().decode_rows(encoded))
     np.testing.assert_array_equal(np.stack([row.pixels for row in rows]), reference)
 

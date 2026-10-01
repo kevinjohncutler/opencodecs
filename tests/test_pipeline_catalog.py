@@ -81,6 +81,6 @@ def test_findings_cannot_block_unknown_work(catalog, names):
 def test_report_distinguishes_candidates_from_shipped(catalog, capsys):
     checker.report(catalog)
     result = capsys.readouterr().out
-    assert '60 registered codecs' in result
+    assert '61 registered codecs' in result
     assert '|---|---|---|---|' in result
     assert 'not shipped support' in result

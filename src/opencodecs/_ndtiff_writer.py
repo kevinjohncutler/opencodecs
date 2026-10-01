@@ -252,12 +252,16 @@ class NDTiffWriter(Writer):
         """Preserve image geometry while sharing prepared compressor dispatch."""
         if self._segment_encoder is None:
             from .core.segment_compression import (
-                bind_segment_encoder, prepare_segment_input, JPEG2000, JXL, WEBP,
+                bind_segment_encoder, prepare_segment_input, JXL, WEBP,
             )
             options = dict(self._compression_options)
             options.setdefault("owned_output", True)
             options["verify"] = self._verify
-            if self._compression_code in (JPEG2000, JXL, WEBP):
+            # JPEG 2000 is lossless by default and lossy for a level
+            # from 1 to 1000 (a PSNR target in dB), as in imagecodecs
+            # and the TIFF writer, so a forced lossless=True would only
+            # make compression_level raise.
+            if self._compression_code in (JXL, WEBP):
                 options.setdefault("lossless", True)
             self._segment_prepare = prepare_segment_input
             self._segment_encoder = bind_segment_encoder(

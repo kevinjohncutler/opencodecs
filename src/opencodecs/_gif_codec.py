@@ -6,8 +6,9 @@ needs to quantize down to 256 colors first (we don't ship a quantizer
 to avoid a heavy color-science dependency — use PIL's quantize() or
 similar).
 
-Returns RGB uint8 by default; pass ``asrgb=False`` to get raw palette
-indices (single-frame only).
+Returns RGB uint8 by default, composited per the GIF89a specification
+(background fill, transparency index, disposal methods, interlacing);
+pass ``asrgb=False`` to get raw palette indices on a canvas-sized array.
 """
 
 from __future__ import annotations
@@ -47,6 +48,32 @@ if GifWriter is not None:
     # it as a virtual subclass rather than wrap it. The reader needs a
     # wrapper because it also had to normalize dtype; this does not.
     Writer.register(GifWriter)
+
+
+def _copy_to_out(result: np.ndarray, out, name: str) -> np.ndarray:
+    """Copy ``result`` into a caller's ``out`` as imagecodecs does: the
+    dtype must match, ``out`` must be C-contiguous, and its shape must
+    equal the result's apart from length-1 axes (the returned array is
+    then ``out`` reshaped). Anything else raises ``ValueError`` rather
+    than broadcasting or casting into ``out``."""
+    if out is None:
+        return result
+    if not isinstance(out, np.ndarray):
+        raise TypeError(f"{name} decode: out must be an ndarray")
+    if out.dtype != result.dtype:
+        raise ValueError(f"{name} decode: out dtype {out.dtype} is not "
+                         f"the image's {result.dtype}")
+    if not out.flags.c_contiguous:
+        raise ValueError(f"{name} decode: out is not C-contiguous")
+    view = out
+    if out.shape != result.shape:
+        if ([d for d in out.shape if d != 1]
+                != [d for d in result.shape if d != 1]):
+            raise ValueError(f"{name} decode: out shape {out.shape} does "
+                             f"not hold the image's {result.shape}")
+        view = out.reshape(result.shape)
+    view[...] = result
+    return view
 
 
 class GifStreamReader(Reader):
@@ -223,18 +250,34 @@ class GifCodec(Codec):
         out = _gif_encode(data, colormap=colormap)
         return _write_dest(out, dest)
 
-    def decode(self, src: Any, *, asrgb: bool = True, **opts) -> np.ndarray:
-        # For RGB output (the common case) we route through GifReader,
-        # which uses our custom oc_giflzw decoder (~1.5x faster than
-        # libgif's reference + handles multi-frame). For asrgb=False
-        # (raw palette indices, single-frame only) keep the original
-        # libgif-based path — palette mode doesn't need compositing.
-        if not asrgb:
-            return _gif_decode(_read_src(src), asrgb=False)
-        if GifReader is None:  # pragma: no cover
-            return _gif_decode(_read_src(src), asrgb=True)
-        with GifReader(_read_src(src)) as r:
-            return r.read()
+    def decode(self, src: Any, index: int | None = None, *,
+               asrgb: bool = True, out=None, **opts) -> np.ndarray:
+        """Decode a GIF, following imagecodecs ``gif_decode(data,
+        index=None, *, asrgb=True, out=None)``.
+
+        ``asrgb=True`` composites every frame per GIF89a (background
+        fill, transparency index, disposal methods 2 and 3) and returns
+        ``(H, W, 3)`` or ``(N, H, W, 3)``. ``asrgb=False`` returns the
+        palette indices on a canvas-sized zero array, ``(H, W)`` or
+        ``(N, H, W)``. ``index`` (also by position) selects one frame,
+        drawn on its own over the background without earlier frames or
+        disposal.
+
+        Differences from imagecodecs 2026.8.16: when the first frame
+        uses its transparent index, imagecodecs returns a fourth channel
+        that is 255 everywhere, while this returns RGB; for a disposal 3
+        frame that follows a disposal 2 frame, imagecodecs does not
+        restore the previous canvas, while this does, as GIF89a section
+        23 says; a frame that extends past the logical screen is clipped
+        to it, where imagecodecs enlarges the canvas, so its output can
+        be larger; and a frame of zero width or height draws nothing,
+        where imagecodecs raises ``GifError``.
+
+        ``out`` must be a C-contiguous uint8 array of the decoded shape
+        (length-1 axes aside), else ``ValueError``, as in imagecodecs.
+        """
+        result = _gif_decode(_read_src(src), index, asrgb=asrgb)
+        return _copy_to_out(result, out, "gif")
 
     def writer(self, dest: Any = None, **opts):
         """A real streaming GIF writer, one composited frame at a time."""

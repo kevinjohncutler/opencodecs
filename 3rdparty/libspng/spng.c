@@ -358,6 +358,7 @@ struct spng_ctx
     size_t libdef_inbuf_size;
     size_t libdef_inbuf_cap;
     int libdef_level;              /* requested compression level */
+    int libdef_bypass;             /* image strategy set: use zlib */
 #endif
     unsigned char *scanline_buf, *prev_scanline_buf, *row_buf, *filtered_scanline_buf;
     unsigned char *scanline, *prev_scanline, *row, *filtered_scanline;
@@ -1264,9 +1265,16 @@ static int spng__deflate_init(spng_ctx *ctx, struct spng__zlib_options *options)
     {
         libdeflate_free_compressor(
             (struct libdeflate_compressor *)ctx->libdef_compressor);
+        ctx->libdef_compressor = NULL;
     }
-    ctx->libdef_compressor = libdeflate_alloc_compressor(ctx->libdef_level);
-    if(ctx->libdef_compressor == NULL) return SPNG_EZLIB_INIT;
+    /* libdeflate has no strategy setting. When the caller set the image
+       strategy explicitly, IDAT goes through zlib's deflate (initialized
+       above with that strategy) so the setting is honored. */
+    if(!ctx->libdef_bypass)
+    {
+        ctx->libdef_compressor = libdeflate_alloc_compressor(ctx->libdef_level);
+        if(ctx->libdef_compressor == NULL) return SPNG_EZLIB_INIT;
+    }
     if(ctx->libdef_inbuf)
     {
         spng__free(ctx, ctx->libdef_inbuf);
@@ -4685,6 +4693,8 @@ static int write_idat_bytes(spng_ctx *ctx, const void *scanline, size_t len, int
     int ret = 0;
 
 #ifdef SPNG_USE_LIBDEFLATE
+    if(!ctx->libdef_bypass)
+    {
     (void)flush;
     /* Append the scanline bytes to our libdeflate input accumulator.
        The actual compression happens in finish_idat() once we have
@@ -4707,7 +4717,8 @@ static int write_idat_bytes(spng_ctx *ctx, const void *scanline, size_t len, int
     memcpy(ctx->libdef_inbuf + ctx->libdef_inbuf_size, scanline, len);
     ctx->libdef_inbuf_size = need;
     return 0;
-#else
+    }
+#endif
     unsigned char *data = NULL;
     z_stream *zstream = &ctx->zstream;
     uint32_t idat_length = SPNG_WRITE_SIZE;
@@ -4736,7 +4747,6 @@ static int write_idat_bytes(spng_ctx *ctx, const void *scanline, size_t len, int
     if(ret != Z_OK) return SPNG_EZLIB;
 
     return 0;
-#endif
 }
 
 static int finish_idat(spng_ctx *ctx)
@@ -4746,6 +4756,8 @@ static int finish_idat(spng_ctx *ctx)
     uint32_t idat_length = SPNG_WRITE_SIZE;
 
 #ifdef SPNG_USE_LIBDEFLATE
+    if(!ctx->libdef_bypass)
+    {
     /* One-shot compress the accumulated filtered-row stream and
        splay the output across SPNG_WRITE_SIZE-sized IDAT chunks.
        Reader compatibility is identical — PNG concatenates IDATs
@@ -4817,7 +4829,8 @@ static int finish_idat(spng_ctx *ctx)
     ctx->libdef_inbuf_cap = 0;
 
     return finish_chunk(ctx);
-#else
+    }
+#endif
     z_stream *zstream = &ctx->zstream;
 
     while(ret != Z_STREAM_END)
@@ -4850,7 +4863,6 @@ static int finish_idat(spng_ctx *ctx)
     if(ret) return ret;
 
     return finish_chunk(ctx);
-#endif
 }
 
 static int encode_scanline(spng_ctx *ctx, const void *scanline, size_t len)
@@ -5533,6 +5545,9 @@ int spng_set_option(spng_ctx *ctx, enum spng_option option, int value)
         case SPNG_IMG_COMPRESSION_STRATEGY:
         {
             ctx->image_options.strategy = value;
+#ifdef SPNG_USE_LIBDEFLATE
+            ctx->libdef_bypass = 1;
+#endif
             break;
         }
         case SPNG_TEXT_COMPRESSION_LEVEL:
