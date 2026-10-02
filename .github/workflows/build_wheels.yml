@@ -118,6 +118,10 @@ jobs:
         if: runner.os == 'macOS'
         run: |
           brew update --quiet
+          # Some macOS runner images link openssl@1.1 into /opt/homebrew/bin;
+          # upgrading openssl@3 (a rust dependency) then fails to link over
+          # it and the whole install fails. Unlinking removes symlinks only.
+          brew unlink openssl@1.1 2>/dev/null || true
           brew install --quiet \
             jpeg-xl libavif libheif webp libpng jpeg-turbo openjpeg \
             zstd brotli c-blosc2 lz4 libdeflate \
