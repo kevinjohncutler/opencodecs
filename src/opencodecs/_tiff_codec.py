@@ -786,6 +786,19 @@ class TiffPage:
             return (self.tile_height, self.tile_width)
         return (self.tile_height, self.tile_width, self.samples_per_pixel)
 
+    def _stored_as_pixels(self) -> bool:
+        """Whether the page's strips, end to end, are its pixels in memory
+        order: uncompressed, stripped, native byte order, no predictor, and
+        not bilevel or planar=2 (packed bits, single-plane strips)."""
+        return (not self.is_tiled
+                and self.compression == CMP_NONE
+                and self.predictor == 1
+                and self.bits_per_sample != 1
+                and self.planar_config != 2
+                and (self.dtype.itemsize == 1 or
+                     (self._stream._byte_order in ("<", "=")
+                      and self.dtype.byteorder in ("<", "=", "|"))))
+
     def _read_strips_into(self, out: np.ndarray, numthreads: int | None = None) -> None:
         """Copy all uncompressed strips directly into ``out``'s buffer.
 
@@ -924,7 +937,8 @@ class TiffPage:
                 tile = tile[:exp_shape[0], :exp_shape[1]]
         return tile
 
-    def asarray(self, *, numthreads: int | None = None) -> np.ndarray:
+    def asarray(self, *, numthreads: int | None = None,
+                out: np.ndarray | None = None) -> np.ndarray:
         """Fully decode this page into a 2D / 3D ndarray.
 
         Parameters
@@ -937,7 +951,18 @@ class TiffPage:
             forces the serial path. Only the general path threads:
             a single-segment image and the uncompressed memcpy path
             have nothing to divide.
+        out : ndarray, optional
+            A C-contiguous array of this page's shape and dtype to decode
+            into, and return. A multi-page ``read`` passes one slice of its
+            stack, so the page lands in place instead of being stacked by
+            a second copy.
         """
+        if out is not None and (tuple(out.shape) != tuple(self.shape)
+                                or out.dtype != self.dtype
+                                or not out.flags.c_contiguous):
+            raise ValueError(
+                f"out must be a C-contiguous {self.dtype} array of shape "
+                f"{tuple(self.shape)}, got {out.dtype} {tuple(out.shape)}")
         is_byte_stream = self.compression in (
             CMP_NONE, CMP_DEFLATE, CMP_ADOBE_DEFLATE,
             CMP_ZSTD, CMP_PACKBITS, CMP_LZW,
@@ -973,25 +998,22 @@ class TiffPage:
             # when the reader is closed -- a use-after-free that shows
             # up as garbage or a crash, long after the call that
             # caused it. Copy when the buffer is not ours to keep.
+            if out is not None:
+                np.copyto(out, arr.reshape(out.shape))
+                return out
             if self._stream._mmap is not None:
                 return np.array(arr, dtype=arr.dtype, order="C", copy=True)
             return np.ascontiguousarray(arr)
 
-        out = np.empty(self.shape, dtype=self.dtype)
+        if out is None:
+            out = np.empty(self.shape, dtype=self.dtype)
 
         # Fast path: uncompressed multi-strip with native byte order
         # and identity predictor — strips are row-contiguous, so we
         # can memcpy straight into out's byte buffer. Bilevel
         # (bps=1) and planar=2 layouts can't use this path: strips
         # are packed bits / single-plane, not byte-image-rows.
-        if (not self.is_tiled
-                and self.compression == CMP_NONE
-                and no_predictor
-                and self.bits_per_sample != 1
-                and self.planar_config != 2
-                and (self.dtype.itemsize == 1 or
-                     (self._stream._byte_order in ("<", "=")
-                      and self.dtype.byteorder in ("<", "=", "|")))):
+        if self._stored_as_pixels():
             self._read_strips_into(out, numthreads)
             return out
 
@@ -1322,15 +1344,55 @@ class TiffStream(Reader):
         nt = self._numthreads
         if self.n_frames == 1:
             return self.page(0).asarray(numthreads=nt)
-        # Frames are decoded one after another and each one threads
-        # across its own segments. Nesting a per-frame pool inside that
-        # would oversubscribe the machine without decoding anything
-        # sooner; opencodecs.parallel.read_files is the tool for
-        # spreading whole files across cores.
-        return np.stack(
-            [self.page(i).asarray(numthreads=nt)
-             for i in range(self.n_frames)],
-            axis=0)
+        pages = [self.page(i) for i in range(self.n_frames)]
+        first = pages[0]
+        if any(tuple(p.shape) != tuple(first.shape) or p.dtype != first.dtype
+               for p in pages):
+            return np.stack([p.asarray(numthreads=nt) for p in pages], axis=0)
+        out = np.empty((len(pages),) + tuple(first.shape), dtype=first.dtype)
+        if self._read_stored_stack_into(pages, out, nt):
+            return out
+        # Frames are decoded one after another, each into its slice of
+        # the stack, and each one threads across its own segments.
+        # Nesting a per-frame pool inside that would oversubscribe the
+        # machine without decoding anything sooner;
+        # opencodecs.parallel.read_files is the tool for spreading whole
+        # files across cores. Decoding into the slice replaces the
+        # np.stack of separately decoded frames, a second copy of the
+        # whole stack.
+        for i, page in enumerate(pages):
+            page.asarray(numthreads=nt, out=out[i])
+        return out
+
+    def _read_stored_stack_into(self, pages, out, numthreads) -> bool:
+        """Read a stack stored as plain pixels, end to end, in one call.
+
+        Every page uncompressed in memory order (``_stored_as_pixels``)
+        and every strip of every page directly after the previous one in
+        the file: what writers produce for a contiguous series. The stack
+        is then one span of the file, read straight into ``out`` by
+        positioned reads in parallel parts (``core.io.read_file_into``),
+        rather than page by page, each page one serial copy. A 23-page
+        2000 x 2000 uint16 stack read in 59.6 ms page by page, where
+        tifffile, which reads such a series in one call, took 29.2 ms
+        (128-core Linux, warm). Returns False to take the page-by-page
+        path.
+        """
+        path = self._src
+        held = getattr(self, "_fd", None)
+        if not (isinstance(path, (str, os.PathLike)) and isinstance(held, io.IOBase)):
+            return False
+        if not all(p._stored_as_pixels() for p in pages):
+            return False
+        offsets = np.concatenate([np.asarray(p.offsets, dtype=np.int64) for p in pages])
+        counts = np.concatenate([np.asarray(p.byte_counts, dtype=np.int64) for p in pages])
+        if (len(offsets) == 0 or int(counts.sum()) != out.nbytes
+                or not np.array_equal(offsets[1:], offsets[:-1] + counts[:-1])):
+            return False
+        from .core.io import read_file_into
+        read_file_into(path, int(offsets[0]), out.view(np.uint8).reshape(-1),
+                       numthreads=numthreads, mapping=self._mmap, fd=held.fileno())
+        return True
 
 
 # ---------------------------------------------------------------------------
