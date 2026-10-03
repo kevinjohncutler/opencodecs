@@ -31,6 +31,7 @@ Use::
 
 from __future__ import annotations
 
+import bisect
 import contextlib
 import math
 import mmap
@@ -255,6 +256,20 @@ def _pread_full(handle: int, view: memoryview, offset: int) -> int:
     return got
 
 
+#: Entries built from a payload index, per file and index, so a caller that
+#: reopens the same file with the same index (an application reading one plane at a
+#: time) does not rebuild them: building 26 entries cost about 13 us, a
+#: twentieth of reading a cached 2 MB plane. Entries are never mutated.
+_INDEX_ENTRIES: dict = {}
+_INDEX_ENTRIES_KEEP = 256
+
+#: First read of the directory: header and body together for any directory
+#: up to this size (a larger one is fetched again whole).
+_DIRECTORY_GUESS = 64 << 10
+#: Largest sub-block segment read in one request with its header; beyond it
+#: the header is read first and the payload on its own.
+_SEGMENT_READ_MAX = 64 << 20
+
 _ZSTD = None
 _JPEGXR = None
 
@@ -466,7 +481,12 @@ class _RangeBuffer:
         # many source calls and bytes it actually cost.
         self.requests = 0
         self.bytes_read = 0
-        self.prefetch(0, min(size, 128))
+        self.header_fetched = False   # the 128-byte file header, fetched by CziReader._ensure_header
+
+    def fetch_header(self):
+        if not self.header_fetched:
+            self.prefetch(0, min(self.size, 128))
+            self.header_fetched = True
 
     def prefetch(self, offset, length):
         data = self._read(offset, length)
@@ -634,6 +654,7 @@ class CziReader(Reader):
         buffer: bytes | bytearray | memoryview | None = None,
         data_source=None,
         size: int | None = None,
+        index: dict | None = None,
     ) -> None:
         self._owned_source = None
         self._unpack = _unpack_from if data_source is not None else struct.unpack_from
@@ -685,6 +706,7 @@ class CziReader(Reader):
         # file_position -> (payload offset, payload size), filled on first
         # positional read so a repeated read skips its 48-byte header read.
         self._payload_ranges: dict[int, tuple[int, int]] = {}
+        self._sorted_positions: list[int] | None = None
         # Populated by _parse_header(). Both refer to the start of the
         # *XML payload* in the file, not the segment header.
         self._meta_xml_off: int = 0
@@ -696,7 +718,11 @@ class CziReader(Reader):
         self._attachment_dir_position: int = 0
         self._uniform_cache: bool | None = None
 
-        self._parse_header()
+        self._header_parsed = False
+        if index is None:
+            self._ensure_header()
+        else:
+            self._entries = self._entries_from_index(index)
 
     @property
     def entries(self) -> list[CziSubBlockEntry]:
@@ -712,6 +738,7 @@ class CziReader(Reader):
                 if self._entries is None:
                     if self._mmap is None:
                         raise CziError("CZI reader is closed; its directory was never read")
+                    self._ensure_header()
                     # Published only when complete: another thread that sees
                     # it non-None must see every entry.
                     self._entries = self._parse_directory(self._directory_position)
@@ -904,10 +931,22 @@ class CziReader(Reader):
         self._directory_position = directory_position
         self._metadata_position = metadata_position
 
+    def _ensure_header(self) -> None:
+        """Parse the file header once (skipped at open when ``index=`` was given)."""
+        if not self._header_parsed:
+            if isinstance(self._mmap, _RangeBuffer):
+                # One request for the whole header. Not at construction: a
+                # reader given an index= never needs it, and on a network
+                # share the read is a round trip.
+                self._mmap.fetch_header()
+            self._parse_header()
+            self._header_parsed = True
+
     def _locate_metadata(self) -> None:
         """Find the metadata XML payload, once, on first use."""
         if self._meta_located:
             return
+        self._ensure_header()
         self._meta_located = True
         m = self._mmap
         metadata_position = self._metadata_position
@@ -931,12 +970,19 @@ class CziReader(Reader):
     def _parse_directory(self, directory_position: int) -> list[CziSubBlockEntry]:
         """Walk the ZISRAWDIRECTORY segment and return its entries."""
         m = self._mmap
+        first = 0
+        if isinstance(m, _RangeBuffer):
+            # Header and body in one request: 64 KB holds the directory of
+            # any acquisition short of a slide scan, and over a network share
+            # the separate header read was a round trip of its own.
+            first = min(self._size - directory_position, _DIRECTORY_GUESS)
+            m.prefetch(directory_position, first)
         sid, _alloc, _used = self._unpack("<16sqq", m, directory_position)
         if not sid.startswith(self._DIR_MAGIC):
             raise CziError(
                 f"expected ZISRAWDIRECTORY at {directory_position}, "
                 f"got {sid!r}")
-        if isinstance(m, _RangeBuffer):
+        if isinstance(m, _RangeBuffer) and 32 + _used > first:
             # One metadata transfer, independent of the number of sub-blocks.
             m.prefetch(directory_position, 32 + _used)
         # Directory payload: uint32 entry_count, 124 bytes reserved,
@@ -1025,6 +1071,40 @@ class CziReader(Reader):
 
     # ----- Sub-block payload decode -----
 
+    def _payload_range(self, entry: CziSubBlockEntry) -> tuple[int, int]:
+        """File offset and size of the sub-block's pixel payload.
+
+        Known ranges come from ``_payload_ranges`` (filled on first use, or
+        up front from an ``index=``); otherwise the 48-byte sub-block header
+        is read once and the result kept.
+        """
+        sb_off = entry.file_position
+        known = self._payload_ranges.get(sb_off)
+        if known is not None:
+            return known
+        m = self._mmap
+        if self._fd >= 0 and _PAYLOAD_PREAD:
+            header = os.pread(self._fd, 48, sb_off)
+            if len(header) != 48:
+                raise CziError("truncated CZI sub-block header")
+        else:
+            header = bytes(m[sb_off:sb_off + 48])
+        if header[:14] != self._SUBBLOCK_MAGIC:
+            raise CziError(f"expected ZISRAWSUBBLOCK at {sb_off}, got {header[:14]!r}")
+        # Skip 32-byte segment header. Then 16 bytes:
+        #   int metadata_size, int attachment_size, int64 data_size
+        meta_size, _att_size, data_size = struct.unpack_from("<iiq", header, 32)
+        # CZI 1.2.2 spec: after the 16-byte sub-block metadata header and
+        # the inline DirectoryEntryDV, filler bytes make
+        # (16 + storage_size + pad) reach 256 bytes minimum. Then comes
+        # ``meta_size`` bytes of XML metadata, then pixel data.
+        pad = max(240 - entry.storage_size, 0)
+        data_off = sb_off + 32 + 16 + entry.storage_size + pad + meta_size
+        if meta_size < 0 or data_off < 0 or data_size < 0 or data_off + data_size > self._size:
+            raise CziError("invalid CZI sub-block payload range")
+        self._payload_ranges[sb_off] = (data_off, data_size)
+        return data_off, data_size
+
     def _pixel_data_view(self, entry: CziSubBlockEntry, *, into=None):
         """Return a memoryview of the sub-block's pixel data, plus its byte
         size. No decompression yet.
@@ -1032,44 +1112,14 @@ class CziReader(Reader):
         A path-backed reader reads the payload with one positional read (see
         ``_PAYLOAD_PREAD``) into a buffer the view owns; decoding goes through
         ``_payload`` instead, which reuses buffers. Other sources return a
-        zero-copy view. ``into=True`` on a path-backed reader skips the fetch
-        and returns the payload's file offset and size, for a caller that
-        reads it somewhere else.
+        zero-copy view. ``into=True`` returns the payload's file offset and
+        size instead, for a caller that reads it somewhere else.
         """
+        data_off, data_size = self._payload_range(entry)
+        if into is not None:
+            return data_off, data_size
         m = self._mmap
-        sb_off = entry.file_position
-        positional = self._fd >= 0 and _PAYLOAD_PREAD
-        if into is not None and positional and sb_off in self._payload_ranges:
-            return self._payload_ranges[sb_off]
-        if positional:
-            header = os.pread(self._fd, 48, sb_off)
-            if len(header) != 48:
-                raise CziError("truncated CZI sub-block header")
-        else:
-            header = m[sb_off:sb_off + 48] if isinstance(m, _RangeBuffer) else None
-        # Verify segment magic.
-        sid = header[:14] if header is not None else m[sb_off:sb_off + 14]
-        if sid != self._SUBBLOCK_MAGIC:
-            raise CziError(
-                f"expected ZISRAWSUBBLOCK at {sb_off}, got {sid!r}")
-        # Skip 32-byte segment header. Then 16 bytes:
-        #   int metadata_size, int attachment_size, int64 data_size
-        meta_size, _att_size, data_size = (
-            struct.unpack_from("<iiq", header, 32) if header is not None else
-            struct.unpack_from("<iiq", m, sb_off + 32))
-        # CZI 1.2.2 spec: after the 16-byte sub-block metadata header and
-        # the inline DirectoryEntryDV, filler bytes make
-        # (16 + storage_size + pad) reach 256 bytes minimum. Then comes
-        # ``meta_size`` bytes of XML metadata, then pixel data.
-        entry_storage = entry.storage_size
-        pad = max(240 - entry_storage, 0)
-        data_off = sb_off + 32 + 16 + entry_storage + pad + meta_size
-        if meta_size < 0 or data_off < 0 or data_size < 0 or data_off + data_size > self._size:
-            raise CziError("invalid CZI sub-block payload range")
-        if positional:
-            if into is not None:
-                self._payload_ranges[sb_off] = (data_off, data_size)
-                return data_off, data_size
+        if self._fd >= 0 and _PAYLOAD_PREAD:
             view = memoryview(bytearray(data_size))
             if data_size and _pread_into(self._fd, view, data_off) != data_size:
                 raise CziError("truncated CZI sub-block payload")
@@ -1077,6 +1127,114 @@ class CziReader(Reader):
         if isinstance(m, _RangeBuffer):
             return memoryview(m[data_off:data_off + data_size]), data_size
         return memoryview(m)[data_off:data_off + data_size], data_size
+
+    _DTYPE_PIXEL_TYPES = {"u1": 0, "u2": 1, "f4": 2}
+
+    def payload_index(self) -> dict:
+        """Where every sub-block's pixels are, as plain data a caller can keep.
+
+        Pass it back as ``CziReader(path, index=...)`` to read pixels with no
+        directory, file-header or sub-block-header reads: over a network
+        share each of those is a round trip. Only stacks of one plane shape
+        and pixel type have such an index.
+        """
+        if not self.is_uniform:
+            raise self._nonuniform_error("payload_index()")
+        ranges = [self._payload_range(e) for e in self.entries]
+        first = self.entries[0]
+        return {"offsets": [r[0] for r in ranges], "sizes": [r[1] for r in ranges],
+                "compressions": [e.compression for e in self.entries],
+                "pixel_type": first.pixel_type,
+                "plane_shape": [s for s in first.stored_shape if s > 1] or [1]}
+
+    def _entries_from_index(self, index: dict) -> list[CziSubBlockEntry]:
+        key = (self.path, self._size, tuple(index["offsets"]), tuple(index["sizes"]),
+               tuple(index["compressions"]), index.get("pixel_type"), str(index.get("dtype")),
+               tuple(index["plane_shape"]))
+        cached = _INDEX_ENTRIES.get(key)
+        if cached is None:
+            self._index_ranges = {}
+            cached = self._build_entries_from_index(index)
+            cached = (cached, self._index_ranges)
+            if len(_INDEX_ENTRIES) >= _INDEX_ENTRIES_KEEP:
+                _INDEX_ENTRIES.pop(next(iter(_INDEX_ENTRIES)))
+            _INDEX_ENTRIES[key] = cached
+        entries, ranges = cached
+        self._payload_ranges.update(ranges)
+        return list(entries)
+
+    def _build_entries_from_index(self, index: dict) -> list[CziSubBlockEntry]:
+        """Sub-block entries from a payload index (see ``payload_index``).
+
+        Accepts ``pixel_type`` or a numpy ``dtype`` (``"uint16"`` ...). Each
+        entry is keyed by its payload offset, and its range is known, so no
+        sub-block header is ever read.
+        """
+        offsets, sizes, comps = index["offsets"], index["sizes"], index["compressions"]
+        if not (len(offsets) == len(sizes) == len(comps)):
+            raise ValueError("index offsets, sizes and compressions differ in length")
+        if "pixel_type" in index:
+            pixel_type = int(index["pixel_type"])
+        else:
+            key = np.dtype(index["dtype"]).str.lstrip("<>|=")
+            if key not in self._DTYPE_PIXEL_TYPES:
+                raise ValueError(f"no CZI pixel type for dtype {index['dtype']!r}")
+            pixel_type = self._DTYPE_PIXEL_TYPES[key]
+        _, samples = _pixel_type_dtype(pixel_type)
+        plane = [int(v) for v in index["plane_shape"]]
+        h, w = (1, plane[0]) if len(plane) == 1 else (plane[-2], plane[-1])
+        entries = []
+        for off, n, c in zip(offsets, sizes, comps):
+            off, n = int(off), int(n)
+            if off < 0 or n < 0 or off + n > self._size:
+                raise CziError(f"index payload range {off}+{n} lies outside the file")
+            entries.append(CziSubBlockEntry(
+                file_position=off, pixel_type=pixel_type, compression=int(c), dimensions_count=2,
+                dims=("Y", "X", "S"), shape=(h, w, samples), stored_shape=(h, w, samples),
+                start=(0, 0, 0), mosaic_index=-1, scene_index=-1, storage_size=0))
+            self._index_ranges[off] = (off, n)
+        return entries
+
+    def _segment_end(self, entry: CziSubBlockEntry) -> int:
+        """Where the sub-block's segment ends at the latest: the next sub-block
+        in the file, else the directory or the end of the file."""
+        positions = self._sorted_positions
+        if positions is None:
+            positions = self._sorted_positions = sorted({e.file_position for e in self.entries})
+        i = bisect.bisect_right(positions, entry.file_position)
+        if i < len(positions):
+            return positions[i]
+        d = getattr(self, "_directory_position", 0) or 0
+        return d if d > entry.file_position else self._size
+
+    def _read_segment(self, entry: CziSubBlockEntry):
+        """Read a sub-block's header and payload in one request.
+
+        Returns ``(buffer, view, payload view)`` or None to fall back to the
+        two-step read (header, then payload), which costs one more round
+        trip over a network share. The segment's extent is bounded by the
+        next sub-block, so this reads at most the sub-block's own metadata
+        beyond what the decode needs.
+        """
+        sb_off = entry.file_position
+        seg = self._segment_end(entry) - sb_off
+        if not 256 <= seg <= _SEGMENT_READ_MAX:
+            return None
+        buf = _take_payload(seg)
+        view = memoryview(buf)[:seg]
+        got = _pread_into(self._fd, view, sb_off)
+        head = bytes(view[:48])
+        ok = got == seg and head[:14] == self._SUBBLOCK_MAGIC
+        if ok:
+            meta_size, _att, data_size = struct.unpack_from("<iiq", head, 32)
+            rel = 48 + entry.storage_size + max(240 - entry.storage_size, 0) + meta_size
+            ok = meta_size >= 0 and data_size >= 0 and rel + data_size <= seg
+        if not ok:
+            view.release()
+            _give_payload(buf)
+            return None
+        self._payload_ranges[sb_off] = (sb_off + rel, data_size)
+        return buf, view, view[rel:rel + data_size]
 
     @contextlib.contextmanager
     def _payload(self, entry: CziSubBlockEntry):
@@ -1090,6 +1248,20 @@ class CziReader(Reader):
         if not (self._fd >= 0 and _PAYLOAD_PREAD):
             yield self._pixel_data_view(entry)[0]
             return
+        if entry.file_position not in self._payload_ranges:
+            located = self._read_segment(entry)
+            if located is not None:
+                buf, view, data = located
+                try:
+                    yield data
+                finally:
+                    try:
+                        data.release()
+                        view.release()
+                    except BufferError:
+                        return
+                    _give_payload(buf)
+                return
         offset, n = self._pixel_data_view(entry, into=True)
         buf = _take_payload(n)
         view = memoryview(buf)[:n]
@@ -1448,6 +1620,7 @@ class CziReader(Reader):
         """
         if self._attachments_cache is not None:
             return self._attachments_cache
+        self._ensure_header()
         found: list[CziAttachment] = []
         pos = self._attachment_dir_position
         m = self._mmap
@@ -1708,6 +1881,15 @@ class CziReader(Reader):
                 out, len(entries), tile_shape, dtype)
         rows = out.reshape(len(entries), -1)
 
+        if len(entries) == 1 and max_pending_bytes is None and worker_budget is None:
+            # One sub-block is one decode on this thread: skip the task
+            # partition and worker policy, which cost about a tenth of a
+            # cached 2 MB plane read.
+            self._decode_one(entries[0], dest=rows[0], scratch=_decode_scratch())
+            if as_rgb:
+                out = _bgr_to_rgb(out, first.pixel_type)
+            return np.squeeze(out) if squeeze else out
+
         whole = len(entries) >= _SPLIT_BELOW_PLANES
 
         def _worker(i: int) -> None:
@@ -1729,13 +1911,7 @@ class CziReader(Reader):
             source = self._mmap
             def descriptors():
                 for i, entry in enumerate(entries):
-                    header = source[entry.file_position:entry.file_position + 48]
-                    if header[:14] != self._SUBBLOCK_MAGIC:
-                        raise CziError("invalid CZI sub-block header")
-                    meta, _, length = struct.unpack_from("<iiq", header, 32)
-                    offset = entry.file_position + 48 + max(240, entry.storage_size) + meta
-                    if meta < 0 or length < 0 or offset + length > self._size:
-                        raise CziError("invalid CZI sub-block payload range")
+                    offset, length = self._payload_range(entry)
                     decoded = int(np.prod(entry.stored_shape)) * entry.dtype.itemsize
                     yield i, entry, offset, length, length + 3 * decoded
             def decode_descriptor(item):

@@ -225,3 +225,40 @@ def test_split_reads_match_whole_reads(path, frames, monkeypatch):
         np.testing.assert_array_equal(np.stack([r.read_tile(i) for i in range(len(r))]), frames)
         np.testing.assert_array_equal(r.read(indices=[3, 1]), frames[[3, 1]])
         np.testing.assert_array_equal(r.read(), frames)
+
+
+# ----- payload index ------------------------------------------------------------
+
+def test_payload_index_round_trip_reads_no_headers(path, frames, monkeypatch):
+    with _open(path) as r:
+        index = r.payload_index()
+    reads = []
+    real = _czi_reader.CziReader._parse_header
+    monkeypatch.setattr(_czi_reader.CziReader, "_parse_header", lambda self: (reads.append(1), real(self))[1])
+    with _czi_reader.CziReader(str(path), index=index) as r:
+        np.testing.assert_array_equal(r.read(), frames)
+        np.testing.assert_array_equal(r.read(indices=[5, 2]), frames[[5, 2]])
+        np.testing.assert_array_equal(r.read_tile(3), frames[3])
+        np.testing.assert_array_equal(r.read(max_pending_bytes=1), frames)
+        assert reads == []                               # no file header, no directory
+        assert r.shape == frames.shape and r.dtype == frames.dtype
+    with _czi_reader.CziReader(buffer=path.read_bytes(), index=index) as r:   # any source
+        np.testing.assert_array_equal(r.read(), frames)
+
+
+def test_index_with_dtype_and_metadata_on_demand(path, frames):
+    with _open(path) as r:
+        index = r.payload_index()
+        meta = r.metadata_bytes
+    index = dict(index); index.pop("pixel_type"); index["dtype"] = "uint16"
+    with _czi_reader.CziReader(str(path), index=index) as r:
+        np.testing.assert_array_equal(r.read(), frames)
+        assert r.metadata_bytes == meta                   # header parsed only now
+
+
+def test_index_outside_the_file_is_refused(path):
+    with _open(path) as r:
+        index = r.payload_index()
+    index["offsets"][0] = 10 ** 12
+    with pytest.raises(_czi_reader.CziError):
+        _czi_reader.CziReader(str(path), index=index)

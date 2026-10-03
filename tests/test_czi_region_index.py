@@ -424,7 +424,10 @@ def test_range_buffer_counts_physical_requests():
             return self.blob[offset:offset + length]
 
     buf = _RangeBuffer(Source(bytes(range(256)) * 4), 1024)
-    assert buf.requests == 1 and buf.bytes_read == 128     # header prefetch
+    assert buf.requests == 0                                # nothing until the header is wanted
+    buf.fetch_header()
+    buf.fetch_header()
+    assert buf.requests == 1 and buf.bytes_read == 128     # header prefetch, once
     assert bytes(buf[10:20]) == bytes(range(10, 20))        # served from cache
     assert buf.requests == 1
     assert bytes(buf[500:504]) == bytes(range(244, 248))    # physical read
