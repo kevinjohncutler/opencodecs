@@ -54,6 +54,19 @@ static inline void oc_unshuffle(uint8_t *__restrict dst,
     size_t j, b;
     if (k == 1) {
         memcpy(dst, src, count);
+#if defined(__GNUC__)
+    } else if (k == 2) {
+        /* GCC vectorizes this byte loop better than the word form: 1.46x
+           faster for a 1000 x 1000 uint16 plane and 1.11x for 2000 x 2000
+           (GCC 15, x86-64, -O3, 41 alternating rounds). Clang ties. MSVC
+           takes the word form below, which it needs (see the top). */
+        const uint8_t *__restrict lo = src;
+        const uint8_t *__restrict hi = src + plane;
+        for (j = 0; j < count; j++) {
+            dst[2 * j] = lo[j];
+            dst[2 * j + 1] = hi[j];
+        }
+#endif
     } else if (oc_words(dst, k)) {
         const uint8_t *__restrict p0 = src;
         const uint8_t *__restrict p1 = src + plane;
