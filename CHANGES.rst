@@ -10,6 +10,32 @@ Versions follow the same ``YYYY.M.D`` cadence as upstream when we
 publish; the entries below cluster work by date rather than by
 release because most of it has shipped continuously to ``main``.
 
+0.5.1 (2026-10-02)
+------------------
+
+``czi_recompress`` takes an optional ``should_continue``: a zero-argument
+callable polled once per sub-block, before that sub-block is read. When it
+returns false the rewrite raises the new ``CziCancelled`` and the partial
+output is removed. Existing callers are unaffected; the default is ``None``.
+
+It is a plain callable rather than a ``threading.Event`` so a caller can pass
+a deadline, a signal flag or a cancellation token just as easily, and nothing
+in the writer needs to know which. ``CziCancelled`` subclasses
+``CziWriterError``, so code already catching that keeps working while code
+that cares can tell "the user stopped it" from "the file is broken" without
+matching on message text.
+
+Why it exists: a caller replacing a subprocess (ZEISS's ``czicompress``) with
+this function loses the ability to kill a process mid-file, and a Cancel
+button that only takes effect between files is a visible regression on a
+slide scan. Polling per sub-block takes effect within roughly ``workers``
+sub-blocks, which on a 481-sub-block scan is sub-second.
+
+An interrupted rewrite now removes ``dst`` on any exception, not only
+cancellation -- a failed verification or a ``KeyboardInterrupt`` too. A CZI
+missing sub-blocks still has a valid header and directory, so readers accept
+it and the loss is silent; truncated-but-plausible is worse than absent.
+
 0.5.0 (2026-10-01)
 ------------------
 

@@ -74,6 +74,17 @@ class CziWriterError(RuntimeError):
     """Raised on writer state-machine violations."""
 
 
+class CziCancelled(CziWriterError):
+    """Raised when a caller's ``should_continue`` stops a rewrite.
+
+    Distinct from :class:`CziWriterError` so a caller can tell "the user
+    pressed stop" apart from "the file or the writer is broken" without
+    matching on message text. The partial output is removed before this
+    propagates: a truncated file that still parses as a CZI is worse than
+    no file, because the next reader opens it without complaint.
+    """
+
+
 # ---------------------------------------------------------------------------
 # Low-level segment builders
 # ---------------------------------------------------------------------------
@@ -980,7 +991,8 @@ __all__ = ["CziWriter", "CziPyramidWriter", "CziWriterError"]
 
 def czi_recompress(src, dst, *, compression: str = "zstdhdr", hilo: bool = True,
                workers=None, verify: bool = False,
-               background_encode: bool = False) -> dict:
+               background_encode: bool = False,
+               should_continue=None) -> dict:
     """Rewrite a CZI with different compression, keeping the container.
 
     Every sub-block keeps its dimension coordinates, its scene and mosaic
@@ -995,6 +1007,14 @@ def czi_recompress(src, dst, *, compression: str = "zstdhdr", hilo: bool = True,
     compares it with the input before the sub-block is allowed into the
     file, which makes a lossless claim something the writer checked rather
     than something the format promises.
+
+    ``should_continue`` is an optional zero-argument callable polled once per
+    sub-block before it is read. When it returns false the rewrite raises
+    :class:`CziCancelled` and ``dst`` is removed. It is a plain callable
+    rather than a ``threading.Event`` so that a caller can just as well pass
+    a deadline, a signal flag or a cancellation token; nothing here needs to
+    know which. Encodes already dispatched still finish, so cancellation
+    takes effect within roughly ``workers`` sub-blocks rather than instantly.
 
     Returns a summary dict: sub-block count, input and output sizes, and the
     compression that was applied.
@@ -1013,13 +1033,28 @@ def czi_recompress(src, dst, *, compression: str = "zstdhdr", hilo: bool = True,
             # One sub-block at a time: a slide scan does not fit in memory,
             # and write_many only needs the next frame, not all of them.
             for i in range(n):
+                if should_continue is not None and not should_continue():
+                    raise CziCancelled(
+                        f"czi: recompress of {src} cancelled after "
+                        f"{i} of {n} sub-blocks")
                 entry = reader.entries[i]
                 yield reader[i], subblock_dims(entry), entry.pyramid_type
 
-        with CziWriter(str(dst), compression=compression, hilo=hilo,
-                       metadata_xml=metadata, verify=verify,
-                       background_encode=background_encode) as writer:
-            writer.write_many(frames(), workers=workers, copy_frames=False)
+        try:
+            with CziWriter(str(dst), compression=compression, hilo=hilo,
+                           metadata_xml=metadata, verify=verify,
+                           background_encode=background_encode) as writer:
+                writer.write_many(frames(), workers=workers, copy_frames=False)
+        except BaseException:
+            # An interrupted rewrite must not leave a file behind. A CZI
+            # missing sub-blocks still has a valid header and directory, so
+            # readers accept it and the loss is silent. Covers cancellation,
+            # a failed verification and KeyboardInterrupt alike.
+            try:
+                os.remove(dst)
+            except OSError:
+                pass
+            raise
 
     return {
         "subblocks": n,

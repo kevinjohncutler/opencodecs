@@ -33,7 +33,7 @@ from _czi_fixture import mosaic_czi_bytes, pyramid_czi_bytes  # noqa: E402
 
 from opencodecs._czi_reader import CziReader  # noqa: E402
 from opencodecs._czi_writer import (  # noqa: E402
-    CziWriter, CziWriterError, czi_recompress, subblock_dims,
+    CziCancelled, CziWriter, CziWriterError, czi_recompress, subblock_dims,
 )
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -238,3 +238,116 @@ def test_roundtrip_a_real_slide_scan(tmp_path):
     dst = tmp_path / "out.czi"
     czi_recompress(src, dst, compression="zstdhdr", workers=4)
     _assert_faithful(src, dst)
+
+
+# ------------------------------------------------------- cancellation
+# A cancelled rewrite has one job beyond stopping: leave nothing behind. A CZI
+# missing sub-blocks still has a valid header and directory, so a reader opens
+# it without complaint and the loss is silent.
+#
+# THE FIXTURE SIZE IS LOAD-BEARING, and an earlier version of these tests was
+# vacuous because of it. write_many groups frames into ~2 MiB tasks, a failing
+# task emits nothing, and the writer opens the output file lazily on the FIRST
+# emitted sub-block. With few small tiles the generator raises while tasks are
+# still being submitted, so nothing is ever emitted, the file is never created,
+# and "no partial file survives" passes whether or not the cleanup exists.
+# Measured on 2026-10-02:
+#     tiles=4  side=1200 stop=3  workers=None -> no file  (cleanup unreachable)
+#     tiles=8  side=1200 stop=5  workers=1    -> 8.7 MB partial file
+#     tiles=16 side=1200 stop=10 workers=1    -> 19.7 MB partial file
+# Enough tiles that the producer must drain results to make room is what forces
+# real emission before the cancel. That is also the real case: a slide scan.
+
+PARTIAL_TILES, PARTIAL_SIDE, PARTIAL_STOP, PARTIAL_WORKERS = 8, 1200, 5, 1
+
+
+def _src(tmp_path, ntiles=4, side=64):
+    tiles = [(_tile(side, side, 90 + i), (0, i * side), [(b"C", i)])
+             for i in range(ntiles)]
+    src = tmp_path / "src.czi"
+    src.write_bytes(mosaic_czi_bytes(tiles, compression=0))
+    return src
+
+
+def test_cancel_removes_a_partial_file_that_really_exists(tmp_path):
+    """The case that actually exercises the cleanup.
+
+    Sized so sub-blocks are emitted before the cancel; without the cleanup this
+    leaves a multi-megabyte file that still parses as a CZI.
+    """
+    src = _src(tmp_path, PARTIAL_TILES, PARTIAL_SIDE)
+    dst = tmp_path / "dst.czi"
+    seen = {"n": 0}
+
+    def should_continue():
+        seen["n"] += 1
+        return seen["n"] <= PARTIAL_STOP
+
+    with pytest.raises(CziCancelled):
+        czi_recompress(src, dst, workers=PARTIAL_WORKERS,
+                       should_continue=should_continue)
+    assert not dst.exists(), (
+        "a cancelled rewrite left a partial CZI behind; without the cleanup "
+        "this file is several MB and readers accept it")
+    assert src.exists(), "the source must never be touched"
+
+
+@pytest.mark.parametrize("stop_after", [0, 1, 3])
+def test_cancel_raises_at_any_point(tmp_path, stop_after):
+    src = _src(tmp_path)
+    dst = tmp_path / "dst.czi"
+    seen = {"n": 0}
+
+    def should_continue():
+        seen["n"] += 1
+        return seen["n"] <= stop_after
+
+    with pytest.raises(CziCancelled) as exc:
+        czi_recompress(src, dst, should_continue=should_continue)
+    assert "cancelled after" in str(exc.value)
+    assert not dst.exists()
+
+
+def test_cancel_is_a_writer_error():
+    """Existing callers that catch CziWriterError keep working."""
+    assert issubclass(CziCancelled, CziWriterError)
+
+
+def test_should_continue_true_completes_normally(tmp_path):
+    src = _src(tmp_path)
+    dst = tmp_path / "dst.czi"
+    calls = {"n": 0}
+
+    def always():
+        calls["n"] += 1
+        return True
+
+    info = czi_recompress(src, dst, should_continue=always)
+    assert info["subblocks"] == 4
+    assert calls["n"] == 4, "should_continue is polled once per sub-block"
+    _assert_faithful(src, dst)
+
+
+def test_default_is_unaffected(tmp_path):
+    """Omitting should_continue must not change anything."""
+    src = _src(tmp_path)
+    dst = tmp_path / "dst.czi"
+    czi_recompress(src, dst)
+    _assert_faithful(src, dst)
+
+
+def test_a_failing_predicate_also_leaves_no_output(tmp_path):
+    """A buggy predicate is a failure like any other, and is sized to emit."""
+    src = _src(tmp_path, PARTIAL_TILES, PARTIAL_SIDE)
+    dst = tmp_path / "dst.czi"
+    calls = {"n": 0}
+
+    def boom():
+        calls["n"] += 1
+        if calls["n"] > PARTIAL_STOP:
+            raise ValueError("predicate blew up")
+        return True
+
+    with pytest.raises(ValueError):
+        czi_recompress(src, dst, workers=PARTIAL_WORKERS, should_continue=boom)
+    assert not dst.exists()
