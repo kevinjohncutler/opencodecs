@@ -88,6 +88,21 @@ _DEFAULT_POOL_SIZE = max(min(2 * (os.cpu_count() or 4), _READ_MAX_WORKERS), 8)
 #: on both machines.
 _READ_TASK_BYTES = 8 << 20
 
+#: The task size when no sub-block of a read is compressed. Reading stored
+#: pixels is a copy, so there is no decode for a task to amortize its
+#: scheduling against, and 8 MB tasks left a 9 x 1000 x 1000 uint16 stack
+#: as three tasks that ran serially (see ``_READ_MIN_TASKS``). Warm, 8
+#: files x 9 alternating repeats: 2 MB tasks with ``_READ_MIN_TASKS`` read
+#: that stack 1.63x faster than a reader copying from an mmap, where 8 MB
+#: tasks read it 0.59x as fast (128-core Linux), 1.51x against 0.88x on a
+#: 20-core Mac; zstd stacks were unchanged either way.
+_READ_TASK_BYTES_STORED = 2 << 20
+
+#: Two tasks are enough to read in parallel. The worker policy's default
+#: (four) is for decoding many small pieces; here a task already carries
+#: megabytes, and ``output_bytes`` still keeps a small read serial.
+_READ_MIN_TASKS = 2
+
 
 def _read_tasks(n_entries: int, tile_bytes: int,
                 budget: int | None = None) -> list[range]:
@@ -1946,7 +1961,9 @@ class CziReader(Reader):
             from .core.parallel import resolve_workers
 
             n = len(entries)
-            tasks = _read_tasks(n, out.nbytes // n)
+            stored = all(e.compression == 0 for e in entries)
+            tasks = _read_tasks(n, out.nbytes // n,
+                                _READ_TASK_BYTES_STORED if stored else None)
             if n_workers is not None:
                 workers = max(1, min(int(n_workers), len(tasks)))
             else:
@@ -1956,7 +1973,8 @@ class CziReader(Reader):
                     # uncompressed sub-blocks overlap their I/O, which the
                     # in-memory copy this flag was measured on did not have.
                     has_decode_work=(self._fd >= 0 and _PAYLOAD_PREAD) or
-                    any(e.compression != 0 for e in entries),
+                    not stored,
+                    min_items=_READ_MIN_TASKS,
                     max_workers=_READ_MAX_WORKERS)
 
             def _run_task(batch):
@@ -2677,12 +2695,15 @@ class CziPyramidReader(PyramidReader):
             # Size the pool by the tiles decoded, not the region returned:
             # a 1024 px region over four 2048 x 1504 JPEG XR tiles is 2 MB of
             # output but 25 MB of decoding, and sizing it by the output gave
-            # it 2 workers: 86 ms, against 45 ms on 4 (20-core Mac).
+            # it 2 workers: 86 ms, against 45 ms on 4 (20-core Mac). Two
+            # batches are enough to share (_READ_MIN_TASKS): a 256 px region
+            # across two JPEG XR tiles decoded them one after the other, 110
+            # ms where aicspylibczi took 101 (128-core Linux).
             workers = resolve_workers(
                 self._decode_workers, len(batches),
                 output_bytes=max(sum(stored), output_bytes or 0),
                 has_decode_work=any(entries[i].compression != 0 for i in hits),
-                max_workers=8)
+                min_items=_READ_MIN_TASKS, max_workers=8)
         self._last_decode = {"workers": workers, "batches": len(batches)}
 
         if workers == 1:
@@ -2786,7 +2807,8 @@ class CziPyramidReader(PyramidReader):
             # boxes (disjoint crops) write little but decode whole tiles.
             workers = resolve_workers(self._decode_workers, n_batches,
                                       output_bytes=max(total, sum(t[0].nbytes for t in targets)),
-                                      has_decode_work=True, max_workers=8)
+                                      has_decode_work=True, min_items=_READ_MIN_TASKS,
+                                      max_workers=8)
         if workers <= 1:
             for i in hits:
                 outs, windows = clipped(i, (bounds[i],))

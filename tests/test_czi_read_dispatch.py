@@ -197,3 +197,38 @@ def test_parallel_read_matches_serial(monkeypatch, n, size):
             assert np.array_equal(r.read(), expected), f"budget={budget}"
             # An explicit count is a budget, not an instruction to spend it.
             assert np.array_equal(r.read(n_workers=64), expected)
+
+
+# ---------------------------------------------------------------- stored pixels
+
+@pytest.mark.parametrize("n", [9, 3])
+def test_stored_stack_reads_on_more_than_one_worker(monkeypatch, tmp_path, n):
+    """Uncompressed 2 MiB planes read from a file go out one per task, on
+    several workers. With the 8 MiB tasks a zstd read uses, nine planes were
+    three tasks, under the worker policy's default minimum of four, and the
+    read ran on one thread: 0.59x the speed of a reader copying from an
+    mmap. Three planes check the minimum itself (``_READ_MIN_TASKS``). Only
+    the dispatch shows either; the pixels are right regardless."""
+    import os
+    from opencodecs.core import parallel
+    if (os.cpu_count() or 1) < 2:
+        pytest.skip("one CPU: nothing to divide")
+    tiles = _tiles(n, 1024, seed=7)
+    path = tmp_path / "stored.czi"
+    path.write_bytes(mosaic_czi_bytes(
+        [(t, (0, i * t.shape[1])) for i, t in enumerate(tiles)], compression=0))
+    seen = []
+    orig = parallel.resolve_workers
+
+    def spy(*args, **kw):
+        workers = orig(*args, **kw)
+        seen.append((args[1], workers))
+        return workers
+
+    monkeypatch.setattr(parallel, "resolve_workers", spy)
+    with CziReader(path) as r:
+        out = r.read()
+    assert np.array_equal(out, np.stack(tiles, axis=0))
+    n_tasks, workers = seen[-1]
+    assert n_tasks == n
+    assert workers >= 2
