@@ -10,7 +10,7 @@ Versions follow the same ``YYYY.M.D`` cadence as upstream when we
 publish; the entries below cluster work by date rather than by
 release because most of it has shipped continuously to ``main``.
 
-0.5.1 (2026-10-02)
+0.6.0 (2026-10-03)
 ------------------
 
 ``czi_recompress`` takes an optional ``should_continue``: a zero-argument
