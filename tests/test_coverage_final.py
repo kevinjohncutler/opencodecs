@@ -89,8 +89,9 @@ def test_czi_bad_directory_magic_raises(tmp_path):
     # Overwrite at dir_pos with non-DIR bytes
     head[dir_pos:dir_pos + 16] = b"NOTADIR" + b"\x00" * 9
     p.write_bytes(bytes(head))
+    # The directory is read on first use (attachment-only reads skip it).
     with pytest.raises(CziError, match="ZISRAWDIRECTORY"):
-        CziReader(str(p))
+        CziReader(str(p)).entries
 
 
 def test_czi_bad_directory_entry_schema_raises(tmp_path):
@@ -112,7 +113,7 @@ def test_czi_bad_directory_entry_schema_raises(tmp_path):
     head[entry_off:entry_off + 2] = b"XX"
     p.write_bytes(bytes(head))
     with pytest.raises(CziError, match="schema"):
-        CziReader(str(p))
+        CziReader(str(p)).entries
 
 
 # ---------------------------------------------------------------------------

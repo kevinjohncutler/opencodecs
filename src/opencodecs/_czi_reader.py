@@ -31,6 +31,7 @@ Use::
 
 from __future__ import annotations
 
+import contextlib
 import math
 import mmap
 import operator
@@ -56,7 +57,6 @@ from .core.scratch import ScratchBuffer
 # every read in the process. Sized at ``2 * cpu_count`` since CZI decode
 # alternates between mmap-page-fault waits and zstd CPU work — that
 # slight oversubscription keeps both queues busy on tiered-core CPUs.
-_DEFAULT_POOL_SIZE = max(2 * (os.cpu_count() or 4), 8)
 _POOL: ThreadPoolExecutor | None = None
 
 #: Most concurrent workers a whole-stack read() will use when the caller
@@ -68,6 +68,15 @@ _POOL: ThreadPoolExecutor | None = None
 #: fastest on both a 20-core arm64 Mac and a 128-core x86-64 Linux host,
 #: and past 32 the Linux host gives it back to memory-bandwidth contention.
 _READ_MAX_WORKERS = 32
+
+#: The shared read pool holds no more threads than one read uses. Decode
+#: scratch and zstd contexts are per thread, and a pool of 2 x CPU threads
+#: (256 on a 128-core host) let each read land on threads that had never
+#: decoded, so they kept allocating and faulting fresh 8 MB scratch, with
+#: memory growing toward one scratch per pool thread. Capping it at the read
+#: budget cut the 75th-percentile warm whole-stack read there from 38.1 ms to
+#: 20.0 ms (median 20.9 to 19.0) and changed nothing on a 20-core Mac.
+_DEFAULT_POOL_SIZE = max(min(2 * (os.cpu_count() or 4), _READ_MAX_WORKERS), 8)
 
 #: How much decoded output one scheduled task should carry. A sub-block at
 #: or above this size gets a task to itself; smaller ones ride together up
@@ -150,6 +159,100 @@ def _decode_scratch() -> ScratchBuffer:
         scratch = ScratchBuffer()
         _TLS.czi_scratch = scratch
     return scratch
+
+
+#: A reader opened from a path fetches each sub-block payload with one
+#: positional read of exactly its bytes instead of slicing the mmap. Slicing
+#: makes the kernel fault the payload in a page cluster at a time, which on a
+#: network share is a round trip per cluster: one cold 2000x2000 plane off SMB
+#: took 24 ms to fetch and decode through the mmap and 12 ms through one read,
+#: where aicspylibczi took 14 ms. It holds when the file is already cached
+#: too, for a reader opened per read (how callers use it): a fresh mmap
+#: faults every page in again, and a warm 23-plane stack took 19.0 ms by
+#: positional reads against 25.2 ms decoding from the mmap even when told the
+#: pages were cached (128-core Linux; 20.6 against 22.6 ms on a 20-core Mac).
+#: A single warm plane gives back about 0.6 ms on the Mac. Uncompressed
+#: payloads are read straight into the destination, since concurrent kernel
+#: copies scale and concurrent mmap copies did not. The header and directory
+#: still come through the mmap. Windows has no positional read in ``os``, so
+#: it keeps the mmap throughout.
+_PAYLOAD_PREAD = hasattr(os, "preadv")
+
+
+#: Payload buffers are shared, not per thread. The read pool is large (256
+#: threads on a 128-core host) and a task lands on whichever thread is free,
+#: so per-thread buffers kept allocating: 10-13 fresh 7 MB buffers per warm
+#: read, each paying its page faults, with memory growing toward one buffer
+#: per pool thread. A shared free list keeps at most this many, sized in
+#: whole MiB so payloads that differ slightly fit the same buffer.
+_PAYLOAD_KEEP = 32
+_PAYLOAD_FREE: list[bytearray] = []
+_PAYLOAD_LOCK = threading.Lock()
+
+
+def _take_payload(n: int) -> bytearray:
+    """A buffer of at least ``n`` bytes, reused when one is free."""
+    with _PAYLOAD_LOCK:
+        for i, buf in enumerate(_PAYLOAD_FREE):
+            if len(buf) >= n:
+                return _PAYLOAD_FREE.pop(i)
+    return bytearray(-(-max(n, 1) // (1 << 20)) << 20)
+
+
+def _give_payload(buf: bytearray) -> None:
+    with _PAYLOAD_LOCK:
+        if len(_PAYLOAD_FREE) < _PAYLOAD_KEEP:
+            _PAYLOAD_FREE.append(buf)
+
+
+#: A payload read on its own (one plane, a few planes) is split into about
+#: 1 MiB pieces, at most 8, read concurrently: over a network share one large
+#: read goes out as sequential requests. A cold 8 MB plane took 19.0 ms as one
+#: read and 12.4 ms as 8 pieces on Linux CIFS, 9.7 and 6.8 ms (4 pieces) on
+#: macOS SMB; a 5 MB zstd payload 14.8 and 7.7 ms on Linux, unchanged on the
+#: Mac. A whole-stack read already has many planes in flight and reads each
+#: one whole (see ``read``).
+_SPLIT_PIECE = 1 << 20
+_SPLIT_MAX = 8
+_SPLIT_BELOW_PLANES = 8
+_IO_POOL: ThreadPoolExecutor | None = None
+_IO_POOL_LOCK = threading.Lock()
+
+
+def _io_pool() -> ThreadPoolExecutor:
+    global _IO_POOL
+    if _IO_POOL is None:
+        with _IO_POOL_LOCK:
+            if _IO_POOL is None:
+                _IO_POOL = ThreadPoolExecutor(2 * _SPLIT_MAX, thread_name_prefix="czi-io")
+    return _IO_POOL
+
+
+def _pread_into(handle: int, view: memoryview, offset: int) -> int:
+    """Fill ``view`` from the file at ``offset``; returns the bytes read.
+
+    Splits into concurrent pieces unless this thread is one of many plane
+    reads already running (``_TLS.whole_read``) or the range is small.
+    """
+    n = len(view)
+    pieces = 1 if getattr(_TLS, "whole_read", False) else min(_SPLIT_MAX, n // _SPLIT_PIECE)
+    if pieces <= 1:
+        return _pread_full(handle, view, offset)
+    step = -(-n // pieces)
+    futures = [_io_pool().submit(_pread_full, handle, view[i:min(i + step, n)], offset + i)
+               for i in range(0, n, step)]
+    return sum(f.result() for f in futures)
+
+
+def _pread_full(handle: int, view: memoryview, offset: int) -> int:
+    """One positional read, finishing a short one (legal over a network share)."""
+    got = os.preadv(handle, [view], offset)
+    while 0 < got < len(view):
+        more = os.preadv(handle, [view[got:]], offset + got)
+        if more <= 0:
+            break
+        got += more
+    return got
 
 
 _ZSTD = None
@@ -311,6 +414,45 @@ class CziSubBlockEntry:
 
 class CziError(RuntimeError):
     pass
+
+
+@dataclass(frozen=True)
+class CziAttachment:
+    """One entry of a CZI's attachment directory (an embedded file).
+
+    ZEN stores things like the ``Thumbnail`` preview (a JPEG), ``TimeStamps``
+    and ``EventList`` this way. ``content_file_type`` is the stored type tag
+    (``"JPG"``, ``"CZTIMS"``, ...). Read the bytes with
+    :meth:`CziReader.read_attachment`.
+    """
+
+    name: str
+    content_file_type: str
+    content_guid: bytes
+    file_position: int
+
+
+class _FileSource:
+    """``read_at`` over an open file descriptor, by positional reads.
+
+    Lets a path-backed reader use the same ``_RangeBuffer`` as a remote range
+    source: the header and the directory each come in one read, and no mmap
+    is created. Creating one cost 1.45 ms per file on SMB, a quarter of
+    opening a CZI there, and nothing reads through it any more (payloads come
+    by positional reads, see ``_PAYLOAD_PREAD``).
+    """
+
+    def __init__(self, fd: int):
+        self.fd = fd
+
+    def read_at(self, offset: int, length: int) -> bytes:
+        data = os.pread(self.fd, length, offset)
+        while len(data) < length:  # a short read is legal; finish it
+            more = os.pread(self.fd, length - len(data), offset + len(data))
+            if not more:
+                break
+            data += more
+        return data
 
 
 class _RangeBuffer:
@@ -510,9 +652,13 @@ class CziReader(Reader):
             self._fd = os.open(self.path, os.O_RDONLY | O_BINARY)
             self._size = os.fstat(self._fd).st_size
             self._owns_fd = True
-            # ACCESS_READ is the portable spelling: PROT_READ and a shared
-            # mapping on POSIX, a read-only view on Windows.
-            self._mmap = mmap.mmap(self._fd, self._size, access=mmap.ACCESS_READ)
+            if _PAYLOAD_PREAD:
+                self._unpack = _unpack_from
+                self._mmap = _RangeBuffer(_FileSource(self._fd), self._size)
+            else:
+                # ACCESS_READ is the portable spelling: PROT_READ and a shared
+                # mapping on POSIX, a read-only view on Windows.
+                self._mmap = mmap.mmap(self._fd, self._size, access=mmap.ACCESS_READ)
         elif buffer is not None:
             self.path = "<buffer>"
             self._fd = -1
@@ -533,7 +679,12 @@ class CziReader(Reader):
         # — measured to drop NAS warm-cache median from 26 ms to 19 ms,
         # and the minimum from 25 ms to 12 ms.
 
-        self.entries: list[CziSubBlockEntry] = []
+        self._entries: list[CziSubBlockEntry] | None = None
+        self._entries_lock = threading.Lock()
+        self._meta_located = False
+        # file_position -> (payload offset, payload size), filled on first
+        # positional read so a repeated read skips its 48-byte header read.
+        self._payload_ranges: dict[int, tuple[int, int]] = {}
         # Populated by _parse_header(). Both refer to the start of the
         # *XML payload* in the file, not the segment header.
         self._meta_xml_off: int = 0
@@ -541,26 +692,50 @@ class CziReader(Reader):
         # Lazy caches for metadata accessors.
         self._metadata_bytes_cache: bytes | None = None
         self._metadata_xml_cache: str | None = None
+        self._attachments_cache: list[CziAttachment] | None = None
+        self._attachment_dir_position: int = 0
         self._uniform_cache: bool | None = None
 
         self._parse_header()
 
-        # Reader-ABC contract: populate shape/dtype/n_frames eagerly so
-        # callers can inspect a file without decoding it. This describes the
-        # stack ``read`` returns, which only exists when every sub-block
-        # stores the same number of pixels - see ``is_uniform``. A pyramidal
-        # or otherwise mixed CZI has no such stack, and ``read`` says so
-        # rather than sizing one from the first sub-block.
-        if self.entries:
-            first = self.entries[0]
-            self.dtype = first.dtype
-            self.n_frames = len(self.entries)
-            tile = tuple(s for s in first.stored_shape if s > 1) or (1,)
-            self.shape = (self.n_frames, *tile)
-        else:  # pragma: no cover - empty CZI defense
-            self.dtype = np.dtype("u1")
-            self.n_frames = 0
-            self.shape = (0,)
+    @property
+    def entries(self) -> list[CziSubBlockEntry]:
+        """Every sub-block's directory entry, parsed on first use.
+
+        Reading only attachments or metadata never reads the directory, so a
+        file whose directory is corrupt opens fine and raises ``CziError``
+        here, on the first call that needs the sub-blocks (``read``,
+        ``read_tile``, ``shape`` ...), not in the constructor.
+        """
+        if self._entries is None:
+            with self._entries_lock:
+                if self._entries is None:
+                    if self._mmap is None:
+                        raise CziError("CZI reader is closed; its directory was never read")
+                    # Published only when complete: another thread that sees
+                    # it non-None must see every entry.
+                    self._entries = self._parse_directory(self._directory_position)
+        return self._entries
+
+    # Reader-ABC contract: shape/dtype/n_frames describe the stack ``read``
+    # returns without decoding anything. That stack only exists when every
+    # sub-block stores the same number of pixels - see ``is_uniform``. A
+    # pyramidal or otherwise mixed CZI has no such stack, and ``read`` says so
+    # rather than sizing one from the first sub-block.
+    @property
+    def n_frames(self) -> int:
+        return len(self.entries)
+
+    @property
+    def dtype(self) -> np.dtype:
+        return self.entries[0].dtype if self.entries else np.dtype("u1")
+
+    @property
+    def shape(self) -> tuple[int, ...]:
+        if not self.entries:  # pragma: no cover - empty CZI defense
+            return (0,)
+        tile = tuple(s for s in self.entries[0].stored_shape if s > 1) or (1,)
+        return (len(self.entries), *tile)
 
     # ----- Lifecycle -----
 
@@ -572,6 +747,11 @@ class CziReader(Reader):
             if self._owned_source is not None:
                 self._owned_source.close()
                 self._owned_source = None
+            return
+        if isinstance(self._mmap, _RangeBuffer):
+            self._mmap = None
+            os.close(self._fd)
+            self._owns_fd = False
             return
         try:
             self._mmap.close()
@@ -712,11 +892,25 @@ class CziReader(Reader):
         dir_off = 32 + 4 + 4 + 4 + 4 + 16 + 16 + 4
         directory_position = self._unpack("<q", m, dir_off)[0]
         metadata_position = self._unpack("<q", m, dir_off + 8)[0]
+        # uint32 update_pending sits between them, hence + 20.
+        self._attachment_dir_position = self._unpack("<q", m, dir_off + 20)[0]
         if directory_position <= 0 or directory_position >= self._size:
             raise CziError(f"invalid directory_position {directory_position}")
 
-        self._parse_directory(directory_position)
+        # The directory and the metadata segment are located lazily (see
+        # ``entries`` and ``_locate_metadata``): reading only an attachment
+        # or the metadata then costs no directory reads, which over SMB are
+        # round trips. czifile reads that way and opened 4 reads cheaper.
+        self._directory_position = directory_position
+        self._metadata_position = metadata_position
 
+    def _locate_metadata(self) -> None:
+        """Find the metadata XML payload, once, on first use."""
+        if self._meta_located:
+            return
+        self._meta_located = True
+        m = self._mmap
+        metadata_position = self._metadata_position
         # Locate the metadata XML payload inside the ZISRAWMETADATA
         # segment so the lazy ``metadata_bytes`` / ``metadata_xml``
         # properties can slice it on demand. Layout (CZI 1.2.2):
@@ -734,8 +928,8 @@ class CziReader(Reader):
                     self._meta_xml_off = metadata_position + 32 + 8 + 248
                     self._meta_xml_size = xml_size
 
-    def _parse_directory(self, directory_position: int) -> None:
-        """Walk the ZISRAWDIRECTORY segment, building self.entries."""
+    def _parse_directory(self, directory_position: int) -> list[CziSubBlockEntry]:
+        """Walk the ZISRAWDIRECTORY segment and return its entries."""
         m = self._mmap
         sid, _alloc, _used = self._unpack("<16sqq", m, directory_position)
         if not sid.startswith(self._DIR_MAGIC):
@@ -751,12 +945,21 @@ class CziReader(Reader):
         offset = directory_position + 32 + 128
 
         if isinstance(m, _RangeBuffer):
-            for _ in range(entry_count):
-                entry, advance = self._parse_directory_entry(offset)
-                self.entries.append(entry)
-                offset += advance
-            return
-        self.entries.extend(_parse_directory_entries(m, offset, entry_count))
+            # The prefetch above holds the whole directory, so parse it from
+            # those bytes with the same vectorized parser as a local buffer.
+            block = m[directory_position:directory_position + 32 + _used]
+            try:
+                return _parse_directory_entries(block, offset - directory_position, entry_count)
+            except struct.error:
+                # The segment header understates its size (seen in hand-built
+                # files): read entry by entry, fetching whatever each needs.
+                entries = []
+                for _ in range(entry_count):
+                    entry, advance = self._parse_directory_entry(offset)
+                    entries.append(entry)
+                    offset += advance
+                return entries
+        return _parse_directory_entries(m, offset, entry_count)
 
     def _parse_directory_entry(self, off: int) -> tuple[CziSubBlockEntry, int]:
         """Parse one CziDirectoryEntryDV at ``off``; return (entry, bytes_read)."""
@@ -822,13 +1025,28 @@ class CziReader(Reader):
 
     # ----- Sub-block payload decode -----
 
-    def _pixel_data_view(self, entry: CziSubBlockEntry) -> tuple[memoryview, int]:
-        """Return a zero-copy memoryview into the sub-block's pixel data,
-        plus its byte size. No decompression yet.
+    def _pixel_data_view(self, entry: CziSubBlockEntry, *, into=None):
+        """Return a memoryview of the sub-block's pixel data, plus its byte
+        size. No decompression yet.
+
+        A path-backed reader reads the payload with one positional read (see
+        ``_PAYLOAD_PREAD``) into a buffer the view owns; decoding goes through
+        ``_payload`` instead, which reuses buffers. Other sources return a
+        zero-copy view. ``into=True`` on a path-backed reader skips the fetch
+        and returns the payload's file offset and size, for a caller that
+        reads it somewhere else.
         """
         m = self._mmap
         sb_off = entry.file_position
-        header = m[sb_off:sb_off + 48] if isinstance(m, _RangeBuffer) else None
+        positional = self._fd >= 0 and _PAYLOAD_PREAD
+        if into is not None and positional and sb_off in self._payload_ranges:
+            return self._payload_ranges[sb_off]
+        if positional:
+            header = os.pread(self._fd, 48, sb_off)
+            if len(header) != 48:
+                raise CziError("truncated CZI sub-block header")
+        else:
+            header = m[sb_off:sb_off + 48] if isinstance(m, _RangeBuffer) else None
         # Verify segment magic.
         sid = header[:14] if header is not None else m[sb_off:sb_off + 14]
         if sid != self._SUBBLOCK_MAGIC:
@@ -848,9 +1066,43 @@ class CziReader(Reader):
         data_off = sb_off + 32 + 16 + entry_storage + pad + meta_size
         if meta_size < 0 or data_off < 0 or data_size < 0 or data_off + data_size > self._size:
             raise CziError("invalid CZI sub-block payload range")
+        if positional:
+            if into is not None:
+                self._payload_ranges[sb_off] = (data_off, data_size)
+                return data_off, data_size
+            view = memoryview(bytearray(data_size))
+            if data_size and _pread_into(self._fd, view, data_off) != data_size:
+                raise CziError("truncated CZI sub-block payload")
+            return view, data_size
         if isinstance(m, _RangeBuffer):
             return memoryview(m[data_off:data_off + data_size]), data_size
         return memoryview(m)[data_off:data_off + data_size], data_size
+
+    @contextlib.contextmanager
+    def _payload(self, entry: CziSubBlockEntry):
+        """Yield the sub-block's payload bytes for one decode.
+
+        Path-backed readers read it into a shared reusable buffer, returned
+        on exit. If something still holds a view of that buffer (a decoded
+        array built on the bytes), it is left to the garbage collector
+        instead, so a later read can never overwrite pixels someone kept.
+        """
+        if not (self._fd >= 0 and _PAYLOAD_PREAD):
+            yield self._pixel_data_view(entry)[0]
+            return
+        offset, n = self._pixel_data_view(entry, into=True)
+        buf = _take_payload(n)
+        view = memoryview(buf)[:n]
+        try:
+            if n and _pread_into(self._fd, view, offset) != n:
+                raise CziError("truncated CZI sub-block payload")
+            yield view
+        finally:
+            try:
+                view.release()
+            except BufferError:
+                return
+            _give_payload(buf)
 
     def _decode_one(self, entry: CziSubBlockEntry, *, _view=None,
                     dest=None, scratch=None) -> np.ndarray:
@@ -859,13 +1111,30 @@ class CziReader(Reader):
         ``dest`` decodes straight into caller storage, which is how ``read``
         fills one slice of its final stack without a tile-sized intermediate.
         """
-        if _view is None:
-            view, data_size = self._pixel_data_view(entry)
-        else:
-            view, data_size = _view, len(_view)
-        return self._decode_payload(view, entry.pixel_type, entry.compression,
-                                    entry.stored_shape, dest=dest,
-                                    scratch=scratch)
+        if _view is None and entry.compression == 0 and self._fd >= 0 and _PAYLOAD_PREAD:
+            # Uncompressed: the stored bytes are the pixels, so read them
+            # straight into the destination rather than through the payload
+            # buffer and a second copy.
+            dtype, _ = _pixel_type_dtype(entry.pixel_type)
+            n_pixels = math.prod(entry.stored_shape)
+            out, out_bytes = _payload_destination(dest, dtype, entry.stored_shape, n_pixels)
+            if out_bytes is None:  # pragma: no cover - empty tile defense
+                return out
+            offset, data_size = self._pixel_data_view(entry, into=True)
+            if data_size < out_bytes.nbytes:
+                raise CziError(f"CZI payload holds {data_size} bytes, "
+                               f"expected {out_bytes.nbytes}")
+            if _pread_into(self._fd, out_bytes, offset) != out_bytes.nbytes:
+                raise CziError("truncated CZI sub-block payload")
+            return out
+        if _view is not None:
+            return self._decode_payload(_view, entry.pixel_type, entry.compression,
+                                        entry.stored_shape, dest=dest,
+                                        scratch=scratch)
+        with self._payload(entry) as view:
+            return self._decode_payload(view, entry.pixel_type, entry.compression,
+                                        entry.stored_shape, dest=dest,
+                                        scratch=scratch)
 
     @staticmethod
     def _check_decoded_size(actual, expected):
@@ -1035,7 +1304,10 @@ class CziReader(Reader):
         zstd-compressed (5 or 6) and laid out Y, X, samples. ``out2d`` may be
         a list of such views, with each window's seventh element naming one.
         """
-        view, _ = self._pixel_data_view(entry)
+        with self._payload(entry) as view:
+            self._decode_windows_from(view, entry, out2d, windows, y_i, x_i)
+
+    def _decode_windows_from(self, view, entry, out2d, windows, y_i, x_i):
         dtype, _samples = _pixel_type_dtype(entry.pixel_type)
         shape = entry.stored_shape
         h, w, samples = shape[y_i], shape[x_i], shape[-1]
@@ -1105,6 +1377,7 @@ class CziReader(Reader):
         truncated CZI).
         """
         if self._metadata_bytes_cache is None:
+            self._locate_metadata()
             if self._meta_xml_size <= 0:  # pragma: no cover - corrupt-CZI defense
                 self._metadata_bytes_cache = b""
             else:
@@ -1161,6 +1434,85 @@ class CziReader(Reader):
         return m[meta_off:meta_off + meta_size]  # pragma: no cover
 
     # ----- Public API -----
+
+    _ATTDIR_MAGIC = b"ZISRAWATTDIR"
+    _ATTACH_MAGIC = b"ZISRAWATTACH"
+
+    def attachments(self) -> list[CziAttachment]:
+        """The file's attachments, from its attachment directory.
+
+        A file without an attachment directory has none listed (ZEN always
+        writes one when it embeds anything). Layout (CZI 1.2.2): a 32-byte
+        segment header, ``int32 entry_count`` and 252 reserved bytes, then
+        128-byte ``AttachmentEntryA1`` records.
+        """
+        if self._attachments_cache is not None:
+            return self._attachments_cache
+        found: list[CziAttachment] = []
+        pos = self._attachment_dir_position
+        m = self._mmap
+        if 0 < pos < self._size:
+            if isinstance(m, _RangeBuffer):
+                # One request for the header and the first 32 entries, which
+                # is every directory ZEN writes; a longer one reads the rest.
+                m.prefetch(pos, min(32 + 256 + 128 * 32, self._size - pos))
+            sid, _alloc, used = self._unpack("<16sqq", m, pos)
+            if sid.startswith(self._ATTDIR_MAGIC):
+                if isinstance(m, _RangeBuffer) and 32 + used > 32 + 256 + 128 * 32:
+                    m.prefetch(pos, 32 + used)
+                count = self._unpack("<i", m, pos + 32)[0]
+                off = pos + 32 + 256
+                if count < 0 or off + 128 * count > self._size:
+                    raise CziError("invalid CZI attachment directory")
+                for i in range(count):
+                    schema, _r, fpos, _part, guid, ctype, name = self._unpack(
+                        "<2s10sqi16s8s80s", m, off + 128 * i)
+                    if schema != b"A1":
+                        raise CziError(f"unknown attachment entry schema {schema!r}")
+                    found.append(CziAttachment(
+                        name=name.rstrip(b"\x00").decode("utf-8", "replace"),
+                        content_file_type=ctype.rstrip(b"\x00").decode("cp1252"),
+                        content_guid=bytes(guid), file_position=int(fpos)))
+        self._attachments_cache = found
+        return found
+
+    def read_attachment(self, which) -> bytes:
+        """The stored bytes of one attachment, exactly as embedded.
+
+        ``which`` is a :class:`CziAttachment` or a name, matched without
+        regard to case (``"thumbnail"`` finds ``"Thumbnail"``). Nothing is
+        decoded: the thumbnail comes back as its JPEG file. Layout: a 32-byte
+        segment header, ``int32 data_size`` and 12 reserved bytes, a copy of
+        the 128-byte entry, 112 reserved bytes, then the data.
+        """
+        if not isinstance(which, CziAttachment):
+            key = str(which).lower()
+            matches = [a for a in self.attachments() if a.name.lower() == key]
+            if not matches:
+                names = ", ".join(a.name for a in self.attachments()) or "none"
+                raise KeyError(f"no CZI attachment named {which!r} (attachments: {names})")
+            which = matches[0]
+        pos, m = which.file_position, self._mmap
+        if not 0 < pos < self._size:
+            raise CziError(f"invalid CZI attachment position {pos}")
+        # One request for the segment header and the first 64 KB of data: a
+        # ZEN thumbnail (about 30 KB) comes back whole from it, the same
+        # number of reads czifile makes for the header alone.
+        start = pos + 32 + 16 + 128 + 112
+        head = bytes(m[pos:min(self._size, start + (64 << 10))])
+        if len(head) < 48 or not head[:16].startswith(self._ATTACH_MAGIC):
+            raise CziError(f"expected ZISRAWATTACH at {pos}, got {head[:16]!r}")
+        size = struct.unpack_from("<i", head, 32)[0]
+        if size < 0 or start + size > self._size:
+            raise CziError("invalid CZI attachment data range")
+        if start + size <= pos + len(head):
+            return head[start - pos:start - pos + size]
+        if self._fd >= 0 and _PAYLOAD_PREAD:
+            data = os.pread(self._fd, size, start)
+            if len(data) != size:
+                raise CziError("truncated CZI attachment")
+            return data
+        return bytes(m[start:start + size])
 
     def __len__(self) -> int:
         return len(self.entries)
@@ -1267,15 +1619,21 @@ class CziReader(Reader):
         pixel types — 3, 4, 8, 9). Grayscale tiles pass through
         unchanged.
         """
-        if idx < 0:
-            idx += len(self.entries)
-        if not 0 <= idx < len(self.entries):
-            raise IndexError(idx)
-        entry = self.entries[idx]
+        entry = self.entries[self._entry_index(idx)]
         arr = np.squeeze(self._decode_one(entry))
         if as_rgb:
             arr = _bgr_to_rgb(arr, entry.pixel_type)
         return arr
+
+    def _entry_index(self, idx) -> int:
+        """Normalize one sub-block index, counting negatives from the end."""
+        i = operator.index(idx)
+        n = len(self.entries)
+        if i < 0:
+            i += n
+        if not 0 <= i < n:
+            raise IndexError(idx)
+        return i
 
     def read(
         self,
@@ -1286,6 +1644,7 @@ class CziReader(Reader):
         max_pending_bytes: int | None = None,
         worker_budget=None,
         out: np.ndarray | None = None,
+        indices=None,
     ) -> np.ndarray:
         """Decode all sub-blocks in parallel and stack along axis 0.
 
@@ -1310,33 +1669,57 @@ class CziReader(Reader):
         the operating system cache still cost what they cost.
         ``as_rgb`` is refused with ``out`` because the stored order would
         differ from the returned view.
-        """
-        if not self.entries:  # pragma: no cover - empty CZI defense
-            return np.empty((0,))
-        if not self.is_uniform:
-            raise self._nonuniform_error("read()")
 
-        first = self.entries[0]
+        ``indices`` reads only those sub-blocks, in that order and in
+        parallel, into a stack of ``len(indices)`` rows. Negative indices
+        count from the end and repeats are allowed. The selected sub-blocks
+        have to stack (same pixel count and type); the rest of the file does
+        not, so this also reads one level of a pyramidal file. Without
+        ``squeeze`` the leading axis stays even for a single index.
+        """
+        if indices is None:
+            entries = self.entries
+            if not entries:  # pragma: no cover - empty CZI defense
+                return np.empty((0,))
+            if not self.is_uniform:
+                raise self._nonuniform_error("read()")
+        else:
+            entries = [self.entries[self._entry_index(i)] for i in indices]
+            if not entries:
+                raise ValueError("read(indices=...) needs at least one index")
+            if len({(math.prod(e.stored_shape), e.pixel_type) for e in entries}) > 1:
+                raise CziError(
+                    "read(indices=...) stacks the selected sub-blocks into one "
+                    "array, but they differ in pixel count or type; read them "
+                    "with read_tile(i) instead")
+
+        first = entries[0]
         tile_shape = first.stored_shape
         dtype = first.dtype
 
         if out is None:
-            out = np.empty((len(self.entries), *tile_shape), dtype=dtype)
+            out = np.empty((len(entries), *tile_shape), dtype=dtype)
         else:
             if as_rgb:
                 raise ValueError(
                     "read(out=...) stores CZI's native channel order; "
                     "as_rgb cannot reorder a caller-owned destination")
             out = self._validate_stack_destination(
-                out, len(self.entries), tile_shape, dtype)
-        rows = out.reshape(len(self.entries), -1)
+                out, len(entries), tile_shape, dtype)
+        rows = out.reshape(len(entries), -1)
+
+        whole = len(entries) >= _SPLIT_BELOW_PLANES
 
         def _worker(i: int) -> None:
             # Pre-touching the destination pages before decode was measured
             # on both platforms and changed nothing; the faults cost the
             # same wherever they are taken.
-            self._decode_one(self.entries[i], dest=rows[i],
-                             scratch=_decode_scratch())
+            _TLS.whole_read = whole   # many planes in flight: read each whole
+            try:
+                self._decode_one(entries[i], dest=rows[i],
+                                 scratch=_decode_scratch())
+            finally:
+                _TLS.whole_read = False
 
         if max_pending_bytes is not None or worker_budget is not None:
             from contextlib import closing
@@ -1345,7 +1728,7 @@ class CziReader(Reader):
                        max(1, int(n_workers)))
             source = self._mmap
             def descriptors():
-                for i, entry in enumerate(self.entries):
+                for i, entry in enumerate(entries):
                     header = source[entry.file_position:entry.file_position + 48]
                     if header[:14] != self._SUBBLOCK_MAGIC:
                         raise CziError("invalid CZI sub-block header")
@@ -1386,14 +1769,18 @@ class CziReader(Reader):
             # cannot pay for its own future) without paying the rounding.
             from .core.parallel import resolve_workers
 
-            n = len(self.entries)
+            n = len(entries)
             tasks = _read_tasks(n, out.nbytes // n)
             if n_workers is not None:
                 workers = max(1, min(int(n_workers), len(tasks)))
             else:
                 workers = resolve_workers(
                     None, len(tasks), output_bytes=out.nbytes,
-                    has_decode_work=any(e.compression != 0 for e in self.entries),
+                    # Reading a file is work too: positional reads of
+                    # uncompressed sub-blocks overlap their I/O, which the
+                    # in-memory copy this flag was measured on did not have.
+                    has_decode_work=(self._fd >= 0 and _PAYLOAD_PREAD) or
+                    any(e.compression != 0 for e in entries),
                     max_workers=_READ_MAX_WORKERS)
 
             def _run_task(batch):
@@ -2111,9 +2498,13 @@ class CziPyramidReader(PyramidReader):
             workers = 1  # nothing to share, or pinned serial
         else:
             from .core.parallel import resolve_workers
+            # Size the pool by the tiles decoded, not the region returned:
+            # a 1024 px region over four 2048 x 1504 JPEG XR tiles is 2 MB of
+            # output but 25 MB of decoding, and sizing it by the output gave
+            # it 2 workers: 86 ms, against 45 ms on 4 (20-core Mac).
             workers = resolve_workers(
                 self._decode_workers, len(batches),
-                output_bytes=sum(stored) if output_bytes is None else output_bytes,
+                output_bytes=max(sum(stored), output_bytes or 0),
                 has_decode_work=any(entries[i].compression != 0 for i in hits),
                 max_workers=8)
         self._last_decode = {"workers": workers, "batches": len(batches)}
