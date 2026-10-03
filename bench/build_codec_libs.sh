@@ -895,11 +895,14 @@ build_jxrlib() {
     local build="$src/_build"
     rm -rf "$build"
     local cflags="-I. -Icommon/include -Iimage/sys -D__ANSI__"
-    # -O3 with link-time optimization: one 2048 x 1504 slide tile decoded in
-    # 43.5 ms at -O2, 39.4 at -O3 and 37.7 with LTO, where libCZI's own copy
-    # (aicspylibczi) took 38.9 (20-core Mac, 2026-10-02). gcc needs fat LTO
-    # objects so the archive still links where the final link is not LTO.
-    cflags+=" -DDISABLE_PERF_MEASUREMENT -w -fPIC -O3 -flto"
+    # -O3 with link-time optimization and NDEBUG: one 2048 x 1504 slide tile
+    # decoded in 43.5 ms at -O2, 39.4 at -O3, 37.7 with LTO and 35.2 with
+    # NDEBUG too, where libCZI's own copy (aicspylibczi) took 38.8 (20-core
+    # Mac, 2026-10-02). libCZI builds jxrlib in CMake Release mode, which
+    # defines NDEBUG; the Makefile here does not, which left jxrlib's 68
+    # assert() calls in the decode loop. gcc needs fat LTO objects so the
+    # archive still links where the final link is not LTO.
+    cflags+=" -DDISABLE_PERF_MEASUREMENT -DNDEBUG -w -fPIC -O3 -flto"
     if [ "$(uname -s)" = "Linux" ]; then cflags+=" -ffat-lto-objects"; fi
     cflags+=" -Wno-error=implicit-function-declaration"
     cflags+=" -Wno-error=incompatible-pointer-types -Wno-error=int-conversion"

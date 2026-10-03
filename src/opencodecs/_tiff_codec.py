@@ -125,11 +125,20 @@ def _get_decoder(modname: str):
 # tiles, and anything with only a few has little work to divide.
 _TIFF_PARALLEL_MIN_SEGMENTS = 4
 _TIFF_MAX_WORKERS = 16
+#: Least compressed input worth a worker. Workers are sized by whichever asks
+#: for more: 1 MiB of output each (the shared default, right for writing the
+#: output) or this much compressed input (the decompression itself). Output
+#: alone held a 2000 x 2000 uint16 deflate image, 6.8 MB compressed in 31
+#: strips, to 7 workers: 4.05 ms, against 1.91 ms on 16 and 4.20 ms for
+#: tifffile. Input alone would serialize a nearly empty int32 mask (16 MB
+#: out, 20 KB in), which is fastest on 15 (20-core Mac, 2026-10-02).
+_TIFF_MIN_INPUT_BYTES_PER_WORKER = 256 << 10
 
 
 def _resolve_tiff_workers(numthreads: int | None, n_segments: int,
                           has_decode_work: bool = True,
-                          output_bytes: int | None = None) -> int:
+                          output_bytes: int | None = None,
+                          input_bytes: int | None = None) -> int:
     """TIFF's segment count and thresholds, on the shared policy.
 
     The reasoning this used to carry lives in core.parallel now, where
@@ -137,13 +146,23 @@ def _resolve_tiff_workers(numthreads: int | None, n_segments: int,
     it. What stays here is what is actually about TIFF: the segment
     count, and that "a handful" means four strips.
     """
-    return resolve_workers(
+    by_output = resolve_workers(
         numthreads, n_segments,
         has_decode_work=has_decode_work,
         output_bytes=output_bytes,
         min_items=_TIFF_PARALLEL_MIN_SEGMENTS,
         max_workers=_TIFF_MAX_WORKERS,
     )
+    if numthreads is not None or not has_decode_work or not input_bytes:
+        return by_output
+    by_input = resolve_workers(
+        None, n_segments,
+        output_bytes=input_bytes,
+        min_items=_TIFF_PARALLEL_MIN_SEGMENTS,
+        max_workers=_TIFF_MAX_WORKERS,
+        min_bytes_per_worker=_TIFF_MIN_INPUT_BYTES_PER_WORKER,
+    )
+    return max(by_output, by_input)
 
 
 # numpy writes native order as "=" and single-byte types as "|", so a
@@ -650,6 +669,14 @@ class TiffPage:
                 return None
         return None
 
+    def _input_bytes(self) -> int | None:
+        """Total stored (compressed) bytes of this page's segments, if known."""
+        counts = getattr(self, "byte_counts", None)
+        try:
+            return int(sum(counts)) if counts is not None else None
+        except TypeError:  # pragma: no cover - malformed tag
+            return None
+
     def _decode_fused(self, out, fused, numthreads, fetch, slow_segment) -> None:
         """Decode every segment of a chunky page through decode_segments_into.
 
@@ -672,7 +699,7 @@ class TiffPage:
         out2d = out.view(np.uint8).reshape(self.height, -1)
         workers = _resolve_tiff_workers(
             numthreads, n, has_decode_work=self.compression != CMP_NONE,
-            output_bytes=out.nbytes)
+            output_bytes=out.nbytes, input_bytes=self._input_bytes())
         # A few chunks per worker keeps the load even when segments differ
         # in cost; 64 segments at most keeps a serial read's buffered input
         # bounded when the source returns bytes rather than a mapped view.
@@ -1068,7 +1095,7 @@ class TiffPage:
         workers = _resolve_tiff_workers(
             numthreads, len(tasks),
             has_decode_work=self.compression != CMP_NONE,
-            output_bytes=out.nbytes)
+            output_bytes=out.nbytes, input_bytes=self._input_bytes())
         if workers > 1 and prefetched is None:
             read_lock = threading.Lock()
         run_batched(lambda t: _do_segment(*t), tasks, workers, name="tiff")
