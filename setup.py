@@ -450,6 +450,13 @@ _PROBE_PREFIXES: list[Path] = [
 # ~/Library/Caches/opencodecs/<lib>/ via bench/build_codec_libs.sh.
 # Probe these so the generic header/lib search picks them up.
 _OC_USER_CACHE = _user_cache()
+
+# jxrlib as bench/build_codec_libs.sh builds it: static libraries and the
+# headers behind include/jxrlib/JXRGlue.h, in the per-user cache prefix.
+_JXR_BUILT = _OC_USER_CACHE / "libs"
+if not all((_JXR_BUILT / f).is_file() for f in (
+        "lib/libjpegxr.a", "lib/libjxrglue.a", "include/jxrlib/JXRGlue.h")):
+    _JXR_BUILT = None
 for _libdir in (
     "sz3", "pcodec", "sperr", "brunsli", "lerc", "zstd", "brotli", "giflib",
     # zfp: brew's bottle is built without -march tuning and is ~17%
@@ -1412,6 +1419,11 @@ extensions = [
     # (most Zeiss whole-slide scans). jxrlib installs its headers under
     # include/jxrlib/ and needs __ANSI__ off Windows; the shim declares
     # the in-memory stream constructor its public headers leave out.
+    # The copy bench/build_codec_libs.sh builds (libCZI's, static) is
+    # linked by path, with its headers first: by -l, a system jxrlib in
+    # an earlier library directory (Homebrew's) won the link while the
+    # headers came from the build, leaving the extension calling names
+    # nothing defines.
     Extension(
         name="opencodecs.codecs._jpegxr",
         sources=[
@@ -1421,12 +1433,16 @@ extensions = [
         include_dirs=[
             str(PKG_CODECS),
             numpy.get_include(),
+            *([str(_JXR_BUILT / "include" / "jxrlib")] if _JXR_BUILT else []),
             *[str(Path(d) / "jxrlib")
               for d in _resolve_include_dirs("jxrlib/JXRGlue.h")],
         ],
-        library_dirs=_lib_dirs_for_probes(),
+        library_dirs=[] if _JXR_BUILT else _lib_dirs_for_probes(),
         # conda-forge on Windows ships static libjxrglue.lib / libjpegxr.lib.
-        libraries=[_lib_name("jxrglue", "libjxrglue"), _lib_name("jpegxr", "libjpegxr")],
+        libraries=[] if _JXR_BUILT else [_lib_name("jxrglue", "libjxrglue"),
+                                         _lib_name("jpegxr", "libjpegxr")],
+        extra_objects=[str(_JXR_BUILT / "lib" / "libjxrglue.a"),
+                       str(_JXR_BUILT / "lib" / "libjpegxr.a")] if _JXR_BUILT else [],
         define_macros=[
             ("NPY_NO_DEPRECATED_API", "NPY_1_7_API_VERSION"),
             *([] if _WINDOWS else [("__ANSI__", "1")]),

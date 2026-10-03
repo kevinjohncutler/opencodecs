@@ -109,7 +109,7 @@ VERSIONS=(
     # closes the gap.
     "CharLS          2.4.3"
 
-    "jxrlib          2019.10.9"
+    "jxrlib          libczi-75f94a1"
 
     # Marquee codec — delegated to the dedicated script for parity with
     # the per-developer flow (some users only want to source-build libjxl
@@ -872,15 +872,22 @@ build_libaec() {
 }
 
 # ---- jxrlib (JPEG XR, for CZI compression 4) ---------------------------
-# Microsoft's reference codec, BSD-2. Upstream builds only with a Makefile
-# and installs headers under include/libjxr/..., while Homebrew, conda-forge
-# and Debian ship them flat under include/jxrlib/, which is what setup.py
-# probes. So: build the two static libraries position-independent (they
-# link into the _jpegxr extension, nothing to bundle) and install the ten
-# public headers flat. The CFLAGS replace the Makefile's own: jxrlib is old
-# C that gcc 14 rejects outright (implicit declarations, pointer types)
-# even under the -w it already passes. Linux and macOS only: Windows wheels
-# take jxrlib from conda-forge.
+# Microsoft's reference codec, BSD-2, from the copy ZEISS maintains inside
+# libCZI (Src/JxrDecode/jxrlib, which libCZI's REUSE metadata licenses
+# BSD-2-Clause, Microsoft). libCZI reworked its decoder (bit reader, byte
+# swaps and rotates through compiler builtins, many hot paths); built with
+# the same flags, it decodes a 2048 x 1504 slide tile about 11% faster
+# than the upstream 2019.10.9 release on x86-64 Linux, where no choice of
+# flags for upstream (-O2, -O3, LTO, -march=native) came within 10% of
+# aicspylibczi, which uses this copy. libCZI has no release tags, so the
+# commit is pinned. Its functions carry a libCZIjxrlib_ prefix; the shim
+# handles both spellings (jpegxr_shim.c). libCZI builds the sources with
+# CMake into its own library, so the two static libraries are compiled
+# here, position-independent (they link into the _jpegxr extension,
+# nothing to bundle). The headers keep their tree, since they include each
+# other by relative path, behind a flat JXRGlue.h for setup.py's probe.
+# Linux and macOS only: Windows wheels take jxrlib from conda-forge.
+LIBCZI_JXR_COMMIT=75f94a14e8a7a7c6df8abc78cfa35b105d3e8ac6
 build_jxrlib() {
     local v="$(get_version jxrlib)"
     case "$(uname -s)" in
@@ -888,37 +895,92 @@ build_jxrlib() {
             echo "  jxrlib: Windows takes it from conda-forge, skipping"; return ;;
     esac
     is_built jxrlib "$v" && { echo "  jxrlib $v already built"; return; }
-    echo "==> jxrlib $v"
-    local src
-    src=$(fetch_tar jxrlib "$v" \
-        "https://github.com/4creators/jxrlib/archive/refs/tags/v$v.tar.gz")
-    local build="$src/_build"
+    echo "==> jxrlib $v (libCZI $LIBCZI_JXR_COMMIT)"
+    local root
+    root=$(fetch_tar libczi "$LIBCZI_JXR_COMMIT" \
+        "https://github.com/ZEISS/libczi/archive/$LIBCZI_JXR_COMMIT.tar.gz")
+    local src="$root/Src/JxrDecode/jxrlib"
+    local build="$root/_jxrbuild"
     rm -rf "$build"
-    local cflags="-I. -Icommon/include -Iimage/sys -D__ANSI__"
+    mkdir -p "$build"
+    # What libCZI's CMake finds by probing, decided by the preprocessor
+    # here so one header serves every compiler and architecture.
+    cat > "$build/JxrDecode_Config.h" <<'CONFIG'
+#pragma once
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+#define JXRDECODE_ISBIGENDIANHOST 1
+#else
+#define JXRDECODE_ISBIGENDIANHOST 0
+#endif
+#define JXRDECODE_SIGBUS_ON_UNALIGNEDINTEGERS 0
+/* libCZI includes glibc's <byteswap.h> for this; elsewhere (macOS) the
+   portable shift form is used, which compilers turn into a byte swap. */
+#if defined(__has_include)
+#if __has_include(<byteswap.h>)
+#define JXRDECODE_HAS_BUILTIN_BSWAP32 1
+#endif
+#endif
+#ifndef JXRDECODE_HAS_BUILTIN_BSWAP32
+#define JXRDECODE_HAS_BUILTIN_BSWAP32 0
+#endif
+#define JXRDECODE_HAS_BYTESWAP_IN_STDLIB 0
+#define JXRDECODE_HAS_BSWAP_LONG_IN_SYS_ENDIAN 0
+#define JXRDECODE_HAS_ROTL_WITH_INTRIN_H 0
+#if defined(__has_builtin)
+#if __has_builtin(__builtin_rotateleft32)
+#define JXRDECODE_HAS_ROTATELEFT32_INTRINSIC 1
+#endif
+#endif
+#ifndef JXRDECODE_HAS_ROTATELEFT32_INTRINSIC
+#define JXRDECODE_HAS_ROTATELEFT32_INTRINSIC 0
+#endif
+#if !JXRDECODE_HAS_ROTATELEFT32_INTRINSIC && (defined(__x86_64__) || defined(__i386__))
+#define JXRDECODE_HAS_ROTL_WITH_X86INTRIN_H 1
+#else
+#define JXRDECODE_HAS_ROTL_WITH_X86INTRIN_H 0
+#endif
+CONFIG
+    local cc="${CC:-cc}"
+    local cflags="-I$build -I$src -I$src/common/include -I$src/image/sys -I$src/jxrgluelib"
+    cflags+=" -D__ANSI__ -DDISABLE_PERF_MEASUREMENT -w -fPIC"
     # -O3 with link-time optimization and NDEBUG: one 2048 x 1504 slide tile
     # decoded in 43.5 ms at -O2, 39.4 at -O3, 37.7 with LTO and 35.2 with
-    # NDEBUG too, where libCZI's own copy (aicspylibczi) took 38.8 (20-core
-    # Mac, 2026-10-02). libCZI builds jxrlib in CMake Release mode, which
-    # defines NDEBUG; the Makefile here does not, which left jxrlib's 68
-    # assert() calls in the decode loop. gcc needs fat LTO objects so the
-    # archive still links where the final link is not LTO.
-    cflags+=" -DDISABLE_PERF_MEASUREMENT -DNDEBUG -w -fPIC -O3 -flto"
+    # NDEBUG too (upstream jxrlib, 20-core Mac, 2026-10-02). libCZI builds
+    # jxrlib in CMake Release mode, which defines NDEBUG. gcc needs fat LTO
+    # objects so the archive still links where the final link is not LTO.
+    cflags+=" -DNDEBUG -O3 -flto"
     if [ "$(uname -s)" = "Linux" ]; then cflags+=" -ffat-lto-objects"; fi
-    cflags+=" -Wno-error=implicit-function-declaration"
-    cflags+=" -Wno-error=incompatible-pointer-types -Wno-error=int-conversion"
-    ( cd "$src" && make -j"$JOBS" DIR_BUILD="$build" CFLAGS="$cflags" \
-        "$build/libjpegxr.a" "$build/libjxrglue.a" )
-    install -d "$PREFIX/include/jxrlib" "$PREFIX/lib"
-    install -m 644 "$build/libjpegxr.a" "$build/libjxrglue.a" "$PREFIX/lib/"
-    install -m 644 \
-        "$src/jxrgluelib/JXRGlue.h" "$src/jxrgluelib/JXRMeta.h" \
-        "$src/jxrtestlib/JXRTest.h" "$src/image/sys/windowsmediaphoto.h" \
-        "$src/common/include/guiddef.h" "$src/common/include/wmsal.h" \
-        "$src/common/include/wmspecstring.h" \
-        "$src/common/include/wmspecstrings_adt.h" \
-        "$src/common/include/wmspecstrings_strict.h" \
-        "$src/common/include/wmspecstrings_undef.h" \
-        "$PREFIX/include/jxrlib/"
+    local core="common/src/log.c
+        image/decode/decode.c image/decode/segdec.c image/decode/strdec.c
+        image/decode/strInvTransform.c image/decode/strPredQuantDec.c
+        image/decode/postprocess.c image/decode/JXRTranscode.c
+        image/encode/strenc.c image/encode/encode.c image/encode/segenc.c
+        image/encode/strFwdTransform.c image/encode/strPredQuantEnc.c
+        image/sys/strcodec.c image/sys/strTransform.c image/sys/image.c
+        image/sys/adapthuff.c image/sys/strPredQuant.c"
+    local glue="jxrgluelib/JXRGlue.c jxrgluelib/JXRGlueJxr.c
+        jxrgluelib/JXRMeta.c jxrgluelib/JXRGluePFC.c"
+    local f objs=() gobjs=()
+    for f in $core; do
+        "$cc" $cflags -c "$src/$f" -o "$build/${f//\//_}.o"
+        objs+=("$build/${f//\//_}.o")
+    done
+    for f in $glue; do
+        "$cc" $cflags -c "$src/$f" -o "$build/${f//\//_}.o"
+        gobjs+=("$build/${f//\//_}.o")
+    done
+    install -d "$PREFIX/lib"
+    rm -f "$PREFIX/lib/libjpegxr.a" "$PREFIX/lib/libjxrglue.a"
+    ar rcs "$PREFIX/lib/libjpegxr.a" "${objs[@]}"
+    ar rcs "$PREFIX/lib/libjxrglue.a" "${gobjs[@]}"
+    # A previous upstream install left flat headers that would shadow these.
+    rm -rf "$PREFIX/include/jxrlib"
+    install -d "$PREFIX/include/jxrlib/jxrgluelib" \
+        "$PREFIX/include/jxrlib/common/include" "$PREFIX/include/jxrlib/image/sys"
+    install -m 644 "$src/jxrgluelib/"*.h "$PREFIX/include/jxrlib/jxrgluelib/"
+    install -m 644 "$src/common/include/"*.h "$PREFIX/include/jxrlib/common/include/"
+    install -m 644 "$src/image/sys/"*.h "$PREFIX/include/jxrlib/image/sys/"
+    printf '#include "jxrgluelib/JXRGlue.h"\n' > "$PREFIX/include/jxrlib/JXRGlue.h"
     mark_built jxrlib "$v"
 }
 

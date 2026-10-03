@@ -19,7 +19,20 @@
 #endif
 #include <JXRGlue.h>
 
+/* The wheels build jxrlib from the copy inside ZEISS's libCZI, faster
+ * than upstream (see build_jxrlib in bench/build_codec_libs.sh). It
+ * exports its functions under a prefix through its JXRLIB_API macro,
+ * declares the memory stream constructor itself, and names the stream
+ * type WMPStream. Upstream jxrlib (conda-forge on Windows, distribution
+ * packages) has none of that. */
+#ifdef JXRLIB_API
+#define OC_JXR(name) JXRLIB_API(name)
+typedef WMPStream oc_stream;
+#else
+#define OC_JXR(name) name
+typedef struct WMPStream oc_stream;
 ERR CreateWS_Memory(struct WMPStream **ppWS, void *pv, size_t cb);
+#endif
 
 struct oc_jxr {
     PKImageDecode *decoder;
@@ -28,7 +41,7 @@ struct oc_jxr {
 int oc_jxr_open(const void *data, size_t size, oc_jxr **handle,
                 oc_jxr_info *info)
 {
-    struct WMPStream *stream = NULL;
+    oc_stream *stream = NULL;
     PKImageDecode *decoder = NULL;
     PKPixelFormatGUID format;
     PKPixelInfo pixel;
@@ -40,10 +53,10 @@ int oc_jxr_open(const void *data, size_t size, oc_jxr **handle,
     memset(info, 0, sizeof(*info));
     if (data == NULL || size == 0)
         return OC_JXR_EINVAL;
-    err = CreateWS_Memory(&stream, (void *)data, size);
+    err = OC_JXR(CreateWS_Memory)(&stream, (void *)data, size);
     if (err < 0)
         return (int)err;
-    err = PKImageDecode_Create_WMP(&decoder);
+    err = OC_JXR(PKImageDecode_Create_WMP)(&decoder);
     if (err < 0) {
         stream->Close(&stream);
         return (int)err;
@@ -63,7 +76,7 @@ int oc_jxr_open(const void *data, size_t size, oc_jxr **handle,
     if (err >= 0) {
         memset(&pixel, 0, sizeof(pixel));
         pixel.pGUIDPixFmt = &format;
-        err = PixelFormatLookup(&pixel, LOOKUP_FORWARD);
+        err = OC_JXR(PixelFormatLookup)(&pixel, LOOKUP_FORWARD);
     }
     if (err < 0) {
         decoder->Release(&decoder);
