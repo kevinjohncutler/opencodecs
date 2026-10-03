@@ -36,6 +36,67 @@ cancellation -- a failed verification or a ``KeyboardInterrupt`` too. A CZI
 missing sub-blocks still has a valid header and directory, so readers accept
 it and the loss is silent; truncated-but-plausible is worse than absent.
 
+CZI reading
+~~~~~~~~~~~
+
+- ``CziReader(path, index=...)`` reads pixels from a payload index (offsets,
+  sizes, compressions, plane shape, pixel type) without reading the file
+  header, the directory or any sub-block header, and ``payload_index()``
+  returns one from an open reader. A caller that stores the index with its
+  own metadata reads planes with no metadata round trips over a network
+  share.
+- ``read(indices=[...])`` reads chosen sub-blocks in parallel into one
+  stack. ``attachments()`` and ``read_attachment(name)`` return embedded
+  files (Thumbnail, TimeStamps, Label ...) exactly as stored.
+- Files on disk are read with positional reads instead of a memory map: a
+  cold plane off a network share was paged in a cluster at a time, and one
+  exact-range read (split into concurrent pieces of about 1 MiB when only a
+  few planes are read) fetches it in a fraction of the time. The file
+  header is fetched when first needed, the directory comes in one request,
+  and a sub-block's header and payload in one. The directory and metadata
+  are read on first use, so a corrupt directory now raises ``CziError`` on
+  first use rather than in the constructor.
+- Uncompressed stacks are read on several threads. They were split into 8
+  MiB tasks, the size zstd reads use, so nine 2 MiB planes made three
+  tasks, which the worker policy ran on one thread; they now go one plane
+  per 2 MiB task, and two tasks are enough to share. Warm, that stack reads
+  1.63x faster than a reader copying from an mmap on 128-core Linux, where
+  it had been 0.59x as fast (1.51x and 0.88x on a 20-core Mac). Slide
+  regions that need two or three tiles decode them in parallel for the same
+  reason.
+- JPEG XR (compression 4, most slide scans) decodes through the copy of
+  jxrlib maintained inside ZEISS's libCZI (BSD-2-Clause, Microsoft), which
+  ZEISS reworked for speed. No compiler flags brought the upstream 2019.10.9
+  release within 10% of aicspylibczi on x86-64 Linux; with libCZI's copy a
+  slide region read inside one tile takes 0.99x aicspylibczi's time there
+  and is 1.08x faster on a 20-core Mac (upstream: 0.90x and 0.93x). The
+  wheels build it static, from a pinned libCZI commit, with ``NDEBUG``
+  (upstream's Makefile left 68 ``assert()`` calls in the decode loop) and
+  link-time optimization. A jxrlib built by ``bench/build_codec_libs.sh``
+  is now linked by path, so a system jxrlib earlier on the library path
+  can no longer replace it. Upstream jxrlib (Windows wheels, distribution
+  packages) still works.
+- The hi/lo byte unshuffle of zstd sub-blocks uses a byte loop for 2-byte
+  pixels under GCC and Clang, which GCC vectorizes better: 1.46x faster for
+  a 1000 x 1000 plane and 1.11x for 2000 x 2000 on x86-64 Linux. Clang ties;
+  MSVC keeps the word form.
+- Payload buffers are shared and reused, and the read pool holds at most
+  the 32 threads one read uses (it was twice the CPU count).
+
+TIFF reading
+~~~~~~~~~~~~
+
+- A multi-page TIFF decodes each page straight into its slice of one
+  output, instead of decoding pages separately and stacking them, a second
+  copy of the whole stack. A stack stored as plain pixels, end to end in
+  the file (what writers produce for a contiguous series), is read as one
+  span by parallel positioned reads: a 23-page 2000 x 2000 uint16 stack in
+  10.8 ms where tifffile takes 33.8 ms (128-core Linux, warm); page by page
+  it took 59.6 ms. ``TiffPage.asarray`` takes ``out=``.
+- Decode workers are sized by whichever asks for more: 1 MiB of output each,
+  or 256 KiB of compressed input each. Output alone held a deflate image
+  with 6.8 MB of compressed data in 31 strips to 7 workers.
+
 0.5.0 (2026-10-01)
 ------------------
 
