@@ -20,5 +20,7 @@ def test_bound_encoder_preserves_eager_threads_and_caps_inner_work(monkeypatch, 
     assert WorkerBudget(2).run(bound, b"nested") == b"nested"
     assert bound(b"last") == b"last"
     assert [options["numthreads"] for options in calls] == [7, inner, 7]
-    assert all(options["level"] == 4 and options["lossless"] is True for options in calls)
+    # JPEG XL's encoder takes imagecodecs' level as its quality.
+    key = "quality" if codec == segments.JXL else "level"
+    assert all(options[key] == 4 and options["lossless"] is True for options in calls)
     assert lookups == [(codec, "encode_buffer" if codec == segments.ZSTD else "encode")]

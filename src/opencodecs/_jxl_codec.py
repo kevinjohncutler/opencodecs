@@ -139,6 +139,22 @@ class JpegXLReader(Reader):
         self._inner.close()
 
 
+def jxl_level_as_quality(opts: dict) -> dict:
+    """imagecodecs.jpegxl_encode's ``level`` is a quality: 100 or below is
+    lossy at that quality, above 100 lossless. The encoder's ``quality``
+    has exactly that meaning, so ``level`` is passed as ``quality``.
+    Writers that take one compression level for every codec (TIFF,
+    NDTiff) reach JPEG XL through this too."""
+    if opts.get("level") is None:
+        opts.pop("level", None)
+        return opts
+    if opts.get("quality") is not None:
+        raise TypeError("jxl: pass level or quality, not both")
+    opts = dict(opts)
+    opts["quality"] = opts.pop("level")
+    return opts
+
+
 class JpegXLCodec(Codec):
     """Native JPEG XL codec (libjxl 0.11).
 
@@ -176,7 +192,7 @@ class JpegXLCodec(Codec):
         return _jxl_check_signature(head)
 
     def encode(self, arr: np.ndarray, *, dest=None, **opts) -> bytes | None:
-        return _jxl_encode(arr, dest=dest, **opts)
+        return _jxl_encode(arr, dest=dest, **jxl_level_as_quality(opts))
 
     def decode(self, src: Any, **opts) -> np.ndarray:
         """Decode a JXL codestream.

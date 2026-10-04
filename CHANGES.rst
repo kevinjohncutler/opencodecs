@@ -52,6 +52,27 @@ alter it. Verification is refused on that path: nothing was encoded, so there
 is nothing to check. ``verify=True`` therefore applies only to the sub-blocks
 that were re-encoded.
 
+Every encoder is now tested against a decoder that is not ours.
+``tests/test_foreign_readers.py`` encodes with each of the 46 codecs that can
+encode and decodes with the format's own library where it has a Python
+binding (zstandard, lz4, brotli, python-blosc2, cramjam, lerc, zfpy, pcodec,
+qoi, pillow-heif, the standard library), imagecodecs, and format readers
+(tifffile, mrcfile, nibabel, pydicom, numcodecs, numpy); it also opens the
+files every writer produces (TIFF with each compression, pyramids, NDTiff,
+OME-Zarr, MRC, NIfTI, RGBE, JPEG XL animation, CZI pyramids). A codec that
+gains an encoder without a case fails the suite. CI installs these readers.
+It found:
+
+- Fix: the JPEG XL encoder refused ``level``, so ``TiffWriter`` and the NDTiff
+  writer raised for JPEG XL with ``compression_level``, which their
+  documentation promised to pass through. ``level`` now means what it means
+  in ``imagecodecs.jpegxl_encode``: 100 or below is lossy at that quality,
+  above 100 lossless. Passing both ``level`` and ``quality`` raises.
+- Known issue: OME-Zarr stores written with ``compressor="blosc2"`` tag their
+  chunks with the codec id ``blosc2``, which neither zarr nor numcodecs
+  defines, so only opencodecs can open them. ``"zstd"``, ``"gzip"``,
+  ``"blosc"`` (zarr v2) and ``"none"`` open in zarr.
+
 0.6.0 (2026-10-03)
 ------------------
 

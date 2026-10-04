@@ -254,6 +254,9 @@ def encode_segment(data, codec: str | int, *, level: int | None = None,
         kw["level"] = level
     if code == JPEG2000:
         kw.setdefault("planar", False)
+    if code == JXL:
+        from .._jxl_codec import jxl_level_as_quality
+        kw = jxl_level_as_quality(kw)
     if code in (ZSTD, JPEG2000, JXL):
         from .pipeline import native_workers, in_worker
         # Zstandard counts background workers: zero means inline serial.
@@ -292,6 +295,9 @@ def bind_segment_encoder(codec: str | int, *, level=None, owned_output=False,
         options.setdefault("level", level)
     if code == JPEG2000:
         options.setdefault("planar", False)
+    if code == JXL:
+        from .._jxl_codec import jxl_level_as_quality
+        options = jxl_level_as_quality(options)
     eager = partial(fn, **options)
     if code not in (ZSTD, JPEG2000, JXL):
         return eager

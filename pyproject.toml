@@ -54,7 +54,20 @@ reference = [
     "nd2",            # ND2
     "readlif",        # LIF
     "oiffile",        # OIB
-    "blosc2",         # MRCZ
+    "blosc2",         # MRCZ, and Blosc2 / B2ND streams
+    # The libraries' own bindings, which test_foreign_readers.py decodes
+    # our streams with alongside imagecodecs.
+    "zstandard",      # zstd
+    "lz4",            # LZ4 frame
+    "brotli",         # Brotli
+    "cramjam",        # Snappy raw and framed
+    "lerc",           # LERC
+    "zfpy",           # ZFP
+    "pcodec",         # pcodec
+    "qoi",            # QOI
+    "pillow-heif",    # HEIF, libheif's decoder
+    "pylibCZIrw",     # CZI through libCZI
+    "aicspylibczi",   # CZI, the Allen Institute's libCZI binding
 ]
 test = [
     "pytest>=8",
