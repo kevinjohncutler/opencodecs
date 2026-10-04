@@ -40,7 +40,7 @@ from typing import Callable
 import numpy as np
 import pytest
 
-from opencodecs.core.codec import get_codec, list_codecs
+from opencodecs.core.codec import get_codec, has_codec, list_codecs
 
 from _ic_reference import IMAGECODECS_REFERENCE  # noqa: E402
 
@@ -367,6 +367,10 @@ _NO_ENCODER = ("No codec available", "Unsupported file-type",
 
 
 def _encode(case: Case, x: np.ndarray) -> bytes:
+    # A build without the library (the CI test build has no SZ3, SPERR,
+    # pcodec, MozJPEG or brunsli; the wheels do) has nothing to test.
+    if not has_codec(case.codec, op="encode"):
+        pytest.skip(f"{case.codec} encoder not built")
     codec = get_codec(case.codec)
     try:
         blob = codec.encode(x, **case.kw)
@@ -561,6 +565,8 @@ def _register_ocf_blosc2(zarr_format):
 @pytest.mark.parametrize("zarr_format, compressor", ZARR_CASES)
 def test_zarr_reads_our_omezarr(tmp_path, zarr_format, compressor):
     zarr = _mod("zarr")
+    if zarr_format == 3 and int(zarr.__version__.split(".")[0]) < 3:
+        pytest.skip(f"zarr {zarr.__version__} reads v2 stores only")
     if compressor == "blosc2":
         _register_ocf_blosc2(zarr_format)
     from opencodecs import write_omezarr_pyramid
