@@ -68,10 +68,15 @@ It found:
   documentation promised to pass through. ``level`` now means what it means
   in ``imagecodecs.jpegxl_encode``: 100 or below is lossy at that quality,
   above 100 lossless. Passing both ``level`` and ``quality`` raises.
-- Known issue: OME-Zarr stores written with ``compressor="blosc2"`` tag their
-  chunks with the codec id ``blosc2``, which neither zarr nor numcodecs
-  defines, so only opencodecs can open them. ``"zstd"``, ``"gzip"``,
-  ``"blosc"`` (zarr v2) and ``"none"`` open in zarr.
+- Fix: OME-Zarr stores written with ``compressor="blosc2"`` opened only in
+  opencodecs. No zarr specification defines Blosc2; the one numcodecs plugin
+  for it, ocf-blosc2 (Open Climate Fix), registers the id ``blosc2`` with
+  the parameters ``cname`` and ``clevel``, where the writer recorded
+  ``level``, which that plugin refuses. v2 stores now record ``cname`` and
+  ``clevel``, and v3 stores name the codec ``numcodecs.blosc2``, as zarr
+  names a numcodecs codec. With ocf-blosc2 installed, zarr opens both and
+  reads the pixels exactly. The chunks themselves are unchanged, and stores
+  written the old way still read here.
 
 0.6.0 (2026-10-03)
 ------------------

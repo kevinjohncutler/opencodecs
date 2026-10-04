@@ -53,7 +53,10 @@ _CODEC_NAME_MAP = {
     "none":   (None, None),
     "raw":    (None, None),
     "zstd":   ("zstd", "zstd"),
-    "blosc2": ("blosc2", "blosc2"),     # blosc2 wire format (v2 + v3)
+    # No zarr specification defines Blosc2. These are the names ocf-blosc2,
+    # the one numcodecs plugin for it, registers: "blosc2" for v2, and
+    # "numcodecs.blosc2" for v3, which is how zarr names a numcodecs codec.
+    "blosc2": ("blosc2", "numcodecs.blosc2"),
     "gzip":   ("gzip", "gzip"),
     "blosc":  ("blosc", None),          # v2-only (no v3 spec)
 }
@@ -66,6 +69,16 @@ class OmeZarrWriterError(RuntimeError):
 # ---------------------------------------------------------------------------
 # Codec dispatch (compress only — decode lives in _omezarr)
 # ---------------------------------------------------------------------------
+
+
+def _blosc2_config(level: int | None, v3: bool = False) -> dict:
+    """The parameters ocf-blosc2's Blosc2(cname, clevel) takes, so zarr with
+    that plugin installed opens the store. cname names the inner codec;
+    _encode_chunk compresses with zstd, blosc2's default, and ocf-blosc2
+    reads "zstd" as that. (Before 0.7.0 the writer recorded "level", which
+    no reader but opencodecs accepted; those stores still read here.)"""
+    config = {"cname": "zstd", "clevel": level if level is not None else 5}
+    return config if v3 else {"id": "blosc2", **config}
 
 
 def _encode_chunk(raw: bytes, codec: str, level: int | None) -> bytes:
@@ -309,8 +322,7 @@ def _write_v2(
         metadata["compressor"] = {"id": "zstd",
                                   "level": level if level is not None else 3}
     elif compressor == "blosc2":
-        metadata["compressor"] = {"id": "blosc2",
-                                  "level": level if level is not None else 5}
+        metadata["compressor"] = _blosc2_config(level)
     elif compressor == "gzip":
         metadata["compressor"] = {"id": "gzip",
                                   "level": level if level is not None else 6}
@@ -375,8 +387,8 @@ def _write_v3(
         })
     elif compressor == "blosc2":
         codecs.append({
-            "name": "blosc2",
-            "configuration": {"clevel": level if level is not None else 5},
+            "name": "numcodecs.blosc2",
+            "configuration": _blosc2_config(level, v3=True),
         })
     elif compressor == "gzip":
         codecs.append({
@@ -460,8 +472,8 @@ def _v3_codecs_for_shard_inner(
         })
     elif compressor == "blosc2":
         codecs.append({
-            "name": "blosc2",
-            "configuration": {"clevel": level if level is not None else 5},
+            "name": "numcodecs.blosc2",
+            "configuration": _blosc2_config(level, v3=True),
         })
     elif compressor == "gzip":
         codecs.append({

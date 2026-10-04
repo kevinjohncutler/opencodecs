@@ -496,7 +496,10 @@ def _run_decoder(name: str, cfg: dict, data: bytes) -> bytes:
             _DECODER_CACHE["blosc2"] = fn
         if fn:
             return fn(data)
-    if name == "blosc2":
+    if name in ("blosc2", "numcodecs.blosc2"):
+        # "numcodecs.blosc2" is ocf-blosc2's v3 name, which our writer
+        # uses; plain "blosc2" is the v2 id, and what v3 stores this
+        # package wrote before 0.7.0 carry.
         fn = _DECODER_CACHE.get("blosc2")
         if not fn:
             from .codecs._blosc2 import decode as _b_decode

@@ -530,22 +530,39 @@ def test_ndtiff_dataset_reads_our_ndtiff(tmp_path, compression):
             assert np.array_equal(np.asarray(ds.read_image(z=z)), ref)
 
 
-_BLOSC2_ID = pytest.mark.xfail(strict=True, reason=(
-    "the writer tags blosc2 chunks with codec id 'blosc2', which neither "
-    "zarr nor numcodecs defines (zarr's Blosc codec is 'blosc', Blosc1; "
-    "imagecodecs registers its Blosc2 as 'imagecodecs_blosc2'), so these "
-    "stores open only in opencodecs"))
-
 ZARR_CASES = [
-    pytest.param(fmt, comp, marks=_BLOSC2_ID if comp == "blosc2" else (),
-                 id=f"{comp}-v{fmt}")
+    pytest.param(fmt, comp, id=f"{comp}-v{fmt}")
     for fmt in (2, 3) for comp in ("none", "zstd", "gzip", "blosc2")
 ] + [pytest.param(2, "blosc", id="blosc-v2")]   # zarr v3 has no Blosc1 spec
+
+
+def _register_ocf_blosc2(zarr_format):
+    """No zarr specification defines Blosc2. ocf-blosc2 (Open Climate Fix)
+    is the numcodecs plugin for it, and the names our writer uses are its
+    names. For v2 its entry point registers "blosc2" with numcodecs on
+    install; for v3 zarr has to be told about its wrapper by hand."""
+    _mod("ocf_blosc2")
+    if zarr_format == 3:
+        import zarr.registry
+        try:
+            from ocf_blosc2.ocf_blosc2_v3 import Blosc2
+        except ImportError:
+            # ocf-blosc2's own v3 module imports a numcodecs helper that
+            # numcodecs 0.16 removed when the v3 wrappers moved into zarr.
+            # Wrap it the way zarr wraps its own numcodecs codecs; the
+            # decoding is still ocf-blosc2's, found in numcodecs' registry.
+            from zarr.codecs.numcodecs import _NumcodecsBytesBytesCodec
+
+            class Blosc2(_NumcodecsBytesBytesCodec, codec_name="blosc2"):
+                pass
+        zarr.registry.register_codec("numcodecs.blosc2", Blosc2)
 
 
 @pytest.mark.parametrize("zarr_format, compressor", ZARR_CASES)
 def test_zarr_reads_our_omezarr(tmp_path, zarr_format, compressor):
     zarr = _mod("zarr")
+    if compressor == "blosc2":
+        _register_ocf_blosc2(zarr_format)
     from opencodecs import write_omezarr_pyramid
     x = INPUTS["u16"]()
     levels = [x, x[::2, ::2].copy()]

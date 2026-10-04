@@ -177,7 +177,7 @@ jobs:
                   "tensorstore", "ndtiff", "czifile", "nd2", "readlif",
                   "oiffile", "zstandard", "lz4", "brotli", "cramjam",
                   "lerc", "zfpy", "pcodec", "qoi", "pillow_heif",
-                  "pylibCZIrw", "aicspylibczi"]
+                  "pylibCZIrw", "aicspylibczi", "ocf_blosc2"]
           have = [m for m in mods if importlib.util.find_spec(m)]
           missing = [m for m in mods if m not in have]
           print("reference readers present:", have)

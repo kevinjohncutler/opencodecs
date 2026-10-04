@@ -64,6 +64,7 @@ reference = [
     "lerc",           # LERC
     "zfpy",           # ZFP
     "pcodec",         # pcodec
+    "ocf-blosc2",     # Blosc2 in zarr (no zarr spec defines it)
     "qoi",            # QOI
     "pillow-heif",    # HEIF, libheif's decoder
     "pylibCZIrw",     # CZI through libCZI
