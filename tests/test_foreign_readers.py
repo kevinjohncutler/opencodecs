@@ -182,6 +182,16 @@ def _pillow_heif(blob, x):
     return np.asarray(ph.open_heif(bytes(blob), convert_hdr_to_8bit=False))
 
 
+def _tifffile_via_imagecodecs():
+    """tifffile, for a TIFF whose tiles it hands to imagecodecs to
+    decompress: then imagecodecs must be the reference release too.
+    imagecodecs 2025.3.30, all Python 3.10 can install, aborted the
+    process decoding one of these files."""
+    tifffile = _mod("tifffile")
+    _imagecodecs()
+    return tifffile
+
+
 def _tifffile(blob, x):
     return _mod("tifffile").imread(io.BytesIO(blob))
 
@@ -469,7 +479,7 @@ TIFF_CASES = [
     pytest.param(*c, id=f"{c[0]}-{c[1]}-" + "-".join(f"{k}{v}" for k, v in c[2].items()))
     for c in TIFF_CASES])
 def test_tifffile_reads_our_tiff(tmp_path, compression, data, kw, tol):
-    tifffile = _mod("tifffile")
+    tifffile = _mod("tifffile") if compression == "none" else _tifffile_via_imagecodecs()
     from opencodecs import TiffWriter
     x = INPUTS[data]()
     path = tmp_path / "w.tif"
@@ -483,7 +493,7 @@ def test_tifffile_reads_our_tiff(tmp_path, compression, data, kw, tol):
 
 
 def test_tifffile_reads_our_pyramid_and_bigtiff(tmp_path):
-    tifffile = _mod("tifffile")
+    tifffile = _tifffile_via_imagecodecs()          # zstd tiles
     from opencodecs import TiffWriter
     x = INPUTS["u16"]()
     levels = [x, x[::2, ::2].copy(), x[::4, ::4].copy()]
@@ -499,7 +509,7 @@ def test_tifffile_reads_our_pyramid_and_bigtiff(tmp_path):
 
 
 def test_tifffile_reads_our_multipage_stack(tmp_path):
-    tifffile = _mod("tifffile")
+    tifffile = _tifffile_via_imagecodecs()          # deflate pages
     from opencodecs import TiffWriter
     stack = np.stack([INPUTS["u16"]() + i for i in range(4)])
     path = tmp_path / "stack.tif"
@@ -522,7 +532,7 @@ def test_ndtiff_dataset_reads_our_ndtiff(tmp_path, compression):
             w.write_frame(f, {"z": z})
     files = sorted(p for p in out.iterdir() if p.suffix == ".tif")
     assert files, "no stack file written"
-    tifffile = _mod("tifffile")
+    tifffile = _mod("tifffile") if compression == "none" else _tifffile_via_imagecodecs()
     pages = [p for f in files for p in tifffile.TiffFile(str(f)).pages]
     assert len(pages) == 3
     for page, ref in zip(pages, frames):
