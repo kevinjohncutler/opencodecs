@@ -10,6 +10,42 @@ Versions follow the same ``YYYY.M.D`` cadence as upstream when we
 publish; the entries below cluster work by date rather than by
 release because most of it has shipped continuously to ``main``.
 
+0.7.1 (unreleased)
+------------------
+
+Every encoder is now tested against a decoder that is not ours.
+``tests/test_foreign_readers.py`` encodes with each of the 46 codecs that can
+encode and decodes with the format's own library where it has a Python
+binding (zstandard, lz4, brotli, python-blosc2, cramjam, lerc, zfpy, pcodec,
+qoi, pillow-heif, the standard library), imagecodecs, and format readers
+(tifffile, mrcfile, nibabel, pydicom, numcodecs, numpy); it also opens the
+files every writer produces (TIFF with each compression, pyramids, NDTiff,
+OME-Zarr, MRC, NIfTI, RGBE, JPEG XL animation, CZI pyramids). A codec that
+gains an encoder without a case fails the suite. CI installs these readers.
+It found:
+
+- Fix: the JPEG XL encoder refused ``level``, so ``TiffWriter`` and the NDTiff
+  writer raised for JPEG XL with ``compression_level``, which their
+  documentation promised to pass through. ``level`` now means what it means
+  in ``imagecodecs.jpegxl_encode``: 100 or below is lossy at that quality,
+  above 100 lossless. Passing both ``level`` and ``quality`` raises.
+- Fix: OME-Zarr stores written with ``compressor="blosc2"`` opened only in
+  opencodecs. No zarr specification defines Blosc2; the one numcodecs plugin
+  for it, ocf-blosc2 (Open Climate Fix), registers the id ``blosc2`` with
+  the parameters ``cname`` and ``clevel``, where the writer recorded
+  ``level``, which that plugin refuses. v2 stores now record ``cname`` and
+  ``clevel``, and v3 stores name the codec ``numcodecs.blosc2``, as zarr
+  names a numcodecs codec. With ocf-blosc2 installed, zarr opens both and
+  reads the pixels exactly. The chunks themselves are unchanged, and stores
+  written the old way still read here.
+- Fix: on Windows, which has no ``os.preadv``, the CZI reader maps the file,
+  and ``close()`` left the closed mapping in place: the next call raised the
+  mapping's ``ValueError: mmap closed or invalid`` instead of the reader's
+  own closed-reader ``CziError``. Two tests encoded the positional-read path
+  as universal (the payload index is kept on every path; a stored stack is
+  one copy out of the mapping on one worker there) and now assert each
+  path's own behavior.
+
 0.7.0 (2026-10-03)
 ------------------
 
@@ -51,32 +87,6 @@ can reach a file this writer wrote, and it is why carrying one across cannot
 alter it. Verification is refused on that path: nothing was encoded, so there
 is nothing to check. ``verify=True`` therefore applies only to the sub-blocks
 that were re-encoded.
-
-Every encoder is now tested against a decoder that is not ours.
-``tests/test_foreign_readers.py`` encodes with each of the 46 codecs that can
-encode and decodes with the format's own library where it has a Python
-binding (zstandard, lz4, brotli, python-blosc2, cramjam, lerc, zfpy, pcodec,
-qoi, pillow-heif, the standard library), imagecodecs, and format readers
-(tifffile, mrcfile, nibabel, pydicom, numcodecs, numpy); it also opens the
-files every writer produces (TIFF with each compression, pyramids, NDTiff,
-OME-Zarr, MRC, NIfTI, RGBE, JPEG XL animation, CZI pyramids). A codec that
-gains an encoder without a case fails the suite. CI installs these readers.
-It found:
-
-- Fix: the JPEG XL encoder refused ``level``, so ``TiffWriter`` and the NDTiff
-  writer raised for JPEG XL with ``compression_level``, which their
-  documentation promised to pass through. ``level`` now means what it means
-  in ``imagecodecs.jpegxl_encode``: 100 or below is lossy at that quality,
-  above 100 lossless. Passing both ``level`` and ``quality`` raises.
-- Fix: OME-Zarr stores written with ``compressor="blosc2"`` opened only in
-  opencodecs. No zarr specification defines Blosc2; the one numcodecs plugin
-  for it, ocf-blosc2 (Open Climate Fix), registers the id ``blosc2`` with
-  the parameters ``cname`` and ``clevel``, where the writer recorded
-  ``level``, which that plugin refuses. v2 stores now record ``cname`` and
-  ``clevel``, and v3 stores name the codec ``numcodecs.blosc2``, as zarr
-  names a numcodecs codec. With ocf-blosc2 installed, zarr opens both and
-  reads the pixels exactly. The chunks themselves are unchanged, and stores
-  written the old way still read here.
 
 0.6.0 (2026-10-03)
 ------------------

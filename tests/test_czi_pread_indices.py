@@ -73,7 +73,9 @@ def test_payload_buffers_are_reused(path):
 def test_payload_location_is_cached(path):
     with _open(path) as r:
         r.read()
-        assert len(r._payload_ranges) == (len(r) if _czi_reader._PAYLOAD_PREAD else 0)
+        # Every source type computes and keeps its payload ranges, the
+        # mapping (no positional reads, e.g. Windows) as well.
+        assert len(r._payload_ranges) == len(r)
 
 
 def test_concurrent_tile_reads_on_one_reader(path, frames):

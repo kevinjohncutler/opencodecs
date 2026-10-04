@@ -813,6 +813,10 @@ class CziReader(Reader):
         finally:
             os.close(self._fd)
             self._owns_fd = False
+            # As on the positional-read path: a closed reader has no
+            # buffer, so the next call raises the reader's own "closed"
+            # error, not the mapping's "mmap closed or invalid".
+            self._mmap = None
 
     @classmethod
     def from_http(

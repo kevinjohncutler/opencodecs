@@ -231,4 +231,10 @@ def test_stored_stack_reads_on_more_than_one_worker(monkeypatch, tmp_path, n):
     assert np.array_equal(out, np.stack(tiles, axis=0))
     n_tasks, workers = seen[-1]
     assert n_tasks == n
-    assert workers >= 2
+    if cz._PAYLOAD_PREAD:
+        # Positional reads overlap their I/O across workers.
+        assert workers >= 2
+    else:
+        # Without positional reads (Windows) a stored stack is a copy out
+        # of the mapping, which did not scale across workers when measured.
+        assert workers == 1
