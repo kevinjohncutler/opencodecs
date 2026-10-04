@@ -64,6 +64,17 @@ _PIXELTYPE_BY_DTYPE_SAMPLES = {
 }
 
 
+#: Must equal the writer's default. libCZI refuses metadata not rooted at
+#: ImageDocument, so a bare <Metadata/> produces files czicompress and ZEN
+#: cannot open; the writer wraps it, and this serializer has to agree or the
+#: byte-for-byte comparison in test_czi_segment_parts fails. Deliberately a
+#: LITERAL rather than an import from the writer: this file is an independent
+#: implementation of the layout, and that test is only meaningful while it
+#: stays independent.
+DEFAULT_METADATA = b"<ImageDocument><Metadata/></ImageDocument>"
+
+
+
 def _pixel_type_for(array: np.ndarray, samples: int) -> int:
     """Pick the CZI pixel type matching this array's dtype and sample count."""
     try:
@@ -90,7 +101,7 @@ def _pad_segment(payload: bytes, payload_alloc: int | None = None) -> bytes:
     return out + b"\x00" * pad
 
 
-def _build_metadata_segment(xml: bytes = b"<Metadata/>") -> bytes:
+def _build_metadata_segment(xml: bytes = DEFAULT_METADATA) -> bytes:
     """Build a minimal ZISRAWMETADATA segment.
 
     Layout post-segment-header (offset 32):
@@ -298,7 +309,7 @@ def czi_bytes(
     *,
     compression: int = 0,
     hilo: bool = False,
-    metadata_xml: bytes = b"<Metadata/>",
+    metadata_xml: bytes = DEFAULT_METADATA,
 ) -> bytes:
     """Serialize ``array`` as a tiny CZI buffer that opencodecs.CziReader
     can decode.
@@ -391,7 +402,7 @@ def pyramid_czi_bytes(
     *,
     compression: int = 0,
     hilo: bool = False,
-    metadata_xml: bytes = b"<Metadata/>",
+    metadata_xml: bytes = DEFAULT_METADATA,
 ) -> bytes:
     """Serialize a multi-resolution CZI fixture.
 
@@ -475,7 +486,7 @@ def mosaic_czi_bytes(
     *,
     compression: int = 0,
     hilo: bool = False,
-    metadata_xml: bytes = b"<Metadata/>",
+    metadata_xml: bytes = DEFAULT_METADATA,
 ) -> bytes:
     """Serialize a single-level mosaic CZI.
 
