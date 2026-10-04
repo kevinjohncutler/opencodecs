@@ -33,7 +33,8 @@ from _czi_fixture import mosaic_czi_bytes, pyramid_czi_bytes  # noqa: E402
 
 from opencodecs._czi_reader import CziReader  # noqa: E402
 from opencodecs._czi_writer import (  # noqa: E402
-    CziCancelled, CziWriter, CziWriterError, czi_recompress, subblock_dims,
+    CziCancelled, CziWriter, CziWriterError, _build_subblock,
+    czi_recompress, subblock_dims,
 )
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -460,3 +461,103 @@ def test_encoded_and_verification_input_are_refused():
                         compression_code=0, hilo=False, file_position=0,
                         logical_shape=(4, 4), verification_input=[],
                         encoded=b"x")
+
+
+# ------------------------------------------------- losslessness
+# Two separate guarantees, and the second is the one that fails silently.
+#
+#   1. The writer cannot PRODUCE a lossy encoding. It accepts compression
+#      codes 0, 5 and 6 and refuses the rest, so no code path creates one.
+#   2. A lossy sub-block is never TRANSCODED. Decoding JPEG XR and writing it
+#      back as lossless zstdhdr looks like an upgrade, inflates the file
+#      (2.59x on a real slide scan) and makes the artifacts permanent and
+#      unrecoverable. Carrying the payload across cannot do that.
+
+@pytest.mark.parametrize("code", [0, 5, 6])
+def test_writer_accepts_only_lossless_codes(code):
+    seg, _entry = _build_subblock(np.zeros((8, 8), "uint16"), pixel_type=1,
+                                  compression_code=code, hilo=True,
+                                  file_position=0, logical_shape=(8, 8))
+    assert seg is not None
+
+
+@pytest.mark.parametrize("code", [1, 2, 3, 4])   # 4 = JPEG XR
+def test_writer_refuses_codes_it_cannot_losslessly_produce(code):
+    """A lossy encoding must be impossible to create, not merely unused."""
+    with pytest.raises(CziWriterError, match="unsupported compression code"):
+        _build_subblock(np.zeros((8, 8), "uint16"), pixel_type=1,
+                        compression_code=code, hilo=True,
+                        file_position=0, logical_shape=(8, 8))
+
+
+@pytest.mark.skipif(not (CORPUS / "ome_axioscan_pyramid.czi").is_file(),
+                    reason="corpus slide scan not present")
+def test_lossy_subblocks_are_carried_bit_identical(tmp_path):
+    """481 real JPEG XR sub-blocks must leave as the same bytes."""
+    src = CORPUS / "ome_axioscan_pyramid.czi"
+    dst = tmp_path / "carried.czi"
+    info = czi_recompress(src, dst, compression="zstdhdr",
+                          recompress_when=lambda e: e.compression == 0)
+    assert info["recompressed"] == 0, "a lossy sub-block was re-encoded"
+    assert info["carried"] == info["subblocks"]
+    with CziReader(str(src)) as a, CziReader(str(dst)) as b:
+        assert {e.compression for e in b.entries} == {4}, "JPEG XR not preserved"
+        for ea, eb in zip(a.entries, b.entries):
+            assert ea.compression == eb.compression
+            with a._payload(ea) as pa, b._payload(eb) as pb:
+                assert bytes(pa) == bytes(pb), "a lossy payload was altered"
+
+
+# ------------------------------------------- libCZI-openable metadata
+# libCZI refuses metadata not rooted at ImageDocument, so czicompress and ZEN
+# cannot open such a file AT ALL. The writer's old default was a bare
+# <Metadata/>, which opencodecs' own reader accepts -- so every round-trip test
+# passed while the files were unreadable by every other CZI tool. These tests
+# assert on the BYTES WRITTEN rather than on a successful read back, because
+# reading it back with our own reader is exactly what hid the bug.
+
+def _metadata_of(path):
+    with CziReader(str(path)) as r:
+        return r.metadata_bytes or b""
+
+
+def test_default_metadata_is_rooted_at_image_document(tmp_path):
+    out = tmp_path / "d.czi"
+    with CziWriter(out, compression="none") as w:
+        w.write_frame(_tile(16, 16, 1))
+    assert b"<ImageDocument>" in _metadata_of(out), (
+        "default metadata is not libCZI-openable")
+
+
+def test_rootless_metadata_is_wrapped_not_accepted(tmp_path):
+    """Passing the old broken value must still produce an openable file."""
+    out = tmp_path / "d.czi"
+    with CziWriter(out, compression="none", metadata_xml=b"<Metadata/>") as w:
+        w.write_frame(_tile(16, 16, 2))
+    md = _metadata_of(out)
+    assert md.startswith(b"<ImageDocument>"), "rootless metadata was not wrapped"
+    assert b"<Metadata/>" in md, "the caller's metadata was lost"
+
+
+def test_existing_root_is_passed_through_untouched(tmp_path):
+    """Real CZI metadata must not be double-wrapped or rewritten."""
+    original = (b'<?xml version="1.0"?><ImageDocument><Metadata>'
+                b"<Information/></Metadata></ImageDocument>")
+    out = tmp_path / "d.czi"
+    with CziWriter(out, compression="none", metadata_xml=original) as w:
+        w.write_frame(_tile(16, 16, 3))
+    md = _metadata_of(out)
+    assert md.count(b"<ImageDocument>") == 1, "metadata was double-wrapped"
+
+
+def test_recompress_carries_source_metadata(tmp_path):
+    """czi_recompress must not substitute its own metadata."""
+    original = (b"<ImageDocument><Metadata><Information>"
+                b"<Image><SizeX>32</SizeX></Image>"
+                b"</Information></Metadata></ImageDocument>")
+    src = tmp_path / "s.czi"
+    src.write_bytes(mosaic_czi_bytes([(_tile(32, 32, 4), (0, 0))],
+                                     metadata_xml=original))
+    dst = tmp_path / "d.czi"
+    czi_recompress(src, dst, compression="zstdhdr")
+    assert b"<SizeX>32</SizeX>" in _metadata_of(dst), "source metadata lost"

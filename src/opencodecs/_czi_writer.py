@@ -70,6 +70,39 @@ _CMP_NAME_TO_CODE = {
 }
 
 
+#: libCZI refuses metadata that is not rooted at ``ImageDocument``, with
+#: ``Root-node "ImageDocument" not found``. That means czicompress and ZEN
+#: cannot open the file at all -- not a degraded read, no read. The writer's
+#: old default was a bare ``<Metadata/>``, which opencodecs' own reader
+#: accepts, so every round-trip test passed while the files were unreadable
+#: by every other CZI tool. Found 2026-10-04 when czicompress rejected a file
+#: this writer had just produced.
+#:
+#: So metadata lacking the root is WRAPPED in one, and a caller writing a NEW
+#: file cannot produce an unopenable one by accident or on purpose.
+#:
+#: ``metadata_as_is=True`` opts out, and exactly one caller needs it:
+#: ``czi_recompress``, which promises the source's metadata is carried across
+#: UNCHANGED. Rewriting it there would break that promise, and silently
+#: "fixing" a source that libCZI could not open either is a surprise, not a
+#: service -- the output is then exactly as openable as the input, which is
+#: what faithful means.
+_DEFAULT_METADATA = b"<ImageDocument><Metadata/></ImageDocument>"
+
+
+def _ensure_image_document(xml: bytes) -> bytes:
+    """Return ``xml`` rooted at ImageDocument, wrapping it if it is not."""
+    head = xml.lstrip()
+    decl = b""
+    if head.startswith(b"<?xml"):
+        end = head.find(b"?>")
+        if end != -1:
+            decl, head = head[:end + 2], head[end + 2:].lstrip()
+    if head.startswith(b"<ImageDocument>") or head.startswith(b"<ImageDocument "):
+        return xml
+    return decl + b"<ImageDocument>" + head + b"</ImageDocument>"
+
+
 class CziWriterError(RuntimeError):
     """Raised on writer state-machine violations."""
 
@@ -263,6 +296,27 @@ def _zstdhdr_encode(pixel_bytes, itemsize: int, hilo: bool, *, scratch=None):
     before this returns, and verification later reads the encoded payload
     and the caller's own pixel snapshot rather than this buffer, so the
     next frame may reuse it.
+
+    WHY LEVEL 3, AND WHY IT IS NOT A PARAMETER
+    Measured end to end through this pipeline on a 503 MB uncompressed CZI
+    (2026-10-04), against ZEISS czicompress at 0.87 s / 319.9 MB on the same
+    file:
+
+        level 3   0.24 s   318.3 MB     beats czicompress on size AND speed
+        level 6   0.92 s   315.3 MB     0.93% smaller, 3.91x slower
+        level 9   1.38 s   314.4 MB     1.23% smaller, 5.83x slower
+
+    The encode cost transfers almost 1:1 into wall clock, because this path is
+    encode-bound rather than I/O-bound: there is no I/O to hide it behind, even
+    with 32 workers. So a higher level buys about 1% of size for 4-6x the time,
+    and level 6 is already slower than the tool we replaced. Level 3 is the
+    only setting that wins on both axes.
+
+    The hi-lo shuffle, by contrast, is free and large: on real microscopy
+    pixels it took the ratio from 0.537 to 0.485 (9.7% smaller) while being
+    FASTER than raw zstd, 923 MB/s against 199 MB/s, because shuffled byte
+    planes are far more compressible. That is where the gain is, and it is
+    already on by default.
     """
     from .codecs._zstd import encode as zstd_encode
     if hilo and itemsize > 1:
@@ -519,15 +573,22 @@ class _CziStreamWriter(Writer):
     """Shared sub-block sink with optional bounded pixel verification."""
 
     def __init__(self, path: str | Path, *, compression: str = "none",
-                 hilo: bool = True, metadata_xml: bytes | str = b"<Metadata/>",
-                 verify: bool = False, background_encode: bool = False):
+                 hilo: bool = True, metadata_xml: bytes | str | None = None,
+                 verify: bool = False, background_encode: bool = False,
+                 metadata_as_is: bool = False):
         if compression not in _CMP_NAME_TO_CODE:
             raise CziWriterError(f"unknown compression {compression!r}")
         self._path = Path(path)
         self._cmp_code = _CMP_NAME_TO_CODE[compression]
         self._hilo = bool(hilo)
-        xml = metadata_xml.encode("utf-8") if isinstance(metadata_xml, str) else metadata_xml
-        self._metadata_segment = _build_metadata_segment(xml)
+        if metadata_xml is None:
+            xml = _DEFAULT_METADATA
+        elif isinstance(metadata_xml, str):
+            xml = metadata_xml.encode("utf-8")
+        else:
+            xml = metadata_xml
+        self._metadata_segment = _build_metadata_segment(
+            xml if metadata_as_is else _ensure_image_document(xml))
         self._header_size = (32 + 88 + 31) // 32 * 32
         self._position = self._header_size + len(self._metadata_segment)
         self._entries: list[dict] = []
@@ -1119,7 +1180,7 @@ def czi_recompress(src, dst, *, compression: str = "zstdhdr", hilo: bool = True,
         n = len(reader.entries)
         if not n:
             raise CziWriterError(f"czi: {src} has no sub-blocks to recompress")
-        metadata = reader.metadata_bytes or b"<Metadata/>"
+        metadata = reader.metadata_bytes or _DEFAULT_METADATA
 
         counts = {"recompressed": 0, "carried": 0}
 
@@ -1160,7 +1221,8 @@ def czi_recompress(src, dst, *, compression: str = "zstdhdr", hilo: bool = True,
         try:
             with CziWriter(str(dst), compression=compression, hilo=hilo,
                            metadata_xml=metadata, verify=verify,
-                           background_encode=background_encode) as writer:
+                           background_encode=background_encode,
+                           metadata_as_is=True) as writer:
                 writer.write_many(frames(), workers=workers, copy_frames=False)
         except BaseException:
             # An interrupted rewrite must not leave a file behind. A CZI
