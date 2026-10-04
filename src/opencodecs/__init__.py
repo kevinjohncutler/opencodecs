@@ -349,4 +349,4 @@ __all__ = [
     "czi_recompress", "subblock_dims",
 ]
 
-__version__ = "0.7.0"
+__version__ = "0.7.1"

@@ -46,6 +46,49 @@ It found:
   one copy out of the mapping on one worker there) and now assert each
   path's own behavior.
 
+- Fix: a CZI this library wrote with default metadata could not be opened by
+  libCZI, so not by czicompress and not by ZEN. ``CziWriter``'s default
+  metadata was a bare ``<Metadata/>``, and libCZI requires the document to be
+  rooted at ``ImageDocument``; it refuses anything else outright with
+  ``Root-node "ImageDocument" not found``. Every round-trip test in this
+  suite passed because every one of them read the file back with our own
+  reader, which accepts it. Metadata lacking the root is now wrapped in one,
+  so a caller writing a new file cannot produce an unopenable one.
+  ``czi_recompress`` passes ``metadata_as_is=True``: it promises the source's
+  metadata is carried across unchanged, and rewriting it there would break
+  that promise, while silently "fixing" a source libCZI could not open either
+  is a surprise rather than a service. Its output is then exactly as openable
+  as its input.
+- ``tests/test_czi_foreign_readers.py`` never uses opencodecs to read. It
+  writes with opencodecs and opens with pylibCZIrw (libCZI itself, so what
+  ZEN and czicompress see), czifile (an independent implementation) and
+  aicspylibczi, skipping any reader that is absent rather than passing
+  silently. It covers all three compressions, a foreign decoder reading
+  pixels back exactly, both metadata regressions, a recompressed real file,
+  and 481 JPEG XR sub-blocks carried across. Its header records what to
+  assume when one fails: the writer is wrong, not the reader, because all
+  three open ZEN files and we are the new participant in a format we did not
+  define.
+- ``tests/_czi_fixture.py`` takes the same default. That serializer is an
+  independent reimplementation of the layout, and
+  ``test_file_bytes_match_the_fixture_serializer`` compares the writer's bytes
+  against it, so the two have to agree on the default; it is written as a
+  literal on both sides rather than imported, because importing would make
+  them agree by construction and hollow the test out. Fixture files are also
+  the sources for the ``czi_recompress`` tests, so that corpus now produces
+  files libCZI accepts.
+- Documented why the ZSTDHDR zstd level is 3 and not a parameter. Measured end
+  to end on a 503 MB uncompressed CZI, against ZEISS czicompress at 0.87 s and
+  319.9 MB on the same file: level 3 gives 0.24 s and 318.3 MB, level 6 gives
+  0.92 s and 315.3 MB, level 9 gives 1.38 s and 314.4 MB. The encode cost
+  transfers almost 1:1 into wall clock because this path is encode-bound
+  rather than I/O-bound, so 32 workers hide none of it, and level 6 is already
+  slower than the tool it replaces. About 1% of size for 4 to 6x the time is
+  not a trade worth a default. The hi-lo byte-plane shuffle is where the gain
+  actually is, and it is already on: on real microscopy pixels it takes the
+  ratio from 0.537 to 0.485 while being faster than raw zstd, 923 against
+  199 MB/s.
+
 0.7.0 (2026-10-03)
 ------------------
 
