@@ -10,6 +10,48 @@ Versions follow the same ``YYYY.M.D`` cadence as upstream when we
 publish; the entries below cluster work by date rather than by
 release because most of it has shipped continuously to ``main``.
 
+0.7.0 (2026-10-03)
+------------------
+
+``czi_recompress`` takes ``recompress_when``, a predicate over the reader's
+``CziSubBlockEntry``. Sub-blocks it accepts are decoded and re-encoded as
+before; sub-blocks it rejects are carried across BYTE FOR BYTE, keeping their
+original compression. The default stays ``None``, which re-encodes everything,
+so existing callers are unaffected. The returned summary gains
+``recompressed`` and ``carried`` counts.
+
+This exists because a sub-block's compression is not a detail to be
+normalized away. Re-encoding one that is already compressed is wasted work,
+and re-encoding a LOSSY one is destructive: the pixels are decoded from a
+lossy encoding and written back losslessly, so the file grows and the
+artifacts become permanent. Measured on a 505 MB Axioscan slide scan of 481
+JPEG XR sub-blocks:
+
+====================================  ========  ==========  ============
+strategy                              time      output      vs source
+====================================  ========  ==========  ============
+carry JPEG XR across (predicate)      0.36 s    489 MB      0.97x
+re-encode everything (no predicate)   12.6 s    1309 MB     2.59x
+====================================  ========  ==========  ============
+
+So the predicate is not a speed knob. Without it that file more than doubles
+in size, takes 33x longer, and loses the option of ever recovering the
+original encoding. This is what ZEISS's ``czicompress`` expresses with
+``--strategy``, and the three strategies map directly::
+
+    uncompressed        lambda e: e.compression == 0
+    uncompressed+zstd   lambda e: e.compression in (0, 5, 6)
+    all                 None
+
+Supporting this needed a writer that can emit a sub-block it cannot itself
+produce. ``_build_subblock`` gained ``encoded=``, which writes the payload
+exactly as given and records the compression code as-is, with no encode step
+and no look at the pixels. That is the only path by which a JPEG XR sub-block
+can reach a file this writer wrote, and it is why carrying one across cannot
+alter it. Verification is refused on that path: nothing was encoded, so there
+is nothing to check. ``verify=True`` therefore applies only to the sub-blocks
+that were re-encoded.
+
 0.6.0 (2026-10-03)
 ------------------
 

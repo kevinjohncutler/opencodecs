@@ -74,6 +74,30 @@ class CziWriterError(RuntimeError):
     """Raised on writer state-machine violations."""
 
 
+class _CarriedSubBlock:
+    """A sub-block copied across unchanged, not re-encoded.
+
+    Carries the encoded payload and the compression code it was written
+    with, plus a zero-filled array of the right shape and dtype so the
+    existing header path can read shape/dtype without the pixels ever being
+    decoded. ``np.empty`` would do, but zeros make an accidental use of
+    these pixels obvious rather than random.
+    """
+
+    __slots__ = ("payload", "compression", "dims", "pyramid_type",
+                 "shape_array", "logical_shape", "pixel_type")
+
+    def __init__(self, payload, *, compression, dims, pyramid_type,
+                 shape_array, logical_shape, pixel_type):
+        self.payload = payload
+        self.compression = compression
+        self.pixel_type = pixel_type
+        self.dims = dims
+        self.pyramid_type = pyramid_type
+        self.shape_array = shape_array
+        self.logical_shape = logical_shape
+
+
 class CziCancelled(CziWriterError):
     """Raised when a caller's ``should_continue`` stops a rewrite.
 
@@ -339,6 +363,7 @@ def _build_subblock(
     dims: tuple | None = None,
     verification_input: list | None = None,
     scratch=None,
+    encoded: object | None = None,
 ) -> tuple[_SubBlockSegment, dict]:
     """Build one ZISRAWSUBBLOCK segment as parts.
 
@@ -351,7 +376,21 @@ def _build_subblock(
     check runs after this returns while the producer may already be
     refilling ``array``. Without it nothing here outlives the call, so the
     array's own buffer feeds the compressor or becomes the raw payload.
+
+    With ``encoded`` the payload is written exactly as given and
+    ``compression_code`` is recorded as-is, with no encode step and no look
+    at the pixels. That is how a sub-block is carried across unchanged, and
+    it is the only path that can emit a compression this writer cannot
+    produce (JPEG XR, for instance). ``array`` is then used only for its
+    shape and dtype, so a zero-filled array of the right shape is enough.
+    Verification is not available on this path: there is nothing to check,
+    because nothing was encoded.
     """
+    if encoded is not None and verification_input is not None:
+        raise CziWriterError(
+            "czi: verification_input cannot be combined with encoded; a "
+            "carried-across sub-block is not re-encoded, so there is "
+            "nothing to verify")
     h, w = array.shape[:2]
     logical_h, logical_w = logical_shape
     start_y, start_x = location
@@ -390,7 +429,10 @@ def _build_subblock(
         pixels = memoryview(contiguous).cast("B")
         keep = contiguous
     itemsize = array.dtype.itemsize
-    if compression_code == 0:
+    if encoded is not None:
+        data = encoded
+        keep = encoded
+    elif compression_code == 0:
         data = pixels
     elif compression_code == 5:
         from .codecs._zstd import encode as zstd_encode
@@ -687,6 +729,17 @@ class _CziStreamWriter(Writer):
             workers = resolve_workers(None, 1 << 30, output_bytes=None, max_workers=8)
         workers = max(1, int(workers))
 
+        def item_bytes(item):
+            """Cost of one snapshotted item, for batching and reservation.
+
+            A carried sub-block has no array: its cost is the encoded payload
+            it already owns. Both batching sites go through here so they
+            cannot disagree about what an item weighs.
+            """
+            if isinstance(item, _CarriedSubBlock):
+                return len(item.payload)
+            return item[0].nbytes
+
         def snapshot(frame):
             """Own the frame's pixels before the producer can touch them.
 
@@ -695,6 +748,10 @@ class _CziStreamWriter(Writer):
             it is a down-scaled level. Those forms are what make a faithful
             re-encode possible on this path as well as on ``write_frame``.
             """
+            if isinstance(frame, _CarriedSubBlock):
+                # Nothing to snapshot: the payload is already bytes we own,
+                # and the pixels are never looked at.
+                return frame
             dims = override_pyramid = None
             if isinstance(frame, tuple):
                 if len(frame) == 2:
@@ -728,7 +785,7 @@ class _CziStreamWriter(Writer):
             batch, batch_bytes = [], 0
             for frame in frames:
                 item = snapshot(frame)
-                n = item[0].nbytes
+                n = item_bytes(item)
                 if batch and batch_bytes + n > batch_limit:
                     yield batch
                     batch, batch_bytes = [], 0
@@ -738,7 +795,7 @@ class _CziStreamWriter(Writer):
                 yield batch
 
         def size(batch):
-            n = sum(item[0].nbytes for item in batch)
+            n = sum(item_bytes(item) for item in batch)
             # Snapshot + encoded output (bounded by the input for these
             # codecs) + decoded verification result and comparison scratch.
             return 2 * n + (verification_reservation(n) if verify else 0)
@@ -746,7 +803,19 @@ class _CziStreamWriter(Writer):
         def encode(batch):
             out = []
             scratch = _worker_scratch()
-            for pixels, logical_shape, pyramid_type, dims in batch:
+            for item in batch:
+                if isinstance(item, _CarriedSubBlock):
+                    segment, entry = _build_subblock(
+                        item.shape_array,
+                        pixel_type=item.pixel_type,
+                        compression_code=item.compression, hilo=self._hilo,
+                        file_position=0, logical_shape=item.logical_shape,
+                        pyramid_type=item.pyramid_type, dims=item.dims,
+                        verification_input=None, scratch=None,
+                        encoded=item.payload)
+                    out.append((segment, entry))
+                    continue
+                pixels, logical_shape, pyramid_type, dims = item
                 captured = [] if verify else None
                 segment, entry = _build_subblock(
                     pixels, pixel_type=_DTYPE_TO_PIXELTYPE[pixels.dtype],
@@ -992,7 +1061,8 @@ __all__ = ["CziWriter", "CziPyramidWriter", "CziWriterError"]
 def czi_recompress(src, dst, *, compression: str = "zstdhdr", hilo: bool = True,
                workers=None, verify: bool = False,
                background_encode: bool = False,
-               should_continue=None) -> dict:
+               should_continue=None,
+               recompress_when=None) -> dict:
     """Rewrite a CZI with different compression, keeping the container.
 
     Every sub-block keeps its dimension coordinates, its scene and mosaic
@@ -1016,8 +1086,30 @@ def czi_recompress(src, dst, *, compression: str = "zstdhdr", hilo: bool = True,
     know which. Encodes already dispatched still finish, so cancellation
     takes effect within roughly ``workers`` sub-blocks rather than instantly.
 
-    Returns a summary dict: sub-block count, input and output sizes, and the
-    compression that was applied.
+    ``recompress_when`` is an optional predicate over the reader's
+    ``CziSubBlockEntry``. Sub-blocks it accepts are decoded and re-encoded;
+    sub-blocks it rejects are carried across BYTE FOR BYTE, keeping their
+    original compression. Default ``None`` re-encodes everything, which is
+    what earlier versions did.
+
+    This is what makes the selective strategies of ZEISS's ``czicompress``
+    expressible, and the reason they exist: re-encoding an already-compressed
+    sub-block is at best wasted work, and for a lossy one it is destructive.
+    A JPEG XR sub-block decoded and re-encoded as lossless zstdhdr grows,
+    and bakes the lossy artifacts in permanently. Carrying it across cannot
+    do that.
+
+        uncompressed only   lambda e: e.compression == 0
+        uncompressed+zstd   lambda e: e.compression in (0, 5, 6)
+        everything          None
+
+    ``verify=True`` applies only to the sub-blocks that were re-encoded; a
+    carried-across payload is unchanged by definition, so there is nothing
+    to check.
+
+    Returns a summary dict: sub-block count, input and output sizes, the
+    compression that was applied, and how many sub-blocks were re-encoded
+    versus carried across.
     """
     import os
 
@@ -1029,6 +1121,8 @@ def czi_recompress(src, dst, *, compression: str = "zstdhdr", hilo: bool = True,
             raise CziWriterError(f"czi: {src} has no sub-blocks to recompress")
         metadata = reader.metadata_bytes or b"<Metadata/>"
 
+        counts = {"recompressed": 0, "carried": 0}
+
         def frames():
             # One sub-block at a time: a slide scan does not fit in memory,
             # and write_many only needs the next frame, not all of them.
@@ -1038,7 +1132,30 @@ def czi_recompress(src, dst, *, compression: str = "zstdhdr", hilo: bool = True,
                         f"czi: recompress of {src} cancelled after "
                         f"{i} of {n} sub-blocks")
                 entry = reader.entries[i]
-                yield reader[i], subblock_dims(entry), entry.pyramid_type
+                if recompress_when is None or recompress_when(entry):
+                    counts["recompressed"] += 1
+                    yield reader[i], subblock_dims(entry), entry.pyramid_type
+                else:
+                    # Carried across: the encoded bytes are copied straight
+                    # from the source and the original compression is kept,
+                    # so the pixels are never decoded and cannot change.
+                    counts["carried"] += 1
+                    d = subblock_dims(entry)
+                    axes = {name.rstrip(b"\x00"): (size, stored)
+                            for name, _start, size, _co, stored in d}
+                    log_h, st_h = axes[b"Y"]
+                    log_w, st_w = axes[b"X"]
+                    with reader._payload(entry) as view:
+                        # Copy: the reader hands back a buffer it reuses, so
+                        # a borrowed view would be overwritten by the next
+                        # sub-block before the writer emits this one.
+                        payload = bytes(view)
+                    yield _CarriedSubBlock(
+                        payload, compression=entry.compression,
+                        dims=d, pyramid_type=entry.pyramid_type,
+                        shape_array=np.zeros((st_h, st_w), entry.dtype),
+                        logical_shape=(log_h, log_w),
+                        pixel_type=entry.pixel_type)
 
         try:
             with CziWriter(str(dst), compression=compression, hilo=hilo,
@@ -1061,4 +1178,6 @@ def czi_recompress(src, dst, *, compression: str = "zstdhdr", hilo: bool = True,
         "src_bytes": os.path.getsize(src),
         "dst_bytes": os.path.getsize(dst),
         "compression": compression,
+        "recompressed": counts["recompressed"],
+        "carried": counts["carried"],
     }

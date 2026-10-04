@@ -351,3 +351,112 @@ def test_a_failing_predicate_also_leaves_no_output(tmp_path):
     with pytest.raises(ValueError):
         czi_recompress(src, dst, workers=PARTIAL_WORKERS, should_continue=boom)
     assert not dst.exists()
+
+
+# ------------------------------------------- selective recompression
+# `recompress_when` exists so the selective strategies of ZEISS's czicompress
+# are expressible. The point is NOT speed: re-encoding an already-compressed
+# sub-block is wasted work, and for a LOSSY one it is destructive, because a
+# JPEG XR block decoded and re-encoded as lossless zstdhdr grows and bakes the
+# lossy artifacts in permanently.
+#
+# Every assertion here is on the OUTPUT'S COMPRESSION CODES, not just its
+# pixels. A pass-through that quietly re-encoded would still produce a
+# readable file with identical pixels, so comparing arrays cannot catch it.
+
+def _mixed_src(tmp_path):
+    """Two uncompressed sub-blocks and two already-zstd ones."""
+    raw = [(_tile(64, 64, 200 + i), (0, i * 64), [(b"C", i)]) for i in range(2)]
+    src_u = tmp_path / "u.czi"
+    src_u.write_bytes(mosaic_czi_bytes(raw, compression=0))
+    pre = tmp_path / "pre.czi"
+    czi_recompress(src_u, pre, compression="zstdhdr")
+    return src_u, pre
+
+
+def _codes(path):
+    with CziReader(str(path)) as r:
+        return [e.compression for e in r.entries]
+
+
+def test_default_still_recompresses_everything(tmp_path):
+    src, _ = _mixed_src(tmp_path)
+    dst = tmp_path / "d.czi"
+    info = czi_recompress(src, dst, compression="zstdhdr")
+    assert info["recompressed"] == 2 and info["carried"] == 0
+    assert set(_codes(dst)) == {6}
+
+
+def test_uncompressed_only_leaves_compressed_blocks_alone(tmp_path):
+    """The czicompress default: only code 0 is touched."""
+    _, pre = _mixed_src(tmp_path)
+    assert set(_codes(pre)) == {6}, "fixture is not already compressed"
+    dst = tmp_path / "d.czi"
+    info = czi_recompress(pre, dst, compression="zstdhdr",
+                          recompress_when=lambda e: e.compression == 0)
+    assert info["recompressed"] == 0, "re-encoded a block it was told to skip"
+    assert info["carried"] == 2
+    assert _codes(dst) == _codes(pre)
+    _assert_faithful(pre, dst)
+
+
+def test_carried_payload_is_byte_identical(tmp_path):
+    """Carried means copied, so the encoded bytes must match exactly."""
+    _, pre = _mixed_src(tmp_path)
+    dst = tmp_path / "d.czi"
+    czi_recompress(pre, dst, compression="none",
+                   recompress_when=lambda e: False)
+    with CziReader(str(pre)) as a, CziReader(str(dst)) as b:
+        for ea, eb in zip(a.entries, b.entries):
+            with a._payload(ea) as pa, b._payload(eb) as pb:
+                assert bytes(pa) == bytes(pb), "carried payload was altered"
+            assert ea.compression == eb.compression
+
+
+def test_carried_blocks_keep_their_code_while_others_change(tmp_path):
+    """A mixed file: some blocks re-encoded, some carried, in one pass."""
+    _, pre = _mixed_src(tmp_path)
+    extra = [(_tile(64, 64, 300 + i), (0, (i + 2) * 64), [(b"C", i + 2)])
+             for i in range(2)]
+    mixed = tmp_path / "mixed.czi"
+    mixed.write_bytes(mosaic_czi_bytes(extra, compression=0))
+    dst = tmp_path / "d.czi"
+    info = czi_recompress(mixed, dst, compression="zstdhdr",
+                          recompress_when=lambda e: e.compression == 0)
+    assert info["recompressed"] == 2 and info["carried"] == 0
+    assert set(_codes(dst)) == {6}
+
+
+def test_predicate_sees_a_real_entry(tmp_path):
+    """The predicate gets the reader's entry, not an opaque index."""
+    src, _ = _mixed_src(tmp_path)
+    seen = []
+
+    def pred(e):
+        seen.append((e.compression, e.pixel_type, e.pyramid_type))
+        return True
+
+    czi_recompress(src, tmp_path / "d.czi", recompress_when=pred)
+    assert len(seen) == 2
+    assert all(c == 0 for c, _p, _y in seen)
+
+
+def test_verify_applies_only_to_recompressed_blocks(tmp_path):
+    """verify=True must not choke on a carried block it never encoded."""
+    _, pre = _mixed_src(tmp_path)
+    dst = tmp_path / "d.czi"
+    info = czi_recompress(pre, dst, compression="zstdhdr", verify=True,
+                          recompress_when=lambda e: e.compression == 0)
+    assert info["carried"] == 2
+    _assert_faithful(pre, dst)
+
+
+def test_encoded_and_verification_input_are_refused():
+    """Verifying a carried block is meaningless; the writer says so."""
+    import numpy as np
+    from opencodecs._czi_writer import _build_subblock
+    with pytest.raises(CziWriterError, match="nothing to verify"):
+        _build_subblock(np.zeros((4, 4), "uint16"), pixel_type=1,
+                        compression_code=0, hilo=False, file_position=0,
+                        logical_shape=(4, 4), verification_input=[],
+                        encoded=b"x")
