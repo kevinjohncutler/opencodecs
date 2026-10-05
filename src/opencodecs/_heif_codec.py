@@ -106,6 +106,12 @@ class HeifCodec(Codec):
         512 tiles, larger files at equal quality, and ``level`` is
         ImageIO's quality scale (``level / 100``). It needs an explicit
         ``level``.
+
+        ``backend="nvvideocodec"`` (opt-in; NVIDIA GPU with
+        PyNvVideoCodec and CuPy) uses NVENC: lossy only, 4:2:0, 8-bit
+        (uint8) or 10-bit (uint16 up to 1023) RGB, at a constant QP from
+        ``level`` (0 to 99), tens of times faster than x265 but with
+        larger files at equal quality. It needs an explicit ``level``.
         """
         if opts:
             raise TypeError(
@@ -167,17 +173,30 @@ class HeifCodec(Codec):
         one level of libheif. Any other file, including the small-tile
         grids iPhones write, is decoded by libheif as without it, since
         there the hardware decoder was no faster.
+
+        ``backend="nvvideocodec"`` (opt-in; NVIDIA GPU with
+        PyNvVideoCodec and CuPy) decodes the primary image on NVDEC, one
+        picture or every tile of a grid, 8 to 12 bits, in the chroma
+        formats the GPU decodes, and converts to RGB on the GPU exactly
+        as libheif does. Files with alpha, monochrome, a rotation,
+        mirror or crop property, or a chroma format or depth the GPU
+        does not decode go to libheif as without it. ``out=`` may also
+        be a CuPy array (the pixels then stay on the GPU) or one from
+        :func:`opencodecs.backends.pinned_empty`.
         """
         if opts:
             raise TypeError(
                 f"heif decode: unsupported option(s) {', '.join(sorted(opts))}")
+        hardware = _select_backend(backend, self.name, "decode")
+        if hardware is not None:
+            # The backend checks out= itself: it may be a device array.
+            data = src if isinstance(src, bytes) else _read_src(src)
+            return hardware.decode_heif(
+                data, _heif_decode, numthreads=native_workers(numthreads),
+                out=out, index=index, photometric=photometric)
         kw = dict(numthreads=native_workers(numthreads),
                   out=out if out is None else array_output(out),
                   index=index, photometric=photometric)
-        hardware = _select_backend(backend, self.name, "decode")
-        if hardware is not None:
-            data = src if isinstance(src, bytes) else _read_src(src)
-            return hardware.decode_heif(data, _heif_decode, **kw)
         if isinstance(src, (bytes, bytearray, memoryview)):
             return _heif_decode(src, **kw)
         if index is None and not range_reads and not hasattr(src, "read_at"):

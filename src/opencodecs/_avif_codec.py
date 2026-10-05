@@ -14,6 +14,7 @@ from .core._io_helpers import read_src as _read_src, write_dest as _write_dest
 from .core._optional_backend import import_or_stubs
 from .core.pipeline import native_workers
 from .core.native_source import NativeSource
+from .backends import select as _select_backend
 
 (
     _avif_encode, _avif_decode, _avif_check_signature,
@@ -76,6 +77,7 @@ class AvifCodec(Codec):
                bitspersample: int | None = None,
                pixelformat: str | None = None,
                tilelog2: tuple | None = None,
+               backend: str | None = None,
                **opts) -> bytes | None:
         """Encode an array as AVIF.
 
@@ -103,10 +105,19 @@ class AvifCodec(Codec):
         ``bitspersample`` (``bit_depth``), ``pixelformat``
         (``yuv_format``) and ``tilelog2`` (``(tile_cols_log2,
         tile_rows_log2)``). Any other unknown keyword raises TypeError.
+
+        ``backend="nvvideocodec"`` (opt-in; NVIDIA GPU with
+        PyNvVideoCodec and CuPy) encodes with NVENC's AV1 encoder:
+        hundreds of times faster than aom, lossy only, 4:2:0, 8-bit
+        (uint8) or 10-bit (uint16 up to 1023) RGB. It needs an explicit
+        ``level`` (0 to 99), mapped to the same AV1 quantizer libavif
+        gives aom for that level; ``speed`` picks the NVENC preset. Tile,
+        codec and color options other than ``iccprofile`` raise.
         """
         if opts:
             raise TypeError(
                 f"avif encode: unsupported option(s) {', '.join(sorted(opts))}")
+        hardware = _select_backend(backend, self.name, "encode")
         bit_depth = _alias("bit_depth", bit_depth, "bitspersample", bitspersample)
         yuv_format = _alias("yuv_format", yuv_format, "pixelformat", pixelformat)
         if tilelog2 is not None:
@@ -115,6 +126,14 @@ class AvifCodec(Codec):
                                     "tilelog2", cols)
             tile_rows_log2 = _alias("tile_rows_log2", tile_rows_log2,
                                     "tilelog2", rows)
+        if hardware is not None:
+            return _write_dest(hardware.encode_avif(
+                data, level=level, lossless=lossless, speed=speed,
+                bit_depth=bit_depth, yuv_format=yuv_format,
+                iccprofile=iccprofile, color=color, codec=codec,
+                tile_cols_log2=tile_cols_log2, tile_rows_log2=tile_rows_log2,
+                auto_tiling=auto_tiling, codec_options=codec_options,
+                primaries=primaries, transfer=transfer, matrix=matrix), dest)
         if not isinstance(data, np.ndarray):
             data = np.asarray(data)
         encoded = _avif_encode(
@@ -129,7 +148,8 @@ class AvifCodec(Codec):
         return _write_dest(encoded, dest)
 
     def decode(self, src: Any, *, numthreads: int | None = None,
-               out=None, index: int | None = None, **opts) -> np.ndarray:
+               out=None, index: int | None = None,
+               backend: str | None = None, **opts) -> np.ndarray:
         """Decode a still, or every image of a sequence.
 
         A sequence decodes to a ``(frames, H, W, C)`` stack, matching
@@ -147,11 +167,14 @@ class AvifCodec(Codec):
         ``index`` (imagecodecs' keyword) decodes that one image of the
         file, 0 for a still; an index the file does not have raises
         IndexError. Negative values count from the end. Any other
-        unknown keyword raises TypeError.
+        unknown keyword raises TypeError. ``backend`` takes None or
+        ``"native"`` only (no hardware AVIF decoder is offered).
         """
         if opts:
             raise TypeError(
                 f"avif decode: unsupported option(s) {', '.join(sorted(opts))}")
+        # No hardware decoder is offered: this validates the name only.
+        _select_backend(backend, self.name, "decode")
         data = _read_src(src)
         n_frames = _avif_frame_count(data)
         if index is not None:

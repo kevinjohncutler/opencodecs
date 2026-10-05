@@ -25,13 +25,19 @@ dependencies = ["numpy>=1.25", "platformdirs>=4"]
 # entirely (verified on Linux 2023.2.28).
 tiff = ["tifffile>=2024.5.10"]
 hdf5 = ["h5py"]
-# The opt-in GPU backend (backend="nvimgcodec" on jpeg, jpeg2k, htj2k):
-# CuPy and nvImageCodec with its nvJPEG and nvJPEG2000 plugins, CUDA 13
-# builds. For CUDA 12 install cupy-cuda12x and the -cu12 packages
-# yourself. The macOS backend (backend="imageio") needs no package.
+# The opt-in NVIDIA backends: backend="nvimgcodec" on jpeg, jpeg2k, htj2k
+# (CuPy and nvImageCodec with its nvJPEG and nvJPEG2000 plugins) and
+# backend="nvvideocodec" on heif and avif (NVIDIA's PyNvVideoCodec, which
+# reaches NVDEC/NVENC through the driver). CUDA 13 builds; CuPy compiles
+# its kernels with NVRTC and the CUDA runtime headers, hence the two
+# cuda-toolkit components (about 140 MB, not the whole toolkit). For CUDA
+# 12 install cupy-cuda12x and the -cu12 packages yourself. The macOS
+# backend (backend="imageio") needs no package.
 gpu = [
     "cupy-cuda13x; sys_platform != 'darwin'",
+    "cuda-toolkit[cudart,nvrtc]==13.*; sys_platform != 'darwin'",
     "nvidia-nvimgcodec-cu13[nvjpeg,nvjpeg2k]; sys_platform != 'darwin'",
+    "PyNvVideoCodec; sys_platform != 'darwin'",
 ]
 # zarr v3 is only available for Python ≥ 3.11 — but our zarr v3
 # BytesBytesCodec wrappers gracefully skip when zarr is < 3 (the
@@ -75,6 +81,7 @@ reference = [
     "ocf-blosc2",     # Blosc2 in zarr (no zarr spec defines it)
     "qoi",            # QOI
     "pillow-heif",    # HEIF, libheif's decoder
+    "av",             # AVIF and HEIF through FFmpeg's own demuxer
     "pylibCZIrw",     # CZI through libCZI
     "aicspylibczi",   # CZI, the Allen Institute's libCZI binding
 ]

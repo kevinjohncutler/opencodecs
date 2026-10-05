@@ -1,29 +1,35 @@
-"""Opt-in hardware backends: NVIDIA nvImageCodec and Apple ImageIO.
+"""Opt-in hardware backends: NVIDIA nvImageCodec and Video Codec SDK,
+and Apple ImageIO.
 
 A codec never picks one of these by itself. They are chosen per call with
 the ``backend=`` keyword, the same keyword deflate uses for ISA-L::
 
     oc.get_codec("htj2k").decode(blob, backend="nvimgcodec")
     oc.read("photo.heic", backend="imageio")
+    oc.read("photo.heic", backend="nvvideocodec")
 
-=================  ==========================  ===========================
-``backend=``       codecs                      needs
-=================  ==========================  ===========================
-``"nvimgcodec"``   jpeg, jpeg2k, htj2k:        an NVIDIA GPU, CuPy and
-                   encode and decode           ``nvidia-nvimgcodec``
-``"imageio"``      heif: decode, and a lossy   macOS (ImageIO through
-                   hardware HEVC encode        ctypes; no extra package)
-=================  ==========================  ===========================
+==================  ==========================  ===========================
+``backend=``        codecs                      needs
+==================  ==========================  ===========================
+``"nvimgcodec"``    jpeg, jpeg2k, htj2k:        an NVIDIA GPU, CuPy and
+                    encode and decode           ``nvidia-nvimgcodec``
+``"nvvideocodec"``  heif: decode (NVDEC) and    an NVIDIA GPU, CuPy and
+                    lossy encode; avif: lossy   ``PyNvVideoCodec``
+                    encode (NVENC)
+``"imageio"``       heif: decode, and a lossy   macOS (ImageIO through
+                    hardware HEVC encode        ctypes; no extra package)
+==================  ==========================  ===========================
 
 ``None`` or ``"native"`` is the CPU path, as before.
 
 Why opt-in only: the first nvImageCodec call in a process costs 1 to 1.6 s
 (importing CuPy and nvImageCodec, creating the CUDA context, the codec's
-own first-call setup), so a script that decodes one image is much slower
-with it. Each backend is created once per process, lazily, and reused.
+own first-call setup), and the first NVDEC or NVENC call a few hundred
+milliseconds, so a script that decodes one image is much slower with
+them. Each backend is created once per process, lazily, and reused.
 
 Importing ``opencodecs`` or this package imports none of CuPy,
-nvImageCodec or any Apple framework; that happens on the first call that
+nvImageCodec, PyNvVideoCodec or any Apple framework; that happens on the first call that
 asks for the backend. Asking for a backend that cannot run raises
 :class:`BackendUnavailable`, never a silent fallback to the CPU. See
 docs/hardware_backends.md for measurements, and for what each backend
@@ -53,6 +59,8 @@ BACKENDS = {
     "nvimgcodec": {"jpeg": ("decode", "encode"),
                    "jpeg2k": ("decode", "encode"),
                    "htj2k": ("decode", "encode")},
+    "nvvideocodec": {"heif": ("decode", "encode"),
+                     "avif": ("encode",)},
     "imageio": {"heif": ("decode", "encode")},
 }
 
@@ -77,6 +85,8 @@ def select(backend: Any, codec: str, op: str):
             f"{codec} {op}: unknown backend={backend!r}; choose None, {choices}")
     if name == "nvimgcodec":
         from . import _nvimgcodec as module
+    elif name == "nvvideocodec":
+        from . import _nvvideocodec as module
     else:
         from . import _imageio as module
     return module
@@ -91,7 +101,8 @@ def available(name: str) -> bool:
     name = str(name).lower()
     if name not in BACKENDS:
         raise ValueError(f"unknown backend {name!r}; one of {sorted(BACKENDS)}")
-    module = select(name, next(iter(BACKENDS[name])), "decode")
+    codec, ops = next(iter(BACKENDS[name].items()))
+    module = select(name, codec, ops[0])
     try:
         module.load()
     except BackendUnavailable:
@@ -106,7 +117,17 @@ def pinned_empty(shape, dtype) -> "Any":
     ordinary pageable memory (measured 5.7 ms against 9.8 ms for a
     4096 x 4096 uint16 HTJ2K decode), so a loop that decodes many images
     of one shape should allocate its output once with this and pass it
-    as ``out=`` to ``decode(..., backend="nvimgcodec")``. Needs CuPy.
+    as ``out=`` to ``decode(..., backend="nvimgcodec")`` or
+    ``backend="nvvideocodec"``. Needs CuPy.
     """
-    from ._nvimgcodec import pinned_empty as _pinned_empty
-    return _pinned_empty(shape, dtype)
+    try:
+        import cupy
+    except ImportError as exc:
+        raise BackendUnavailable("pinned_empty needs CuPy") from exc
+    import numpy as np
+    dtype = np.dtype(dtype)
+    shape = tuple(int(s) for s in np.atleast_1d(shape))
+    count = int(np.prod(shape, dtype=np.int64))
+    memory = cupy.cuda.alloc_pinned_memory(max(count * dtype.itemsize, 1))
+    # The array's base holds the pinned allocation alive.
+    return np.frombuffer(memory, dtype, count).reshape(shape)
