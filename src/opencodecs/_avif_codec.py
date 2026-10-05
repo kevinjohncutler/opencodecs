@@ -94,8 +94,11 @@ class AvifCodec(Codec):
         (H, W, 2), so (H, W, 1) input comes back as (H, W), as in
         imagecodecs. Lossy color is coded
         4:4:4 unless ``yuv_format`` asks for subsampling, alpha is
-        always lossless, and ``speed`` defaults to libavif's own
-        default; all three are imagecodecs' defaults.
+        always lossless, as in imagecodecs. ``speed`` defaults to 6, as
+        libavif's avifenc does, where imagecodecs keeps libavif's library
+        default (libaom's slowest search): about 50x faster for about 10%
+        larger files at equal perceived quality. Pass ``speed=0`` for
+        imagecodecs' setting.
 
         uint16 data is coded at the smallest of 10 and 12 bits that
         holds it; data needing more than 12 bits raises, since AV1

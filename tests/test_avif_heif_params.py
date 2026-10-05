@@ -83,7 +83,8 @@ def test_avif_uint16_matches_imagecodecs_at_the_same_depth():
     ic = _imagecodecs_avif()
     rng = np.random.default_rng(5)
     arr = rng.integers(0, 4096, (32, 48, 3)).astype(np.uint16)
-    ours = avif.encode(arr)
+    # speed=0 is imagecodecs' default; ours is 6 (see the codec docstring).
+    ours = avif.encode(arr, speed=0)
     assert ours == bytes(ic.avif_encode(arr, bitspersample=12))
     np.testing.assert_array_equal(ic.avif_decode(ours), arr)
 
@@ -161,9 +162,10 @@ def test_avif_level_alone_is_lossy_like_imagecodecs():
     ic = _imagecodecs_avif()
     rng = np.random.default_rng(10)
     arr = rng.integers(0, 256, (64, 48, 3), dtype=np.uint8)
-    lossless = avif.encode(arr)
-    # No level and level=100 are lossless, and identical to imagecodecs.
-    assert lossless == avif.encode(arr, level=100) == bytes(ic.avif_encode(arr))
+    lossless = avif.encode(arr, speed=0)
+    # No level and level=100 are lossless, and identical to imagecodecs at
+    # its speed (libavif's default, 0; ours defaults to 6).
+    assert lossless == avif.encode(arr, level=100, speed=0) == bytes(ic.avif_encode(arr))
     assert lossless == bytes(ic.avif_encode(arr, level=100))
     for level in (30, 90):
         ours = avif.encode(arr, level=level)
@@ -232,7 +234,7 @@ def test_avif_gray_lossless_bytes_match_imagecodecs():
             (rng.integers(0, 4096, (32, 48)).astype(np.uint16),
              {"bitspersample": 12})):
         theirs = bytes(ic.avif_encode(arr, **kwargs))
-        assert avif.encode(arr, **kwargs) == theirs
+        assert avif.encode(arr, speed=0, **kwargs) == theirs
         assert _nclx(theirs)[2] == 2
 
 
@@ -288,7 +290,9 @@ def test_avif_lossy_defaults_follow_imagecodecs():
     rgba = _sharp_rgba()
     rgb = np.ascontiguousarray(rgba[..., :3])
     for level in (30, 60, 90):
-        ours = avif.encode(rgba, level=level)
+        # Speed is the one default this package does not share with
+        # imagecodecs (6 here, libavif's 0 there): compare at imagecodecs'.
+        ours = avif.encode(rgba, level=level, speed=0)
         theirs = bytes(ic.avif_encode(rgba, level=level))
         assert _av1c(ours)["subsampling"] == _av1c(theirs)["subsampling"] == 0
         back = avif.decode(ours)
@@ -298,8 +302,10 @@ def test_avif_lossy_defaults_follow_imagecodecs():
         err = np.abs(back[..., :3].astype(int) - rgb).max()
         ref = np.abs(ic.avif_decode(theirs)[..., :3].astype(int) - rgb).max()
         assert err <= ref + 4, (level, err, ref)
-    # The codec wrapper and the Cython codec now share one default.
+    # The codec wrapper and the Cython codec now share one default, and
+    # it is speed 6.
     assert avif.encode(rgb, level=60) == _avif.encode(rgb, level=60)
+    assert avif.encode(rgb, level=60) == avif.encode(rgb, level=60, speed=6)
     # Subsampling is still there when asked for.
     assert _av1c(avif.encode(rgb, level=60, yuv_format="420"))["subsampling"] == 3
 

@@ -60,6 +60,19 @@ Every change below returns output identical to the previous release.
   pixel-identical. Untiled codestreams decode as before; OpenJPH offers no
   parallelism within a tile.
 
+- AVIF encode defaults to speed 6 where it left libavif's library default,
+  libaom's slowest search, as imagecodecs does. On the 24 Kodak photographs
+  and six microscopy images (12-bit fluorescence and confocal, 8-bit
+  brightfield) that took about 50x longer for files about 10% smaller at
+  equal perceived quality: at level 80 the two settings land within 0.5 to
+  1.8 SSIMULACRA2 points of each other, both in its "very high quality"
+  band, and Butteraugli agreed. A 12-megapixel photograph now encodes in
+  0.5 s instead of 22 s. Lossless encodes, which speed governs too, run 17
+  to 35x faster for files 1 to 2.5% larger, still exact. libavif's own
+  avifenc defaults to 6. This is a
+  deliberate departure from imagecodecs' default; ``speed=0`` restores its
+  setting, and output at a given speed is unchanged.
+
 Opt-in hardware backends:
 
 - ``backend="nvimgcodec"`` on ``jpeg``, ``jpeg2k`` and ``htj2k`` encodes and

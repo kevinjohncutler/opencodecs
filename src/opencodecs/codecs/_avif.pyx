@@ -122,9 +122,11 @@ def encode(data, *, level: int | None = None,
         channel is always coded lossless, as imagecodecs does.
     speed : int, optional
         Encoder speed 0-10 (lower = slower / smaller files). None
-        (default) leaves libavif's own default, as imagecodecs does;
-        values outside 0-10 are clamped to that range, also as
-        imagecodecs does.
+        (default) is 6, as libavif's avifenc uses: about 50x faster than
+        libavif's library default (libaom's slowest search, 0), which
+        imagecodecs keeps, for about 10% larger files at equal
+        perceived quality. Values outside 0-10 are clamped to that
+        range, as imagecodecs does.
     color : str or ColorSpec, optional
         Color-encoding spec. Same vocabulary as the JXL codec accepts:
         'srgb', 'display-p3', 'rec2020-pq', 'rec2020-hlg', etc. If None,
@@ -358,10 +360,14 @@ def encode(data, *, level: int | None = None,
         # imagecodecs codes it: level trades color fidelity for size,
         # and a mask or transparency channel is not color.
         encoder.qualityAlpha = AVIF_QUALITY_LOSSLESS
-        if speed is not None:
-            # imagecodecs clamps an out-of-range speed rather than
-            # dropping it; None keeps libavif's default.
-            encoder.speed = max(0, min(10, int(speed)))
+        # Speed 6 unless asked. libavif's default leaves libaom at its
+        # slowest search, which took about 50x longer than 6 for about 10%
+        # smaller files at equal perceived quality (SSIMULACRA2 and
+        # Butteraugli on photographs and microscopy), and libavif's own
+        # avifenc defaults to 6. imagecodecs keeps libavif's default, so
+        # here this package departs from it on purpose. imagecodecs
+        # clamps an out-of-range speed rather than dropping it, as here.
+        encoder.speed = 6 if speed is None else max(0, min(10, int(speed)))
         if numthreads is None or numthreads <= 0:
             import os as _os
             encoder.maxThreads = _os.cpu_count() or 4
