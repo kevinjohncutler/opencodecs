@@ -499,9 +499,166 @@ def _decode_target(out, shape, dtype):
     return np.frombuffer(view.cast("B"), dtype=dtype).reshape(shape)
 
 
+# ---------------------------------------------------------------------------
+# Tile-parallel decode
+# ---------------------------------------------------------------------------
+#
+# OpenJPH decodes a codestream from one ojph::codestream object, line by
+# line, on the calling thread: it has no threads of its own and no way to
+# ask for part of an image (restrict_input_resolution drops resolutions,
+# not area). Measured on a 4096 x 4096 uint16 lossless image, the
+# finest resolution alone is about 80% of the decode (reduce=1 took 25 of
+# 120 ms), so nothing short of splitting the image helps. JPEG 2000 tiles
+# are the one split the format itself makes: each tile is coded on its
+# own. A codestream of several tiles is therefore cut into one
+# single-tile codestream per tile (the main header, with SIZ narrowed to
+# the tile at the same reference-grid coordinates, so code-blocks,
+# precincts and wavelet parity are unchanged, and the tile's
+# tile-parts) and the tiles decode on separate threads. The pixels are
+# identical; a 4096 x 4096 image in 16 tiles of 1024 decoded in 10 ms on
+# 16 threads instead of 110. An untiled image has nothing to divide.
+
+_SOC_SIZ = b"\xff\x4f\xff\x51"
+
+
+def _tile_plan(data):
+    """How to cut a multi-tile codestream into single-tile ones, or None.
+
+    None for anything this does not handle plainly (one tile, component
+    subsampling, packed headers in the main header (PPM), a malformed
+    marker or tile-part layout); those decode as one codestream, which
+    also raises the precise error for a damaged one.
+    """
+    import struct
+    try:
+        mv = memoryview(data).cast("B")
+    except (TypeError, ValueError, BufferError):
+        return None
+    n = len(mv)
+    if n < 42 or bytes(mv[:4]) != _SOC_SIZ:
+        return None
+    lsiz = int.from_bytes(mv[4:6], "big")
+    if lsiz < 41 or 4 + lsiz > n:
+        return None
+    siz = bytes(mv[2:4 + lsiz])
+    (xsiz, ysiz, xo, yo, xt, yt, xto, yto, csiz) = struct.unpack(">IIIIIIIIH", siz[6:40])
+    if xt == 0 or yt == 0 or xsiz <= xo or ysiz <= yo or len(siz) < 40 + 3 * csiz:
+        return None
+    for c in range(csiz):
+        if siz[41 + 3 * c] != 1 or siz[42 + 3 * c] != 1:
+            return None
+    ntx = -(-(xsiz - xto) // xt)
+    nty = -(-(ysiz - yto) // yt)
+    if ntx * nty < 2:
+        return None
+    pos = 4 + lsiz
+    main = []
+    while True:
+        if pos + 4 > n:
+            return None
+        marker = int.from_bytes(mv[pos:pos + 2], "big")
+        if marker == 0xFF90:
+            break
+        length = int.from_bytes(mv[pos + 2:pos + 4], "big")
+        if marker < 0xFF40 or marker == 0xFF60 or length < 2 or pos + 2 + length > n:
+            return None
+        if marker not in (0xFF55, 0xFF57):   # TLM and PLM index the whole file
+            main.append((pos, pos + 2 + length))
+        pos += 2 + length
+    parts = [[] for _ in range(ntx * nty)]
+    end_of_data = n - 2 if bytes(mv[n - 2:n]) == b"\xff\xd9" else n
+    while pos < end_of_data:
+        if pos + 12 > n or int.from_bytes(mv[pos:pos + 2], "big") != 0xFF90:
+            return None
+        lsot, isot, psot = struct.unpack(">HHI", mv[pos + 2:pos + 10])
+        end = end_of_data if psot == 0 else pos + psot
+        if lsot != 10 or isot >= ntx * nty or end > end_of_data or end < pos + 14:
+            return None
+        parts[isot].append((pos, end))
+        pos = end
+    if any(not p for p in parts):
+        return None
+    tiles = []
+    for t in range(ntx * nty):
+        gx0, gy0 = xto + (t % ntx) * xt, yto + (t // ntx) * yt
+        x0, y0 = max(gx0, xo), max(gy0, yo)
+        x1, y1 = min(gx0 + xt, xsiz), min(gy0 + yt, ysiz)
+        head = siz[:6] + struct.pack(">IIIIIIII", x1, y1, x0, y0, xt, yt, gx0, gy0) + siz[38:]
+        tiles.append((x0 - xo, y0 - yo, x1 - xo, y1 - yo, head, parts[t]))
+    return mv, main, tiles
+
+
+def _tile_codestream(mv, main, tile):
+    """One tile of a multi-tile codestream as a codestream of its own."""
+    head = [b"\xff\x4f", tile[4]]
+    head.extend(mv[a:b] for a, b in main)
+    for a, b in tile[5]:
+        head.append(mv[a:a + 4])
+        head.append(b"\x00\x00")           # the tile is tile 0 of its codestream
+        head.append(mv[a + 6:b])
+    head.append(b"\xff\xd9")
+    return b"".join(head)
+
+
+def _decode_tiled(data, numthreads, planar, out):
+    """Decode a multi-tile codestream one tile per task; None to decode it whole.
+
+    None when the codestream is not one :func:`_tile_plan` cuts, when the
+    worker policy gives one thread, or when any tile fails or draws a
+    warning from OpenJPH: the whole decode then runs and returns the
+    image, warns, or raises its usual error, exactly as without tiles.
+    """
+    plan = _tile_plan(data)
+    if plan is None:
+        return None
+    mv, main, tiles = plan
+    try:
+        info = decode_info(data)
+    except OpenJphError:
+        return None
+    dtype = info["dtype"]
+    if dtype is None or info["nlt_type"] not in (0, 3):
+        return None
+    comps = info["components"]
+    from opencodecs.core.parallel import parallel_call, resolve_workers, run_batched
+    workers = resolve_workers(numthreads, len(tiles),
+                              output_bytes=info["width"] * info["height"] * comps
+                              * dtype.itemsize)
+    if workers <= 1:
+        return None
+    if planar is None:
+        planar = not info["color_transform"]
+    if comps == 1:
+        shape = (info["height"], info["width"])
+    elif planar:
+        shape = (comps, info["height"], info["width"])
+    else:
+        shape = (info["height"], info["width"], comps)
+    result = np.empty(shape, dtype=dtype) if out is None else _decode_target(out, shape, dtype)
+    failed = []
+
+    def one(tile):
+        x0, y0, x1, y1 = tile[:4]
+        try:
+            pixels = decode(_tile_codestream(mv, main, tile), planar=planar, numthreads=1,
+                            _tile=True)
+            if comps == 1:
+                result[y0:y1, x0:x1] = pixels
+            elif planar:
+                result[:, y0:y1, x0:x1] = pixels
+            else:
+                result[y0:y1, x0:x1] = pixels
+        except Exception:   # any failure: decode the codestream whole instead
+            failed.append(tile)
+
+    with parallel_call():
+        run_batched(one, tiles, workers, name="htj2k-tiles")
+    return None if failed else result
+
+
 def decode(data, *, bint ignore_unsupported=False, int reduce=0,
            planar=None, skipres=None, bint resilient=False,
-           out=None) -> np.ndarray:
+           out=None, numthreads=None, bint _tile=False) -> np.ndarray:
     """Decode an HTJ2K codestream to an ndarray.
 
     Raises :class:`OpenJphUnsupportedFeature` when OpenJPH reports that
@@ -540,6 +697,14 @@ def decode(data, *, bint ignore_unsupported=False, int reduce=0,
         dtype and be C-contiguous and writable; any other writable
         buffer must hold exactly the output's bytes and is returned
         viewed as the output array. A mismatch raises ValueError.
+    numthreads : int, optional
+        Threads for a codestream of several tiles, which decode
+        independently, one tile per task. ``None`` sizes the pool by the
+        tile count and image size (``resolve_workers``); ``1`` decodes on
+        the calling thread. OpenJPH itself decodes a tile on one thread,
+        so an untiled image always does too. Tiles are not split this way
+        with ``reduce``, ``skipres``, ``resilient`` or
+        ``ignore_unsupported``.
     """
     cdef:
         const uint8_t[::1] src
@@ -554,6 +719,11 @@ def decode(data, *, bint ignore_unsupported=False, int reduce=0,
         cnp.ndarray result
 
     rd, rr = _reductions(reduce, skipres)
+    if (rd == 0 and rr == 0 and not resilient and not ignore_unsupported
+            and numthreads != 1):
+        tiled = _decode_tiled(data, numthreads, planar, out)
+        if tiled is not None:
+            return tiled
     opencodecs_htj2k_clear_warnings()
 
     if isinstance(data, (bytes, bytearray)):
@@ -617,6 +787,10 @@ def decode(data, *, bint ignore_unsupported=False, int reduce=0,
     if rc != 0:
         _raise(rc, "decode")
 
+    if _tile and opencodecs_htj2k_last_warnings()[0] != 0:
+        # One tile of a split codestream: let the whole decode report it,
+        # once, as it always has.
+        raise OpenJphError("decode: OpenJPH warned about a tile")
     _check_warnings(ignore_unsupported)
 
     if result.dtype != dtype:

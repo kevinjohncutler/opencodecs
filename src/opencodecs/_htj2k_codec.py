@@ -97,10 +97,12 @@ class Htj2kCodec(Codec):
                planar: bool | None = None,
                skipres: Any = None,
                resilient: bool = False, out=None,
+               numthreads: int | None = None,
                **opts) -> np.ndarray:
         """Decode HTJ2K; keywords follow ``imagecodecs.htj2k_decode``.
 
-        ``out=`` receives the image in place; see
+        ``out=`` receives the image in place, and ``numthreads`` bounds
+        the threads a codestream of several tiles decodes on; see
         :func:`opencodecs.codecs._openjph.decode`.
         """
         if opts:
@@ -109,7 +111,8 @@ class Htj2kCodec(Codec):
         return _htj2k_decode(_read_src(src), reduce=reduce,
                              ignore_unsupported=ignore_unsupported,
                              planar=planar, skipres=skipres,
-                             resilient=resilient, out=out)
+                             resilient=resilient, out=out,
+                             numthreads=numthreads)
 
 
 __all__ = ["Htj2kCodec"]
