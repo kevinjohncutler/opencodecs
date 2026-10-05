@@ -77,14 +77,31 @@ Opt-in hardware backends:
   phone photos stay on libheif, which is as fast there. It also offers a
   lossy hardware HEVC encode, 5 to 15x faster but writing larger files. It
   needs no extra package.
+- ``backend="nvvideocodec"`` uses NVIDIA's video engines through NVIDIA's
+  PyNvVideoCodec (in the ``gpu`` extra, which now also installs the CUDA
+  runtime compiler CuPy needs to build any kernel). ``heif`` decode runs on
+  NVDEC, a single picture or every tile of a grid, 8 to 12 bits in the chroma
+  formats the GPU reports, converted to RGB with libheif's arithmetic, so the
+  pixels equal the CPU path's exactly. Files the GPU should not take (alpha,
+  monochrome, rotation, mirror or crop, ``index=``) go to libheif. On an RTX
+  4090 a 4096 x 3072 HEIF decoded in 11 to 42 ms; against a CPU path decoding
+  on several threads the gain measured 5 to 8x. ``avif`` and ``heif`` encode
+  run on NVENC (lossy 4:2:0, 8 or 10-bit, ``level`` required): AVIF in 14 ms
+  against 5.7 to 6.3 s for aom, HEIF in 37 to 46 ms against 1.1 to 2.9 s for
+  x265, with files 1.8 to 2.7 times larger at equal quality for AVIF, so it
+  is a fast mode rather than a replacement. The HEVC headers carry the color
+  description and drop buffering parameters libde265 rejects above 8.9
+  megapixels. The first call in a process costs about 0.8 s (decode) or
+  1.6 s (encode).
 - Importing opencodecs loads none of the optional packages. Asking for a
   backend that cannot run raises ``opencodecs.backends.BackendUnavailable``
   rather than falling back to the CPU. Every encode a backend adds is checked
   by an independent decoder in ``tests/test_foreign_readers.py``.
-- Measured and not added: Intel Quick Sync through VA-API decoded 4:2:0 HEVC
-  about 12x faster on a single picture but cannot decode the 4:4:4 files this
-  library writes, gained nothing on JPEG, and needs a vendor driver and
-  render-group access; NVIDIA's nvCOMP cannot read standard LZ4 files and
+- Measured and not added: Intel Quick Sync and AMD VCN through VA-API. Intel
+  decoded 4:2:0 HEVC about 12x faster on a single picture, but neither
+  decodes the 4:4:4 or 10-bit HEVC this library writes, copying the picture
+  back from the GPU is their bottleneck, JPEG gained nothing, and they need a
+  vendor driver and render-group access; NVIDIA's nvCOMP cannot read standard LZ4 files and
   lost to CPU threads end to end on standard zstd and deflate.
 
 0.7.1 (2026-10-04)
