@@ -107,8 +107,11 @@ def test_missing_cuda_packages_raise(monkeypatch):
 def test_imageio_off_macos_raises(monkeypatch):
     from opencodecs.backends import _imageio
     monkeypatch.setattr(_imageio, "_api", None)
-    # Where the frameworks are absent, as anywhere but macOS.
-    monkeypatch.setattr(_imageio, "_FRAMEWORK", "/nonexistent/{0}.framework/{0}")
+    # Where the frameworks are absent, as anywhere but macOS. The names must
+    # not exist either: for a missing ".../X.framework/X" path, macOS's
+    # loader falls back to the system's X.framework and loads it anyway.
+    monkeypatch.setattr(_imageio, "_FRAMEWORK",
+                        "/nonexistent/{0}Absent.framework/{0}Absent")
     with pytest.raises(BackendUnavailable, match="macOS"):
         _imageio.load()
     if has_codec("heif"):
