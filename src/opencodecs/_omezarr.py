@@ -61,6 +61,14 @@ _O_READ = os.O_RDONLY | O_BINARY
 #: Decoded bytes per parallel region task (see OmeZarrArray.read_region).
 _ZARR_BATCH_BYTES = 2 << 20
 
+#: Decoded bytes per task of the batched native read (_read_batched). A
+#: task holds its compressed input and its decoded chunks, about twice
+#: this, so a 64 MiB max_buffer_bytes leaves room for 31 workers.
+_ZARR_NATIVE_TASK_BYTES = 1 << 20
+
+#: Scratch a pool thread keeps between batched reads, per buffer.
+_ZARR_SCRATCH_KEEP = 16 << 20
+
 _ZSTD_MODULE = None
 _ZSTD_TLS = threading.local()
 
@@ -80,6 +88,19 @@ def _zstd_thread_state():
         from .core.scratch import ScratchBuffer
         state = (ScratchBuffer(), _zstd_module().DecodeContext())
         _ZSTD_TLS.state = state
+    return state
+
+
+_BATCH_TLS = threading.local()
+
+
+def _batch_thread_state():
+    """This thread's input and decode scratch for batched region reads."""
+    state = getattr(_BATCH_TLS, "state", None)
+    if state is None:
+        from .core.scratch import ScratchBuffer
+        state = (ScratchBuffer(), ScratchBuffer())
+        _BATCH_TLS.state = state
     return state
 
 
@@ -591,6 +612,7 @@ class OmeZarrArray:
         if max_buffer_bytes < 1:
             raise ValueError("max_buffer_bytes must be positive")
         self._max_buffer_bytes = int(max_buffer_bytes)
+        self._num_workers_arg = num_workers
         self._num_workers = (8 if isinstance(self._store, _HttpStore) else 1) \
             if num_workers is None else max(1, int(num_workers))
         self._shard_index_lock = threading.RLock()
@@ -789,32 +811,40 @@ class OmeZarrArray:
             return self._decode_chunk(raw)
         return self._load_chunk_from_shard(chunk_idx)
 
-    def _load_chunk_from_shard(
-        self, chunk_idx: tuple[int, ...],
-    ) -> np.ndarray:
-        """Resolve a sub-chunk inside a v3 shard.
+    def _shard_pairs(self, shard_key, n_inner, has_crc, index_bytes_len):
+        """A shard's index, ``(offset, nbytes)`` per inner chunk, flattened.
 
-        Layout per shard (when ``index_location == "end"`` — the
-        zarr-python default):
-
-            [chunk_0_bytes][chunk_1_bytes]...[index]
-
-        The index has one (offset, nbytes) ``uint64`` pair per inner
-        chunk, in row-major order over the shard's chunk grid. Both
-        fields are ``(2**64-1)`` for absent chunks (Zarr's "empty"
-        marker). The index is itself encoded by ``index_codecs`` —
-        commonly ``[bytes, crc32c]``, where the crc32c codec just
-        appends a 4-byte trailing checksum.
-
-        Fast path: when the store supports byte-range reads
-        (``store.supports_range == True``), we fetch ONLY the index
-        footer (~16 bytes per inner chunk) and ONLY the specific
-        inner chunk we need. Indexes are cached per-shard so reading
-        many inner chunks from the same shard pays the index cost
-        once. For a 256 MB shard with 16 KB chunks (4096 inner
-        chunks), reading one chunk over HTTP drops from ~256 MB to
-        ~80 KB on the wire.
+        Read by range and cached per shard. Raises what the store raises
+        for a missing shard (KeyError or FileNotFoundError).
         """
+        with self._shard_index_lock:
+            lock = self._shard_fetch_locks.get(shard_key)
+            if lock is None:
+                lock = threading.Lock()
+                self._shard_fetch_locks[shard_key] = lock
+        # Fetch each index once without serializing unrelated shards.
+        with lock:
+            with self._shard_index_lock:
+                pairs = self._shard_index_cache.get(shard_key)
+                if pairs is not None:
+                    self._shard_index_cache.move_to_end(shard_key)
+            if pairs is None:
+                position = -index_bytes_len if self._shard_index_location == "end" else 0
+                index_raw = self._store.read_range(shard_key, position, index_bytes_len)
+                if has_crc:
+                    index_raw = strip_crc32c(index_raw)
+                import struct as _struct
+                pairs = _struct.unpack(f"<{n_inner * 2}Q", index_raw)
+                with self._shard_index_lock:
+                    self._shard_index_cache[shard_key] = pairs
+                    if len(self._shard_index_cache) > self._shard_index_cache_max:
+                        self._shard_index_cache.popitem(last=False)
+        return pairs
+
+    def _shard_location(self, chunk_idx):
+        """Where inner chunk ``chunk_idx`` lives: ``(shard_key, lin, n_inner,
+        has_crc, index_bytes_len)``, ``lin`` being its position in the
+        shard's row-major chunk grid."""
         shard_shape = self._shard_shape
         assert shard_shape is not None
         # Outer (shard) index: how many shards in each dim and which
@@ -850,34 +880,43 @@ class OmeZarrArray:
         for w, cps in zip(within, chunks_per_shard):
             lin = lin * cps + w
 
+        return shard_key, lin, n_inner, has_crc, index_bytes_len
+
+    def _load_chunk_from_shard(
+        self, chunk_idx: tuple[int, ...],
+    ) -> np.ndarray:
+        """Resolve a sub-chunk inside a v3 shard.
+
+        Layout per shard (when ``index_location == "end"`` — the
+        zarr-python default):
+
+            [chunk_0_bytes][chunk_1_bytes]...[index]
+
+        The index has one (offset, nbytes) ``uint64`` pair per inner
+        chunk, in row-major order over the shard's chunk grid. Both
+        fields are ``(2**64-1)`` for absent chunks (Zarr's "empty"
+        marker). The index is itself encoded by ``index_codecs`` —
+        commonly ``[bytes, crc32c]``, where the crc32c codec just
+        appends a 4-byte trailing checksum.
+
+        Fast path: when the store supports byte-range reads
+        (``store.supports_range == True``), we fetch ONLY the index
+        footer (~16 bytes per inner chunk) and ONLY the specific
+        inner chunk we need. Indexes are cached per-shard so reading
+        many inner chunks from the same shard pays the index cost
+        once. For a 256 MB shard with 16 KB chunks (4096 inner
+        chunks), reading one chunk over HTTP drops from ~256 MB to
+        ~80 KB on the wire.
+        """
+        shard_key, lin, n_inner, has_crc, index_bytes_len = self._shard_location(chunk_idx)
+
         EMPTY = (1 << 64) - 1
         supports_range = getattr(self._store, "supports_range", False)
 
         # ---- Range-aware fast path ----
         if supports_range:
             try:
-                with self._shard_index_lock:
-                    lock = self._shard_fetch_locks.get(shard_key)
-                    if lock is None:
-                        lock = threading.Lock()
-                        self._shard_fetch_locks[shard_key] = lock
-                # Fetch each index once without serializing unrelated shards.
-                with lock:
-                    with self._shard_index_lock:
-                        pairs = self._shard_index_cache.get(shard_key)
-                        if pairs is not None:
-                            self._shard_index_cache.move_to_end(shard_key)
-                    if pairs is None:
-                        position = -index_bytes_len if self._shard_index_location == "end" else 0
-                        index_raw = self._store.read_range(shard_key, position, index_bytes_len)
-                        if has_crc:
-                            index_raw = strip_crc32c(index_raw)
-                        import struct as _struct
-                        pairs = _struct.unpack(f"<{n_inner * 2}Q", index_raw)
-                        with self._shard_index_lock:
-                            self._shard_index_cache[shard_key] = pairs
-                            if len(self._shard_index_cache) > self._shard_index_cache_max:
-                                self._shard_index_cache.popitem(last=False)
+                pairs = self._shard_pairs(shard_key, n_inner, has_crc, index_bytes_len)
             except (KeyError, FileNotFoundError):
                 return np.full(self.chunks, self.fill_value, dtype=self.dtype)
 
@@ -916,19 +955,19 @@ class OmeZarrArray:
         only the chunks intersecting the slice are loaded."""
         return self.read_region(item)
 
-    def _zstd_window_ok(self) -> bool:
-        """Whether chunks can decompress straight into the output.
+    def _zstd_chunks_ok(self) -> bool:
+        """Whether every chunk is plain zstd over its C-order pixels.
 
-        True for plain zstd chunks (v2 compressor ``zstd``; v3 ``bytes`` then
-        ``zstd``) stored unsharded in native byte order with at least two
-        axes: then a chunk's bytes are its C-order pixels, and one native
-        call can decompress it into its windows of the region output.
+        True for v2 compressor ``zstd`` or v3 ``bytes`` then ``zstd`` (the
+        inner codecs, for a sharded array), in native byte order, with at
+        least two axes: then a chunk decompresses to exactly the bytes its
+        windows of a region output are copied from.
         """
-        cached = self.__dict__.get("_zstd_window")
+        cached = self.__dict__.get("_zstd_chunks")
         if cached is not None:
             return cached
         ok = False
-        if not self._sharded and len(self.chunks) >= 2 and self._codecs is not None:
+        if len(self.chunks) >= 2 and self._codecs is not None:
             native = self.dtype.byteorder in ("=", "|") or self.dtype.itemsize == 1
             if self.zarr_format == 2:
                 ok = native and (self._codecs.get("id") == "zstd")
@@ -938,16 +977,45 @@ class OmeZarrArray:
                     endian = (self._codecs[0].get("configuration") or {}).get("endian")
                     ok = self.dtype.itemsize == 1 or endian in (
                         None, "little" if sys.byteorder == "little" else "big")
-        self.__dict__["_zstd_window"] = ok
+        self.__dict__["_zstd_chunks"] = ok
         return ok
 
-    def _place_zstd_chunk(self, chunk_idx, bounds, out, out2d, scratch, context):
-        """Decompress one zstd chunk straight into its windows of ``out``.
+    def _zstd_window_ok(self) -> bool:
+        """Whether chunks can decompress straight into the output.
+
+        True for plain zstd chunks (:meth:`_zstd_chunks_ok`) stored
+        unsharded: one native call decompresses a chunk into its windows
+        of the region output.
+        """
+        return not self._sharded and self._zstd_chunks_ok()
+
+    def _batch_ok(self) -> bool:
+        """Whether region reads take the batched native path.
+
+        Plain zstd chunks (:meth:`_zstd_chunks_ok`), sharded or not, in a
+        local directory. Chunk files are then read, decompressed and copied
+        into the output by three native calls per task of chunks, none of
+        them holding the GIL, instead of several Python calls per chunk.
+        """
+        cached = self.__dict__.get("_batch")
+        if cached is None:
+            cached = isinstance(self._store, _FsStore) and self._zstd_chunks_ok()
+            if cached and self._sharded:
+                cached = all((c.get("name") or c.get("id")) in ("bytes", "crc32c")
+                             for c in self._shard_index_codecs)
+            self.__dict__["_batch"] = cached
+        return cached
+
+    def _chunk_windows(self, chunk_idx, bounds, out_shape):
+        """Where chunk ``chunk_idx`` lands in a region output, as row windows.
 
         The chunk is viewed as rows of its last axis, one row per index of
-        every other axis, and ``out2d`` the same way; each combination of
-        the intersected leading indices is one window of one native call.
-        A missing chunk fills its part of the region with the fill value.
+        every other axis, and the output the same way. Returns the chunk's
+        intersection with the region, as per-axis ``(lo, hi)`` pairs in the
+        chunk (``src``) and in the output (``dst``), and one window
+        ``(sy0, sy1, sx0, sx1, dy, dx)`` per combination of the intersected
+        leading indices: chunk rows ``sy0:sy1``, elements ``sx0:sx1`` of
+        each, go to output row ``dy``, element ``dx`` onward.
         """
         chunks = self.chunks
         nd = len(chunks)
@@ -960,13 +1028,10 @@ class OmeZarrArray:
             hi = min(stop, ci * c + c)
             src.append((lo - ci * c, hi - ci * c))
             dst.append((lo - start, hi - start))
-        try:
-            raw = self._store[self._chunk_key(chunk_idx)]
-        except (KeyError, FileNotFoundError):
-            out[tuple(slice(a, b) for a, b in dst)] = self.fill_value
-            return
+        if nd == 2:
+            return src, dst, [(src[0][0], src[0][1], src[1][0], src[1][1],
+                               dst[0][0], dst[1][0])]
         # Row strides over the leading axes, in chunk and in output rows.
-        out_shape = out.shape
         windows = []
         lead = [range(src[a][0], src[a][1]) for a in range(nd - 2)]
 
@@ -983,6 +1048,22 @@ class OmeZarrArray:
                      o_row * out_shape[axis] + (k - src[axis][0] + dst[axis][0]))
 
         walk(0, 0, 0)
+        return src, dst, windows
+
+    def _place_zstd_chunk(self, chunk_idx, bounds, out, out2d, scratch, context):
+        """Decompress one zstd chunk straight into its windows of ``out``.
+
+        Each window of :meth:`_chunk_windows` is one window of one native
+        call. A missing chunk fills its part of the region with the fill
+        value.
+        """
+        chunks = self.chunks
+        src, dst, windows = self._chunk_windows(chunk_idx, bounds, out.shape)
+        try:
+            raw = self._store[self._chunk_key(chunk_idx)]
+        except (KeyError, FileNotFoundError):
+            out[tuple(slice(a, b) for a, b in dst)] = self.fill_value
+            return
         tile_h = 1
         for c in chunks[:-1]:
             tile_h *= c
@@ -996,6 +1077,239 @@ class OmeZarrArray:
             raise ValueError(
                 f"OmeZarrArray: chunk size mismatch (decoded {written} bytes, "
                 f"expected {total} for chunk shape {chunks})")
+
+    def _read_batched(self, ranges, bounds, out, place_decoded, num_workers,
+                      max_buffer_bytes) -> None:
+        """Read every chunk in ``ranges`` into ``out`` by tasks of chunks.
+
+        Each task is three native calls that run without the GIL: read
+        every chunk's bytes (``_bytetools.read_ranges``), decompress them
+        all (``_zstd.decode_run``) and copy each chunk's windows into the
+        output (``_bytetools.place_windows``). One Python call per chunk,
+        or several, is what limited threads before: on 4096 chunks of
+        64 KiB, reading the files alone got slower with more threads. The
+        Python work left per chunk (its file name, where it lands) is done
+        here for all chunks at once, so a task holds the GIL only briefly.
+
+        Tasks carry about ``_ZARR_NATIVE_TASK_BYTES`` of decoded data, and
+        the worker count follows the shared policy (``resolve_workers``)
+        unless a count was given here or to the constructor, within
+        ``max_buffer_bytes`` for the tasks' buffers.
+        """
+        import itertools
+        from .core.parallel import resolve_workers, run_batched
+        nd = len(self.chunks)
+        idx = np.stack(np.meshgrid(*[np.arange(r.start, r.stop, dtype=np.int64)
+                                     for r in ranges], indexing="ij"),
+                       axis=-1).reshape(-1, nd)
+        n = len(idx)
+        raw_size = int(np.prod(self.chunks)) * self.dtype.itemsize
+        requested = self._num_workers_arg if num_workers is None else num_workers
+        workers = resolve_workers(None if requested is None else max(1, int(requested)),
+                                  n, output_bytes=out.nbytes)
+        per_task = max(1, min(_ZARR_NATIVE_TASK_BYTES // max(1, raw_size),
+                              -(-n // workers)))
+        limit = self._max_buffer_bytes if max_buffer_bytes is None else max_buffer_bytes
+        workers = max(1, min(workers, limit // (per_task * 2 * raw_size + 65536)))
+        if self._sharded:
+            plan = self._shard_plan(idx)
+        else:
+            # The keys _chunk_key builds, for every chunk at once.
+            prefix = os.path.join(self._store._root_str, "")
+            if self.zarr_format == 3:
+                prefix += "c" + self._chunk_key_sep
+            parts = [[str(k) for k in r] for r in ranges]
+            sep = self._chunk_key_sep
+            plan = ([prefix + sep.join(t) for t in itertools.product(*parts)],
+                    np.zeros(n, dtype=np.int64), np.full(n, -1, dtype=np.int64), None)
+        windows = self._all_windows(idx, bounds, out.shape, per_task, raw_size)
+        out2d = out.reshape(-1, out.shape[-1]).view(np.uint8)
+        tasks = [(a, min(a + per_task, n)) for a in range(0, n, per_task)]
+        run_batched(lambda task: self._batch_task(
+                        task, idx, plan, windows, bounds, out, out2d, raw_size,
+                        place_decoded),
+                    tasks, workers, name="zarr-read")
+
+    def _shard_plan(self, idx):
+        """Where every inner chunk of ``idx`` is: ``(paths, offsets,
+        lengths, present)``, one entry per chunk.
+
+        Each shard touched has its index read once (and cached, as
+        :meth:`_load_chunk_from_shard` caches it). A chunk in a missing
+        shard, or marked empty in its shard's index, is not present; the
+        per-chunk path fills it.
+        """
+        n = len(idx)
+        per_shard = np.array([s // c for s, c in zip(self._shard_shape, self.chunks)],
+                             dtype=np.int64)
+        n_inner = int(np.prod(per_shard))
+        has_crc = any(c.get("name") == "crc32c" for c in self._shard_index_codecs)
+        index_len = n_inner * 16 + (4 if has_crc else 0)
+        shard_rows = idx // per_shard
+        lin = np.ravel_multi_index(tuple((idx - shard_rows * per_shard).T),
+                                   tuple(per_shard.tolist()))
+        unique, which = np.unique(shard_rows, axis=0, return_inverse=True)
+        which = which.reshape(-1)
+        prefix = os.path.join(self._store._root_str, "")
+        empty = np.uint64((1 << 64) - 1)
+        offsets = np.zeros(n, dtype=np.int64)
+        lengths = np.zeros(n, dtype=np.int64)
+        present = np.zeros(n, dtype=bool)
+        shard_paths = []
+        # Chunks grouped by shard: those of shard u are by_shard[edges[u]:edges[u + 1]].
+        by_shard = np.argsort(which, kind="stable")
+        edges = np.searchsorted(which[by_shard], np.arange(len(unique) + 1))
+        for u, row in enumerate(unique.tolist()):
+            shard_key = self._chunk_key(tuple(row))
+            shard_paths.append(prefix + shard_key)
+            try:
+                pairs = self._shard_pairs(shard_key, n_inner, has_crc, index_len)
+            except (KeyError, FileNotFoundError):
+                continue
+            mine = by_shard[edges[u]:edges[u + 1]]
+            entry = np.asarray(pairs, dtype=np.uint64).reshape(-1, 2)[lin[mine]]
+            good = (entry[:, 0] != empty) & (entry[:, 1] != empty)
+            mine = mine[good]
+            offsets[mine] = entry[good, 0].astype(np.int64)
+            lengths[mine] = entry[good, 1].astype(np.int64)
+            present[mine] = True
+        paths = [shard_paths[u] for u in which.tolist()]
+        return paths, offsets, lengths, present
+
+    def _all_windows(self, idx, bounds, out_shape, per_task, raw_size):
+        """place_windows rows for every chunk of ``idx``, or None.
+
+        Computed for all chunks at once when each chunk has exactly one
+        window, which is when every axis but the last two is chunked by
+        one (2-D arrays; OME-Zarr's (t, c, z, y, x) with one plane per
+        chunk). The rows assume chunk ``g`` at ``(g % per_task) * raw_size``
+        of its task's scratch; a task that skips chunks shifts them.
+        """
+        chunks = self.chunks
+        nd = len(chunks)
+        if any(c != 1 for c in chunks[:-2]):
+            return None
+        itemsize = self.dtype.itemsize
+        row_bytes = chunks[-1] * itemsize
+        (y0, y1), (x0, x1) = bounds[-2], bounds[-1]
+        ch, cw = chunks[-2], chunks[-1]
+        cy = idx[:, -2] * ch
+        cx = idx[:, -1] * cw
+        ly = np.maximum(y0, cy)
+        hy = np.minimum(y1, cy + ch)
+        lx = np.maximum(x0, cx)
+        hx = np.minimum(x1, cx + cw)
+        # Output row of the window's first row: the leading axes' position
+        # in the region, flattened, then the row within the plane.
+        lead = np.zeros(len(idx), dtype=np.int64)
+        for axis in range(nd - 2):
+            lead = lead * out_shape[axis] + (idx[:, axis] - bounds[axis][0])
+        g = np.arange(len(idx), dtype=np.int64)
+        windows = np.empty((len(idx), 6), dtype=np.int64)
+        windows[:, 0] = (g % per_task) * raw_size + (ly - cy) * row_bytes + (lx - cx) * itemsize
+        windows[:, 1] = row_bytes
+        windows[:, 2] = hy - ly
+        windows[:, 3] = (hx - lx) * itemsize
+        windows[:, 4] = lead * out_shape[-2] + (ly - y0)
+        windows[:, 5] = (lx - x0) * itemsize
+        return windows
+
+    def _batch_task(self, task, idx, plan, windows, bounds, out, out2d, raw_size,
+                    place_decoded) -> None:
+        """Read, decompress and place chunks ``task[0]:task[1]`` of ``idx``.
+
+        ``plan`` is ``(paths, offsets, lengths, present)`` per chunk (see
+        :meth:`_shard_plan`; ``present`` is None when every chunk has a
+        file of its own). A chunk the native calls cannot finish (one not
+        present, a missing or unreadable file, a frame that does not decode
+        to exactly one chunk) is redone on the per-chunk path, which fills,
+        or raises the precise error.
+        """
+        from .codecs import _bytetools
+        zstd = _zstd_module()
+        state = _batch_thread_state()
+        a, b = task
+        paths, offsets, lengths, present = plan
+        if present is None:
+            members = list(range(a, b))
+            redo = []
+            task_paths = paths[a:b]
+            offs = offsets[a:b]
+            lens = lengths[a:b]
+            need = (b - a) * (raw_size + (raw_size >> 7) + 4096)
+        else:
+            here = present[a:b]
+            keep = np.flatnonzero(here)
+            members = (keep + a).tolist()
+            redo = (np.flatnonzero(~here) + a).tolist()
+            task_paths = [paths[g] for g in members]
+            offs = offsets[a:b][keep]
+            lens = lengths[a:b][keep]
+            need = int(lens.sum())
+        m = len(members)
+        if m:
+            starts = np.empty(m + 1, dtype=np.int64)
+            sizes = np.empty(m, dtype=np.int64)
+            errs = np.empty(m, dtype=np.int32)
+            while True:
+                buf = state[0].bytes(max(need, state[0].capacity))
+                starts[m] = _bytetools.read_ranges(task_paths, offs, lens, buf, starts,
+                                                   sizes, errs)
+                if not (sizes == -2).any():
+                    break
+                need = 2 * len(buf)
+            dec = state[1].bytes(m * raw_size)
+            got = np.empty(m, dtype=np.int64)
+            # A file that failed to read is an empty chunk here (its start is
+            # the next one's), so it fails to decode and is redone below.
+            zstd.decode_run(buf, dec, np.arange(m + 1, dtype=np.int64) * raw_size,
+                            0, m, got, starts)
+            ok = (sizes >= 0) & (got == raw_size)
+            if windows is not None:
+                # Member k decoded at k * raw_size; _all_windows placed chunk g
+                # at (g - a) * raw_size, which differs where chunks were skipped.
+                placed = np.flatnonzero(ok)
+                chosen = np.array(members, dtype=np.int64)[placed]
+                rows = windows[chosen]
+                rows[:, 0] += (placed - (chosen - a)) * raw_size
+            else:
+                rows = self._task_windows(idx, members, ok, bounds, out.shape, raw_size)
+            if len(rows):
+                _bytetools.place_windows(dec, out2d, rows)
+            if not ok.all():
+                redo.extend(members[k] for k in np.flatnonzero(~ok).tolist())
+            del buf, dec
+            # The scratch outlives the call, one pair per pool thread: keep
+            # what a task of ordinary chunks needs, not one huge chunk's worth.
+            for scratch in state:
+                if scratch.capacity > _ZARR_SCRATCH_KEEP:
+                    scratch.clear()
+        if redo:
+            redo.sort()
+            if self._sharded:
+                for g in redo:
+                    place_decoded(tuple(idx[g].tolist()))
+            else:
+                scratch, context = _zstd_thread_state()
+                for g in redo:
+                    self._place_zstd_chunk(tuple(idx[g].tolist()), bounds, out, out2d,
+                                           scratch, context)
+
+    def _task_windows(self, idx, members, ok, bounds, out_shape, raw_size):
+        """place_windows rows for one task, chunk by chunk (see _all_windows);
+        member ``k`` was decoded at ``k * raw_size``."""
+        itemsize = self.dtype.itemsize
+        row_bytes = self.chunks[-1] * itemsize
+        rows = []
+        for k, g in enumerate(members):
+            if not ok[k]:
+                continue
+            base = k * raw_size
+            ci = tuple(idx[g].tolist())
+            for sy0, sy1, sx0, sx1, dy, dx in self._chunk_windows(ci, bounds, out_shape)[2]:
+                rows.append((base + sy0 * row_bytes + sx0 * itemsize, row_bytes,
+                             sy1 - sy0, (sx1 - sx0) * itemsize, dy, dx * itemsize))
+        return np.array(rows, dtype=np.int64).reshape(-1, 6)
 
     def read_region(self, region, *, num_workers=None, max_buffer_bytes=None) -> np.ndarray:
         """Read a region given as a tuple of slices or single slice.
@@ -1071,6 +1385,11 @@ class OmeZarrArray:
                 src_slices.append(slice(s_lo - chunk_start, s_hi - chunk_start))
                 dst_slices.append(slice(s_lo - start, s_hi - start))
             out[tuple(dst_slices)] = chunk[tuple(src_slices)]
+
+        if self._batch_ok() and out.size:
+            self._read_batched(ranges, bounds, out, place_decoded,
+                               num_workers, max_buffer_bytes)
+            return out
 
         # Plain zstd chunks decompress straight into the output: one native
         # call per chunk instead of decode, frombuffer and a copy, each of
