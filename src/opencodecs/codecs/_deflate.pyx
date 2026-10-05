@@ -748,3 +748,109 @@ _VTABLE.decode = _vt_decode
 def decoder_capsule():
     """This module's decompressor as a C table, for a nogil caller in C."""
     return PyCapsule_New(<void*> &_VTABLE, OC_DECODER_VTABLE_CAPSULE, NULL)
+
+
+# ---------------------------------------------------------------------------
+# Many chunks in one call (see oc_batch.h and opencodecs.core.batch)
+# ---------------------------------------------------------------------------
+
+from libc.stdint cimport int64_t
+
+cdef extern from "oc_batch.h":
+    ctypedef struct oc_batch:
+        Py_ssize_t n
+        const uint8_t** src
+        size_t* src_len
+        uint8_t** dst
+        size_t* dst_cap
+    int oc_batch_acquire(oc_batch* b, object chunks, object chunk_offsets,
+                         object out, object offsets,
+                         Py_ssize_t start, Py_ssize_t stop) except -1
+    void oc_batch_release(oc_batch* b)
+
+
+def decode_run(chunks, out, offsets, Py_ssize_t start, Py_ssize_t stop,
+               int64_t[::1] sizes, chunk_offsets=None, *, bint raw=False):
+    """Decode ``chunks[start:stop]`` into their destinations, without the GIL.
+
+    ``chunks`` is a sequence of bytes-like objects, or with
+    ``chunk_offsets`` one buffer that chunk ``i`` spans from
+    ``chunk_offsets[i]`` to ``chunk_offsets[i + 1]``. ``out`` is one
+    writable buffer per chunk, or one buffer that chunk ``i`` fills from
+    ``offsets[i]`` to ``offsets[i + 1]`` (offsets are int64 arrays).
+    Each chunk decodes as
+    :func:`decode` with that destination as ``out=`` (and the same
+    ``raw``) would: its size goes to ``sizes[i]``, or -1 where
+    :func:`decode` would raise. One decompressor is reused for the whole
+    run. Returns the number of chunks that failed;
+    :func:`opencodecs.core.batch.decode_batch` raises the precise error.
+    """
+    cdef:
+        oc_batch b
+        Py_ssize_t k, failed = 0
+        int fmt = _FMT_RAW if raw else _FMT_ZLIB
+        size_t written
+        uLongf dstsize
+        int rc
+        libdeflate_decompressor* decompressor = NULL
+    if start < 0 or stop > sizes.shape[0]:
+        raise ValueError("sizes is shorter than the chunk run")
+    if raw and not OPENCODECS_HAVE_LIBDEFLATE:
+        # Without libdeflate a raw stream is inflated by Python's zlib,
+        # which needs the GIL: decode one chunk at a time.
+        return _decode_run_python(chunks, out, offsets, start, stop, sizes,
+                                  chunk_offsets)
+    oc_batch_acquire(&b, chunks, chunk_offsets, out, offsets, start, stop)
+    try:
+        with nogil:
+            if OPENCODECS_HAVE_LIBDEFLATE:
+                decompressor = libdeflate_alloc_decompressor()
+            for k in range(b.n):
+                if b.src_len[k] == 0:
+                    sizes[start + k] = 0
+                    continue
+                if OPENCODECS_HAVE_LIBDEFLATE:
+                    if decompressor == NULL or oc_ld_decompress(
+                            fmt, decompressor, <const void*> b.src[k], b.src_len[k],
+                            <void*> b.dst[k], b.dst_cap[k],
+                            &written) != LIBDEFLATE_SUCCESS:
+                        sizes[start + k] = -1
+                        failed += 1
+                    else:
+                        sizes[start + k] = <int64_t> written
+                    continue
+                dstsize = <uLongf> b.dst_cap[k]
+                rc = uncompress(b.dst[k], &dstsize, b.src[k], <uLong> b.src_len[k])
+                if rc != Z_OK:
+                    sizes[start + k] = -1
+                    failed += 1
+                else:
+                    sizes[start + k] = <int64_t> dstsize
+            if decompressor != NULL:
+                libdeflate_free_decompressor(decompressor)
+    finally:
+        oc_batch_release(&b)
+    return failed
+
+
+def _decode_run_python(chunks, out, offsets, Py_ssize_t start, Py_ssize_t stop,
+                       int64_t[::1] sizes, chunk_offsets):
+    """decode_run for raw streams in a build without libdeflate."""
+    cdef Py_ssize_t i, failed = 0
+    whole = None if isinstance(out, (list, tuple)) else memoryview(out).cast("B")
+    source = None if chunk_offsets is None else memoryview(chunks).cast("B")
+    for i in range(start, stop):
+        if source is None:
+            chunk = chunks[i]
+        else:
+            chunk = source[chunk_offsets[i]:chunk_offsets[i + 1]]
+        if whole is None:
+            target = memoryview(out[i]).cast("B")
+        else:
+            target = whole[offsets[i]:offsets[i + 1]]
+        try:
+            sizes[i] = len(decode(chunk, out=target, raw=True))
+        except ZlibError:
+            sizes[i] = -1
+            failed += 1
+    return failed

@@ -613,3 +613,140 @@ def unpackints_into(data, out, int bits, Py_ssize_t count,
                 dest_index = i * itemsize + (j if little_endian else itemsize - 1 - j)
                 target[dest_index] = <uint8_t> (value >> (8 * j))
     return out
+
+
+# ---------------------------------------------------------------------------
+# Reading many files, and placing decoded chunks, without the GIL
+# ---------------------------------------------------------------------------
+
+from libc.stdint cimport int32_t, int64_t
+from libc.stdlib cimport calloc, free
+from libc.string cimport memcpy
+from libc.errno cimport errno
+
+cdef extern from "oc_readfiles.h":
+    const void* oc_path_acquire(object obj, void** owner) except NULL
+    void oc_path_release(void* owner)
+    int oc_file_open(const void* path) nogil
+    void oc_file_close(int fd) nogil
+    int64_t oc_file_size(int fd) nogil
+    int64_t oc_file_pread(int fd, uint8_t* dst, int64_t n, int64_t offset) nogil
+
+
+def read_ranges(paths, const int64_t[::1] offsets, const int64_t[::1] lengths,
+                uint8_t[::1] buffer, int64_t[::1] starts, int64_t[::1] sizes,
+                int32_t[::1] errnos):
+    """Read a byte range of each file in ``paths`` into ``buffer``, in order.
+
+    Item ``i`` reads ``lengths[i]`` bytes at ``offsets[i]`` of ``paths[i]``
+    (fewer at the end of the file); a negative length reads to the end of
+    the file, and a negative offset counts back from the end, clamped at the
+    start, as ``_FsStore.read_range`` does. The bytes go to ``buffer`` back
+    to back: item ``i`` at ``starts[i]``, ``sizes[i]`` long. An item that
+    does not fit in what is left of ``buffer`` gets size -2 and is skipped,
+    so the caller can grow the buffer and read it again; an item whose
+    file could not be opened or read gets size -1 and its ``errno``.
+    Consecutive items naming the same path object share one open.
+
+    Opening, sizing and reading all run without the GIL. Returns the
+    number of buffer bytes used.
+    """
+    cdef:
+        Py_ssize_t n = len(paths), i
+        const void** native = NULL
+        void** owners = NULL
+        int fd = -1
+        int64_t pos = 0, cap = buffer.shape[0], size, offset, want, got
+        uint8_t* base = &buffer[0] if buffer.shape[0] else NULL
+    if (offsets.shape[0] < n or lengths.shape[0] < n or starts.shape[0] < n
+            or sizes.shape[0] < n or errnos.shape[0] < n):
+        raise ValueError("every per-item array needs one entry per path")
+    native = <const void**> calloc(n + 1, sizeof(void*))
+    owners = <void**> calloc(n + 1, sizeof(void*))
+    if native == NULL or owners == NULL:
+        free(native)
+        free(owners)
+        raise MemoryError()
+    try:
+        for i in range(n):
+            if i and paths[i] is paths[i - 1]:
+                native[i] = native[i - 1]
+            else:
+                native[i] = oc_path_acquire(paths[i], &owners[i])
+        with nogil:
+            for i in range(n):
+                starts[i] = pos
+                sizes[i] = -1
+                errnos[i] = 0
+                if i == 0 or native[i] != native[i - 1] or fd < 0:
+                    if fd >= 0:
+                        oc_file_close(fd)
+                    fd = oc_file_open(native[i])
+                    if fd < 0:
+                        errnos[i] = errno
+                        continue
+                offset = offsets[i]
+                want = lengths[i]
+                if offset < 0 or want < 0:
+                    size = oc_file_size(fd)
+                    if size < 0:
+                        errnos[i] = errno
+                        continue
+                    if offset < 0:
+                        offset = size + offset if size + offset > 0 else 0
+                    if want < 0:
+                        want = size - offset if size > offset else 0
+                if want > cap - pos:
+                    sizes[i] = -2
+                    continue
+                got = oc_file_pread(fd, base + pos if base != NULL else NULL,
+                                    want, offset)
+                if got < 0:
+                    errnos[i] = errno
+                    continue
+                sizes[i] = got
+                pos += got
+            if fd >= 0:
+                oc_file_close(fd)
+    finally:
+        for i in range(n):
+            oc_path_release(owners[i])
+        free(native)
+        free(owners)
+    return pos
+
+
+def place_windows(src, out, const int64_t[:, ::1] windows):
+    """Copy rectangles of rows from ``src`` into the 2D byte array ``out``.
+
+    Each row of ``windows`` is ``(src_offset, src_stride, rows, nbytes,
+    dst_row, dst_col)``: ``rows`` runs of ``nbytes`` bytes, the r-th
+    starting at ``src[src_offset + r * src_stride]``, land at
+    ``out[dst_row + r, dst_col:dst_col + nbytes]``. Every window is checked
+    against both buffers first; the copies then run without the GIL.
+    """
+    cdef:
+        const uint8_t[::1] s = src
+        uint8_t[:, ::1] d = out
+        Py_ssize_t m = windows.shape[0], i, r
+        int64_t so, ss, rows, nb, dr, dc
+        int64_t slen = s.shape[0]
+    if windows.shape[1] != 6:
+        raise ValueError(f"windows must have 6 columns, got {windows.shape[1]}")
+    for i in range(m):
+        so = windows[i, 0]; ss = windows[i, 1]; rows = windows[i, 2]
+        nb = windows[i, 3]; dr = windows[i, 4]; dc = windows[i, 5]
+        if rows <= 0 or nb <= 0:
+            continue
+        if (so < 0 or ss < 0 or dr < 0 or dc < 0
+                or dr + rows > d.shape[0] or dc + nb > d.shape[1]
+                or so + (rows - 1) * ss + nb > slen):
+            raise ValueError(f"window {i} lies outside the source or destination")
+    with nogil:
+        for i in range(m):
+            so = windows[i, 0]; ss = windows[i, 1]; rows = windows[i, 2]
+            nb = windows[i, 3]; dr = windows[i, 4]; dc = windows[i, 5]
+            if rows <= 0 or nb <= 0:
+                continue
+            for r in range(rows):
+                memcpy(&d[dr + r, dc], &s[so + r * ss], <size_t> nb)

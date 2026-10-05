@@ -713,3 +713,72 @@ _VTABLE.decode = _vt_decode
 def decoder_capsule():
     """This module's decompressor as a C table, for a nogil caller in C."""
     return PyCapsule_New(<void*> &_VTABLE, OC_DECODER_VTABLE_CAPSULE, NULL)
+
+
+# ---------------------------------------------------------------------------
+# Many chunks in one call (see oc_batch.h and opencodecs.core.batch)
+# ---------------------------------------------------------------------------
+
+from libc.stdint cimport int64_t
+
+cdef extern from "oc_batch.h":
+    ctypedef struct oc_batch:
+        Py_ssize_t n
+        const uint8_t** src
+        size_t* src_len
+        uint8_t** dst
+        size_t* dst_cap
+    int oc_batch_acquire(oc_batch* b, object chunks, object chunk_offsets,
+                         object out, object offsets,
+                         Py_ssize_t start, Py_ssize_t stop) except -1
+    void oc_batch_release(oc_batch* b)
+
+
+def decode_run(chunks, out, offsets, Py_ssize_t start, Py_ssize_t stop,
+               int64_t[::1] sizes, chunk_offsets=None):
+    """Decode ``chunks[start:stop]`` into their destinations, without the GIL.
+
+    ``chunks`` is a sequence of bytes-like objects, or with
+    ``chunk_offsets`` one buffer that chunk ``i`` spans from
+    ``chunk_offsets[i]`` to ``chunk_offsets[i + 1]``. ``out`` is one
+    writable buffer per chunk, or one buffer that chunk ``i`` fills from
+    ``offsets[i]`` to ``offsets[i + 1]`` (offsets are int64 arrays).
+    Each chunk decodes as
+    :func:`decode` with that destination as ``out=`` would: its size goes
+    to ``sizes[i]``, or -1 where :func:`decode` would raise. One context is
+    reused for the whole run. Returns the number of chunks that failed;
+    :func:`opencodecs.core.batch.decode_batch` raises the precise error.
+    """
+    cdef:
+        oc_batch b
+        Py_ssize_t k, failed = 0
+        unsigned long long content
+        size_t bad = 0, ret
+        ZSTD_DCtx* dctx = NULL
+    if start < 0 or stop > sizes.shape[0]:
+        raise ValueError("sizes is shorter than the chunk run")
+    oc_batch_acquire(&b, chunks, chunk_offsets, out, offsets, start, stop)
+    try:
+        with nogil:
+            dctx = ZSTD_createDCtx()
+            for k in range(b.n):
+                if b.src_len[k] == 0:
+                    sizes[start + k] = 0
+                    continue
+                content = _content_size(b.src[k], b.src_len[k], &bad)
+                if dctx == NULL or content == <unsigned long long> ZSTD_CONTENTSIZE_ERROR:
+                    sizes[start + k] = -1
+                    failed += 1
+                    continue
+                ret = ZSTD_decompressDCtx(dctx, <void*> b.dst[k], b.dst_cap[k],
+                                          <const void*> b.src[k], b.src_len[k])
+                if ZSTD_isError(ret):
+                    sizes[start + k] = -1
+                    failed += 1
+                else:
+                    sizes[start + k] = <int64_t> ret
+            if dctx != NULL:
+                ZSTD_freeDCtx(dctx)
+    finally:
+        oc_batch_release(&b)
+    return failed

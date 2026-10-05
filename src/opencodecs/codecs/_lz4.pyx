@@ -660,3 +660,139 @@ def lz4block_check_signature(data) -> bool:
         return bytes(data[:8]) == LZ4BLOCK_MAGIC
     except Exception:
         return False
+
+
+# ---------------------------------------------------------------------------
+# Many chunks in one call (see oc_batch.h and opencodecs.core.batch)
+# ---------------------------------------------------------------------------
+
+from libc.stdint cimport int64_t
+
+cdef extern from "oc_batch.h":
+    ctypedef struct oc_batch:
+        Py_ssize_t n
+        const uint8_t** src
+        size_t* src_len
+        uint8_t** dst
+        size_t* dst_cap
+    int oc_batch_acquire(oc_batch* b, object chunks, object chunk_offsets,
+                         object out, object offsets,
+                         Py_ssize_t start, Py_ssize_t stop) except -1
+    void oc_batch_release(oc_batch* b)
+
+
+cdef Py_ssize_t _frame_into(LZ4F_dctx* dctx, const uint8_t* src, size_t srcsize,
+                            uint8_t* dst, size_t dst_size) noexcept nogil:
+    """:func:`decode` into a caller buffer, step for step; -1 where it raises."""
+    cdef LZ4F_frameInfo_t info
+    cdef size_t ret, pos, dst_pos = 0, this_dst, this_src
+    memset(<void*> &info, 0, sizeof(LZ4F_frameInfo_t))
+    this_src = srcsize
+    ret = LZ4F_getFrameInfo(dctx, &info, <const void*> src, &this_src)
+    if LZ4F_isError(ret):
+        return -1
+    pos = this_src
+    while True:
+        this_dst = dst_size - dst_pos
+        this_src = srcsize - pos
+        ret = LZ4F_decompress(dctx, <void*> (dst + dst_pos), &this_dst,
+                              <const void*> (src + pos), &this_src, NULL)
+        if LZ4F_isError(ret):
+            return -1
+        dst_pos += this_dst
+        pos += this_src
+        if ret == 0 and pos == srcsize:
+            return <Py_ssize_t> dst_pos
+        if (this_dst == 0 and this_src == 0) or (
+                ret != 0 and pos == srcsize and dst_pos == dst_size):
+            return -1
+        if ret != 0 and pos == srcsize:
+            return -1
+
+
+def decode_run(chunks, out, offsets, Py_ssize_t start, Py_ssize_t stop,
+               int64_t[::1] sizes, chunk_offsets=None):
+    """Decode the LZ4 frames ``chunks[start:stop]``, without the GIL.
+
+    ``chunks`` is a sequence of bytes-like objects, or with
+    ``chunk_offsets`` one buffer that chunk ``i`` spans from
+    ``chunk_offsets[i]`` to ``chunk_offsets[i + 1]``. ``out`` is one
+    writable buffer per chunk, or one buffer that chunk ``i`` fills from
+    ``offsets[i]`` to ``offsets[i + 1]`` (offsets are int64 arrays).
+    Each chunk decodes as
+    :func:`decode` with that destination as ``out=`` would: its size goes
+    to ``sizes[i]``, or -1 where :func:`decode` would raise. One context is
+    reused while chunks succeed. Returns the number of chunks that failed;
+    :func:`opencodecs.core.batch.decode_batch` raises the precise error.
+    """
+    cdef:
+        oc_batch b
+        Py_ssize_t k, failed = 0, got
+        size_t ret
+        LZ4F_dctx* dctx = NULL
+    if start < 0 or stop > sizes.shape[0]:
+        raise ValueError("sizes is shorter than the chunk run")
+    oc_batch_acquire(&b, chunks, chunk_offsets, out, offsets, start, stop)
+    try:
+        with nogil:
+            for k in range(b.n):
+                if b.src_len[k] == 0:
+                    sizes[start + k] = 0
+                    continue
+                if dctx == NULL:
+                    ret = LZ4F_createDecompressionContext(&dctx, LZ4F_VERSION)
+                    if LZ4F_isError(ret):
+                        dctx = NULL
+                got = -1 if dctx == NULL else _frame_into(
+                    dctx, b.src[k], b.src_len[k], b.dst[k], b.dst_cap[k])
+                sizes[start + k] = got
+                if got < 0:
+                    failed += 1
+                    # A failed frame leaves the context mid-frame; the
+                    # next chunk starts from a fresh one, as decode does.
+                    if dctx != NULL:
+                        LZ4F_freeDecompressionContext(dctx)
+                        dctx = NULL
+            if dctx != NULL:
+                LZ4F_freeDecompressionContext(dctx)
+    finally:
+        oc_batch_release(&b)
+    return failed
+
+
+def block_decode_run(chunks, out, offsets, Py_ssize_t start, Py_ssize_t stop,
+                     int64_t[::1] sizes, chunk_offsets=None):
+    """Decode the bare LZ4 blocks ``chunks[start:stop]``, without the GIL.
+
+    As :func:`decode_run`, but each chunk is one bare block that must fill
+    its destination exactly, as :func:`block_decode` with ``size`` set to
+    the destination's length requires.
+    """
+    cdef:
+        oc_batch b
+        Py_ssize_t k, failed = 0
+        int ret
+    if start < 0 or stop > sizes.shape[0]:
+        raise ValueError("sizes is shorter than the chunk run")
+    oc_batch_acquire(&b, chunks, chunk_offsets, out, offsets, start, stop)
+    try:
+        with nogil:
+            for k in range(b.n):
+                if (b.dst_cap[k] > 0x7E000000 or b.src_len[k] > 0x7FFFFFFF
+                        or (b.src_len[k] == 0 and b.dst_cap[k] != 0)):
+                    sizes[start + k] = -1
+                    failed += 1
+                    continue
+                if b.src_len[k] == 0:
+                    sizes[start + k] = 0
+                    continue
+                ret = LZ4_decompress_safe(<const char*> b.src[k], <char*> b.dst[k],
+                                          <int> b.src_len[k], <int> b.dst_cap[k])
+                if ret < 0 or <size_t> ret != b.dst_cap[k]:
+                    sizes[start + k] = -1
+                    failed += 1
+                else:
+                    sizes[start + k] = ret
+    finally:
+        oc_batch_release(&b)
+    return failed

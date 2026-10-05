@@ -76,6 +76,7 @@ from ._tiff_pyramid import TiffPyramidReader
 from ._tiff_http import HTTPDataSource, FileDataSource
 from .core.pyramid import PyramidReader, PyramidLevel
 from .core.parallel import parallel_call as _parallel_call
+from .core.batch import decode_batch
 
 
 def read(src: Any, *, format: str | None = None, **opts):
@@ -308,6 +309,8 @@ def _pyramid_bytes(src: Any) -> bytes:
 __all__ = [
     # Top-level unified API
     "read", "write", "open", "open_pyramid",
+    # Many compressed chunks in one call
+    "decode_batch",
     # N5 (Janelia chunked arrays)
     "N5Array", "N5Error",
     # Imaris (.ims)
