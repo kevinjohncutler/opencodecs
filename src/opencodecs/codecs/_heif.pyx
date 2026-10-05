@@ -55,7 +55,7 @@ from heif cimport (
     heif_context_set_max_decoding_threads,
     heif_context_encode_image,
     heif_writer, heif_context_write,
-    heif_error,
+    heif_error, heif_decoding_options,
     heif_color_profile_nclx,
     heif_nclx_color_profile_alloc, heif_nclx_color_profile_free,
     heif_nclx_color_profile_set_color_primaries,
@@ -258,6 +258,60 @@ cdef int _alpha_bits(const heif_image_handle* handle) except -2:
     return bits
 
 
+# libheif hands the HEVC decoder its own thread count only from 1.21
+# (heif_decoding_options version 8, num_codec_threads); before that, and
+# when this is left at 0, its libde265 plugin starts one worker thread, so
+# a single coded image decoded on one core however many were asked for.
+# libde265 threads over the wavefront rows that x265 writes by default
+# (and over tiles, which x265 does not write): an untiled 4096 x 3072
+# image went from 953 to 134 ms on 16 threads, pixel-identical. A grid
+# image is many small coded images that libheif already decodes in
+# parallel (heif_context_set_max_decoding_threads), so those keep one
+# codec thread each rather than multiplying the two counts.
+cdef extern from *:
+    """
+    #include <libheif/heif.h>
+    #if LIBHEIF_NUMERIC_VERSION >= 0x01150000
+    #include <libheif/heif_items.h>
+    static heif_decoding_options* oc_heif_decoding_options(
+            heif_context* ctx, const heif_image_handle* handle, int threads) {
+        heif_decoding_options* options = heif_decoding_options_alloc();
+        uint32_t type = heif_item_get_item_type(
+            ctx, heif_image_handle_get_item_id(handle));
+        if (options != NULL && options->version >= 8)
+            options->num_codec_threads =
+                type == (((uint32_t) 'g' << 24) | ((uint32_t) 'r' << 16)
+                         | ((uint32_t) 'i' << 8) | (uint32_t) 'd') ? 1 : threads;
+        return options;
+    }
+    static void oc_heif_decoding_options_free(heif_decoding_options* options) {
+        if (options != NULL)
+            heif_decoding_options_free(options);
+    }
+    #else
+    static heif_decoding_options* oc_heif_decoding_options(
+            heif_context* ctx, const heif_image_handle* handle, int threads) {
+        (void) ctx; (void) handle; (void) threads;
+        return NULL;
+    }
+    static void oc_heif_decoding_options_free(heif_decoding_options* options) {
+        (void) options;
+    }
+    #endif
+    """
+    heif_decoding_options* oc_heif_decoding_options(
+        heif_context* ctx, const heif_image_handle* handle, int threads)
+    void oc_heif_decoding_options_free(heif_decoding_options* options)
+
+
+def _decode_threads(numthreads):
+    """Threads for one decode: as given (at least 1), or this call's share."""
+    if numthreads is not None:
+        return max(1, int(numthreads))
+    from opencodecs.core.parallel import auto_threads
+    return auto_threads(None)
+
+
 def decode(data, *, numthreads: int | None = None, out=None,
            index=None, photometric=None, _info=False) -> np.ndarray:
     """Decode HEIF/HEIC bytes to a numpy array.
@@ -280,10 +334,13 @@ def decode(data, *, numthreads: int | None = None, out=None,
     Parameters
     ----------
     numthreads : int, optional
-        Max worker threads for the HEVC decoder. ``None`` (default)
-        leaves libheif's compile-time default (typically 4). ``0`` or
-        ``1`` forces single-threaded. Larger values give near-linear
-        speedup on 4K+ images.
+        Threads for the decode. ``None`` (default) takes this call's
+        share of the CPU count, at most 16 (``auto_threads``). ``0`` or
+        ``1`` decodes on one thread. A grid image (what cameras write)
+        decodes its tiles on that many threads; a single coded image
+        hands them to the HEVC decoder, which needs libheif 1.21 or
+        newer to accept them and uses them only for what the bitstream
+        allows to run in parallel (the wavefront rows x265 writes).
     out : np.ndarray | None, optional
         Preallocated output ndarray. See ``_png.decode`` for the full
         contract. libheif allocates its own RGB plane internally and
@@ -297,6 +354,14 @@ def decode(data, *, numthreads: int | None = None, out=None,
         monochrome from a color image raises ValueError: imagecodecs
         hands back its red channel there, which is not a gray image.
     """
+    from opencodecs.core.parallel import parallel_call
+    # Registered for the whole call, so concurrent decodes size their
+    # threads as shares of the machine (core.parallel.fair_share).
+    with parallel_call():
+        return _decode(data, numthreads, out, index, photometric, _info)
+
+
+def _decode(data, numthreads, out, index, photometric, _info):
     cdef:
         const uint8_t[::1] src
         size_t srcsize
@@ -327,6 +392,7 @@ def decode(data, *, numthreads: int | None = None, out=None,
         int idx
         heif_item_id* ids = NULL
         heif_item_id wanted
+        heif_decoding_options* options = NULL
 
     _ensure_init()
     want_monochrome = _wants_monochrome(photometric)
@@ -346,10 +412,8 @@ def decode(data, *, numthreads: int | None = None, out=None,
     if ctx == NULL:
         raise HeifError('heif_context_alloc failed')
     try:
-        if numthreads is not None:
-            _heif_n = int(numthreads)
-            if _heif_n < 1: _heif_n = 1
-            heif_context_set_max_decoding_threads(ctx, _heif_n)
+        _heif_n = _decode_threads(numthreads)
+        heif_context_set_max_decoding_threads(ctx, _heif_n)
         if hasattr(data, "read_at"):
             err = heif_context_read_from_reader(ctx, &_source_reader, <void*>data, NULL)
             data.raise_error()
@@ -458,10 +522,14 @@ def decode(data, *, numthreads: int | None = None, out=None,
             chroma = (heif_chroma_interleaved_RRGGBBAA_LE if has_alpha
                       else heif_chroma_interleaved_RRGGBB_LE)
 
-        with nogil:
-            err = heif_decode_image(
-                handle, &img, colorspace, chroma, NULL,
-            )
+        options = oc_heif_decoding_options(ctx, handle, _heif_n)
+        try:
+            with nogil:
+                err = heif_decode_image(
+                    handle, &img, colorspace, chroma, options,
+                )
+        finally:
+            oc_heif_decoding_options_free(options)
         if hasattr(data, "raise_error"):
             data.raise_error()
         if err.code != 0:
