@@ -14,6 +14,7 @@ from .core._io_helpers import read_src as _read_src, write_dest as _write_dest
 from .core._optional_backend import import_or_stubs
 from .core.pipeline import native_workers
 from .core.native_source import NativeSource
+from .backends import select as _select_backend
 
 _jp2_encode, _jp2_decode, _jp2_check_signature, _HAVE_BACKEND = import_or_stubs(
     "opencodecs.codecs._jpeg2k",
@@ -84,7 +85,7 @@ class Jpeg2kCodec(Codec):
                        "resolutions", "reversible", "mct", "verbose")
 
     def encode(self, data: Any, *, dest=None, level: float | None = None,
-               numthreads: int | None = None,
+               numthreads: int | None = None, backend: str | None = None,
                **opts) -> bytes | None:
         """Encode as JPEG 2000; keywords follow ``imagecodecs.jpeg2k_encode``.
 
@@ -94,10 +95,19 @@ class Jpeg2kCodec(Codec):
         makes the encode lossy unless ``lossless=True`` is also passed,
         which raises instead of ignoring the level. ``ratio=`` asks for
         a compression ratio. See :func:`opencodecs.codecs._jpeg2k.encode`.
+
+        ``backend="nvimgcodec"`` encodes on an NVIDIA GPU (opt-in; see
+        :mod:`opencodecs.backends`). It takes uint8, uint16 or int16, as
+        a numpy or CuPy array, lossless or with a PSNR ``level``, and
+        refuses ``ratio``, ``colorspace``, ``tile`` and ``bitspersample``.
         """
         unknown = sorted(set(opts) - set(self._ENCODE_OPTIONS))
         if unknown:
             raise TypeError(f"jpeg2k encode: unsupported options {unknown}")
+        hardware = _select_backend(backend, self.name, "encode")
+        if hardware is not None:
+            return _write_dest(hardware.encode_jpeg2k(data, level=level, **opts),
+                               dest)
         if not isinstance(data, np.ndarray):
             data = np.asarray(data)
         kw = dict(opts, level=level, numthreads=native_workers(numthreads))
@@ -114,10 +124,26 @@ class Jpeg2kCodec(Codec):
 
     def decode(self, src: Any, *, numthreads: int | None = None,
                out=None, reduce: int = 0, planar: bool | None = None,
-               verbose: Any = None, **opts) -> np.ndarray:
+               verbose: Any = None, backend: str | None = None,
+               **opts) -> np.ndarray:
+        """Decode JPEG 2000; see :func:`opencodecs.codecs._jpeg2k.decode`.
+
+        ``backend="nvimgcodec"`` decodes on an NVIDIA GPU (opt-in; see
+        :mod:`opencodecs.backends`): same dtype, shape and, for lossless
+        files, pixels. ``out=`` may then also be a CuPy array or one from
+        :func:`opencodecs.backends.pinned_empty`; ``reduce`` is not
+        available there.
+        """
         if opts:
             raise TypeError(
                 f"jpeg2k decode: unsupported options {sorted(opts)}")
+        hardware = _select_backend(backend, self.name, "decode")
+        if hardware is not None:
+            if reduce:
+                raise ValueError("jpeg2k decode: reduce= is not available "
+                                 "with backend='nvimgcodec'")
+            return hardware.decode(self.name, _read_src(src), out=out,
+                                   planar=planar)
         kw = dict(numthreads=native_workers(numthreads), reduce=reduce,
                   planar=planar, verbose=verbose)
         if out is not None:

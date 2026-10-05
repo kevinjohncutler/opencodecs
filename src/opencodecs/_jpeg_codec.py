@@ -11,6 +11,7 @@ from .core.codec import Codec
 from .core.buffers import array_output
 from .core._io_helpers import read_src as _read_src, write_dest as _write_dest
 from .core._optional_backend import import_or_stubs
+from .backends import select as _select_backend
 
 (
     _jpeg_encode, _jpeg_decode, _jpeg_check_signature,
@@ -58,6 +59,7 @@ class JpegCodec(Codec):
         bitspersample: int | None = None,
         validate: bool | None = None,
         iccprofile: bytes | None = None,
+        backend: str | None = None,
     ) -> bytes | None:
         """Encode an ndarray as JPEG.
 
@@ -68,7 +70,20 @@ class JpegCodec(Codec):
         ``TypeError`` rather than something silently dropped.
         ``validate`` has no effect, in imagecodecs as here; it is taken
         for compatibility.
+
+        ``backend="nvimgcodec"`` encodes on an NVIDIA GPU (opt-in; see
+        :mod:`opencodecs.backends`): 8-bit gray or RGB, lossy, with
+        ``level``, ``subsampling`` and ``optimize``; other options raise.
         """
+        hardware = _select_backend(backend, self.name, "encode")
+        if hardware is not None:
+            encoded = hardware.encode_jpeg(
+                data, level=level, colorspace=colorspace,
+                outcolorspace=outcolorspace, subsampling=subsampling,
+                optimize=optimize, smoothing=smoothing, lossless=lossless,
+                predictor=predictor, bitspersample=bitspersample,
+                validate=validate, iccprofile=iccprofile)
+            return _write_dest(encoded, dest)
         encoded = _jpeg_encode(
             data, level=level, colorspace=colorspace,
             outcolorspace=outcolorspace, subsampling=subsampling,
@@ -80,12 +95,32 @@ class JpegCodec(Codec):
     def decode(self, src: Any, *, out=None, tables=None, header=None,
                colorspace=None, outcolorspace=None, fancyupsampling=None,
                shape=None, bitspersample=None, scale=None,
-               scale_num=None, scale_denom=None) -> np.ndarray:
+               scale_num=None, scale_denom=None,
+               backend: str | None = None) -> np.ndarray:
         """Decode a JPEG stream; see :func:`opencodecs.codecs._jpeg.decode`.
 
         The parameters are those of ``imagecodecs.jpeg_decode`` plus the
         DCT-domain ``scale``.
+
+        ``backend="nvimgcodec"`` decodes 8-bit gray or color lossy JPEG
+        on an NVIDIA GPU (opt-in; see :mod:`opencodecs.backends`).
+        Pixels differ from libjpeg-turbo's by a few levels (IDCT and
+        upsampling rounding). Only ``out=`` is taken with it; it may be a
+        CuPy array or one from :func:`opencodecs.backends.pinned_empty`.
         """
+        hardware = _select_backend(backend, self.name, "decode")
+        if hardware is not None:
+            given = dict(tables=tables, header=header, colorspace=colorspace,
+                         outcolorspace=outcolorspace,
+                         fancyupsampling=fancyupsampling, shape=shape,
+                         bitspersample=bitspersample, scale=scale,
+                         scale_num=scale_num, scale_denom=scale_denom)
+            bad = sorted(k for k, v in given.items() if v is not None)
+            if bad:
+                raise ValueError(
+                    f"jpeg decode: backend='nvimgcodec' does not take "
+                    f"{', '.join(bad)}; use backend=None for them")
+            return hardware.decode(self.name, _read_src(src), out=out)
         return _jpeg_decode(
             _read_src(src), out=out if out is None else array_output(out),
             tables=tables, header=header, colorspace=colorspace,

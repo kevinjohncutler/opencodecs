@@ -28,6 +28,7 @@ import numpy as np
 from .core.codec import Codec
 from .core._io_helpers import read_src as _read_src, write_dest as _write_dest
 from .core._optional_backend import import_or_stubs
+from .backends import select as _select_backend
 
 (
     _htj2k_encode, _htj2k_decode, _HAVE_BACKEND,
@@ -77,16 +78,23 @@ class Htj2kCodec(Codec):
                        "profile", "num_decomp")
 
     def encode(self, data: Any, *, dest=None,
-               level: float | None = None,
+               level: float | None = None, backend: str | None = None,
                **opts) -> bytes | None:
         """Encode as HTJ2K; keywords follow ``imagecodecs.htj2k_encode``.
 
         ``level=None`` is lossless. See
         :func:`opencodecs.codecs._openjph.encode` for every option.
+
+        ``backend="nvimgcodec"`` encodes on an NVIDIA GPU (opt-in; see
+        :mod:`opencodecs.backends`): uint8, uint16 or int16, lossless or
+        a quality ``level`` from 1 to 100, from a numpy or CuPy array.
         """
         unknown = sorted(set(opts) - set(self._ENCODE_OPTIONS))
         if unknown:
             raise TypeError(f"htj2k encode: unsupported options {unknown}")
+        hardware = _select_backend(backend, self.name, "encode")
+        if hardware is not None:
+            return _write_dest(hardware.encode_htj2k(data, level, **opts), dest)
         if not isinstance(data, np.ndarray):
             data = np.asarray(data)
         out = _htj2k_encode(data, level, **opts)
@@ -98,16 +106,31 @@ class Htj2kCodec(Codec):
                skipres: Any = None,
                resilient: bool = False, out=None,
                numthreads: int | None = None,
+               backend: str | None = None,
                **opts) -> np.ndarray:
         """Decode HTJ2K; keywords follow ``imagecodecs.htj2k_decode``.
 
         ``out=`` receives the image in place, and ``numthreads`` bounds
         the threads a codestream of several tiles decodes on; see
         :func:`opencodecs.codecs._openjph.decode`.
+
+        ``backend="nvimgcodec"`` decodes on an NVIDIA GPU (opt-in; see
+        :mod:`opencodecs.backends`): same dtype, shape and pixels.
+        ``out=`` may then also be a CuPy array or one from
+        :func:`opencodecs.backends.pinned_empty`; ``reduce``, ``skipres``
+        and ``resilient`` are not available there.
         """
         if opts:
             raise TypeError(
                 f"htj2k decode: unsupported options {sorted(opts)}")
+        hardware = _select_backend(backend, self.name, "decode")
+        if hardware is not None:
+            if reduce or skipres is not None or resilient:
+                raise ValueError(
+                    "htj2k decode: reduce=, skipres= and resilient= are not "
+                    "available with backend='nvimgcodec'")
+            return hardware.decode(self.name, _read_src(src), out=out,
+                                   planar=planar)
         return _htj2k_decode(_read_src(src), reduce=reduce,
                              ignore_unsupported=ignore_unsupported,
                              planar=planar, skipres=skipres,

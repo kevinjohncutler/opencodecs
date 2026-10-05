@@ -15,6 +15,7 @@ from .core._io_helpers import read_src as _read_src, write_dest as _write_dest
 from .core._optional_backend import import_or_stubs
 from .core.pipeline import native_workers
 from .core.native_source import NativeSource
+from .backends import select as _select_backend
 
 (
     _heif_encode, _heif_decode, _heif_check_signature,
@@ -67,6 +68,7 @@ class HeifCodec(Codec):
                iccprofile: bytes | None = None,
                bitspersample: int | None = None,
                photometric=None, compression=None,
+               backend: str | None = None,
                **opts) -> bytes | None:
         """Encode an array as HEIF/HEIC.
 
@@ -97,10 +99,18 @@ class HeifCodec(Codec):
         (undefined) for either. A disagreeing value raises, where
         imagecodecs would write a stack of gray images or ignore it. Any
         other unknown keyword raises TypeError.
+
+        ``backend="imageio"`` (macOS, opt-in; see
+        :mod:`opencodecs.backends`) uses Apple's hardware HEVC encoder:
+        5 to 15 times faster, but lossy only, 8-bit 4:2:0 RGB in 512 x
+        512 tiles, larger files at equal quality, and ``level`` is
+        ImageIO's quality scale (``level / 100``). It needs an explicit
+        ``level``.
         """
         if opts:
             raise TypeError(
                 f"heif encode: unsupported option(s) {', '.join(sorted(opts))}")
+        hardware = _select_backend(backend, self.name, "encode")
         if bitspersample is not None:
             if bit_depth is not None and bit_depth != bitspersample:
                 raise ValueError(
@@ -115,6 +125,10 @@ class HeifCodec(Codec):
             data = np.asarray(data)
         if photometric is not None:
             _check_photometric(photometric, data)
+        if hardware is not None:
+            return _write_dest(hardware.encode(
+                data, level=level, lossless=lossless, bit_depth=bit_depth,
+                iccprofile=iccprofile, color=color), dest)
         if dest is not None:
             with binary_destination(dest) as stream:
                 return _heif_encode(data, level=level, lossless=lossless,
@@ -129,7 +143,8 @@ class HeifCodec(Codec):
 
     def decode(self, src: Any, *, numthreads: int | None = None,
                out=None, index=None, photometric=None,
-               range_reads: bool = False, **opts) -> np.ndarray:
+               range_reads: bool = False, backend: str | None = None,
+               **opts) -> np.ndarray:
         """Decode one image; the primary one unless ``index`` is given.
 
         ``index`` counts top-level images in the order the container
@@ -143,6 +158,15 @@ class HeifCodec(Codec):
         keyword) returns a monochrome image's gray plane instead, (H, W)
         or (H, W, 2) with alpha, and raises for a color image. Any other
         unknown keyword raises TypeError.
+
+        ``backend="imageio"`` (macOS, opt-in; see
+        :mod:`opencodecs.backends`) decodes with Apple's hardware HEVC
+        decoder when the file's primary image is one 8-bit color picture
+        (or a grid of tiles at least 1024 on a side) without alpha or a
+        rotation, mirror or crop property: 10 to 19 times faster, within
+        one level of libheif. Any other file, including the small-tile
+        grids iPhones write, is decoded by libheif as without it, since
+        there the hardware decoder was no faster.
         """
         if opts:
             raise TypeError(
@@ -150,6 +174,10 @@ class HeifCodec(Codec):
         kw = dict(numthreads=native_workers(numthreads),
                   out=out if out is None else array_output(out),
                   index=index, photometric=photometric)
+        hardware = _select_backend(backend, self.name, "decode")
+        if hardware is not None:
+            data = src if isinstance(src, bytes) else _read_src(src)
+            return hardware.decode_heif(data, _heif_decode, **kw)
         if isinstance(src, (bytes, bytearray, memoryview)):
             return _heif_decode(src, **kw)
         if index is None and not range_reads and not hasattr(src, "read_at"):

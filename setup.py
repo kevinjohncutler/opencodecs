@@ -1969,7 +1969,8 @@ class build_ext(_build_ext):
 setup(
     cmdclass={"build_ext": build_ext},
     package_dir={"": "src"},
-    packages=["opencodecs", "opencodecs.core", "opencodecs.codecs"],
+    packages=["opencodecs", "opencodecs.core", "opencodecs.codecs",
+              "opencodecs.backends"],
     ext_modules=cythonize(
         extensions,
         include_path=[str(PKG_CODECS)],
