@@ -53,6 +53,11 @@ CATALOG = {
         'if sys.platform == "darwin":':
             "a copy off such a mount inherits com.apple.quarantine",
     },
+    "src/opencodecs/codecs/oc_readfiles.h": {
+        "#ifdef _WIN32":
+            "Windows opens a path as UTF-16 (_wopen, as os.open does there) and "
+            "has no pread; elsewhere a path is bytes in the filesystem encoding",
+    },
     "src/opencodecs/codecs/jpegxr_shim.c": {
         "#ifdef _WIN32":
             "jxrlib's headers use the Windows SDK's SAL annotations there",
