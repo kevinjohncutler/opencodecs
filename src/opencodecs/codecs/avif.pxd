@@ -7,6 +7,7 @@ cdef extern from 'avif/avif.h' nogil:
     int AVIF_QUALITY_DEFAULT
     int AVIF_RESULT_OK
     int AVIF_RESULT_IO_ERROR
+    int AVIF_RESULT_OUT_OF_MEMORY
 
     ctypedef uint16_t avifColorPrimaries
     ctypedef uint16_t avifTransferCharacteristics
@@ -64,14 +65,35 @@ cdef extern from 'avif/avif.h' nogil:
         # encode it's the buffer avifImageSetProfileICC manages.
         avifRWData icc
 
+    cdef enum avifChromaUpsampling:
+        AVIF_CHROMA_UPSAMPLING_AUTOMATIC = 0
+        AVIF_CHROMA_UPSAMPLING_FASTEST = 1
+        AVIF_CHROMA_UPSAMPLING_BEST_QUALITY = 2
+        AVIF_CHROMA_UPSAMPLING_NEAREST = 3
+        AVIF_CHROMA_UPSAMPLING_BILINEAR = 4
+
     ctypedef struct avifRGBImage:
         uint32_t width
         uint32_t height
         uint32_t depth
         avifRGBFormat format
+        avifChromaUpsampling chromaUpsampling
         # ...
         uint32_t rowBytes
         uint8_t* pixels
+
+    # A view of some rows of an image, sharing its planes. The view is
+    # a plain struct the caller owns (zeroed before the call) and is
+    # never passed to avifImageDestroy. Rows must start on a chroma row:
+    # an even y for 4:2:0.
+    ctypedef struct avifCropRect:
+        uint32_t x
+        uint32_t y
+        uint32_t width
+        uint32_t height
+    avifResult avifImageSetViewRect(
+        avifImage* dstImage, const avifImage* srcImage,
+        const avifCropRect* cropRect)
 
     avifImage* avifImageCreate(uint32_t width, uint32_t height,
                                uint32_t depth, avifPixelFormat yuvFormat)

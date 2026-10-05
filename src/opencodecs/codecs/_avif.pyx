@@ -11,6 +11,7 @@
 from cpython.bytes cimport PyBytes_FromStringAndSize
 from cpython.bytearray cimport PyByteArray_AS_STRING
 from libc.string cimport memcpy, memset
+from libc.stdlib cimport malloc, free
 from libc.stdint cimport uint8_t, uint16_t, uint32_t, uint64_t
 
 import numpy as np
@@ -18,7 +19,7 @@ cimport numpy as cnp
 
 from avif cimport (
     AVIF_QUALITY_LOSSLESS, AVIF_QUALITY_DEFAULT, AVIF_RESULT_OK,
-    AVIF_RESULT_IO_ERROR,
+    AVIF_RESULT_IO_ERROR, AVIF_RESULT_OUT_OF_MEMORY,
     avifIO, avifROData, avifResult, avifDecoderSetIO,
     AVIF_PIXEL_FORMAT_YUV444, AVIF_PIXEL_FORMAT_YUV422,
     AVIF_PIXEL_FORMAT_YUV420, AVIF_PIXEL_FORMAT_YUV400,
@@ -30,6 +31,7 @@ from avif cimport (
     avifRGBImage, avifRGBImageSetDefaults,
     avifRGBImageAllocatePixels, avifRGBImageFreePixels,
     avifImageRGBToYUV, avifImageYUVToRGB,
+    avifCropRect, avifImageSetViewRect,
     avifEncoder, avifEncoderCreate, avifEncoderDestroy, avifEncoderWrite,
     avifEncoderSetCodecSpecificOption,
     avifDecoder, avifDecoderCreate, avifDecoderDestroy, avifDecoderReadMemory,
@@ -437,6 +439,9 @@ def encode(data, *, level: int | None = None,
 #: and there they stop helping around 8. Measured on a 64-core x86-64 host,
 #: 2048 x 2048: untiled 189 ms on 1 thread, 189 on 8 and 199 on one thread
 #: per hardware thread; tiled 129 ms on 1, 75 on 8 and 83 on all of them.
+#: The same count splits the YUV to RGB conversion into row bands
+#: (_yuv_to_rgb). Giving the conversion of a 4096 x 3072 frame 16 bands
+#: instead of 8 measured no faster on a 20-core arm64 host.
 _AVIF_DECODE_MAX_THREADS = 8
 
 
@@ -447,6 +452,7 @@ def _decode_threads(numthreads):
         return _os.cpu_count() or 4
     from opencodecs.core.parallel import auto_threads
     return auto_threads(numthreads, max_threads=_AVIF_DECODE_MAX_THREADS)
+
 
 
 cdef int _rgb_layout(avifImage* image, avifRGBImage* rgb) noexcept:
@@ -463,6 +469,149 @@ cdef int _rgb_layout(avifImage* image, avifRGBImage* rgb) noexcept:
         return 2 if alpha else 1
     rgb.format = AVIF_RGB_FORMAT_RGBA if alpha else AVIF_RGB_FORMAT_RGB
     return 4 if alpha else 3
+
+
+# ---------------------------------------------------------------------------
+# YUV to RGB in row bands
+# ---------------------------------------------------------------------------
+#
+# libavif's own YUV to RGB conversion (this build has no libyuv, so the
+# result follows the H.273 equations) runs on one thread, and on a
+# 4096 x 3072 frame it was most of the decode. Rows convert
+# independently except through chroma upsampling, so the frame is cut
+# into bands of rows, each converted through a view of the image
+# (avifImageSetViewRect) straight into its rows of the output, on
+# threads with the GIL released.
+#
+# The one dependency that crosses rows is 4:2:0 with bilinear chroma
+# upsampling, libavif's default: a luma row also reads the chroma row
+# above or below its own. A view clamps that neighbor at its edge, so
+# the first and last row of every band come out wrong. Those rows are
+# converted again afterwards through a window of eight rows around each
+# band edge, which holds every chroma row they read, and copied over.
+# libavif's own threaded conversion (avifRGBImage.maxThreads) refuses
+# this case for the same reason, which is why it is not used here.
+# Bands start on even rows so that each view starts on a chroma row.
+
+#: Fewest rows a band is given; below twice this the frame is converted
+#: in one call.
+cdef uint32_t _MIN_BAND_ROWS = 64
+
+
+cdef avifResult _convert_rows(const avifImage* image, const avifRGBImage* rgb,
+                              uint32_t y0, uint32_t y1,
+                              uint8_t* dst) noexcept nogil:
+    """Convert rows [y0, y1) of ``image`` into ``dst``, laid out as ``rgb``."""
+    cdef avifImage view
+    cdef avifCropRect rect
+    cdef avifRGBImage part
+    cdef avifResult rc
+    memset(&view, 0, sizeof(avifImage))
+    rect.x = 0
+    rect.y = y0
+    rect.width = image.width
+    rect.height = y1 - y0
+    rc = avifImageSetViewRect(&view, image, &rect)
+    if rc != AVIF_RESULT_OK:
+        return rc
+    part = rgb[0]
+    part.height = y1 - y0
+    part.pixels = dst
+    return avifImageYUVToRGB(&view, &part)
+
+
+cdef avifResult _redo_band_edges(const avifImage* image,
+                                 const avifRGBImage* rgb,
+                                 uint32_t rows) noexcept nogil:
+    """Convert the rows next to every band edge again, with full context.
+
+    Edge ``b`` gets the window [b - 4, b + 4), clipped to the image,
+    and rows [b - 2, b + 2) of it are kept: each of those reads chroma
+    rows that all lie inside the window, or the image itself ends there
+    and libavif clamps exactly as it does for the whole frame.
+    """
+    cdef uint32_t b, w0, w1, c0, c1
+    cdef size_t row_bytes = rgb.rowBytes
+    cdef avifResult rc = AVIF_RESULT_OK
+    cdef uint8_t* scratch = <uint8_t*> malloc(8 * row_bytes)
+    if scratch == NULL:
+        return AVIF_RESULT_OUT_OF_MEMORY
+    b = rows
+    while b < image.height:
+        w0 = b - 4
+        w1 = b + 4 if b + 4 < image.height else image.height
+        rc = _convert_rows(image, rgb, w0, w1, scratch)
+        if rc != AVIF_RESULT_OK:
+            break
+        c0 = b - 2
+        c1 = b + 2 if b + 2 < image.height else image.height
+        memcpy(rgb.pixels + <size_t> c0 * row_bytes,
+               scratch + <size_t> (c0 - w0) * row_bytes,
+               <size_t> (c1 - c0) * row_bytes)
+        b += rows
+    free(scratch)
+    return rc
+
+
+cdef class _RowBands:
+    """One conversion split into bands; ``band(i)`` converts band i."""
+    cdef const avifImage* image
+    cdef avifRGBImage rgb
+    cdef uint32_t rows
+
+    def band(self, Py_ssize_t i):
+        cdef uint32_t y0 = <uint32_t> i * self.rows
+        cdef uint32_t y1 = y0 + self.rows
+        cdef avifResult rc
+        if y1 > self.image.height:
+            y1 = self.image.height
+        with nogil:
+            rc = _convert_rows(self.image, &self.rgb, y0, y1,
+                               self.rgb.pixels + <size_t> y0 * self.rgb.rowBytes)
+        if rc != AVIF_RESULT_OK:
+            raise AvifError(
+                f'avifImageYUVToRGB: {avifResultToString(rc).decode()}')
+
+
+cdef int _yuv_to_rgb(const avifImage* image, avifRGBImage* rgb,
+                     int nthreads) except -1:
+    """``avifImageYUVToRGB(image, rgb)`` on up to ``nthreads`` threads.
+
+    The output is the same, byte for byte, as one call converting the
+    whole frame; ``rgb.pixels`` and ``rgb.rowBytes`` say where it goes.
+    """
+    cdef avifResult rc
+    cdef uint32_t height = image.height
+    cdef uint32_t rows = height
+    cdef uint32_t nbands = 1
+    cdef _RowBands bands
+    if nthreads > 1 and height >= 2 * _MIN_BAND_ROWS:
+        nbands = <uint32_t> nthreads
+        if nbands > height // _MIN_BAND_ROWS:
+            nbands = height // _MIN_BAND_ROWS
+        rows = (height + nbands - 1) // nbands
+        rows += rows & 1
+        nbands = (height + rows - 1) // rows
+    if nbands <= 1:
+        with nogil:
+            rc = avifImageYUVToRGB(image, rgb)
+        if rc != AVIF_RESULT_OK:
+            raise AvifError(
+                f'avifImageYUVToRGB: {avifResultToString(rc).decode()}')
+        return 0
+    from opencodecs.core.parallel import run_batched
+    bands = _RowBands.__new__(_RowBands)
+    bands.image = image
+    bands.rgb = rgb[0]
+    bands.rows = rows
+    run_batched(bands.band, list(range(nbands)), <int> nbands, name="avif")
+    if image.yuvFormat == AVIF_PIXEL_FORMAT_YUV420:
+        with nogil:
+            rc = _redo_band_edges(image, rgb, rows)
+        if rc != AVIF_RESULT_OK:
+            raise AvifError(
+                f'avifImageYUVToRGB: {avifResultToString(rc).decode()}')
+    return 0
 
 
 def decode(data, *, numthreads: int | None = None, out=None) -> np.ndarray:
@@ -484,10 +633,12 @@ def decode(data, *, numthreads: int | None = None, out=None) -> np.ndarray:
     rounded result. Lossless files decode identically.
 
     ``out=`` is a preallocated ndarray of the decoded shape and dtype
-    (uint8 / uint16). libavif allocates its own RGB buffer internally;
-    out= skips the second allocation that the default path does (we
-    still pay the libavif internal one). See ``_png.decode`` for the
-    full contract.
+    (uint8 / uint16). See ``_png.decode`` for the full contract.
+
+    The YUV to RGB conversion writes straight into the returned array
+    (or ``out``), on the decoder's thread count, in row bands; see
+    ``_yuv_to_rgb``. The result is the same as one single-threaded
+    conversion of the whole frame, byte for byte.
     """
     cdef:
         const uint8_t[::1] src
@@ -502,8 +653,6 @@ def decode(data, *, numthreads: int | None = None, out=None) -> np.ndarray:
         int channels
         int dtype_bytes
         int img_depth
-        unsigned int y
-        size_t row_bytes_out
         tuple expected_shape
         object expected_dtype
 
@@ -538,56 +687,40 @@ def decode(data, *, numthreads: int | None = None, out=None) -> np.ndarray:
         channels = _rgb_layout(image, &rgb)
         rgb.depth = <unsigned int> img_depth
 
-        rc = avifRGBImageAllocatePixels(&rgb)
-        if rc != AVIF_RESULT_OK:
-            raise AvifError(
-                f'avifRGBImageAllocatePixels: '
-                f'{avifResultToString(rc).decode()}')
-        try:
-            with nogil:
-                rc = avifImageYUVToRGB(image, &rgb)
-            if rc != AVIF_RESULT_OK:
-                raise AvifError(
-                    f'avifImageYUVToRGB: '
-                    f'{avifResultToString(rc).decode()}')
+        shape[0] = image.height
+        shape[1] = image.width
+        shape[2] = channels
+        if channels == 1:
+            expected_shape = (int(image.height), int(image.width))
+        else:
+            expected_shape = (int(image.height), int(image.width), channels)
+        expected_dtype = np.uint8 if dtype_bytes == 1 else np.uint16
 
-            shape[0] = image.height
-            shape[1] = image.width
-            shape[2] = channels
-            if channels == 1:
-                expected_shape = (int(image.height), int(image.width))
-            else:
-                expected_shape = (int(image.height), int(image.width), channels)
-            expected_dtype = np.uint8 if dtype_bytes == 1 else np.uint16
-
-            if out is not None:
-                if not isinstance(out, np.ndarray):
-                    raise TypeError(
-                        f"avif decode: out= must be an ndarray, "
-                        f"got {type(out).__name__}")
-                if out.shape != expected_shape:
-                    raise ValueError(
-                        f"avif decode: out= shape {out.shape} does not "
-                        f"match expected {expected_shape}")
-                if out.dtype != expected_dtype:
-                    raise ValueError(
-                        f"avif decode: out= dtype {out.dtype} does not "
-                        f"match expected {np.dtype(expected_dtype)}")
-                if not out.flags['C_CONTIGUOUS']:
-                    raise ValueError("avif decode: out= must be C-contiguous")
-                out_arr = out
-            else:
-                out_arr = cnp.PyArray_EMPTY(
-                    2 if channels == 1 else 3, shape,
-                    cnp.NPY_UINT8 if dtype_bytes == 1 else cnp.NPY_UINT16, 0)
-            row_bytes_out = <size_t>(image.width * channels * dtype_bytes)
-            for y in range(image.height):
-                memcpy(<uint8_t*> cnp.PyArray_DATA(out_arr) + y * row_bytes_out,
-                       rgb.pixels + y * rgb.rowBytes,
-                       row_bytes_out)
-            return out_arr
-        finally:
-            avifRGBImageFreePixels(&rgb)
+        if out is not None:
+            if not isinstance(out, np.ndarray):
+                raise TypeError(
+                    f"avif decode: out= must be an ndarray, "
+                    f"got {type(out).__name__}")
+            if out.shape != expected_shape:
+                raise ValueError(
+                    f"avif decode: out= shape {out.shape} does not "
+                    f"match expected {expected_shape}")
+            if out.dtype != expected_dtype:
+                raise ValueError(
+                    f"avif decode: out= dtype {out.dtype} does not "
+                    f"match expected {np.dtype(expected_dtype)}")
+            if not out.flags['C_CONTIGUOUS']:
+                raise ValueError("avif decode: out= must be C-contiguous")
+            out_arr = out
+        else:
+            out_arr = cnp.PyArray_EMPTY(
+                2 if channels == 1 else 3, shape,
+                cnp.NPY_UINT8 if dtype_bytes == 1 else cnp.NPY_UINT16, 0)
+        # Converted in place: the array's rows are libavif's RGB rows.
+        rgb.pixels = <uint8_t*> cnp.PyArray_DATA(out_arr)
+        rgb.rowBytes = <uint32_t> (image.width * channels * dtype_bytes)
+        _yuv_to_rgb(image, &rgb, decoder.maxThreads)
+        return out_arr
     finally:
         avifImageDestroy(image)
         avifDecoderDestroy(decoder)
@@ -713,14 +846,13 @@ cdef class AvifSequence:
             self._decoder = NULL
 
     def frame(self, int index, *, numthreads=None):
-        """Decode frame ``index`` and copy it out as an ndarray."""
+        """Decode frame ``index`` into a new ndarray."""
         cdef int rc
         cdef unsigned int idx
         cdef avifRGBImage rgb
         cdef cnp.ndarray out_arr
         cdef cnp.npy_intp shape[3]
-        cdef int channels, dtype_bytes, y
-        cdef size_t row_bytes_out
+        cdef int channels, dtype_bytes
         cdef avifImage* image
 
         if self._decoder == NULL:
@@ -746,31 +878,16 @@ cdef class AvifSequence:
         avifRGBImageSetDefaults(&rgb, image)
         channels = _rgb_layout(image, &rgb)
         rgb.depth = <unsigned int> image.depth
-        rc = avifRGBImageAllocatePixels(&rgb)
-        if rc != AVIF_RESULT_OK:
-            raise AvifError(
-                f'avifRGBImageAllocatePixels: '
-                f'{avifResultToString(rc).decode()}')
-        try:
-            with nogil:
-                rc = avifImageYUVToRGB(image, &rgb)
-            if rc != AVIF_RESULT_OK:
-                raise AvifError(
-                    f'avifImageYUVToRGB: {avifResultToString(rc).decode()}')
-            shape[0] = image.height
-            shape[1] = image.width
-            shape[2] = channels
-            out_arr = cnp.PyArray_EMPTY(
-                2 if channels == 1 else 3, shape,
-                cnp.NPY_UINT8 if dtype_bytes == 1 else cnp.NPY_UINT16, 0)
-            row_bytes_out = <size_t>(image.width * channels * dtype_bytes)
-            for y in range(image.height):
-                memcpy(
-                    <uint8_t*> cnp.PyArray_DATA(out_arr) + y * row_bytes_out,
-                    rgb.pixels + y * rgb.rowBytes, row_bytes_out)
-            return out_arr
-        finally:
-            avifRGBImageFreePixels(&rgb)
+        shape[0] = image.height
+        shape[1] = image.width
+        shape[2] = channels
+        out_arr = cnp.PyArray_EMPTY(
+            2 if channels == 1 else 3, shape,
+            cnp.NPY_UINT8 if dtype_bytes == 1 else cnp.NPY_UINT16, 0)
+        rgb.pixels = <uint8_t*> cnp.PyArray_DATA(out_arr)
+        rgb.rowBytes = <uint32_t> (image.width * channels * dtype_bytes)
+        _yuv_to_rgb(image, &rgb, self._decoder.maxThreads)
+        return out_arr
 
 
 def frame_count(data) -> int:
