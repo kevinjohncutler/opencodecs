@@ -30,9 +30,9 @@ Backends 2 and 3 share the .pyx path because they share the zlib
 API; libdeflate has a different API and lives behind the macro.
 """
 
-from cpython.bytes cimport PyBytes_FromStringAndSize
+from cpython.bytes cimport PyBytes_FromStringAndSize, PyBytes_AS_STRING
 from libc.stdint cimport uint8_t
-from libc.stdlib cimport realloc, free
+from libc.stdlib cimport malloc, realloc, free
 from libc.string cimport memcpy
 from libc.stddef cimport size_t
 
@@ -131,6 +131,15 @@ cdef extern from *:
           (void)d; (void)a; (void)b; (void)o; (void)oa; (void)actual;
           return 1;
       }
+      static inline libdeflate_result
+      libdeflate_gzip_decompress_ex(libdeflate_decompressor* d,
+                                    const void* a, size_t b,
+                                    void* o, size_t oa,
+                                    size_t* actual_in, size_t* actual_out) {
+          (void)d; (void)a; (void)b; (void)o; (void)oa;
+          (void)actual_in; (void)actual_out;
+          return 1;
+      }
     #endif
 
     /* One entry point per wrapper, so the encode and decode loops below
@@ -195,6 +204,13 @@ cdef extern from *:
         int fmt, libdeflate_decompressor* d,
         const void* indata, size_t in_nbytes,
         void* outdata, size_t out_nbytes_avail,
+        size_t* actual_out_nbytes_ret,
+    ) nogil
+    libdeflate_result libdeflate_gzip_decompress_ex(
+        libdeflate_decompressor* d,
+        const void* indata, size_t in_nbytes,
+        void* outdata, size_t out_nbytes_avail,
+        size_t* actual_in_nbytes_ret,
         size_t* actual_out_nbytes_ret,
     ) nogil
 
@@ -265,6 +281,138 @@ def _fallback_encode(data, int lvl, int fmt) -> bytes:
     trailer = ((_stdlib_zlib.crc32(view) & 0xFFFFFFFF).to_bytes(4, 'little')
                + (len(view) & 0xFFFFFFFF).to_bytes(4, 'little'))
     return header + body + trailer
+
+
+# DEFLATE cannot expand its input more than about 1032 to 1 (a 258-byte
+# match coded in two bits). A size above this many bytes per compressed
+# byte cannot be the output of the input in hand, so it is never
+# allocated: a corrupt trailer claiming 4 GB for a 30-byte file is
+# refused rather than honored.
+cdef size_t _MAX_INFLATE_RATIO = 1040
+
+
+cdef inline size_t _inflate_bound(size_t in_nbytes) noexcept nogil:
+    if in_nbytes > (<size_t> -1 - 65536) // _MAX_INFLATE_RATIO:
+        return <size_t> -1
+    return in_nbytes * _MAX_INFLATE_RATIO + 65536
+
+
+def gzip_decode(data) -> bytes:
+    """Inflate every member of a gzip stream (RFC 1952) with libdeflate.
+
+    Members are decoded in order and their outputs joined. Zero bytes
+    after a member are skipped, as the stdlib ``gzip.decompress``
+    skips them; anything else after a member must be another member.
+    Each member's CRC-32 and ISIZE are checked by libdeflate.
+
+    The output size comes from the trailer. ISIZE is the LAST member's
+    length mod 2**32, so for the common single-member file under 4 GiB
+    the result is allocated once at its exact size and written in place.
+    Anything else (concatenated members, a member of 4 GiB or more whose
+    ISIZE has wrapped) takes a second path that grows a buffer and
+    retries the member that did not fit.
+
+    Raises ZlibError for anything libdeflate rejects. The caller is
+    expected to hand such input to the stdlib, which then raises its
+    own, more specific error, or decodes it.
+    """
+    cdef:
+        const uint8_t[::1] src
+        size_t n, isize, pos, done, cap, avail, bound, used_in, used_out
+        size_t members
+        libdeflate_decompressor* decompressor = NULL
+        libdeflate_result rc
+        bytes first
+        uint8_t* buf = NULL
+        uint8_t* grown
+        uint8_t dummy = 0
+        uint8_t* dst
+
+    if not OPENCODECS_HAVE_LIBDEFLATE:
+        raise ZlibError("gzip decode: libdeflate is not linked")
+    try:
+        src = data
+    except (TypeError, ValueError, BufferError):
+        src = bytes(data)
+    n = <size_t> src.shape[0]
+    if n == 0:
+        return b""
+    if n < 18:
+        # Shorter than an empty member's header and trailer.
+        raise ZlibError("gzip decode: truncated stream")
+
+    isize = (<size_t> src[n - 4] | (<size_t> src[n - 3] << 8)
+             | (<size_t> src[n - 2] << 16) | (<size_t> src[n - 1] << 24))
+    bound = _inflate_bound(n)
+
+    with nogil:
+        decompressor = libdeflate_alloc_decompressor()
+    if decompressor == NULL:
+        raise MemoryError("libdeflate_alloc_decompressor returned NULL")
+    try:
+        # One member, sized by its own trailer: decode in place.
+        if isize <= bound:
+            first = PyBytes_FromStringAndSize(NULL, <Py_ssize_t> isize)
+            dst = <uint8_t*> PyBytes_AS_STRING(first) if isize else &dummy
+            with nogil:
+                rc = libdeflate_gzip_decompress_ex(
+                    decompressor, <const void*> &src[0], n,
+                    <void*> dst, isize, &used_in, &used_out)
+            if rc == LIBDEFLATE_SUCCESS and used_out == isize:
+                pos = used_in
+                while pos < n and src[pos] == 0:
+                    pos += 1
+                if pos == n:
+                    return first
+            first = None
+
+        # Several members, or a member whose ISIZE wrapped.
+        cap = isize if isize > 65536 else 65536
+        if cap > bound:
+            cap = bound
+        buf = <uint8_t*> malloc(cap)
+        if buf == NULL:
+            raise MemoryError()
+        pos = 0
+        done = 0
+        members = 0
+        while True:
+            if members:
+                while pos < n and src[pos] == 0:
+                    pos += 1
+                if pos == n:
+                    break
+            avail = cap - done
+            with nogil:
+                rc = libdeflate_gzip_decompress_ex(
+                    decompressor, <const void*> &src[pos], n - pos,
+                    <void*> (buf + done), avail, &used_in, &used_out)
+            if rc == LIBDEFLATE_INSUFFICIENT_SPACE:
+                # avail can be 0: the previous member filled the buffer.
+                bound = _inflate_bound(n - pos)
+                if avail >= bound:
+                    raise ZlibError("gzip decode: member does not end")
+                avail = avail * 2 if avail > 32768 else 65536
+                if avail > bound:
+                    avail = bound
+                grown = <uint8_t*> realloc(buf, done + avail)
+                if grown == NULL:
+                    raise MemoryError()
+                buf = grown
+                cap = done + avail
+                continue
+            if rc != LIBDEFLATE_SUCCESS:
+                raise ZlibError(f"gzip decode: libdeflate rc={rc}")
+            pos += used_in
+            done += used_out
+            members += 1
+            if pos == n:
+                break
+        return PyBytes_FromStringAndSize(<char*> buf, <Py_ssize_t> done)
+    finally:
+        free(buf)
+        with nogil:
+            libdeflate_free_decompressor(decompressor)
 
 
 def _fallback_raw_decode(data) -> bytes:

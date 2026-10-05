@@ -76,7 +76,7 @@ library is missing — see [INSTALL.md](INSTALL.md).
 | `brotli` | ✓ | ✓ | system libbrotli | `.br` |
 | `blosc2` | ✓ | ✓ | source-built c-blosc2 2.23 | `.b2` |
 | `deflate` | ✓ | ✓ | libdeflate / zlib-ng / zlib (auto-selected at build time) | `.zlib` |
-| `gzip` | ✓ | ✓ | the deflate engine above (encode), stdlib zlib (decode) | `.gz` |
+| `gzip` | ✓ | ✓ | the deflate engine above (decode: libdeflate when linked, else stdlib zlib) | `.gz` |
 | `none` | ✓ | ✓ | identity (filter-chain placeholder) | — |
 | `bz2` | ✓ | ✓ | stdlib bz2 | `.bz2` |
 | `lzma` | ✓ | ✓ | stdlib lzma | `.xz` |

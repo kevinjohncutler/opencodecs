@@ -86,3 +86,117 @@ def test_truncated_stream_still_raises(codec):
     blob = gzip.compress(os.urandom(1 << 16), 1)
     with pytest.raises(Exception):
         codec.decode(blob[:len(blob) // 2])
+
+
+# ---------------------------------------------------------------------------
+# libdeflate decode (_deflate.gzip_decode), when the build links it
+# ---------------------------------------------------------------------------
+
+def _libdeflate_decode():
+    from opencodecs import _gzip_codec
+    if not _gzip_codec._LIBDEFLATE_DECODE:
+        pytest.skip("this build decodes gzip with the stdlib")
+    return _gzip_codec
+
+
+def _named_member(payload):
+    """A member with FNAME and MTIME set, as gzip.GzipFile writes it."""
+    import io
+    buf = io.BytesIO()
+    with gzip.GzipFile(filename="x.bin", mode="wb", fileobj=buf,
+                       mtime=123) as f:
+        f.write(payload)
+    return buf.getvalue()
+
+
+@pytest.mark.parametrize("kind", [
+    "single", "two", "small-last-member", "trailing-zero-padding",
+    "zeros-between-members", "named-header", "empty-member-first",
+    "same-size-members",
+])
+def test_valid_input_never_reaches_the_stdlib(codec, monkeypatch, kind):
+    """Valid gzip, single or multi-member, decodes through libdeflate.
+
+    The stdlib is the fallback for input libdeflate refuses. If valid
+    input reached it, the speedup would vanish with every result still
+    correct, so the stdlib is made to fail here.
+    """
+    gzip_codec = _libdeflate_decode()
+    rng = random.Random(2)
+    a, b = rng.randbytes(70_000), b"abc" * 9_000
+    blob, want = {
+        "single": (gzip.compress(a), a),
+        "two": (gzip.compress(a) + gzip.compress(b), a + b),
+        "small-last-member": (gzip.compress(b) + gzip.compress(b"z"),
+                              b + b"z"),
+        "trailing-zero-padding": (gzip.compress(a) + bytes(37), a),
+        "zeros-between-members": (gzip.compress(a) + bytes(5)
+                                  + gzip.compress(b), a + b),
+        "named-header": (_named_member(a), a),
+        "empty-member-first": (gzip.compress(b"") + gzip.compress(a), a),
+        # The last ISIZE sizes the buffer and the first member fills it
+        # exactly, so the second starts with no room at all.
+        "same-size-members": (gzip.compress(a) + gzip.compress(a), a + a),
+    }[kind]
+
+    def stdlib_used(*args, **kwargs):
+        raise AssertionError("valid input fell back to the stdlib")
+
+    monkeypatch.setattr(gzip_codec.gzip, "decompress", stdlib_used)
+    assert codec.decode(blob) == want
+
+
+def _malformed(kind):
+    good = gzip.compress(random.Random(4).randbytes(50_000))
+    return {
+        "magic-only": good[:2],
+        "short-header": good[:9],
+        "truncated-body": good[:len(good) // 2],
+        "truncated-trailer": good[:-3],
+        "bad-crc": good[:-8] + bytes([good[-8] ^ 1]) + good[-7:],
+        "bad-isize": good[:-4] + bytes([good[-4] ^ 1]) + good[-3:],
+        "garbage-after-member": good + b"garbage!",
+        "leading-zeros": bytes(4) + good,
+        "bad-method": good[:2] + b"\x07" + good[3:],
+        "corrupt-body": good[:500] + bytes(64) + good[564:],
+        "second-member-truncated": good + gzip.compress(b"abc" * 99)[:20],
+        "zeros-only": bytes(40),
+    }[kind]
+
+
+@pytest.mark.parametrize("kind", [
+    "magic-only", "short-header", "truncated-body", "truncated-trailer",
+    "bad-crc", "bad-isize", "garbage-after-member", "leading-zeros",
+    "bad-method", "corrupt-body", "second-member-truncated", "zeros-only",
+])
+def test_malformed_input_raises_what_the_stdlib_raises(codec, kind):
+    """Same exception type and message as gzip.decompress, on every build."""
+    blob = _malformed(kind)
+    with pytest.raises(Exception) as ref:
+        gzip.decompress(blob)
+    with pytest.raises(type(ref.value)) as got:
+        codec.decode(blob)
+    assert str(got.value) == str(ref.value)
+
+
+def test_reserved_flag_bits_still_decode(codec):
+    """libdeflate refuses reserved FLG bits; the stdlib ignores them.
+
+    The fallback keeps the stdlib's answer, so a file that decoded
+    before still decodes.
+    """
+    payload = b"reserved" * 1000
+    blob = bytearray(gzip.compress(payload))
+    blob[3] |= 0x20
+    assert codec.decode(bytes(blob)) == payload
+
+
+def test_native_decode_refuses_rather_than_guesses():
+    """gzip_decode raises ZlibError, never returns a partial result."""
+    _libdeflate_decode()
+    from opencodecs.codecs import _deflate
+    good = gzip.compress(b"x" * 5000)
+    assert _deflate.gzip_decode(b"") == b""
+    for blob in (good[:-1], good + b"junk", b"\x1f\x8b" + bytes(30)):
+        with pytest.raises(_deflate.ZlibError):
+            _deflate.gzip_decode(blob)
