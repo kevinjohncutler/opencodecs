@@ -40,6 +40,7 @@ from typing import Callable
 import numpy as np
 import pytest
 
+from opencodecs.backends import BackendUnavailable
 from opencodecs.core.codec import get_codec, has_codec, list_codecs
 
 from _ic_reference import IMAGECODECS_REFERENCE  # noqa: E402
@@ -357,6 +358,27 @@ CASES = [
          id="jxl-level"),
     Case("rgbe", "rgb_f4", [ic("rgbe_decode")], tol=("rgbe", 1 / 128)),
 
+    # The opt-in hardware encoders (opencodecs.backends). Their output
+    # goes through the same foreign readers; a host without the GPU or
+    # without macOS skips them.
+    Case("jpeg2k", "u16", [ic("jpeg2k_decode")], kw={"backend": "nvimgcodec"},
+         id="jpeg2k-nvimgcodec"),
+    Case("jpeg2k", "rgb", [ic("jpeg2k_decode")], kw={"backend": "nvimgcodec"},
+         id="jpeg2k-rgb-nvimgcodec"),
+    Case("htj2k", "u16", [ic("htj2k_decode"), ic("jpeg2k_decode")],
+         kw={"backend": "nvimgcodec"}, id="htj2k-nvimgcodec"),
+    Case("htj2k", "rgb", [ic("htj2k_decode"), ic("jpeg2k_decode")],
+         kw={"backend": "nvimgcodec"}, id="htj2k-rgb-nvimgcodec"),
+    Case("jpeg", "rgb", [ic("jpeg8_decode")],
+         kw={"level": 90, "backend": "nvimgcodec"}, tol=("psnr", 35),
+         id="jpeg-nvimgcodec"),
+    Case("jpeg", "u8", [ic("jpeg8_decode")],
+         kw={"level": 90, "backend": "nvimgcodec"}, tol=("psnr", 35),
+         id="jpeg-gray-nvimgcodec"),
+    Case("heif", "rgb", [ic("heif_decode"), _pillow_heif],
+         kw={"level": 90, "backend": "imageio"}, tol=("psnr", 30),
+         id="heif-imageio"),
+
     # Whole-file formats: the format's own reader.
     Case("tiff", "u16", [_tifffile]),
     Case("tiff", "rgb", [_tifffile], id="tiff-rgb"),
@@ -384,6 +406,8 @@ def _encode(case: Case, x: np.ndarray) -> bytes:
     codec = get_codec(case.codec)
     try:
         blob = codec.encode(x, **case.kw)
+    except BackendUnavailable as e:
+        pytest.skip(f"backend={case.kw.get('backend')!r} unavailable: {e}")
     except Exception as e:  # noqa: BLE001 -- narrowed below
         if case.codec in ("avif", "heif") and any(s in str(e) for s in _NO_ENCODER):
             pytest.skip(f"{case.codec} encoder not built: {e}")
