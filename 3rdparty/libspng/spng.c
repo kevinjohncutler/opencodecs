@@ -1507,11 +1507,95 @@ static void defilter_up(size_t bytes, unsigned char *row, const unsigned char *p
 
    Names are oc_defilter_* to make the divergence from upstream
    libspng obvious. */
+/* Sub, average and Paeth read row[i - bpp], the byte stored one pixel
+   earlier. With bpp only known at run time that is a load of a byte
+   just written, so every byte waits on a store-to-load forward: on a
+   16-bit gray PNG (bpp 2) the sub filter alone cost more than the
+   memcpy of the row. The OC_CARRY_* loops below keep the previous
+   pixel in locals instead, for a pixel size fixed at compile time, so
+   the dependency is one add per byte. Byte-for-byte the same
+   arithmetic as the plain loops, which remain for other pixel sizes. */
+#define OC_CARRY_SUB(BPP)                                                   \
+static void oc_defilter_sub_##BPP(size_t n, unsigned char *row)             \
+{                                                                           \
+    unsigned char a[BPP];                                                   \
+    size_t i, k;                                                            \
+    for(k = 0; k < BPP; k++) a[k] = row[k];                                 \
+    for(i = BPP; i + BPP <= n; i += BPP)                                    \
+        for(k = 0; k < BPP; k++)                                            \
+        {                                                                   \
+            a[k] = (unsigned char)(a[k] + row[i + k]);                      \
+            row[i + k] = a[k];                                              \
+        }                                                                   \
+}
+
+#define OC_CARRY_AVG(BPP)                                                   \
+static void oc_defilter_avg_##BPP(size_t n, unsigned char *row,             \
+                                  const unsigned char *prev)                \
+{                                                                           \
+    unsigned char a[BPP];                                                   \
+    size_t i, k;                                                            \
+    for(k = 0; k < BPP; k++)                                                \
+    {                                                                       \
+        row[k] = (unsigned char)(row[k] + (prev[k] >> 1));                  \
+        a[k] = row[k];                                                      \
+    }                                                                       \
+    for(i = BPP; i + BPP <= n; i += BPP)                                    \
+        for(k = 0; k < BPP; k++)                                            \
+        {                                                                   \
+            unsigned avg = ((unsigned)a[k] + (unsigned)prev[i + k]) >> 1;   \
+            a[k] = (unsigned char)(row[i + k] + avg);                       \
+            row[i + k] = a[k];                                              \
+        }                                                                   \
+}
+
+#define OC_CARRY_PAETH(BPP)                                                 \
+static void oc_defilter_paeth_##BPP(size_t n, unsigned char *row,           \
+                                    const unsigned char *prev)              \
+{                                                                           \
+    unsigned char a[BPP], c[BPP];                                           \
+    size_t i, k;                                                            \
+    for(k = 0; k < BPP; k++)                                                \
+    {                                                                       \
+        row[k] = (unsigned char)(row[k] + prev[k]);                         \
+        a[k] = row[k];                                                      \
+        c[k] = prev[k];                                                     \
+    }                                                                       \
+    for(i = BPP; i + BPP <= n; i += BPP)                                    \
+        for(k = 0; k < BPP; k++)                                            \
+        {                                                                   \
+            int b = prev[i + k];                                            \
+            int p = a[k] + b - c[k];                                        \
+            int pa = p > a[k] ? p - a[k] : a[k] - p;                        \
+            int pb = p > b ? p - b : b - p;                                 \
+            int pc = p > c[k] ? p - c[k] : c[k] - p;                        \
+            int pred;                                                       \
+            if(pa <= pb && pa <= pc) pred = a[k];                           \
+            else if(pb <= pc)        pred = b;                              \
+            else                     pred = c[k];                           \
+            a[k] = (unsigned char)(row[i + k] + pred);                      \
+            row[i + k] = a[k];                                              \
+            c[k] = (unsigned char)b;                                        \
+        }                                                                   \
+}
+
+OC_CARRY_SUB(1) OC_CARRY_SUB(2) OC_CARRY_SUB(6) OC_CARRY_SUB(8)
+OC_CARRY_AVG(1) OC_CARRY_AVG(2) OC_CARRY_AVG(6) OC_CARRY_AVG(8)
+OC_CARRY_PAETH(1) OC_CARRY_PAETH(2) OC_CARRY_PAETH(6) OC_CARRY_PAETH(8)
+
 static void oc_defilter_sub_generic(
     size_t scanline_width, unsigned char *row, unsigned bytes_per_pixel)
 {
     /* row[i] += row[i - bpp] for i >= bpp. */
     size_t i;
+    if(scanline_width >= bytes_per_pixel) switch(bytes_per_pixel)
+    {
+        case 1: oc_defilter_sub_1(scanline_width, row); return;
+        case 2: oc_defilter_sub_2(scanline_width, row); return;
+        case 6: oc_defilter_sub_6(scanline_width, row); return;
+        case 8: oc_defilter_sub_8(scanline_width, row); return;
+        default: break;
+    }
     for(i = bytes_per_pixel; i < scanline_width; i++)
         row[i] = (unsigned char)(row[i] + row[i - bytes_per_pixel]);
 }
@@ -1522,6 +1606,14 @@ static void oc_defilter_avg_generic(
 {
     /* row[i] += (left + above) / 2.   left = 0 for first bpp pixels. */
     size_t i;
+    if(scanline_width >= bytes_per_pixel) switch(bytes_per_pixel)
+    {
+        case 1: oc_defilter_avg_1(scanline_width, row, prev); return;
+        case 2: oc_defilter_avg_2(scanline_width, row, prev); return;
+        case 6: oc_defilter_avg_6(scanline_width, row, prev); return;
+        case 8: oc_defilter_avg_8(scanline_width, row, prev); return;
+        default: break;
+    }
     for(i = 0; i < bytes_per_pixel && i < scanline_width; i++)
         row[i] = (unsigned char)(row[i] + (prev[i] >> 1));
     for(; i < scanline_width; i++)
@@ -1540,6 +1632,14 @@ static void oc_defilter_paeth_generic(
        paeth(a, b, c): p = a + b - c; choose whichever of a/b/c is
        closest to p (ties go a > b > c). */
     size_t i;
+    if(scanline_width >= bytes_per_pixel) switch(bytes_per_pixel)
+    {
+        case 1: oc_defilter_paeth_1(scanline_width, row, prev); return;
+        case 2: oc_defilter_paeth_2(scanline_width, row, prev); return;
+        case 6: oc_defilter_paeth_6(scanline_width, row, prev); return;
+        case 8: oc_defilter_paeth_8(scanline_width, row, prev); return;
+        default: break;
+    }
     for(i = 0; i < bytes_per_pixel && i < scanline_width; i++)
         row[i] = (unsigned char)(row[i] + prev[i]);
     for(; i < scanline_width; i++)
@@ -1637,6 +1737,141 @@ no_opt:
 
     return 0;
 }
+
+#ifdef SPNG_USE_LIBDEFLATE
+/* opencodecs addition: decode a whole non-interlaced 8- or 16-bit image
+   with one libdeflate_zlib_decompress call, for SPNG_FMT_PNG output.
+
+   libspng inflates one scanline per inflate() call, through zlib. With
+   an 8 KB output window zlib copies every row into its sliding window
+   and restarts its fast loop at every row boundary, which cost about a
+   fifth of the inflate on a 4096 x 4096 16-bit image; and libdeflate's
+   one-shot inflate is faster than zlib's to begin with. So the IDAT
+   payload is gathered and inflated in one call into the filtered-row
+   buffer. Each row is then defiltered as libspng does it: copied into
+   one of two scanline buffers with 32 bytes of slack, because the
+   SIMD defilter_sub3 / defilter_avg4 family stores a few bytes past
+   the end of the row (in the inflated buffer that would overwrite the
+   next row's filter byte), defiltered there by defilter_scanline, and
+   copied out, swapped to host byte order for 16-bit samples as
+   SPNG_FMT_PNG returns them.
+
+   Returns 0 on success. Any other value means "not decoded here" and
+   the caller decodes with libspng as before, which then reports
+   whatever is wrong in its own words: anything unexpected falls back,
+   never fails. That covers chunks that do not fit the buffer, a CRC
+   mismatch in any IDAT chunk, a zlib stream libdeflate refuses or that
+   is shorter or longer than the image, and a filter type above 4.
+
+   `png` is the whole file; the caller has already parsed the chunks
+   before the first IDAT with libspng. Only the first run of
+   consecutive IDAT chunks is read, as libspng reads it. */
+int oc_spng_decode_oneshot(const unsigned char *png, size_t png_len,
+                           uint32_t width, uint32_t height,
+                           unsigned channels, unsigned bit_depth,
+                           unsigned char *out, size_t out_len)
+{
+    size_t bpp, row_bytes, filtered_len, pos, idat_len = 0, n_idat = 0;
+    size_t first_idat = 0, end_idat = 0, actual = 0, y;
+    const unsigned char *zdata;
+    unsigned char *gathered = NULL, *filtered = NULL, *rows = NULL;
+    unsigned char *cur, *prev, *t;
+    struct libdeflate_decompressor *d = NULL;
+    int ret = 1;
+
+    if(bit_depth != 8 && bit_depth != 16) return 1;
+    if(!width || !height || !channels || channels > 4) return 1;
+    bpp = (size_t)channels * (bit_depth / 8);
+    row_bytes = (size_t)width * bpp;
+    if(row_bytes / bpp != width) return 1;
+    if(height > SIZE_MAX / (row_bytes + 1)) return 1;
+    if(out_len != row_bytes * height) return 1;
+    filtered_len = (row_bytes + 1) * height;
+
+    /* Find the first run of IDAT chunks and check their CRCs. */
+    pos = 8;
+    while(pos <= png_len && png_len - pos >= 12)
+    {
+        uint32_t len = read_u32(png + pos);
+        int is_idat = !memcmp(png + pos + 4, type_idat, 4);
+
+        if(len > spng_u32max || len > png_len - pos - 12) break;
+        if(!is_idat && n_idat) break;
+        if(is_idat)
+        {
+            uint32_t crc = (uint32_t)libdeflate_crc32(0, png + pos + 4, (size_t)len + 4);
+            if(crc != read_u32(png + pos + 8 + len)) return 1;
+            if(!n_idat) first_idat = pos;
+            n_idat++;
+            idat_len += len;
+            end_idat = pos + 12 + len;
+        }
+        pos += 12 + (size_t)len;
+    }
+    if(!n_idat || !idat_len) return 1;
+
+    if(n_idat == 1)
+    {
+        zdata = png + first_idat + 8;
+    }
+    else
+    {
+        unsigned char *dst = gathered = malloc(idat_len);
+        if(gathered == NULL) return 1;
+        for(pos = first_idat; pos < end_idat; )
+        {
+            uint32_t len = read_u32(png + pos);
+            memcpy(dst, png + pos + 8, len);
+            dst += len;
+            pos += 12 + (size_t)len;
+        }
+        zdata = gathered;
+    }
+
+    filtered = malloc(filtered_len);
+    if(row_bytes > (SIZE_MAX - 64) / 2) goto done;
+    rows = calloc(1, 2 * (row_bytes + 32)); /* prev starts as zeros */
+    d = libdeflate_alloc_decompressor();
+    if(filtered == NULL || rows == NULL || d == NULL) goto done;
+
+    if(libdeflate_zlib_decompress(d, zdata, idat_len, filtered, filtered_len, &actual)
+       != LIBDEFLATE_SUCCESS || actual != filtered_len) goto done;
+
+    cur = rows;
+    prev = rows + row_bytes + 32;
+    for(y = 0; y < height; y++)
+    {
+        const unsigned char *line = filtered + y * (row_bytes + 1);
+        unsigned char *dst = out + y * row_bytes;
+        unsigned filter = line[0];
+
+        if(filter > 4) goto done;
+        memcpy(cur, line + 1, row_bytes);
+        if(filter && defilter_scanline(prev, cur, row_bytes + 1, (unsigned)bpp, filter)) goto done;
+
+        if(bit_depth == 16)
+        {
+            size_t i;
+            for(i = 0; i < row_bytes; i += 2)
+            {
+                uint16_t v = (uint16_t)((cur[i] << 8) | cur[i + 1]);
+                memcpy(dst + i, &v, 2);
+            }
+        }
+        else memcpy(dst, cur, row_bytes);
+
+        t = prev; prev = cur; cur = t;
+    }
+    ret = 0;
+
+done:
+    if(d) libdeflate_free_decompressor(d);
+    free(rows);
+    free(filtered);
+    free(gathered);
+    return ret;
+}
+#endif /* SPNG_USE_LIBDEFLATE */
 
 /* filter_scanline_* mirrors the filter_sum_* family below: one function
    per filter type, with the first `bytes_per_pixel` bytes (where a and c

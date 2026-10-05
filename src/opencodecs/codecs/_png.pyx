@@ -64,6 +64,33 @@ from spng cimport (
 cnp.import_array()
 
 
+# The one-shot decode in the vendored libspng (spng.c), present when it
+# is built with libdeflate; otherwise a stub that always declines.
+cdef extern from *:
+    """
+    #ifdef SPNG_USE_LIBDEFLATE
+    int oc_spng_decode_oneshot(const unsigned char *png, size_t png_len,
+                               uint32_t width, uint32_t height,
+                               unsigned channels, unsigned bit_depth,
+                               unsigned char *out, size_t out_len);
+    #else
+    static inline int oc_spng_decode_oneshot(
+        const unsigned char *png, size_t png_len, uint32_t width,
+        uint32_t height, unsigned channels, unsigned bit_depth,
+        unsigned char *out, size_t out_len)
+    {
+        (void)png; (void)png_len; (void)width; (void)height;
+        (void)channels; (void)bit_depth; (void)out; (void)out_len;
+        return 1;
+    }
+    #endif
+    """
+    int oc_spng_decode_oneshot(
+        const uint8_t* png, size_t png_len, uint32_t width, uint32_t height,
+        unsigned channels, unsigned bit_depth, uint8_t* out,
+        size_t out_len) nogil
+
+
 class PngError(RuntimeError):
     """Raised on PNG encode/decode failures."""
 
@@ -135,6 +162,49 @@ cdef int _decode_layout(spng_ctx* ctx, spng_ihdr* ihdr, int* fmt, int* flags,
     raise PngError(f'unsupported PNG color type {color_type}')
 
 
+cdef inline bint _oneshot_eligible(int fmt, int flags, spng_ihdr* ihdr) noexcept:
+    """The images oc_spng_decode_oneshot handles: the file's own layout."""
+    return (fmt == SPNG_FMT_PNG and flags == 0 and ihdr.bit_depth >= 8
+            and ihdr.interlace_method == 0)
+
+
+def _oneshot_decodes(data) -> bool:
+    """True if decode() inflates ``data`` in one libdeflate call.
+
+    For tests. That path declines silently and libspng decodes instead,
+    with the same result, so a change that made it decline everything
+    would show up only as lost speed.
+    """
+    cdef:
+        const uint8_t[::1] src = bytes(data)
+        spng_ctx* ctx = spng_ctx_new(0)
+        spng_ihdr ihdr
+        int fmt, flags = 0, channels = 0, rc
+        bint wide = False
+        size_t out_size
+        uint8_t[::1] scratch
+    if ctx == NULL:
+        raise PngError('spng_ctx_new failed')
+    try:
+        _check(spng_set_png_buffer(ctx, <const void*> &src[0], src.shape[0]),
+               'spng_set_png_buffer')
+        _check(spng_get_ihdr(ctx, &ihdr), 'spng_get_ihdr')
+        _check(_decode_layout(ctx, &ihdr, &fmt, &flags, &channels, &wide),
+               'spng_get_trns')
+        if not _oneshot_eligible(fmt, flags, &ihdr):
+            return False
+        _check(spng_decoded_image_size(ctx, fmt, &out_size),
+               'spng_decoded_image_size')
+        scratch = bytearray(out_size)
+        rc = oc_spng_decode_oneshot(
+            &src[0], src.shape[0], ihdr.width, ihdr.height,
+            <unsigned> channels, <unsigned> ihdr.bit_depth,
+            &scratch[0], out_size)
+        return rc == 0
+    finally:
+        spng_ctx_free(ctx)
+
+
 def decode(data, *, out=None):
     """Decode a PNG byte string to a numpy array.
 
@@ -150,6 +220,12 @@ def decode(data, *, out=None):
           for the PNG bit depth, and the correct shape — matching
           what the default path would have produced. Returns the
           same array. Zero-alloc fast path for tile / page reuse.
+
+    A non-interlaced 8- or 16-bit image decoded to its own sample
+    layout (no tRNS expansion, no palette) is inflated in one
+    libdeflate call when libdeflate is linked, rather than one zlib
+    call per row; see oc_spng_decode_oneshot in the vendored spng.c.
+    The pixels are the same either way.
     """
     cdef:
         const uint8_t[::1] src
@@ -238,11 +314,23 @@ def decode(data, *, out=None):
                 f'decoded image size mismatch: spng={out_size} '
                 f'numpy={out_arr.nbytes}')
 
-        with nogil:
-            rc = spng_decode_image(
-                ctx, cnp.PyArray_DATA(out_arr), out_size, fmt, flags,
-            )
-        _check(rc, 'spng_decode_image')
+        # Non-interlaced 8- and 16-bit images with the file's own sample
+        # layout inflate in one libdeflate call (oc_spng_decode_oneshot
+        # in spng.c). Anything it does not take, or finds wrong, is
+        # decoded by libspng as before, which reports the error.
+        rc = 1
+        if _oneshot_eligible(fmt, flags, &ihdr):
+            with nogil:
+                rc = oc_spng_decode_oneshot(
+                    &src[0], srcsize, ihdr.width, ihdr.height,
+                    <unsigned> channels, <unsigned> ihdr.bit_depth,
+                    <uint8_t*> cnp.PyArray_DATA(out_arr), out_size)
+        if rc != 0:
+            with nogil:
+                rc = spng_decode_image(
+                    ctx, cnp.PyArray_DATA(out_arr), out_size, fmt, flags,
+                )
+            _check(rc, 'spng_decode_image')
 
         return out_arr
     finally:

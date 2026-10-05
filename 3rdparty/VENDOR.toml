@@ -199,17 +199,25 @@ license = "BSD-2-Clause"
   local = "3rdparty/libspng/spng.c"
   upstream = "spng/spng.c"
   modified = true
-  note = """Carries four opencodecs changes: the grayscale-defilter \
+  note = """Carries six opencodecs changes: the grayscale-defilter \
 patch, the filter_sum_* family (one function per filter instead of a \
 switch inside the per-byte loop), the matching filter_scanline_* \
-family, and a libdeflate bypass for an explicit compression strategy. \
-The second and third are the same transformation applied to the two \
-halves of the encode filter path; both are branch hoisting, and both \
-produce byte-identical output to the code they replaced. The fourth: \
-under SPNG_USE_LIBDEFLATE the IDAT stream is compressed in one \
-libdeflate call; setting SPNG_IMG_COMPRESSION_STRATEGY switches that \
-context back to zlib's deflate, since libdeflate has no strategy \
-setting and the option would otherwise be ignored."""
+family, a libdeflate bypass for an explicit compression strategy, \
+the OC_CARRY_* defilter loops, and oc_spng_decode_oneshot. The second \
+and third are the same transformation applied to the two halves of \
+the encode filter path; both are branch hoisting, and both produce \
+byte-identical output to the code they replaced. The fourth: under \
+SPNG_USE_LIBDEFLATE the IDAT stream is compressed in one libdeflate \
+call; setting SPNG_IMG_COMPRESSION_STRATEGY switches that context \
+back to zlib's deflate, since libdeflate has no strategy setting and \
+the option would otherwise be ignored. The fifth keeps the previous \
+pixel in locals for sub, average and Paeth at 1, 2, 6 and 8 bytes per \
+pixel, the same arithmetic without a store-to-load dependency per \
+byte. The sixth, also under SPNG_USE_LIBDEFLATE, is a new function \
+the extension calls for non-interlaced 8- and 16-bit images in their \
+own layout: one libdeflate inflate of the whole IDAT stream instead of \
+one zlib call per row, declining (so libspng decodes as before) on \
+anything it does not expect."""
   [[component.file]]
   local = "3rdparty/libspng/spng.h"
   upstream = "spng/spng.h"
