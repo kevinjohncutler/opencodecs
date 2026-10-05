@@ -183,6 +183,21 @@ def _pillow_heif(blob, x):
     return np.asarray(ph.open_heif(bytes(blob), convert_hdr_to_8bit=False))
 
 
+def _pillow_heif_10bit(blob, x):
+    """pillow-heif returns deep images scaled to 16 bits; back to 10."""
+    return _pillow_heif(blob, x) >> 6
+
+
+def _pyav(blob, x):
+    """FFmpeg through PyAV: its own ISOBMFF demuxer (not libheif or
+    libavif), dav1d or its HEVC decoder, and swscale to RGB, going by
+    the stream's color signaling."""
+    av = _mod("av")
+    with av.open(io.BytesIO(bytes(blob))) as container:
+        frame = next(container.decode(video=0))
+        return frame.to_ndarray(format="rgb24")
+
+
 def _tifffile_via_imagecodecs():
     """tifffile, for a TIFF whose tiles it hands to imagecodecs to
     decompress: then imagecodecs must be the reference release too.
@@ -258,6 +273,10 @@ INPUTS = {
     "f4": lambda: _smooth((32, 48), 100.0, np.float32),
     "f4_3d": lambda: _smooth((32, 48), 100.0, np.float32)[None].repeat(4, 0),
     "rgb_f4": lambda: (_smooth((32, 48, 3), 1000.0, np.float32) + 1.0),
+    # NVENC's smallest picture is 192 x 128 (AV1) on current GPUs.
+    "rgb_large": lambda: _smooth((256, 320, 3), 255, np.uint8),
+    "rgb_odd": lambda: _smooth((255, 321, 3), 255, np.uint8),
+    "rgb10": lambda: _smooth((256, 320, 3), 1023, np.uint16),
 }
 
 
@@ -269,7 +288,8 @@ class Case:
     data: str
     readers: list
     kw: dict = field(default_factory=dict)
-    # None = exact; ("abs", e) / ("rel", e) / ("psnr", db) for lossy.
+    # None = exact; ("abs", e) / ("rel", e) / ("psnr", db) for lossy;
+    # ("psnr", db, peak) for samples narrower than their dtype.
     tol: tuple | None = None
     id: str = ""
 
@@ -378,6 +398,24 @@ CASES = [
     Case("heif", "rgb", [ic("heif_decode"), _pillow_heif],
          kw={"level": 90, "backend": "imageio"}, tol=("psnr", 30),
          id="heif-imageio"),
+    # NVENC: the container is written in Python around the encoder's
+    # output, so independent parsers read it, at 8 and 10 bits; an odd
+    # size is padded and cropped by a clap box, which readers apply.
+    Case("avif", "rgb_large", [ic("avif_decode"), _pyav],
+         kw={"level": 80, "backend": "nvvideocodec"}, tol=("psnr", 32),
+         id="avif-nvvideocodec"),
+    Case("avif", "rgb10", [ic("avif_decode")],
+         kw={"level": 80, "backend": "nvvideocodec"}, tol=("psnr", 32, 1023),
+         id="avif-10bit-nvvideocodec"),
+    Case("heif", "rgb_large", [ic("heif_decode"), _pillow_heif, _pyav],
+         kw={"level": 80, "backend": "nvvideocodec"}, tol=("psnr", 32),
+         id="heif-nvvideocodec"),
+    Case("heif", "rgb10", [ic("heif_decode"), _pillow_heif_10bit],
+         kw={"level": 80, "backend": "nvvideocodec"}, tol=("psnr", 32, 1023),
+         id="heif-10bit-nvvideocodec"),
+    Case("heif", "rgb_odd", [ic("heif_decode"), _pillow_heif],
+         kw={"level": 80, "backend": "nvvideocodec"}, tol=("psnr", 32),
+         id="heif-odd-nvvideocodec"),
 
     # Whole-file formats: the format's own reader.
     Case("tiff", "u16", [_tifffile]),
@@ -435,7 +473,7 @@ def _check(got, x, tol, label):
         assert a.dtype == ref.dtype, f"{label}: dtype {a.dtype} != {ref.dtype}"
         assert np.array_equal(a, ref), f"{label}: not the pixels we encoded"
         return
-    kind, bound = tol
+    kind, bound, *peak = tol
     diff = np.abs(a.astype(np.float64) - ref.astype(np.float64))
     if kind == "abs":
         assert diff.max() <= bound * (1 + 1e-6), f"{label}: max error {diff.max()}"
@@ -449,7 +487,8 @@ def _check(got, x, tol, label):
         rel = diff / peak
         assert rel.max() <= bound, f"{label}: error {rel.max()} of the pixel peak"
     elif kind == "psnr":
-        peak = 255.0 if ref.dtype == np.uint8 else float(np.iinfo(ref.dtype).max)
+        peak = (float(peak[0]) if peak else 255.0 if ref.dtype == np.uint8
+                else float(np.iinfo(ref.dtype).max))
         mse = float(np.mean(diff ** 2))
         psnr = np.inf if mse == 0 else 10 * np.log10(peak ** 2 / mse)
         assert psnr >= bound, f"{label}: PSNR {psnr:.1f} dB < {bound}"
