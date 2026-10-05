@@ -10,7 +10,7 @@ Versions follow the same ``YYYY.M.D`` cadence as upstream when we
 publish; the entries below cluster work by date rather than by
 release because most of it has shipped continuously to ``main``.
 
-0.7.2 (unreleased)
+0.7.2 (2026-10-05)
 ------------------
 
 Speed, from measuring opencodecs against Apple's ImageIO, NVIDIA's GPU
