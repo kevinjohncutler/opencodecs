@@ -10,7 +10,84 @@ Versions follow the same ``YYYY.M.D`` cadence as upstream when we
 publish; the entries below cluster work by date rather than by
 release because most of it has shipped continuously to ``main``.
 
-0.7.1 (unreleased)
+0.7.2 (unreleased)
+------------------
+
+Speed, from measuring opencodecs against Apple's ImageIO, NVIDIA's GPU
+codecs and the Intel media engine: most of the gaps those measurements
+exposed were in opencodecs itself, and are closed here on every platform.
+Every change below returns output identical to the previous release.
+
+- AVIF decode converts YUV to RGB on the decoder's threads, in row bands
+  written straight into the output, instead of on one thread into a buffer
+  copied out afterward. For 4:2:0 with bilinear chroma upsampling the rows
+  next to each band edge are converted again with the chroma rows they read,
+  so the result is byte-identical to a single-threaded conversion (checked on
+  92 files, every subsampling, depth, range and matrix, at 1 to 64 threads).
+  4096 x 3072 RGB: 4:2:0 149 to 58 ms, 4:2:2 158 to 65 ms, 4:4:4 108 to
+  71 ms.
+- PNG decode inflates a non-interlaced 8 or 16-bit image in one libdeflate
+  call rather than one zlib call per row, and the sub, average and Paeth
+  defilters no longer wait on the byte just stored. Anything unexpected falls
+  back to libspng, so pixels and errors are unchanged (PngSuite and 306
+  generated files). 4096 x 4096 uint16 gray 155 to 79 ms, RGB 8-bit 170 to
+  107 ms.
+- gzip decode goes through libdeflate when it is linked, reading every
+  member of a multi-member file as before; input libdeflate refuses is
+  handed to the standard library's gzip module, so malformed files raise
+  what they raised before. 256 MiB: 438 to 367 ms (text) and 807 to 646 ms
+  on macOS, whose system zlib is already fast; more where it is not.
+- ``opencodecs.decode_batch`` decodes many zstd, zlib, raw deflate, LZ4
+  frame or bare LZ4 block chunks in a few native calls without the GIL, into
+  one output or one buffer per chunk. 256 MiB stored as 64 KiB zstd chunks
+  decodes in 28 ms with the default worker count, where one Python call per
+  chunk took 179 ms on 8 threads; a corrupt chunk raises what ``decode``
+  raises for it.
+- Zarr and OME-Zarr arrays of zstd chunks on local disk, sharded or not,
+  read their chunk files, decompress and place them in native code without
+  the GIL, and read in parallel by default. A full 256 MiB read of 64 KiB
+  chunks takes 45 ms instead of 511 ms (286 ms on 16 workers before), and of
+  a sharded array 53 ms instead of 609 ms. Other codecs and remote stores
+  keep their paths.
+- HEIF decode hands its thread count to the HEVC decoder (libheif 1.21 or
+  newer, which the wheels bundle). The encoder already writes wavefront
+  rows, so an untiled 4096 x 3072 image decodes in 78 ms instead of 288 ms,
+  or 136 ms instead of 984 ms at higher quality, pixel-identical.
+  ``numthreads=None`` now means this call's share of the machine, at most 16.
+- HTJ2K decode splits a codestream of several tiles into its tiles and
+  decodes them in parallel (new ``numthreads`` argument): a 4096 x 4096
+  uint16 lossless image in 16 tiles decodes in 13.5 ms instead of 118 ms,
+  pixel-identical. Untiled codestreams decode as before; OpenJPH offers no
+  parallelism within a tile.
+
+Opt-in hardware backends:
+
+- ``backend="nvimgcodec"`` on ``jpeg``, ``jpeg2k`` and ``htj2k`` encodes and
+  decodes on an NVIDIA GPU through nvImageCodec (``pip install
+  'opencodecs[gpu]'``). Lossless decodes return the same array as the CPU
+  path, and ``out=`` accepts numpy, CuPy or pinned memory from
+  ``opencodecs.backends.pinned_empty``. On an RTX 4090 an HTJ2K lossless
+  decode of a 4096 x 4096 uint16 image ran 9x faster than the CPU path (16x
+  into pinned memory) and JPEG encode 4.8x. The first call in a process
+  costs 1 to 1.6 s, and small tiles decode faster on CPU threads, so it is
+  never chosen by default and there is no process-wide switch.
+- ``backend="imageio"`` on ``heif`` (macOS) decodes with Apple's media
+  engine where that helps: 10 to 19x faster than libheif on large
+  single-picture files, within one level for 4:4:4. Small-tile grids such as
+  phone photos stay on libheif, which is as fast there. It also offers a
+  lossy hardware HEVC encode, 5 to 15x faster but writing larger files. It
+  needs no extra package.
+- Importing opencodecs loads none of the optional packages. Asking for a
+  backend that cannot run raises ``opencodecs.backends.BackendUnavailable``
+  rather than falling back to the CPU. Every encode a backend adds is checked
+  by an independent decoder in ``tests/test_foreign_readers.py``.
+- Measured and not added: Intel Quick Sync through VA-API decoded 4:2:0 HEVC
+  about 12x faster on a single picture but cannot decode the 4:4:4 files this
+  library writes, gained nothing on JPEG, and needs a vendor driver and
+  render-group access; NVIDIA's nvCOMP cannot read standard LZ4 files and
+  lost to CPU threads end to end on standard zstd and deflate.
+
+0.7.1 (2026-10-04)
 ------------------
 
 Every encoder is now tested against a decoder that is not ours.

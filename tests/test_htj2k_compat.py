@@ -310,8 +310,9 @@ def test_codec_rejects_unknown_options():
     a = np.zeros((16, 16), np.uint8)
     with pytest.raises(TypeError, match="unsupported"):
         codec.encode(a, quality=50)
+    # numthreads is an option since tile-parallel decode; this one is not.
     with pytest.raises(TypeError, match="unsupported"):
-        codec.decode(codec.encode(a), numthreads=2)
+        codec.decode(codec.encode(a), workers=2)
 
 
 # ---------------------------------------------------------------------------
