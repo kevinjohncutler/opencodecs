@@ -183,6 +183,19 @@ format — Android Camera's default since A14 and what iOS 18+ reads
 natively. Decode dtype controls the output: `float16` returns linear
 BT.2100 HDR; `uint8` returns the SDR-tonemapped base JPEG.
 
+#### Opt-in hardware backends
+
+`jpeg`, `jpeg2k` and `htj2k` can encode and decode on an NVIDIA GPU with
+`backend="nvimgcodec"` (`pip install 'opencodecs[gpu]'`), and `heif` can
+decode, or encode lossy, with Apple's media engine via
+`backend="imageio"` on macOS. Neither is ever the default: the GPU path
+costs 1 to 1.6 s of startup per process, and both lose on batches of
+small tiles. Where they fit, an HTJ2K lossless decode of a 4096 x 4096
+uint16 image ran 9x faster on an RTX 4090 (16x into pinned memory) and a
+large untiled HEIC decoded 10 to 19x faster on an M1 Ultra. Lossless
+decodes match the CPU path bit for bit. Details and every measurement:
+[docs/hardware_backends.md](docs/hardware_backends.md).
+
 ### Multi-frame / chunked formats
 
 | Codec | Read | Write | Container | Notes |

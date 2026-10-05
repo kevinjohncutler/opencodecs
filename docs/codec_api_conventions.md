@@ -77,6 +77,23 @@ VSI's three options (`auto` / `thumbnail` / `ets`) are both native code
 paths, but we still call the kwarg `backend=` for cross-codec
 consistency. The actual semantics live in the docstring.
 
+The same keyword selects an alternative engine on `encode()` and
+`decode()`: `deflate` takes `backend="isal"`, and `jpeg`, `jpeg2k`,
+`htj2k` and `heif` take the opt-in hardware backends
+(`"nvimgcodec"`, `"imageio"`; see
+[hardware_backends.md](hardware_backends.md)). Those follow three rules:
+
+* `None` (and `"native"`) is the CPU path; an alternative engine is
+  never picked by default or by an environment variable.
+* Explicitly asking for an engine that cannot run raises
+  (`opencodecs.backends.BackendUnavailable`) rather than falling back,
+  and an option the engine cannot honor raises rather than being
+  dropped. The one documented exception is `heif` with `"imageio"`,
+  which routes files Apple's decoder would not speed up (small-tile
+  grids) or would return in another layout to libheif, by design.
+* The result has the CPU path's dtype and shape, and the same pixels
+  wherever the codec is lossless.
+
 If you're keeping an older kwarg around for back-compat, accept it as
 an alias:
 
