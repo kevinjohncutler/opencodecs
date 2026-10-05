@@ -40,7 +40,7 @@ import threading
 
 import numpy as np
 
-from . import BackendUnavailable
+from . import BackendUnavailable, _heifbox
 from ..core.errors import OpenCodecsError
 
 _log = logging.getLogger("opencodecs")
@@ -48,12 +48,6 @@ _log = logging.getLogger("opencodecs")
 # Tiles at least this many pixels on each side are worth the hardware
 # decoder. ImageIO's own 512 x 512 grids were no faster than libheif.
 MIN_TILE = 1024
-
-# Auxiliary-image types that mean "this is the alpha plane" (HEVC's and
-# MPEG-B's spellings); a depth map or other auxiliary image does not
-# change how the primary image decodes.
-_ALPHA_URNS = (b"urn:mpeg:hevc:2015:auxid:1",
-               b"urn:mpeg:mpegB:cicp:systems:auxiliary:alpha")
 
 _lock = threading.Lock()
 _api = None
@@ -165,103 +159,6 @@ def load() -> _Api:
 
 # ------------------------------------------------------- HEIF structure
 
-def _boxes(data, start, end):
-    """(type, payload start, box end) for each ISOBMFF box in a range."""
-    pos = start
-    while pos + 8 <= end:
-        size, kind = struct.unpack_from(">I4s", data, pos)
-        head = 8
-        if size == 1:
-            if pos + 16 > end:
-                return
-            size = struct.unpack_from(">Q", data, pos + 8)[0]
-            head = 16
-        elif size == 0:
-            size = end - pos
-        if size < head or pos + size > end:
-            return
-        yield kind, pos + head, pos + size
-        pos += size
-
-
-def _items(data):
-    """Primary item id, item types, references and properties of a HEIF."""
-    meta = next(((s, e) for k, s, e in _boxes(data, 0, len(data))
-                 if k == b"meta"), None)
-    if meta is None:
-        return None
-    primary, types, refs, props, assoc = None, {}, [], [], {}
-    for kind, s, e in _boxes(data, meta[0] + 4, meta[1]):
-        version = data[s]
-        if kind == b"pitm":
-            primary = (struct.unpack_from(">H", data, s + 4)[0] if version == 0
-                       else struct.unpack_from(">I", data, s + 4)[0])
-        elif kind == b"iinf":
-            first = s + (6 if version == 0 else 8)
-            for k2, s2, e2 in _boxes(data, first, e):
-                if k2 != b"infe" or data[s2] < 2:
-                    continue
-                if data[s2] == 2:
-                    item = struct.unpack_from(">H", data, s2 + 4)[0]
-                    at = s2 + 8
-                else:
-                    item = struct.unpack_from(">I", data, s2 + 4)[0]
-                    at = s2 + 10
-                types[item] = bytes(data[at:at + 4])
-        elif kind == b"iref":
-            wide = version != 0
-            for k2, s2, e2 in _boxes(data, s + 4, e):
-                fmt, step = (">I", 4) if wide else (">H", 2)
-                src = struct.unpack_from(fmt, data, s2)[0]
-                count = struct.unpack_from(">H", data, s2 + step)[0]
-                at = s2 + step + 2
-                dst = [struct.unpack_from(fmt, data, at + i * step)[0]
-                       for i in range(count)]
-                refs.append((bytes(k2), src, dst))
-        elif kind == b"iprp":
-            for k2, s2, e2 in _boxes(data, s, e):
-                if k2 == b"ipco":
-                    props = [(bytes(k3), s3, e3)
-                             for k3, s3, e3 in _boxes(data, s2, e2)]
-                elif k2 == b"ipma":
-                    v2, flags = data[s2], data[s2 + 3]
-                    count = struct.unpack_from(">I", data, s2 + 4)[0]
-                    at = s2 + 8
-                    for _ in range(count):
-                        if v2 < 1:
-                            item = struct.unpack_from(">H", data, at)[0]
-                            at += 2
-                        else:
-                            item = struct.unpack_from(">I", data, at)[0]
-                            at += 4
-                        n = data[at]
-                        at += 1
-                        idx = []
-                        for _ in range(n):
-                            if flags & 1:
-                                idx.append(struct.unpack_from(">H", data, at)[0]
-                                           & 0x7FFF)
-                                at += 2
-                            else:
-                                idx.append(data[at] & 0x7F)
-                                at += 1
-                        assoc.setdefault(item, []).extend(idx)
-    return primary, types, refs, props, assoc
-
-
-def _clap_is_identity(data, props) -> bool:
-    """True if the clean-aperture box keeps the whole coded image."""
-    ispe = props.get(b"ispe")
-    if ispe is None:
-        return False
-    width, height = struct.unpack_from(">II", data, ispe[0] + 4)
-    wn, wd, hn, hd, xn, xd, yn, yd = struct.unpack_from(
-        ">IIIIiIiI", data, props[b"clap"][0])
-    if not (wd and hd and xd and yd):
-        return False
-    return wn == width * wd and hn == height * hd and xn == 0 and yn == 0
-
-
 def route(data, *, index=None, photometric=None) -> tuple[str, str]:
     """``("imageio", "")`` if ImageIO should decode ``data``, else
     ``("native", reason)``. Reads only the container's metadata."""
@@ -270,33 +167,23 @@ def route(data, *, index=None, photometric=None) -> tuple[str, str]:
     if photometric is not None:
         return "native", "photometric= is a libheif decode option"
     try:
-        parsed = _items(memoryview(data))
+        items = _heifbox.parse(memoryview(data))
     except (struct.error, IndexError, ValueError):
-        parsed = None
-    if not parsed or parsed[0] is None:
+        items = None
+    if items is None or items.primary is None:
         return "native", "could not read the HEIF item structure"
-    primary, types, refs, props, assoc = parsed
-
-    def properties(item):
-        out = {}
-        for i in assoc.get(item, ()):
-            if 1 <= i <= len(props):
-                kind, s, e = props[i - 1]
-                out.setdefault(kind, (s, e))
-        return out
-
+    primary, types = items.primary, items.types
     kind = types.get(primary)
     coded = primary
     if kind == b"grid":
-        tiles = [d for k, s, d in refs if k == b"dimg" and s == primary]
-        tiles = tiles[0] if tiles else []
+        tiles = items.references(b"dimg", primary)
         if not tiles:
             return "native", "grid image without tiles"
         coded = tiles[0]
-        ispe = properties(coded).get(b"ispe")
-        if ispe is None:
+        size = items.size(coded)
+        if size is None:
             return "native", "grid tile without a size"
-        tw, th = struct.unpack_from(">II", data, ispe[0] + 4)
+        tw, th = size
         if min(tw, th) < MIN_TILE:
             return "native", (f"a grid of {tw} x {th} tiles, which libheif "
                               f"decodes on several threads as fast")
@@ -304,14 +191,10 @@ def route(data, *, index=None, photometric=None) -> tuple[str, str]:
             return "native", "grid tiles are not HEVC"
     elif kind != b"hvc1":
         return "native", f"primary image is {kind!r}, not HEVC"
-    mine = properties(primary)
-    if b"imir" in mine:
-        return "native", "the image is mirrored (imir)"
-    if b"irot" in mine and data[mine[b"irot"][0]] & 3:
-        return "native", "the image is rotated (irot)"
-    if b"clap" in mine and not _clap_is_identity(data, mine):
-        return "native", "the image is cropped (clap)"
-    hvcc = properties(coded).get(b"hvcC")
+    reason = _heifbox.transform_reason(items, primary)
+    if reason:
+        return "native", reason
+    hvcc = items.properties(coded).get(b"hvcC")
     if hvcc is None or hvcc[1] - hvcc[0] < 19:
         return "native", "no HEVC configuration"
     s = hvcc[0]
@@ -320,14 +203,8 @@ def route(data, *, index=None, photometric=None) -> tuple[str, str]:
         return "native", "monochrome"
     if luma or chroma_bits:
         return "native", f"{8 + luma}-bit samples"
-    for k, src, dst in refs:
-        if k == b"auxl" and primary in dst:
-            auxc = properties(src).get(b"auxC")
-            # auxC is a full box; its aux_type is a NUL-terminated URN.
-            urn = (b"" if auxc is None else
-                   bytes(data[auxc[0] + 4:auxc[1]]).split(b"\0")[0])
-            if auxc is None or urn in _ALPHA_URNS:
-                return "native", "the image has an alpha plane"
+    if _heifbox.has_alpha(items, primary):
+        return "native", "the image has an alpha plane"
     return "imageio", ""
 
 
@@ -405,6 +282,9 @@ def decode_heif(data, native_decode, *, out=None, index=None,
     """The heif codec's ``backend="imageio"`` decode: ImageIO where
     :func:`route` says it helps, libheif (``native_decode``) otherwise."""
     load()
+    if out is not None:
+        from ..core.buffers import array_output
+        out = array_output(out)
     path, reason = route(data, index=index, photometric=photometric)
     if path == "imageio":
         result = decode(data, out=out)
